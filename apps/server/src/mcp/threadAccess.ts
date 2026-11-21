@@ -7,7 +7,6 @@ import {
   type EnvironmentId,
   OrchestratorMcpFailure,
   type ProjectId,
-  type ProviderInstanceId,
   type ProviderInteractionMode,
   type RuntimeMode,
   ThreadId,
@@ -19,7 +18,6 @@ import {
   threadLinkCandidates,
   threadLinkRefs,
 } from "@t3tools/shared/threadLinks";
-import { hasPendingBackgroundSubagent } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 
@@ -28,6 +26,8 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
 import { fencingLinkOrigin } from "./linkOrigin.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import { CurrentRequest, CommandIndex } from "./McpRequestReceipts.ts";
+import * as Ref from "effect/Ref";
 
 const delegatedTaskPrefix = "thread:delegated-task:";
 
@@ -152,7 +152,7 @@ export const loadCaller = Effect.fn("mcp.loadCaller")(function* () {
       scope,
       threads,
       caller: undefined,
-      limits: McpInvocationContext.clientModeCeiling(scope.client),
+      limits: scope.authority?.ceiling ?? McpInvocationContext.clientModeCeiling(scope.client),
     } satisfies Caller;
   }
   const caller = yield* threads
@@ -164,11 +164,16 @@ export const loadCaller = Effect.fn("mcp.loadCaller")(function* () {
       message: "The calling thread was not found.",
     });
   }
+  if (scope.client !== undefined)
+    yield* assertTargetWithinLimits(McpInvocationContext.clientModeCeiling(scope.client), caller);
   return {
     scope,
     threads,
     caller,
-    limits: { runtimeMode: caller.runtimeMode, interactionMode: caller.interactionMode },
+    limits: McpInvocationContext.intersectModes(
+      { runtimeMode: caller.runtimeMode, interactionMode: caller.interactionMode },
+      scope.authority?.ceiling ?? scope.legacyPeerCeiling,
+    ),
   } satisfies Caller;
 });
 
@@ -188,24 +193,10 @@ export const assertTargetWithinLimits = (
     ),
   );
 
-/** Background subagents retain credentials until provider exit; archived threads and other instances cannot act. */
-export const isLiveCallerShell = (
-  shell: Pick<
-    OrchestrationV2ThreadShell,
-    "archivedAt" | "activeRunId" | "providerInstanceId" | "pendingBackgroundTasks"
-  > | null,
-  providerInstanceId: ProviderInstanceId | undefined,
-) =>
-  shell !== null &&
-  shell.archivedAt === null &&
-  shell.providerInstanceId === providerInstanceId &&
-  (shell.activeRunId !== null ||
-    hasPendingBackgroundSubagent(shell.pendingBackgroundTasks, providerInstanceId));
-
 /** Thread callers need a live run or its background subagent in an unarchived thread. OAuth clients rely on their session and ceiling. */
 export function assertLiveCaller({ caller, scope }: Caller) {
   if (caller === undefined) return Effect.void;
-  return isLiveCallerShell(caller, scope.thread?.providerInstanceId)
+  return McpInvocationContext.isLiveCallerShell(caller, scope.thread?.providerInstanceId)
     ? Effect.void
     : Effect.fail(
         new OrchestratorMcpFailure({
@@ -260,7 +251,7 @@ export const readThread = Effect.fn("mcp.readThread")(function* <
   }
   const projection = yield* context.threads
     .getProjectThreadRecords({ projectId: shell.projectId, threadId: targetId }, fields, {
-      turnItemTypes: ["user_input_request"],
+      turnItemTypes: ["user_input_request", "approval_request"],
       ...filter,
     })
     .pipe(
@@ -277,6 +268,12 @@ export const readThread = Effect.fn("mcp.readThread")(function* <
 });
 
 export const newCommandId = Effect.fn("mcp.newCommandId")(function* () {
+  const identity = yield* CurrentRequest;
+  const counter = yield* CommandIndex;
+  if (identity !== undefined && counter !== undefined)
+    return CommandId.make(
+      `mcp:request:${identity.id}:${yield* Ref.getAndUpdate(counter, (index) => index + 1)}`,
+    );
   const random = yield* SecureRandom.SecureRandom;
   return CommandId.make(`mcp:${yield* random.uuidV4()}`);
 });

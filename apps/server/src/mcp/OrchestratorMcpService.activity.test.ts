@@ -1,5 +1,7 @@
+import * as Database from "../persistence/Sqlite.ts";
 import {
   EnvironmentId,
+  EventId,
   NodeId,
   type OrchestratorMcpThreadReadResult,
   type OrchestrationV2ThreadProjection,
@@ -20,6 +22,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Metric from "effect/Metric";
 import * as TestClock from "effect/testing/TestClock";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "vite-plus/test";
 
@@ -27,20 +30,28 @@ import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterReg
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
-import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import { restartCutView } from "@t3tools/shared/restartCut";
 import type * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 import { liveThreadShell } from "./McpToolAccess.testkit.ts";
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
+import * as ServerSettings from "../serverSettings.ts";
 
 const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
+  Layer.provide(Database.layerMemory),
+  Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+  Layer.provide(
+    Layer.mock(RemoteDelegation.RemoteDelegation)({ runStatus: () => Effect.succeed(null) }),
+  ),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+  Layer.provide(NodeServices.layer),
 );
 
 const environmentId = EnvironmentId.make("environment-mcp-orchestrator-detail");
@@ -188,9 +199,12 @@ it("readThread preserves caller access errors and prefers activity-run status ov
   } as unknown as OrchestrationV2ThreadProjection;
 
   const layer = layerOrchestratorService.pipe(
+    Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRunRecovery: () => Effect.succeed({ state: "none" }),
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getTimelinePage: () =>
             Effect.succeed({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
           getThreadRecords: (threadId) =>
@@ -354,6 +368,8 @@ it("readThread pages cut-off text without splitting an emoji across pages", asyn
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
+          readRunRecovery: () => Effect.succeed({ state: "none" }),
           getTimelinePage: (_threadId, options) => {
             const remaining = rows.filter(
               (candidate) =>
@@ -469,6 +485,8 @@ it("readThread returns the newest items that fit the response budget", async () 
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRunRecovery: () => Effect.succeed({ state: "none" }),
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getTimelinePage: (_threadId, options) => {
             pageOptions.push(options);
             return Effect.succeed({
@@ -511,8 +529,8 @@ it("readThread returns the newest items that fit the response budget", async () 
       maxCharsPerItem: 1_500,
     };
     const result = yield* service.readThread(makeScope(), read);
-    // The CLI reads as a client without a cursor and follows only hasMore.
-    const first = yield* service.readThread({ ...makeScope(), thread: undefined }, read);
+    // Outside MCP clients and linked environments read without a thread scope.
+    const outside = yield* service.readThread({ ...makeScope(), thread: undefined }, read);
     const fromStart = yield* service.readThread(makeScope(), { ...read, afterPosition: -1 });
     const linked = yield* service.readThread(
       {
@@ -530,7 +548,7 @@ it("readThread returns the newest items that fit the response budget", async () 
 
     expect(pageOptions).toEqual([
       { beforePosition: Number.POSITIVE_INFINITY, limit: 100, view: "activity" },
-      { limit: 100, view: "activity" },
+      { beforePosition: Number.POSITIVE_INFINITY, limit: 100, view: "activity" },
       { afterPosition: -1, limit: 100, view: "activity" },
       { beforePosition: Number.POSITIVE_INFINITY, limit: 100, view: "activity" },
     ]);
@@ -540,9 +558,7 @@ it("readThread returns the newest items that fit the response budget", async () 
     expect(result.items.at(-1)?.position).toBe(99);
     expect(result.earlierPosition).toBe(result.items[0]?.position);
     expect(result.hasMore).toBe(false);
-    expect(first.items[0]?.position).toBe(0);
-    expect(first.hasMore).toBe(true);
-    expect(first.nextPosition).toBe(first.items.at(-1)?.position);
+    expect(outside.items).toEqual(result.items);
     expect(fromStart.items[0]?.position).toBe(0);
     expect(linked.items.at(-1)?.position).toBe(99);
     expect(linked.earlierPosition).toBe(linked.items[0]?.position);
@@ -587,6 +603,8 @@ it("readThread keeps an activity page within an MCP client's output limit and pa
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRunRecovery: () => Effect.succeed({ state: "none" }),
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getTimelinePage: (_threadId, options) => {
             const after =
               options.itemId === undefined
@@ -678,126 +696,167 @@ it("readThread keeps an activity page within an MCP client's output limit and pa
   }).pipe(Effect.provide(layer), Effect.runPromise);
 });
 
-it("taskStatus returns task.providerInstanceId rather than the driver kind", async () => {
-  const parentProjection = {
-    thread: baseThread({
-      threadId: parentThreadId,
-      title: "Parent",
-      instanceId: parentInstanceId,
-      model: "gpt-5.4",
-    }),
-    runs: [makeRun({ id: activeRunId, ordinal: 1, status: "running" })],
-    visibleTurnItems: [],
-    providerTurns: [],
-    runtimeRequests: [],
-    messages: [],
-    contextTransfers: [],
-    subagents: [
-      {
-        id: taskId,
+it.each(["local", "remote"] as const)(
+  "taskStatus preserves the %s task instance and execution identity",
+  async (location) => {
+    const latestResult = {
+      environmentId: EnvironmentId.make("remote-environment"),
+      threadId: childThreadId,
+      runId: RunId.make("remote-followup"),
+      eventId: EventId.make("remote-followup-result"),
+      sequence: 2,
+      status: "completed" as const,
+      text: "Follow-up result",
+      truncated: false,
+    };
+    const stop = { requestId: "remote-stop", state: "pending" as const };
+    const parentProjection = {
+      thread: baseThread({
         threadId: parentThreadId,
-        runId: activeRunId,
-        parentNodeId: NodeId.make("node-parent"),
-        origin: "app_owned",
+        title: "Parent",
+        instanceId: parentInstanceId,
+        model: "gpt-5.4",
+      }),
+      runs: [makeRun({ id: activeRunId, ordinal: 1, status: "running" })],
+      visibleTurnItems: [],
+      providerTurns: [],
+      runtimeRequests: [],
+      messages: [],
+      contextTransfers: [],
+      subagents: [
+        {
+          id: taskId,
+          threadId: parentThreadId,
+          runId: activeRunId,
+          parentNodeId: NodeId.make("node-parent"),
+          origin: "app_owned",
+          createdBy: "agent",
+          driver: codexDriver,
+          providerInstanceId: customCodexInstanceId,
+          providerThreadId: null,
+          childThreadId: location === "local" ? childThreadId : null,
+          ...(location === "local"
+            ? {}
+            : {
+                remoteChild: {
+                  environmentId: latestResult.environmentId,
+                  threadId: childThreadId,
+                  label: "Remote",
+                  title: "Remote review",
+                  runId: childRunId,
+                  availability: "current",
+                  latestResult,
+                  stop,
+                },
+              }),
+          nativeTaskRef: null,
+          prompt: "Inspect the custom instance.",
+          title: null,
+          model: "gpt-5.4",
+          status: "running",
+          result: null,
+          startedAt: now,
+          completedAt: null,
+          updatedAt: now,
+        },
+      ],
+      updatedAt: now,
+    } as unknown as OrchestrationV2ThreadProjection;
+
+    const childProjection = {
+      thread: {
+        ...baseThread({
+          threadId: childThreadId,
+          title: "Child",
+          instanceId: customCodexInstanceId,
+          model: "gpt-5.4",
+        }),
+        lineage: {
+          parentThreadId,
+          relationshipToParent: "subagent",
+          rootThreadId: parentThreadId,
+        },
         createdBy: "agent",
-        driver: codexDriver,
-        providerInstanceId: customCodexInstanceId,
-        providerThreadId: null,
-        childThreadId,
-        nativeTaskRef: null,
-        prompt: "Inspect the custom instance.",
-        title: null,
-        model: "gpt-5.4",
-        status: "running",
-        result: null,
-        startedAt: now,
-        completedAt: null,
-        updatedAt: now,
       },
-    ],
-    updatedAt: now,
-  } as unknown as OrchestrationV2ThreadProjection;
+      runs: [
+        makeRun({
+          id: childRunId,
+          ordinal: 1,
+          status: "running",
+          instanceId: customCodexInstanceId,
+        }),
+      ],
+      visibleTurnItems: [],
+      providerTurns: [],
+      runtimeRequests: [],
+      messages: [],
+      contextTransfers: [
+        {
+          type: "subagent_spawn",
+          sourceThreadId: parentThreadId,
+          targetThreadId: childThreadId,
+          targetRunId: childRunId,
+        },
+      ],
+      subagents: [],
+      providerThreads: [],
+      updatedAt: now,
+    } as unknown as OrchestrationV2ThreadProjection;
 
-  const childProjection = {
-    thread: {
-      ...baseThread({
-        threadId: childThreadId,
-        title: "Child",
-        instanceId: customCodexInstanceId,
-        model: "gpt-5.4",
-      }),
-      lineage: {
-        parentThreadId,
-        relationshipToParent: "subagent",
-        rootThreadId: parentThreadId,
-      },
-      createdBy: "agent",
-    },
-    runs: [
-      makeRun({
-        id: childRunId,
-        ordinal: 1,
-        status: "running",
-        instanceId: customCodexInstanceId,
-      }),
-    ],
-    visibleTurnItems: [],
-    providerTurns: [],
-    runtimeRequests: [],
-    messages: [],
-    contextTransfers: [
-      {
-        type: "subagent_spawn",
-        sourceThreadId: parentThreadId,
-        targetThreadId: childThreadId,
-        targetRunId: childRunId,
-      },
-    ],
-    subagents: [],
-    providerThreads: [],
-    updatedAt: now,
-  } as unknown as OrchestrationV2ThreadProjection;
-
-  const layer = layerOrchestratorService.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
-          getTimelinePage: () =>
-            Effect.succeed({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
-          getThreadRecords: (threadId) => {
-            if (threadId === parentThreadId) return Effect.succeed(parentProjection);
-            if (threadId === childThreadId) return Effect.succeed(childProjection);
-            return Effect.die(`unexpected thread ${threadId}`);
-          },
-        } satisfies Partial<ThreadManagementService.ThreadManagementService["Service"]>),
-        ServerSettings.layerTest(),
-        Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getProviders: Effect.succeed([]),
-        } satisfies Partial<ProviderRegistry.ProviderRegistry["Service"]>),
-        Layer.mock(ProjectService.ProjectService)({}),
-        Layer.mock(SecretRequests.SecretRequests)({}),
-        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-        Layer.mock(ScheduledTaskService.ScheduledTaskService)({
-          list: () => Effect.succeed({ tasks: [] }),
-        } satisfies Partial<ScheduledTaskService.ScheduledTaskService["Service"]>),
-        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
-          list: () => Effect.succeed([]),
-        } satisfies Partial<ProviderAdapterRegistry.ProviderAdapterRegistryV2["Service"]>),
-        NodeCrypto.layer,
+    const layer = layerOrchestratorService.pipe(
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            readRunRecovery: () => Effect.succeed({ state: "none" }),
+            readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
+            getTimelinePage: () =>
+              Effect.succeed({ items: [], totalItems: 0, hasMore: false, hasEarlier: false }),
+            getThreadRecords: (threadId) => {
+              if (threadId === parentThreadId) return Effect.succeed(parentProjection);
+              if (threadId === childThreadId) return Effect.succeed(childProjection);
+              return Effect.die(`unexpected thread ${threadId}`);
+            },
+          } satisfies Partial<ThreadManagementService.ThreadManagementService["Service"]>),
+          ServerSettings.layerTest(),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed([]),
+          } satisfies Partial<ProviderRegistry.ProviderRegistry["Service"]>),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+            list: () => Effect.succeed({ tasks: [] }),
+          } satisfies Partial<ScheduledTaskService.ScheduledTaskService["Service"]>),
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+            list: () => Effect.succeed([]),
+          } satisfies Partial<ProviderAdapterRegistry.ProviderAdapterRegistryV2["Service"]>),
+          NodeCrypto.layer,
+        ),
       ),
-    ),
-  );
+    );
 
-  await Effect.gen(function* () {
-    const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-    const result = yield* service.taskStatus(makeScope(), taskId);
-    expect(result.providerInstanceId).toBe(customCodexInstanceId);
-    expect(result.providerInstanceId).not.toBe(ProviderInstanceId.make(String(codexDriver)));
-    expect(result.status).toBe("running");
-    expect(result.taskId).toBe(taskId);
-    expect(result.childThreadId).toBe(childThreadId);
-  }).pipe(Effect.provide(layer), Effect.runPromise);
-});
+    await Effect.gen(function* () {
+      const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+      const result = yield* service.taskStatus(makeScope(), taskId);
+      expect(result.providerInstanceId).toBe(customCodexInstanceId);
+      expect(result.providerInstanceId).not.toBe(ProviderInstanceId.make(String(codexDriver)));
+      expect(result.status).toBe("running");
+      expect(result.taskId).toBe(taskId);
+      expect(result.childThreadId).toBe(location === "local" ? childThreadId : null);
+      if (location === "remote") {
+        expect(result.childRunId).toBeNull();
+        expect(result.link).toMatch(/^\[Remote review\]\(t3-thread:\/\/v2\/remote-environment\//);
+        expect(result.remoteObservation).toMatchObject({
+          originalRunId: childRunId,
+          availability: "current",
+          latestResult,
+          stop,
+        });
+      }
+    }).pipe(Effect.provide(layer), Effect.runPromise);
+  },
+);
 
 it("readThread and sendToThread reach threads in other projects", async () => {
   let parentShell: OrchestrationV2ThreadShell | null = null;
@@ -863,9 +922,12 @@ it("readThread and sendToThread reach threads in other projects", async () => {
     }) as unknown as OrchestrationV2ThreadProjection;
 
   const layer = layerOrchestratorService.pipe(
+    Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ThreadManagementService.ThreadManagementService)({
+          readRunRecovery: () => Effect.succeed({ state: "none" }),
+          readRestartCutView: (run, runs) => Effect.succeed(restartCutView(run, runs)),
           getThreadRecords: (threadId) => {
             if (threadId === parentThreadId) return Effect.succeed(parentProjection);
             if (threadId === foreignThreadId) return Effect.succeed(foreignProjection(threadId));
@@ -1002,6 +1064,20 @@ it("readThread and sendToThread reach threads in other projects", async () => {
       .requestSecret(makeScope(), { label: "Secret", reason: "requires a run" })
       .pipe(Effect.flip);
     expect(secret.code).toBe("parent_not_active");
+    // Fork: upstream's delivery "file" returns one path, so it cannot combine with fields.
+    const fileWithFields = yield* service
+      .requestSecret(makeScope(), {
+        label: "Client",
+        reason: "two values",
+        fields: [
+          { name: "client_id", label: "Client ID" },
+          { name: "client_secret", label: "Client secret" },
+        ],
+        delivery: "file",
+      })
+      .pipe(Effect.flip);
+    expect(fileWithFields.code).toBe("invalid_request");
+    expect(fileWithFields.message).toContain('delivery "file" returns one path');
 
     parentShell = { ...parentShell, providerInstanceId: customCodexInstanceId };
     const switchedScope = {
@@ -1127,7 +1203,7 @@ it("requestSecret saves a pasted value to a file without opening a card", async 
       value: "482916",
       clientRequestId: "pin-1",
     });
-    expect(result).toEqual({ status: "saved", file });
+    expect(result).toEqual({ status: "saved", file, files: { value: file } });
     expect(JSON.stringify(result)).not.toContain("482916");
     expect(saved).toEqual([
       {
@@ -1312,98 +1388,5 @@ it("requestSecret cancels its card when a steering restart supersedes the reques
     const records = dispatched.filter((command) => command.type === "secret_request.record");
     expect(records.map((command) => command.secretStatus)).toEqual(["pending", "cancelled"]);
     expect(records.every((command) => command.nodeId === originalRoot)).toBe(true);
-  }).pipe(Effect.provide(layer), Effect.runPromise);
-});
-
-it("requestSecret delivers a fields card as one file per field", async () => {
-  const dispatched: Array<{
-    readonly type: string;
-    readonly turnItemId?: string;
-    readonly secretStatus?: string;
-  }> = [];
-  const files = {
-    email: "/home/user/.t3/userdata/secrets/files/0123456789abcdef0123456789abcdef",
-    password: "/home/user/.t3/userdata/secrets/files/fedcba9876543210fedcba9876543210",
-  };
-  const projection = () => {
-    const card = dispatched.find((command) => command.type === "secret_request.record");
-    return {
-      thread: baseThread({
-        threadId: parentThreadId,
-        title: "Parent",
-        instanceId: parentInstanceId,
-        model: "gpt-5.4",
-      }),
-      runs: [
-        { ...makeRun({ id: activeRunId, ordinal: 1, status: "running" }), rootNodeId: taskId },
-      ],
-      visibleTurnItems: [],
-      turnItems:
-        card === undefined
-          ? []
-          : [{ type: "secret_request", id: card.turnItemId, secretStatus: "saved" }],
-      runtimeRequests: [],
-      messages: [],
-      contextTransfers: [],
-      subagents: [],
-      updatedAt: now,
-    } as unknown as OrchestrationV2ThreadProjection;
-  };
-  const layer = layerOrchestratorService.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
-          getThreadRecords: () => Effect.sync(projection),
-          getThreadShell: () =>
-            Effect.sync(() => projection().thread as unknown as OrchestrationV2ThreadShell),
-          dispatch: (command) => Effect.sync(() => void dispatched.push(command) as never),
-        } satisfies Partial<ThreadManagementService.ThreadManagementService["Service"]>),
-        ServerSettings.layerTest(),
-        Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getProviders: Effect.succeed([]),
-        } satisfies Partial<ProviderRegistry.ProviderRegistry["Service"]>),
-        Layer.mock(ProjectService.ProjectService)({}),
-        Layer.mock(SecretRequests.SecretRequests)({
-          saveToFile: () => Effect.succeed({ files }),
-        }),
-        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
-        NodeCrypto.layer,
-      ),
-    ),
-  );
-  const fields = [
-    { name: "email", label: "Email", secret: false },
-    { name: "password", label: "Password" },
-  ];
-
-  await Effect.gen(function* () {
-    const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-    for (const conflicting of [{ delivery: "secretRef" as const }, { value: "pw" }]) {
-      const refused = yield* service
-        .requestSecret(makeScope(), {
-          label: "Staging login",
-          reason: "Signs in the QA account.",
-          fields,
-          ...conflicting,
-        })
-        .pipe(Effect.flip);
-      expect(refused.code).toBe("invalid_request");
-    }
-    expect(dispatched).toEqual([]);
-
-    const result = yield* service.requestSecret(makeScope(), {
-      label: "Staging login",
-      reason: "Signs in the QA account.",
-      fields,
-    });
-    expect(result).toEqual({ status: "saved", files });
-    expect(dispatched[0]).toMatchObject({
-      type: "secret_request.record",
-      secretStatus: "pending",
-      delivery: "file",
-      fields,
-    });
   }).pipe(Effect.provide(layer), Effect.runPromise);
 });
