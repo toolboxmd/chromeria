@@ -3314,6 +3314,7 @@ sources and reasons.
     "packages/client-runtime/src/secretRequest.test.ts",
     "packages/client-runtime/src/secretRequest.ts",
     "packages/contracts/src/orchestratorMcp.test.ts",
+    "packages/contracts/src/secretRequest.test.ts",
     "packages/contracts/src/secretRequest.ts"
   ],
   "sharedFiles": [
