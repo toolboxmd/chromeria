@@ -287,10 +287,11 @@ it.layer(NodeCrypto.layer)("peer MCP client", (it) => {
           const linked = yield* linkTo(links, b);
           const day = 24 * 60 * 60 * 1000;
           const linkedAt = linked.linkedAt.epochMilliseconds;
-          // Fork links never expire; an upstream peer's link lasts 30 days on both sides.
+          // Pairing-code links never expire; session-approved or upstream-issued ones last 30 days.
           const finite = DateTime.formatIso(DateTime.makeUnsafe(linkedAt + 30 * day));
+          const linkSession = (yield* b.linkedSessions)[0]!.sessionId;
           yield* Context.get(peerDatabase, SqlClient.SqlClient)`
-            UPDATE auth_sessions SET expires_at = ${finite}
+            UPDATE auth_sessions SET expires_at = ${finite} WHERE session_id = ${linkSession}
           `;
           yield* Context.get(context, SqlClient.SqlClient)`
             UPDATE peer_environment_links SET expires_at = ${finite}

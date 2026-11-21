@@ -241,7 +241,7 @@ it.effect("tells a client why a linked environment's thread cannot be read", () 
       yield* b.auth.revokeSession(session);
       expect(yield* reasonOf()).toEqual({ reason: "rejected", label: "Box" });
 
-      // Fork links never expire; one an upstream peer issued lasts 30 days.
+      // Pairing-code links never expire; session-approved or upstream-issued ones last 30 days.
       yield* a.sql`UPDATE peer_environment_links SET expires_at = ${(yield* DateTime.now).pipe(
         DateTime.add({ days: 30 }),
         DateTime.formatIso,
