@@ -414,6 +414,7 @@ packages/client-runtime/src/state/threadRelationships.test.ts
 packages/client-runtime/src/state/threadRelationships.ts
 packages/client-runtime/src/state/subagentRuntime.ts
 apps/mobile/src/features/threads/thread-work-log.tsx
+apps/mobile/src/features/threads/ThreadBackgroundWorkSheet.tsx
 packages/client-runtime/src/work-log/itemDetail.test.ts
 packages/client-runtime/src/work-log/itemDetail.ts
 packages/shared/src/orchestrationV2PendingBackgroundWork.test.ts
