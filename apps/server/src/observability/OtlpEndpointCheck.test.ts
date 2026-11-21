@@ -1,5 +1,5 @@
-import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { layerLoopbackServerTest } from "../testUtils/loopbackHttpServer.ts";
 import { assert, it } from "@effect/vitest";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
@@ -176,7 +176,7 @@ describe("OtlpEndpointCheck", () => {
         assert.deepStrictEqual(result, { _tag: "Rejected", status: 307 });
         assert.deepStrictEqual(requests, [{ url: "/v1/traces", apiKey: "secret" }]);
       }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    ).pipe(Effect.provide(layerLoopbackServerTest)),
   );
 
   it.effect("keeps OTEL endpoint credentials off other endpoints", () => {

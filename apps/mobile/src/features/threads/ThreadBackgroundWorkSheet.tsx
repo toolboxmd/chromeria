@@ -15,7 +15,12 @@ import { SheetHeader } from "../../components/ui/SheetHeader";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { ScreenContent } from "../../components/ui/ScreenContent";
+import { useEnvironments } from "../../state/environments";
+import { useLinkedEnvironments } from "../../state/peerLinks";
 import { environmentThreadShells } from "../../state/threads";
+import { backgroundWorkThreadTarget } from "./backgroundWorkTarget";
+import type { SubagentThreadTarget } from "./threadAgentsPresentation";
+import { useOpenLinkedThreadRead } from "./useOpenLinkedThread";
 
 const KIND_LABELS = {
   subagent: msg("Subagent"),
@@ -36,11 +41,33 @@ export function ThreadBackgroundWorkSheet({ route }: StaticScreenProps<Backgroun
     environmentThreadShells.threadShellAtom(scopeThreadRef(target.environmentId, target.threadId)),
   );
   const presentation = presentPendingBackgroundWork(thread?.pendingBackgroundTasks ?? [], m);
-  const openThread = (threadId: ThreadId) => {
+  const openLinkedRead = useOpenLinkedThreadRead();
+  const { presentationById } = useEnvironments();
+  const ownConnection = (environmentId: EnvironmentId) => {
+    const own = presentationById.get(environmentId);
+    return own && { connected: own.connection.phase === "connected" };
+  };
+  const links = useLinkedEnvironments(
+    presentation?.items.some(
+      (item) =>
+        item.childEnvironmentId !== undefined &&
+        ownConnection(item.childEnvironmentId)?.connected !== true,
+    )
+      ? target.environmentId
+      : null,
+  );
+  const openThread = (child: SubagentThreadTarget, title: string) => {
     void Haptics.selectionAsync();
+    if (child.linked !== undefined) {
+      openLinkedRead(child, child.linked, title, { source: target, replace: true });
+      return;
+    }
     // A thread replaces the leaf sheet so workspace back navigation still works.
     navigation.dispatch(
-      StackActions.replace("Thread", { environmentId: target.environmentId, threadId }),
+      StackActions.replace("Thread", {
+        environmentId: child.environmentId,
+        threadId: child.threadId,
+      }),
     );
   };
   const content = (
@@ -57,7 +84,14 @@ export function ThreadBackgroundWorkSheet({ route }: StaticScreenProps<Backgroun
         </Text>
       ) : (
         presentation.items.map((item) => (
-          <BackgroundWorkRow key={item.taskId} item={item} onOpen={openThread} />
+          <BackgroundWorkRow
+            key={item.taskId}
+            item={item}
+            target={backgroundWorkThreadTarget(item, target.environmentId, ownConnection, (id) =>
+              links.get(id),
+            )}
+            onOpen={openThread}
+          />
         ))
       )}
     </ScrollView>
@@ -72,12 +106,12 @@ export function ThreadBackgroundWorkSheet({ route }: StaticScreenProps<Backgroun
 
 function BackgroundWorkRow(props: {
   readonly item: PendingBackgroundWorkItem;
-  readonly onOpen: (threadId: ThreadId) => void;
+  readonly target: SubagentThreadTarget | null;
+  readonly onOpen: (child: SubagentThreadTarget, title: string) => void;
 }) {
-  const { item } = props;
+  const { item, target } = props;
   const gt = useGT();
   const m = useMessages();
-  const childThreadId = item.childThreadId;
   const row = (
     <View className="flex-row items-center gap-3 border-b border-border py-3.5">
       <SymbolView
@@ -92,18 +126,18 @@ function BackgroundWorkRow(props: {
         <Text className="font-t3-medium text-sm text-foreground">{item.label}</Text>
         <Text className="text-xs text-foreground-muted">{m(KIND_LABELS[item.kind])}</Text>
       </View>
-      {childThreadId === undefined ? null : (
+      {target === null ? null : (
         <SymbolView name="chevron.right" size={12} tintColorClassName="accent-icon-subtle" />
       )}
     </View>
   );
-  return childThreadId === undefined ? (
+  return target === null ? (
     <View accessible>{row}</View>
   ) : (
     <Pressable
       accessibilityRole="link"
       accessibilityLabel={gt("Open subagent {label}", { label: item.label })}
-      onPress={() => props.onOpen(childThreadId)}
+      onPress={() => props.onOpen(target, item.label)}
       className="active:opacity-70"
     >
       {row}

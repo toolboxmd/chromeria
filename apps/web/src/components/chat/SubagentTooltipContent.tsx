@@ -1,3 +1,7 @@
+import {
+  threadRelationshipLiveStatusLabel,
+  threadRelationshipLiveStatus,
+} from "@t3tools/client-runtime/state/thread-relationships";
 import type {
   OrchestrationV2ThreadShell,
   OrchestrationV2TurnItemStatus,
@@ -48,6 +52,7 @@ export function SubagentTooltipContent(props: {
   parentProject?: Pick<OrchestrationProjectShell, "workspaceRoot"> | undefined;
   childProject?: Pick<OrchestrationProjectShell, "id" | "title" | "workspaceRoot"> | undefined;
   status: OrchestrationV2TurnItemStatus;
+  presentationStatus?: ReturnType<typeof threadRelationshipLiveStatus>;
   result?: string | null | undefined;
   progress?: string | null | undefined;
 }) {
@@ -122,13 +127,16 @@ export function SubagentTooltipContent(props: {
   const entries = deriveProviderInstanceEntries(props.providers ?? []);
   const entry = entries.find((candidate) => candidate.instanceId === props.provider?.instanceId);
   const showInstanceBadge = entry !== undefined && shouldShowInstanceBadge(entry, entries);
-  const working = ["running", "in_progress", "pending", "waiting"].includes(props.status);
-  const failed = ["failed", "error"].includes(props.status);
+  const status = props.presentationStatus ?? props.status;
+  const working =
+    threadRelationshipLiveStatusLabel(status) !== null ||
+    ["running", "in_progress", "pending", "waiting"].includes(status);
+  const failed = ["failed", "error"].includes(status);
   const StatusIcon = working
     ? CircleDashedIcon
     : failed
       ? CircleXIcon
-      : props.status === "completed"
+      : status === "completed"
         ? CheckIcon
         : CircleDashedIcon;
   return (
@@ -171,29 +179,30 @@ export function SubagentTooltipContent(props: {
               ? "text-info"
               : failed
                 ? "text-error"
-                : props.status === "completed"
+                : status === "completed"
                   ? "text-success"
                   : "text-muted-foreground",
           )}
         >
           <StatusIcon aria-hidden className="size-3 shrink-0" />
-          {props.status === "idle"
-            ? gt("idle", { $context: "subagent status" })
-            : props.status === "pending"
-              ? gt("pending", { $context: "subagent status" })
-              : props.status === "running"
-                ? gt("running", { $context: "subagent status" })
-                : props.status === "waiting"
-                  ? gt("waiting", { $context: "subagent status" })
-                  : props.status === "completed"
-                    ? gt("completed", { $context: "subagent status" })
-                    : props.status === "failed"
-                      ? gt("failed", { $context: "subagent status" })
-                      : props.status === "cancelled"
-                        ? gt("cancelled", { $context: "subagent status" })
-                        : props.status === "interrupted"
-                          ? gt("interrupted", { $context: "subagent status" })
-                          : (props.status as string).replaceAll("_", " ")}
+          {threadRelationshipLiveStatusLabel(status) ??
+            (status === "idle"
+              ? gt("idle", { $context: "subagent status" })
+              : status === "pending"
+                ? gt("pending", { $context: "subagent status" })
+                : status === "running"
+                  ? gt("running", { $context: "subagent status" })
+                  : status === "waiting"
+                    ? gt("waiting", { $context: "subagent status" })
+                    : status === "completed"
+                      ? gt("completed", { $context: "subagent status" })
+                      : status === "failed"
+                        ? gt("failed", { $context: "subagent status" })
+                        : status === "cancelled"
+                          ? gt("cancelled", { $context: "subagent status" })
+                          : status === "interrupted"
+                            ? gt("interrupted", { $context: "subagent status" })
+                            : (status as string).replaceAll("_", " "))}
         </span>
         {props.elapsed}
       </div>
