@@ -32,12 +32,14 @@ import { AssistantCitationSource } from "./AssistantCitationSource";
 import { resolveAssistantMessageCopyState } from "./MessagesTimeline.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
+import { PROMACHOS_BUBBLE_MARKDOWN } from "../promachos/promachosBubbles";
 import { useUiStateStore } from "~/uiStateStore";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
 import { readThreadTurnItems } from "../../state/entities";
 import { useV2ItemSupport } from "../../state/v2ItemSupport";
 import { TimelineRowCtx, TimelineRowActivityCtx, type TimelineRow } from "./timelineRowContext";
 import { MESSAGE_HEADING_LEVEL, MessageAuthorHeading } from "./TimelineRowParts";
+import { APP_BASE_NAME } from "../../branding";
 import { useAtomValue } from "@effect/atom-react";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { vcsEnvironment } from "../../state/vcs";
@@ -59,7 +61,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
   return (
     <>
       <div className="relative min-w-0 px-1 py-0.5">
-        <MessageAuthorHeading>T3 Code</MessageAuthorHeading>
+        <MessageAuthorHeading>{APP_BASE_NAME}</MessageAuthorHeading>
         <div data-thread-find-text="true">
           <AssistantCitationSource
             messageId={row.message.id}
@@ -69,6 +71,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
             listRef={ctx.listRef}
           >
             <ChatMarkdown
+              {...(ctx.promachos ? PROMACHOS_BUBBLE_MARKDOWN : {})}
               text={messageText}
               renderInsights
               cwd={ctx.markdownCwd}
@@ -88,7 +91,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
             />
           </AssistantCitationSource>
         </div>
-        {ctx.onOpenTurnDiff ? (
+        {ctx.onOpenTurnDiff && !ctx.promachos ? (
           <AssistantChangedFilesSection
             turnSummary={row.assistantTurnDiffSummary}
             routeThreadKey={ctx.routeThreadKey}
@@ -101,7 +104,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
             <AssistantStatusBadge status="interrupted" />
           </div>
         ) : null}
-        {row.showAssistantMeta ? (
+        {!ctx.promachos && row.showAssistantMeta ? (
           <AssistantMessageMeta
             className="mt-1.5"
             projectedItem={row.projectedItem}
