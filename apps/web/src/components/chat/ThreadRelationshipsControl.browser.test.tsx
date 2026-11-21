@@ -294,7 +294,7 @@ it("shows a side chat's full title in its tooltip", async () => {
   );
 });
 
-it("shows a remote subagent's full title in its tooltip even when its environment is unavailable", async () => {
+it("shows a remote subagent's full title in its tooltip and reads it when its environment is unavailable", async () => {
   setup();
   const longTitle = "Investigate a remote subagent issue across linked environments";
   const remoteEnvId = EnvironmentId.make("remote-env");
@@ -366,11 +366,24 @@ it("shows a remote subagent's full title in its tooltip even when its environmen
     expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toContain(longTitle),
   );
   expect(document.querySelector('[data-slot="tooltip-popup"]')?.textContent).toContain(
-    "Runs on Remote VM with a long machine name in the office, which this client is not connected to",
+    "Read the thread on Remote VM with a long machine name in the office",
   );
 
-  await row.click({ force: true });
+  await row.click();
   expect(screen.router?.state.location.pathname).toBe("/environment/fork");
+  expect(
+    selectThreadRightPanelState(
+      useRightPanelStore.getState().byThreadKey,
+      scopeThreadRef(environmentId, threadId),
+    ).surfaces.filter((surface) => surface.kind === "linked-thread"),
+  ).toEqual([
+    expect.objectContaining({
+      viaEnvironmentId: environmentId,
+      environmentId: remoteEnvId,
+      threadId: remoteThreadId,
+      label: "Remote VM with a long machine name in the office",
+    }),
+  ]);
 });
 
 it("explains why Merge back is unavailable before the fork completes a run", async () => {

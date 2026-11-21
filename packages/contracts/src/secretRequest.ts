@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { ThreadId, TrimmedNonEmptyString, TurnItemId } from "./baseSchemas.ts";
 import { SecretReference } from "./secretReference.ts";
@@ -42,6 +43,27 @@ export type SecretRequestField = typeof SecretRequestField.Type;
 /** The name of the one field a request without `fields` asks for. */
 export const SECRET_REQUEST_SINGLE_FIELD_NAME = "secret";
 
+const SecretRequestFieldValues = Schema.Record(SecretRequestFieldName, SecretValue);
+
+const SecretRequestFieldsSave = Schema.Struct({
+  type: Schema.Literal("save"),
+  secrets: SecretRequestFieldValues,
+});
+
+/** Upstream clients name the field values `values`; decoded as `secrets`. */
+const UpstreamSecretRequestFieldsSave = Schema.Struct({
+  type: Schema.Literal("save"),
+  values: SecretRequestFieldValues,
+}).pipe(
+  Schema.decodeTo(
+    SecretRequestFieldsSave,
+    SchemaTransformation.transform({
+      decode: ({ type, values }) => ({ type, secrets: values }),
+      encode: ({ type, secrets }) => ({ type, values: secrets }),
+    }),
+  ),
+);
+
 /**
  * The user's answer to an agent's request for a secret. A card without
  * `fields` is saved with `secret`; a card with `fields` is saved with every
@@ -53,10 +75,8 @@ export const SecretRequestAnswerInput = Schema.Struct({
   turnItemId: TurnItemId,
   answer: Schema.Union([
     Schema.Struct({ type: Schema.Literal("save"), secret: SecretValue }),
-    Schema.Struct({
-      type: Schema.Literal("save"),
-      secrets: Schema.Record(SecretRequestFieldName, SecretValue),
-    }),
+    SecretRequestFieldsSave,
+    UpstreamSecretRequestFieldsSave,
     Schema.Struct({ type: Schema.Literal("decline") }),
     /** Read once through a configured secret provider; only servers advertising `secretRequestReferences` accept it. */
     Schema.Struct({ type: Schema.Literal("reference"), reference: SecretReference }),

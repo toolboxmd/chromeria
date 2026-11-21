@@ -97,7 +97,11 @@ import { AgentElapsed } from "./AgentElapsed";
 import { ThreadRelationshipIcon, threadRelationshipStatusLabel } from "./ThreadRelationshipIcon";
 import { ThreadLineageWorkflowRow } from "./ThreadLineageWorkflowRow";
 import { useSideThreadTrigger } from "../../hooks/useSideThreadTrigger";
-import { openSideThread, resolveThreadOpenRoute } from "../../lib/sideChatPane";
+import {
+  openLinkedThreadRead,
+  openSideThread,
+  resolveThreadOpenRoute,
+} from "../../lib/sideChatPane";
 
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -899,7 +903,13 @@ export function ThreadRelationshipsPanel(props: {
     const rowEnvironmentId = remoteEnvironmentId ?? props.environmentId;
     const remoteUnreachable =
       remoteEnvironmentId !== null && !serverConfigs.has(remoteEnvironmentId);
-    const rowUnavailable = remoteUnreachable && !hasSourceRemoteTaskView(agent);
+    const sourceViewable = hasSourceRemoteTaskView(agent);
+    // An unconnected remote child reads read-only through this environment.
+    const readOnlyChild =
+      remoteUnreachable && !sourceViewable && agent?.remoteChild !== undefined
+        ? agent.remoteChild
+        : null;
+    const rowUnavailable = remoteUnreachable && !sourceViewable && readOnlyChild === null;
     const canStop =
       agent &&
       agent.remoteChild === undefined &&
@@ -949,11 +959,13 @@ export function ThreadRelationshipsPanel(props: {
     const isSideChat = node?.thread?.lineage.sideChat === true && !isParent;
     const remoteLabel = agent?.remoteChild?.label ?? gt("another machine");
     const hint = remoteUnreachable
-      ? !hasSourceRemoteTaskView(agent)
-        ? gt("Runs on {label}, which this client is not connected to", { label: remoteLabel })
-        : gt("Runs on {label}, available through this conversation", {
-            label: agent.remoteChild.label,
-          })
+      ? readOnlyChild !== null
+        ? gt("Read the thread on {label}", { label: readOnlyChild.label })
+        : !sourceViewable
+          ? gt("Runs on {label}, which this client is not connected to", { label: remoteLabel })
+          : gt("Runs on {label}, available through this conversation", {
+              label: agent.remoteChild.label,
+            })
       : remoteEnvironmentId !== null
         ? relationshipRemoteHint(edge, props.threadId, isSideChat, remoteLabel, m)
         : relationshipHint(edge, props.threadId, isSideChat, m);
@@ -970,11 +982,26 @@ export function ThreadRelationshipsPanel(props: {
     };
     // A local side chat or subagent opens beside this thread or in its place, as the click asks.
     const openProps =
-      sourceRemoteTask === undefined &&
-      remoteEnvironmentId === null &&
-      (isSideChat || (isSubagent && !isParent))
-        ? trigger((intent) => openSideThreadRow(threadId, intent))
-        : { onClick: openRow };
+      readOnlyChild !== null && remoteEnvironmentId !== null
+        ? trigger((intent) =>
+            openLinkedThreadRead({
+              panelRef: ref,
+              target: {
+                viaEnvironmentId: props.environmentId,
+                environmentId: remoteEnvironmentId,
+                threadId,
+                label: readOnlyChild.label,
+                title: threadTitle,
+              },
+              intent,
+              navigate,
+            }),
+          )
+        : sourceRemoteTask === undefined &&
+            remoteEnvironmentId === null &&
+            (isSideChat || (isSubagent && !isParent))
+          ? trigger((intent) => openSideThreadRow(threadId, intent))
+          : { onClick: openRow };
     const RelationshipPopup = agent ? ThreadHoverCardPopup : TooltipPopup;
     const relationshipTooltip = agent ? (
       <>

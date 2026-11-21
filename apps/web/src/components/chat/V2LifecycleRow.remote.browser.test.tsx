@@ -78,6 +78,7 @@ vi.mock("../ui/dialog", () => ({
   DialogPopup: ({ children }: { children: ReactNode }) => children,
   DialogTitle: ({ children }: { children: ReactNode }) => children,
 }));
+import { selectThreadRightPanelState, useRightPanelStore } from "../../rightPanelStore";
 import { BackgroundSubagentOpenButton } from "./BackgroundSubagentOpenButton";
 import { NotificationSubagentOpenButton, SubagentNotificationLink } from "./V2LifecycleRow";
 
@@ -106,6 +107,19 @@ const remoteAgent = {
 };
 
 const parentRef = scopeThreadRef(EnvironmentId.make("test"), ThreadId.make("parent"));
+
+/** The read-only views of remote threads open in the parent's right panel. */
+const readOnlyViews = () =>
+  selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, parentRef).surfaces.filter(
+    (surface) => surface.kind === "linked-thread",
+  );
+const remoteChildReadOnlyView = {
+  kind: "linked-thread",
+  viaEnvironmentId: EnvironmentId.make("test"),
+  environmentId: EnvironmentId.make("cavallo"),
+  threadId: ThreadId.make("remote-child"),
+  label: "cavallo",
+};
 
 it("opens a remote delegated task's notification card in its own environment", async () => {
   using _cleanup = {
@@ -152,7 +166,7 @@ it("opens a remote delegated task's notification card in its own environment", a
   );
 });
 
-it("renders no link for a remote notification when the client is not connected there", async () => {
+it("opens a remote notification read-only until the client connects there", async () => {
   using _cleanup = {
     [Symbol.dispose]: () => {
       vi.restoreAllMocks();
@@ -163,6 +177,7 @@ it("renders no link for a remote notification when the client is not connected t
   state.subagents = [];
   state.configs = new Map();
   state.queries = [];
+  useRightPanelStore.setState({ byThreadKey: {} });
 
   await using screen = await render(null);
   const container = screen.container;
@@ -185,7 +200,11 @@ it("renders no link for a remote notification when the client is not connected t
       );
     });
   await rerender();
-  expect(buttonsByLabel("Open subagent thread")).toHaveLength(0);
+  const readOnlyButtons = buttonsByLabel("Open subagent thread");
+  expect(readOnlyButtons).toHaveLength(1);
+  await act(async () => readOnlyButtons[0]!.click());
+  expect(onOpenThread).not.toHaveBeenCalled();
+  expect(readOnlyViews()).toEqual([expect.objectContaining(remoteChildReadOnlyView)]);
 
   // The native config atom publishes a new snapshot when membership changes.
   // In-place edits hide those changes from the compiler's cached consumer.
@@ -199,11 +218,7 @@ it("renders no link for a remote notification when the client is not connected t
     EnvironmentId.make("cavallo"),
   );
 
-  onOpenThread.mockClear();
-  state.configs = new Map();
-  await rerender();
-  expect(buttonsByLabel("Open subagent thread")).toHaveLength(0);
-  expect(onOpenThread).not.toHaveBeenCalled();
+  expect(readOnlyViews()).toHaveLength(1);
 });
 
 const entries = ["transcript", "notification", "background"] as const;
@@ -299,6 +314,7 @@ it.each(
     state.subagents = [];
     state.configs = new Map();
     state.queries = [];
+    useRightPanelStore.setState({ byThreadKey: {} });
 
     await using screen = await render(null);
     const container = screen.container;
@@ -348,19 +364,20 @@ it.each(
     const buttons = buttonsByLabel(
       entry === "transcript" ? "Open Remote roast" : "Open subagent thread",
     );
-    // An unconnected remote transcript card opens upstream's read-only view through A.
-    const readOnly = !local && !connected && entry === "transcript";
-    expect(buttons.length).toBe(local || connected || readOnly ? 1 : 0);
-    if (buttons[0]) {
-      await act(async () => buttons[0]!.click());
-      if (local) expect(onOpenThread.mock.calls[0]?.[0]).toBe(ThreadId.make("local-child"));
-      else if (readOnly) expect(onOpenThread).not.toHaveBeenCalled();
-      else
-        expect(onOpenThread).toHaveBeenCalledWith(
-          ThreadId.make("remote-child"),
-          EnvironmentId.make("cavallo"),
-        );
-    }
+    // An unconnected remote child opens upstream's read-only view through A from every entry.
+    const readOnly = !local && !connected;
+    expect(buttons).toHaveLength(1);
+    await act(async () => buttons[0]!.click());
+    expect(readOnlyViews()).toEqual(
+      readOnly ? [expect.objectContaining(remoteChildReadOnlyView)] : [],
+    );
+    if (local) expect(onOpenThread.mock.calls[0]?.[0]).toBe(ThreadId.make("local-child"));
+    else if (readOnly) expect(onOpenThread).not.toHaveBeenCalled();
+    else
+      expect(onOpenThread).toHaveBeenCalledWith(
+        ThreadId.make("remote-child"),
+        EnvironmentId.make("cavallo"),
+      );
     expect(state.queries).toEqual([]);
   },
 );

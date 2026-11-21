@@ -536,6 +536,7 @@ apps/web/src/components/chat/SecretRequestCard.tsx
 packages/client-runtime/src/secretRequest.test.ts
 packages/client-runtime/src/secretRequest.ts
 packages/contracts/src/orchestratorMcp.test.ts
+packages/contracts/src/secretRequest.test.ts
 packages/contracts/src/secretRequest.ts
 
 apps/server/src/auth/McpOAuth.test.ts
