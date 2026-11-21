@@ -357,6 +357,30 @@ describe("derivePendingBackgroundWork kinds", () => {
           childThreadId: "thread:other" as never,
         },
         {
+          id: "item-remote-bestia" as never,
+          type: "subagent",
+          status: "running",
+          title: "Review src/math.ts",
+          childThreadId: null,
+          remoteChild: {
+            environmentId: "environment:bestia" as never,
+            threadId: "thread:remote" as never,
+            label: "bestia",
+          },
+        },
+        {
+          id: "item-remote-rocky" as never,
+          type: "subagent",
+          status: "running",
+          title: "Review src/math.ts",
+          childThreadId: null,
+          remoteChild: {
+            environmentId: "environment:rocky" as never,
+            threadId: "thread:remote" as never,
+            label: "rocky",
+          },
+        },
+        {
           id: "item-cmd" as never,
           type: "command_execution",
           status: "running",
@@ -382,6 +406,20 @@ describe("derivePendingBackgroundWork kinds", () => {
         description: "Review src/math.ts",
         kind: "subagent",
         childThreadId: "thread:other",
+      },
+      {
+        taskId: "item-remote-bestia",
+        description: "Review src/math.ts",
+        kind: "subagent",
+        childThreadId: "thread:remote",
+        childEnvironmentId: "environment:bestia",
+      },
+      {
+        taskId: "item-remote-rocky",
+        description: "Review src/math.ts",
+        kind: "subagent",
+        childThreadId: "thread:remote",
+        childEnvironmentId: "environment:rocky",
       },
       { taskId: "cmd", description: "npm test", kind: "command" },
     ]);
