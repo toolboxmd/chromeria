@@ -8,7 +8,6 @@ import { useThreadShell, useProject } from "../../state/entities";
 import type { SideThreadOpenIntent } from "@t3tools/client-runtime/side-thread";
 import { hasSourceRemoteTaskView } from "@t3tools/client-runtime/state/remote-tasks";
 import { SideThreadsOpenContext, useSideThreadTrigger } from "../../hooks/useSideThreadTrigger";
-import { useLinkedThreadOpener } from "../../state/linkedThreadView";
 import { SubagentTooltipContent } from "./SubagentTooltipContent";
 import { useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef, scopeProjectRef } from "@t3tools/client-runtime/environment";
@@ -530,22 +529,13 @@ function SubagentTimelineLink(props: {
       ? null
       : { threadId: targetThreadId, environmentId: childEnvironmentId ?? null },
   );
-  // A task in a linked environment opens there, or read-only through this one.
-  const remoteOpener = useLinkedThreadOpener(
-    props.parentRef,
-    remote?.threadId === undefined
-      ? undefined
-      : { environmentId: remote.environmentId, threadId: remote.threadId, label: remote.label },
-    props.title,
-  );
   const trigger = useSideThreadTrigger();
   const canOpen = use(SideThreadsOpenContext);
   // The source viewer comes first: a task it can show opens there, not in the linked environment.
   const sourceView = hasSourceRemoteTaskView(agent ?? undefined);
   const local = targetThreadId !== null && childEnvironmentId === undefined;
-  // A connected remote child opens in its own environment; only an unconnected
-  // one falls back to the read-only view through this environment.
-  const readOnly = !sourceView && !local && !navigation.canOpen ? remoteOpener : null;
+  // A connected remote child opens in its own environment; an unconnected one
+  // opens read-only through this environment.
   const open: ((intent: SideThreadOpenIntent) => void) | null = !canOpen
     ? null
     : sourceView
@@ -553,10 +543,10 @@ function SubagentTimelineLink(props: {
       : local
         ? (intent) => props.onOpenThread(targetThreadId, undefined, intent)
         : navigation.canOpen
-          ? () => navigation.open()
-          : (readOnly?.open ?? null);
+          ? navigation.openWithIntent
+          : null;
   // A task on a connected linked environment opens there, on the main screen only.
-  const panel = !sourceView && (local || readOnly?.mode === "linked");
+  const panel = !sourceView && (local || navigation.readOnly);
   const liveStatus = agent?.status ?? props.status;
   const status = props.event ? props.event.status : liveStatus;
   const statusLabel = props.event?.label ?? m(subagentStatusVisual(liveStatus).label);

@@ -85,7 +85,23 @@ vi.mock(import("../ui/tooltip"), async () => {
   };
 });
 
+import { selectThreadRightPanelState, useRightPanelStore } from "../../rightPanelStore";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
+
+/** The read-only views of remote threads open in the parent's right panel. */
+const readOnlyViews = () =>
+  selectThreadRightPanelState(
+    useRightPanelStore.getState().byThreadKey,
+    scopeThreadRef(EnvironmentId.make("test"), ThreadId.make("parent")),
+  ).surfaces.filter((surface) => surface.kind === "linked-thread");
+const remoteChildReadOnlyView = {
+  kind: "linked-thread",
+  viaEnvironmentId: EnvironmentId.make("test"),
+  environmentId: EnvironmentId.make("cavallo"),
+  threadId: ThreadId.make("remote-child"),
+  label: "cavallo",
+};
 
 it("shows a child delegated to a linked environment and opens it there", async () => {
   using _cleanup = {
@@ -198,18 +214,19 @@ it("shows a child delegated to a linked environment and opens it there", async (
     params: { environmentId: "cavallo", threadId: "remote-child" },
   });
 
-  // Disabling a saved connection retains its cached providers.
+  // Disabling a saved connection retains its cached providers; the child reads read-only through this one.
   state.navigate.mockClear();
+  useRightPanelStore.setState({ byThreadKey: {} });
   state.disabledEnvironments.add("cavallo");
   await update();
   const disabledRowButton = buttons().find((button) =>
     button.textContent?.includes("Remote roast thread"),
   );
   expect(disabledRowButton).toBeDefined();
-  expect(disabledRowButton!.disabled).toBe(false);
-  expect(disabledRowButton!.getAttribute("aria-disabled")).toBe("true");
+  expect(disabledRowButton!.getAttribute("aria-disabled")).toBeNull();
   await click(disabledRowButton!);
   expect(state.navigate).not.toHaveBeenCalled();
+  expect(readOnlyViews()).toEqual([expect.objectContaining(remoteChildReadOnlyView)]);
 
   state.disabledEnvironments.delete("cavallo");
   await update();
@@ -225,15 +242,16 @@ it("shows a child delegated to a linked environment and opens it there", async (
   });
 
   state.navigate.mockClear();
+  useRightPanelStore.setState({ byThreadKey: {} });
   state.configs.delete("cavallo");
   await update();
   const disconnectedRowButton = buttons().find((button) =>
     button.textContent?.includes("Remote roast thread"),
   )!;
-  expect(disconnectedRowButton.disabled).toBe(false);
-  expect(disconnectedRowButton.getAttribute("aria-disabled")).toBe("true");
+  expect(disconnectedRowButton.getAttribute("aria-disabled")).toBeNull();
   await click(disconnectedRowButton);
   expect(state.navigate).not.toHaveBeenCalled();
+  expect(readOnlyViews()).toEqual([expect.objectContaining(remoteChildReadOnlyView)]);
 });
 
 it.each([false, true])("shows live workflow member state with phased=%s", async (phased) => {
