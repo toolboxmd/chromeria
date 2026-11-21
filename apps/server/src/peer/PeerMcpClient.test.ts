@@ -19,6 +19,7 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import { Tool, Toolkit } from "effect/ai";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
@@ -29,6 +30,7 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../mcp/McpToolAccess.ts";
+import * as Sqlite from "../persistence/Sqlite.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
@@ -260,6 +262,74 @@ it.layer(NodeCrypto.layer)("peer MCP client", (it) => {
         expect(link._tag === "Some" ? link.value.lastError : "missing").toBeNull();
       }),
     ).pipe(Effect.provide(layerLoopbackServerTest)),
+  );
+
+  it.effect(
+    "keeps the expiry the peer answers with, so a used link outlives its first 30 days",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const handlers = McpToolAccess.toLayer(toolkit, {
+            probe: McpToolAccess.reads(() => Effect.succeed({ modes: "" })),
+            hold: McpToolAccess.reads(() => Effect.succeed({ modes: "" })),
+            refuse: McpToolAccess.reads(() => Effect.fail(refusal)),
+          });
+          const box = descriptorOf("environment-box", "Box");
+          const peerDatabase = yield* Layer.build(Sqlite.layerMemory);
+          const b = yield* servePeer(box, McpHttpServer.toolkitRegistration(toolkit, handlers), {
+            database: Layer.succeedContext(peerDatabase),
+          });
+          const context = yield* Layer.build(
+            layerLinkingEnvironment(descriptorOf("environment-a", "A")),
+          );
+          const links = Context.get(context, PeerLinks.PeerLinks);
+          const client = Context.get(context, PeerMcpClient.PeerMcpClient);
+          const linked = yield* linkTo(links, b);
+          const day = 24 * 60 * 60 * 1000;
+          const linkedAt = linked.linkedAt.epochMilliseconds;
+          // Fork links never expire; an upstream peer's link lasts 30 days on both sides.
+          const finite = DateTime.formatIso(DateTime.makeUnsafe(linkedAt + 30 * day));
+          yield* Context.get(peerDatabase, SqlClient.SqlClient)`
+            UPDATE auth_sessions SET expires_at = ${finite}
+          `;
+          yield* Context.get(context, SqlClient.SqlClient)`
+            UPDATE peer_environment_links SET expires_at = ${finite}
+          `;
+          const call = client.call({
+            environmentId: box.environmentId,
+            tool: "probe",
+            arguments: {},
+            limits: { runtimeMode: "full-access", interactionMode: "default" },
+            success: Result,
+          });
+          const storedExpiry = links
+            .get(box.environmentId)
+            .pipe(
+              Effect.map((link) =>
+                link._tag === "Some" ? link.value.expiresAt.epochMilliseconds : 0,
+              ),
+            );
+          const expiryThere = b.linkedSessions.pipe(
+            Effect.map((sessions) => sessions[0]?.expiresAt.epochMilliseconds),
+          );
+          expect(yield* storedExpiry).toBe(linkedAt + 30 * day);
+
+          yield* TestClock.adjust("20 days");
+          yield* call;
+          expect(yield* expiryThere).toBe(linkedAt + 50 * day);
+          expect(yield* storedExpiry).toBe(linkedAt + 50 * day);
+
+          yield* TestClock.adjust("20 days");
+          expect(yield* call).toEqual({ modes: "" });
+          expect(yield* storedExpiry).toBe(linkedAt + 70 * day);
+
+          // Idle for the whole window, the link expires on both sides.
+          yield* TestClock.adjust("30 days");
+          expect((yield* call.pipe(Effect.flip)).code).toBe("capability_denied");
+          expect((yield* links.list)[0]?.status).toBe("expired");
+          expect(yield* b.linkedSessions).toEqual([]);
+        }),
+      ).pipe(Effect.provide(layerLoopbackServerTest)),
   );
 
   it.effect("does not follow mutation POST redirects below the dispatch observer", () =>

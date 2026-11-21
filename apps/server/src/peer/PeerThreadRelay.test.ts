@@ -24,6 +24,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 import { HttpRouter, HttpServerResponse } from "effect/http";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
@@ -106,6 +107,7 @@ const makeLaptop = Effect.gen(function* () {
   return {
     links: Context.get(linking, PeerLinks.PeerLinks),
     settings: Context.get(linking, ServerSettings.ServerSettingsService),
+    sql: Context.get(linking, SqlClient.SqlClient),
     relay: Context.get(relay, PeerThreadRelay.PeerThreadRelay),
     /** The status of each answer the relay got, once its headers arrived. */
     answered,
@@ -238,7 +240,16 @@ it.effect("tells a client why a linked environment's thread cannot be read", () 
 
       yield* b.auth.revokeSession(session);
       expect(yield* reasonOf()).toEqual({ reason: "rejected", label: "Box" });
-      // Fork links do not expire after 30 days, so there is no expired case to reach.
+
+      // Fork links never expire; one an upstream peer issued lasts 30 days.
+      yield* a.sql`UPDATE peer_environment_links SET expires_at = ${(yield* DateTime.now).pipe(
+        DateTime.add({ days: 30 }),
+        DateTime.formatIso,
+      )}`;
+      yield* Ref.set(b.bearers, []);
+      yield* TestClock.adjust(Duration.days(31));
+      expect(yield* reasonOf()).toEqual({ reason: "expired", label: "Box" });
+      expect(yield* Ref.get(b.bearers)).toEqual([]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
