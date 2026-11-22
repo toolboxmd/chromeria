@@ -77,7 +77,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import { dispatchVia, ScheduledTaskDispatchPolicy } from "../scheduledTaskChecks/DispatchPolicy.ts";
 import { forkFireKey } from "../scheduledTaskChecks/schedules.ts";
 import { migrateLegacyCalendarSchedules } from "../scheduledTaskChecks/fixedTimeMigration.ts";
-import { deleteSpentOnceTask, pruneSpentForkOnceTasks } from "../scheduledTaskChecks/spentOnce.ts";
+import { deleteSpentOnceTask } from "../scheduledTaskChecks/spentOnce.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
@@ -610,8 +610,6 @@ export const layer = Layer.effect(
     const dispatchPolicy = yield* ScheduledTaskDispatchPolicy;
     // Fork: legacy weekly and monthly rows become fixed_time before recovery decodes them.
     yield* migrateLegacyCalendarSchedules();
-    // Fork: spent `at` tasks from before completion deleted them.
-    yield* pruneSpentForkOnceTasks();
     // Webhook deliveries for one task dispatch in arrival order rather than
     // being dropped while an earlier delivery is still dispatching.
     const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Semaphore.Semaphore>>(
