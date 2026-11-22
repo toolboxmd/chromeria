@@ -1406,15 +1406,6 @@ export const layer = Layer.effect(
       const run = Effect.gen(function* () {
         // Re-read stale poll snapshots so deleted, paused or postponed tasks cannot fire.
         const active = yield* findTask(task.id);
-        // Outcome writes are fenced by the start time, so two runs must not share one.
-        if (
-          trigger === "manual" &&
-          active?.lastRunAt != null &&
-          Date.parse(active.lastRunAt) === DateTime.toEpochMillis(startedAt)
-        )
-          return yield* taskError("This task already started a run at this instant; try again.", {
-            taskId: task.id,
-          });
         if (active === null) {
           if (webhook !== undefined) {
             return yield* new WebhookDeliverySkipped({
@@ -1497,6 +1488,15 @@ export const layer = Layer.effect(
               );
           }
         }
+        // Outcome writes are fenced by the start time, so two runs must not share one.
+        if (
+          trigger === "manual" &&
+          active.lastRunAt != null &&
+          Date.parse(active.lastRunAt) === DateTime.toEpochMillis(startedAt)
+        )
+          return yield* taskError("This task already started a run at this instant; try again.", {
+            taskId: task.id,
+          });
         // Fork: decided before the task is marked running; a skip consumed the slot.
         const decision = yield* dispatchPolicy
           .decide({ task: active, trigger, startedAt })
