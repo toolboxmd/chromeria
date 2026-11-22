@@ -431,6 +431,19 @@ it.effect("a one-shot is one run per instant: a replayed fire with another offse
       [`${taskId}:2026-10-08T12:00:00.000Z`],
     );
     assert.equal(h.sent.length, 1);
+    // After a backward clock step, Run now at that instant is refused, not silently skipped.
+    const manual = yield* Effect.exit(h.decide("manual", NOW, once));
+    assert.isTrue(Exit.isFailure(manual));
+    assert.include(String(manual), "already started at this instant");
+    assert.equal(h.sent.length, 1);
+    // A keyed Run now has its own run id, so the instant's run does not block it.
+    const keyed = yield* h.runs.decide({
+      task: once,
+      trigger: "manual",
+      startedAt: DateTime.makeUnsafe(NOW),
+      manualRequestId: "a".repeat(64),
+    });
+    assert.equal(keyed._tag, "fork");
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 

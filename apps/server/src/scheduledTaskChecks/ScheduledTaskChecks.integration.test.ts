@@ -578,9 +578,20 @@ it.effect(
         yield* TestClock.adjust("6 seconds");
         yield* Fiber.join(skipped);
         assert.equal((yield* messagesOf).length, 1);
+        // A keyed run can hold the row as running without this process's reservation.
+        yield* sql`UPDATE scheduled_tasks SET last_run_status = 'running' WHERE task_id = ${id}`;
         const refused = yield* Effect.exit(service.runNow({ id: ScheduledTaskId.make(id) }));
         assert.isTrue(Exit.isFailure(refused));
         assert.include(String(refused), "unfinished work");
+        // A start refused before it marked the task running leaves the holder's row alone.
+        const [held] = yield* sql<{
+          last_run_status: string;
+          run_count: number;
+        }>`SELECT last_run_status, run_count FROM scheduled_tasks WHERE task_id = ${id}`;
+        assert.deepEqual(
+          { status: held?.last_run_status, runCount: held?.run_count },
+          { status: "running", runCount: started.task.runCount },
+        );
         // Even a needs-you run is not resumed while its thread still has an active turn.
         const state = (yield* readCheckState(ScheduledTaskId.make(id)))!;
         yield* writeCheckState(state, {

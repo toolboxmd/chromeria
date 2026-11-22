@@ -766,6 +766,7 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
   Effect.gen(function* () {
     const launches = yield* Ref.make(0);
     const sends = yield* Ref.make<Array<{ threadId: ThreadId; freshContext?: boolean }>>([]);
+    const messageIds = yield* Ref.make<Array<string>>([]);
     const launched = ThreadId.make("thread:fresh-session-task");
     const layer = ScheduledTaskService.layer.pipe(
       Layer.provide(
@@ -773,8 +774,14 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
           Layer.mock(BareLaunch.BareLaunch)({}),
           ManagedPolicy.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({
-            launch: () =>
+            launch: (input) =>
               Ref.update(launches, (n) => n + 1).pipe(
+                Effect.andThen(
+                  Ref.update(messageIds, (all) => [
+                    ...all,
+                    String(input.initialMessage?.messageId),
+                  ]),
+                ),
                 Effect.as({ threadId: launched, resumed: false } as never),
               ),
           }),
@@ -792,7 +799,10 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
                   threadId: input.threadId,
                   ...(input.freshContext === undefined ? {} : { freshContext: input.freshContext }),
                 },
-              ]).pipe(Effect.as({} as never)),
+              ]).pipe(
+                Effect.andThen(Ref.update(messageIds, (all) => [...all, input.messageId])),
+                Effect.as({} as never),
+              ),
           }),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
@@ -822,6 +832,16 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
       yield* service.upsert({ ...input, threadMode: "fresh_session" });
 
       assert.equal((yield* service.runNow({ id: input.id })).threadId, launched);
+      // Outcome writes are fenced by the start time, so a second start at that instant is refused.
+      // A keyed run can hold the instant without the local reservation; the refusal leaves it alone.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE scheduled_tasks SET last_run_status = 'running' WHERE task_id = ${input.id}`;
+      const sameInstant = yield* Effect.flip(service.runNow({ id: input.id }));
+      assert.include(sameInstant.message, "already started a run at this instant");
+      const held = (yield* service.list()).tasks.find((task) => task.id === input.id)!;
+      assert.equal(held.lastRunStatus, "running");
+      assert.equal(held.runCount, 1);
+      yield* TestClock.adjust(5);
       // A form opened before the first run saves no thread; the binding stays.
       const { task } = yield* service.upsert({
         ...input,
@@ -838,6 +858,10 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
 
       assert.equal(yield* Ref.get(launches), 1);
       assert.deepEqual(yield* Ref.get(sends), [{ threadId: launched, freshContext: true }]);
+      // After the clock steps back to the first run's instant, a Run Now still sends its own message.
+      yield* TestClock.setTime(0);
+      yield* service.runNow({ id: input.id });
+      assert.equal(new Set(yield* Ref.get(messageIds)).size, 3);
       // Its thread stays in the old project, so moving the task leaves it for a new one.
       const moved = yield* service.upsert({
         ...input,
@@ -917,6 +941,7 @@ it.effect("a refused dispatch records its refusal, and opaque causes stay generi
       });
       for (const [cause, expected] of cases) {
         yield* Ref.set(failure, cause);
+        yield* TestClock.adjust(1);
         const result = yield* service.runNow({ id: task.id });
         assert.equal(result.task.lastRunStatus, "failed");
         assert.equal(result.task.lastRunError, expected);

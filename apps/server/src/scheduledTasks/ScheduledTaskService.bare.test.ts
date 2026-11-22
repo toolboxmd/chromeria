@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import * as FileSystem from "effect/FileSystem";
 import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Sqlite from "../persistence/Sqlite.ts";
@@ -144,6 +145,7 @@ it.effect.each(["new_thread", "fresh_session", "continue"] as const)(
       yield* Effect.gen(function* () {
         const tasks = yield* ScheduledTasks.ScheduledTaskService;
         const task = (yield* tasks.list()).tasks[0]!;
+        yield* TestClock.adjust(1);
         yield* tasks.runNow({ id: task.id });
         expect(seen).toHaveLength(threadMode === "new_thread" ? 2 : 1);
         expect(sent).toEqual(threadMode === "new_thread" ? [] : [threadMode === "fresh_session"]);
@@ -170,8 +172,10 @@ it.effect.each(["new_thread", "fresh_session", "continue"] as const)(
           expect(changed.message).toContain("no new additions");
           const retained = content;
           content = { additions: [] };
+          yield* TestClock.adjust(1);
           expect((yield* Effect.result(tasks.runNow({ id: task.id })))._tag).toBe("Failure");
           content = undefined;
+          yield* TestClock.adjust(1);
           expect((yield* Effect.result(tasks.runNow({ id: task.id })))._tag).toBe("Failure");
           content = retained;
           expect(sent).toHaveLength(1);
