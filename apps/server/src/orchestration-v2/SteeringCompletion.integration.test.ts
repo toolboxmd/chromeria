@@ -21,6 +21,7 @@ import {
   ThreadId,
   TurnItemId,
   type ModelSelection,
+  type PurposeIntent,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
@@ -554,6 +555,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
       turn: ProviderAdapter.ProviderAdapterV2SteerInput,
     ) => Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error>;
     readonly extraAdapters?: ReadonlyArray<ProviderAdapter.ProviderAdapterV2["Service"]>;
+    readonly firstPurposeIntent?: PurposeIntent;
   } = {},
 ) {
   const driver = ProviderDriverKind.make(
@@ -735,6 +737,9 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
       text: "first",
       attachments: [],
       modelSelection: runSelection,
+      ...(options.firstPurposeIntent === undefined
+        ? {}
+        : { purposeIntent: options.firstPurposeIntent }),
       dispatchMode: { type: "start_immediately" },
       createdBy: "user",
       creationSource: "web",
@@ -4274,13 +4279,35 @@ it.effect.each([
   ["delegated task question", "restart"],
   ["accepted delegated completion", "restart"],
   ["held delegated completion", "restart"],
+  ["emptied delegated completion", "restart"],
   ["wakes around a user steer", "restart"],
   ["user steer", "stop"],
   ["delegated task question", "stop"],
 ] as const)("handles a %s the provider left unread at %s", ([kind, ending]) =>
   Effect.gen(function* () {
     const name = `unread-${kind.replaceAll(" ", "-")}-${ending}`;
-    const { events, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(name);
+    const issueScope = {
+      type: "single",
+      reference: {
+        host: "github.com",
+        repository: "toolboxmd/chromeria",
+        kind: "issue",
+        number: 875,
+      },
+    } as const;
+    const { events, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+      name,
+      false,
+      undefined,
+      kind === "accepted delegated completion"
+        ? {
+            firstPurposeIntent: {
+              version: 1,
+              intent: { type: "reference", reference: issueScope.reference },
+            },
+          }
+        : {},
+    );
     yield* Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
@@ -4304,7 +4331,9 @@ it.effect.each([
       } as const;
       const mailboxId = MessageId.make(`message:${name}:mailbox`);
       const mailbox =
-        kind === "accepted delegated completion" || kind === "held delegated completion";
+        kind === "accepted delegated completion" ||
+        kind === "held delegated completion" ||
+        kind === "emptied delegated completion";
       const completionSource = {
         runId: RunId.make(`run:${name}:child`),
         purpose: executionPurposeOf(parent),
@@ -4320,7 +4349,8 @@ it.effect.each([
         },
       } as const;
       // The reserved cohort and claimed task an acceptance that never committed leaves behind.
-      const writeReservation = (label: string) =>
+      // An emptied one is what the parent leaves by reading the last result before acceptance commits.
+      const writeReservation = (label: string, emptied = false) =>
         Effect.gen(function* () {
           const now = yield* DateTime.now;
           const run = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
@@ -4342,7 +4372,9 @@ it.effect.each([
             title: "Background test",
             model: null,
             completionWake: "always",
-            completionDelivery: { state: "claimed", observedByRunId: null },
+            completionDelivery: emptied
+              ? { state: "acknowledged", observedByRunId: parent.id }
+              : { state: "claimed", observedByRunId: null },
             completionSource,
             status: "completed",
             result: "done",
@@ -4358,7 +4390,15 @@ it.effect.each([
                 threadId,
                 runId: parent.id,
                 occurredAt: now,
-                payload: { ...run, delegatedCompletion: cohort },
+                payload: {
+                  ...run,
+                  delegatedCompletion: emptied
+                    ? {
+                        ...cohort,
+                        delivery: { ...cohort.delivery, taskIds: [], purposeCauses: [] },
+                      }
+                    : cohort,
+                },
               },
               {
                 id: EventId.make(`event:${name}:${label}:task`),
@@ -4386,7 +4426,7 @@ it.effect.each([
             ? [question]
             : kind === "accepted delegated completion"
               ? [mailboxSend]
-              : kind === "held delegated completion"
+              : kind === "held delegated completion" || kind === "emptied delegated completion"
                 ? [userSteer, mailboxSend]
                 : [question, userSteer, question];
       const messageIds = sends.map((send, index) =>
@@ -4406,6 +4446,7 @@ it.effect.each([
       }
       assert.lengthOf(steered, sends.length);
       if (kind === "held delegated completion") yield* writeReservation("held");
+      if (kind === "emptied delegated completion") yield* writeReservation("emptied", true);
 
       const turn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
       const ingested = yield* orchestrator.streamDomainEvents.pipe(
@@ -4479,11 +4520,21 @@ it.effect.each([
         ),
       );
       yield* recovery.reconcile("startup");
+      const requeued =
+        kind === "emptied delegated completion"
+          ? messageIds.filter((messageId) => messageId !== mailboxId)
+          : messageIds;
       for (let pass = 0; pass < 2; pass += 1) {
         yield* orchestrator.recoverDelegatedTasks;
         yield* worker.drain();
         // The cut run holds the queue, so the requeued steers wait there, in the order they were sent.
-        assert.deepEqual(yield* queued, messageIds);
+        assert.deepEqual(yield* queued, requeued);
+      }
+      if (kind === "accepted delegated completion") {
+        const wake = (yield* read).runs.find(
+          (run) => run.status === "queued" && run.userMessageId === mailboxId,
+        );
+        assert.deepEqual(wake?.purpose?.scope, issueScope);
       }
       assert.isFalse(
         (yield* read).turnItems.some(

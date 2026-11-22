@@ -3843,6 +3843,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
   });
 
+  // A wake's notice stays on the run it steered until a queued run takes it over.
+  const settledWakeItemEvent = (
+    item: Extract<OrchestrationV2TurnItem, { readonly type: "notification" }>,
+    now: DateTime.Utc,
+  ) => ({
+    type: "turn-item.updated" as const,
+    threadId: item.threadId,
+    ...(item.runId === null ? {} : { runId: item.runId }),
+    ...(item.nodeId === null ? {} : { nodeId: item.nodeId }),
+    occurredAt: now,
+    payload: { ...item, status: "cancelled" as const, completedAt: now, updatedAt: now },
+  });
+
   // A steer still pending after its run ended was never read: the provider marks one it read
   // completed, and one Stop dropped cancelled. It runs next, in its place among waiting messages.
   const requeueUnreadSteers = Effect.fn("Orchestrator.requeueUnreadSteers")(function* (
@@ -3885,10 +3898,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             );
       if (run === undefined || message === undefined || isActiveRun(run)) continue;
       const mailbox = message.delegatedCompletion;
-      const reserved =
-        mailbox !== undefined &&
-        projection.runs.find((candidate) => candidate.id === mailbox.parentRunId)
-          ?.delegatedCompletion?.delivery?.messageId === message.id;
+      const reservation =
+        mailbox === undefined
+          ? undefined
+          : projection.runs.find((candidate) => candidate.id === mailbox.parentRunId)
+              ?.delegatedCompletion?.delivery;
+      const reserved = reservation?.messageId === message.id;
+      // The parent read every result before accepting the wake, so nothing is left to deliver.
+      if (item.type === "notification" && reserved && reservation.taskIds.length === 0) {
+        yield* writeSystemEvents([settledWakeItemEvent(item, yield* DateTime.now)]);
+        continue;
+      }
       // Stop drops a steer it reached; say so, as the adapter does for steers it still held.
       if (yield* projectionStore.hasRunInterruptRequest(threadId, run.id)) {
         const now = yield* DateTime.now;
@@ -3976,6 +3996,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         // A mailbox wake keeps its reservation until accepted; once accepted it returns as its notice.
         ...(item.type === "notification" && !reserved
           ? {
+              // It was steered into this run because their purposes matched.
+              purposeSource: {
+                version: 1,
+                scope: executionPurposeOf(run).scope,
+                provenance: { type: "source_run", threadId, runId: run.id },
+              },
               notification: {
                 source: item.source,
                 outcome: item.outcome,
@@ -7990,6 +8016,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
     if (yield* isStaleQuestionWake(projection, command.messageId, command.notification)) {
+      const steeredWakeItem =
+        command.steerFollowUpOfRunId === undefined
+          ? null
+          : yield* projectionStore
+              .getTurnItem({
+                threadId: command.threadId,
+                itemId: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+                ),
+              );
+      if (
+        steeredWakeItem?.type === "notification" &&
+        steeredWakeItem.status === "pending" &&
+        steeredWakeItem.runId === command.steerFollowUpOfRunId
+      ) {
+        yield* emit(events, command)(settledWakeItemEvent(steeredWakeItem, yield* DateTime.now));
+      }
       yield* emit(
         events,
         command,
@@ -9097,7 +9143,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.creationSource === "provider" &&
         !(yield* stopReachedRun(command, command.threadId, activeRun.id));
       let steerFollowUpQueuePosition: number | undefined;
-      let steerFollowUpWakeItem: OrchestrationV2TurnItem | undefined;
+      let steerFollowUpWakeItem:
+        | Extract<OrchestrationV2TurnItem, { readonly type: "notification" }>
+        | undefined;
       if (
         command.steerFollowUpOfRunId !== undefined &&
         command.steerFollowUpAfterRunOrdinal !== undefined
@@ -9365,26 +9413,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           },
         });
       }
-      // A wake's notice stays on the run it steered until the queued run starts; settle it now.
       if (
         steerFollowUpWakeItem?.status === "pending" &&
         steerFollowUpWakeItem.runId === command.steerFollowUpOfRunId
       ) {
-        yield* emitEvent({
-          type: "turn-item.updated",
-          threadId: command.threadId,
-          runId: steerFollowUpWakeItem.runId,
-          ...(steerFollowUpWakeItem.nodeId === null
-            ? {}
-            : { nodeId: steerFollowUpWakeItem.nodeId }),
-          occurredAt: now,
-          payload: {
-            ...steerFollowUpWakeItem,
-            status: "cancelled",
-            completedAt: now,
-            updatedAt: now,
-          },
-        });
+        yield* emitEvent(settledWakeItemEvent(steerFollowUpWakeItem, now));
       }
       if (queuedRunStop !== undefined) {
         return yield* stopRunForQueuedCommand({
