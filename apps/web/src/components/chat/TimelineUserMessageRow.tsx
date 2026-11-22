@@ -81,6 +81,7 @@ import type { ChatMarkdownContextReference } from "../ChatMarkdown";
 import { cn } from "~/lib/utils";
 import { markdownProseDirection } from "~/textDirection";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
+import { PROMACHOS_OUTBOUND_BUBBLE_CLASS_NAME } from "../promachos/PromachosChat";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
 import { WorkflowOpeningBlock } from "./WorkflowOpeningBlock";
 import { useTallEnoughToFold } from "./useTallEnoughToFold";
@@ -900,6 +901,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       </div>
     </div>
   );
+  // Fork: a server wake attributed to T3 Code is not announced as the user's own message.
+  const ownAuthor =
+    userMessage.attribution === "t3code"
+      ? gt("Sent by T3 Code")
+      : gt("You", { $context: "author of the user's own message" });
   return (
     <div
       className="group @container flex flex-col items-end gap-1"
@@ -930,9 +936,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       {mediaAboveText ? (
         <div className="flex max-w-[80%] justify-end">
           {/* The heading leads the media so screen readers reach it before the images. */}
-          <MessageAuthorHeading>
-            {gt("You", { $context: "author of the user's own message" })}
-          </MessageAuthorHeading>
+          <MessageAuthorHeading>{ownAuthor}</MessageAuthorHeading>
           {mediaBlock}
         </div>
       ) : null}
@@ -946,6 +950,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             ? guestBubbleClassName(false)
             : !mediaOnly && !fileCardsOnly && !audioOnly && "bg-message",
           !folded && !mediaOnly && !fileCardsOnly && !audioOnly && "p-3",
+          ctx.promachos && PROMACHOS_OUTBOUND_BUBBLE_CLASS_NAME,
           folded && expanded && "w-full",
         )}
         data-user-message-bubble=""
@@ -956,7 +961,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             {folded
               ? senderLabel
               : userMessage.guestName === undefined
-                ? gt("You", { $context: "author of the user's own message" })
+                ? ownAuthor
                 : gt("{name} (guest)", { name: userMessage.guestName })}
           </MessageAuthorHeading>
         )}

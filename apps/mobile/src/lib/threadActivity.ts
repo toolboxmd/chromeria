@@ -61,7 +61,13 @@ import type {
   ScheduledTaskId,
   TurnItemId,
 } from "@t3tools/contracts";
-import { idleCompactionOf, isCompactionCommandMessage, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  idleCompactionOf,
+  isCompactionCommandMessage,
+  requestAnsweredByLabel,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
 import {
   classifyToolActivity,
   collectToolFilePaths,
@@ -685,9 +691,13 @@ function itemSummary(
     case "web_search":
       return resolve(msg("Searched the web"));
     case "approval_request":
-      return resolve(msg("Approval requested"));
+      return item.answeredBy
+        ? requestAnsweredByLabel(item.answeredBy)
+        : resolve(msg("Approval requested"));
     case "user_input_request":
-      return resolve(msg("Input requested"));
+      return item.answeredBy
+        ? requestAnsweredByLabel(item.answeredBy)
+        : resolve(msg("Input requested"));
     case "checkpoint":
       return resolve(msg("Checkpoint captured"));
     case "run_interrupt_request":
