@@ -36,6 +36,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
+import * as MutationReceipts from "./mutationReceipts.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 
 const isScheduledTaskError = Schema.is(ScheduledTaskError);
@@ -1275,4 +1276,70 @@ it.effect("a run interrupted right after it reserves the task does not block the
       assert.equal(yield* Ref.get(launches), 1);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
+  "a task stored before incarnations existed can be deleted with and without a receipt",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-09-09T12:00:00.000Z";
+      for (const id of ["legacy-mcp", "legacy-settings", "current"])
+        yield* insertRow(sql, { id, next: null, enabled: 1, status: "never" }, now);
+      yield* sql`CREATE TABLE scheduled_task_request_incarnations (task_id TEXT PRIMARY KEY, incarnation TEXT NOT NULL, active_request_id TEXT)`;
+      yield* sql`INSERT INTO scheduled_task_request_incarnations VALUES ('current','kept',NULL)`;
+      const layer = ScheduledTaskService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            ManagedPolicy.layerTest(),
+            Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+            Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+            Layer.mock(SecretRequests.SecretRequests)({}),
+            Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+              namedProjectsRoot: "/projects",
+              isScratchProject: () => Effect.succeed(false),
+            }),
+            Layer.mock(BareLaunch.BareLaunch)({}),
+            NodeCrypto.layer,
+            Scheduler.layer,
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const incarnations = yield* sql<{
+          task_id: string;
+          incarnation: string;
+        }>`SELECT task_id,incarnation FROM scheduled_task_request_incarnations ORDER BY task_id`;
+        assert.deepEqual(
+          incarnations.map((row) => row.task_id),
+          ["current", "legacy-mcp", "legacy-settings"],
+        );
+        assert.equal(incarnations[0]?.incarnation, "kept");
+        yield* service.delete({ id: ScheduledTaskId.make("legacy-mcp") }).pipe(
+          Effect.provideService(MutationReceipts.CurrentMutation, {
+            request: {
+              id: "a".repeat(64),
+              generation: "generation:1",
+              inputDigest: "digest:1",
+              clientRequestId: "delete-legacy",
+            },
+            secret: { type: "none" },
+            recheck: Effect.void,
+          }),
+        );
+        yield* service.delete({ id: ScheduledTaskId.make("legacy-settings") });
+        assert.deepEqual(
+          (yield* service.list()).tasks.map((task) => task.id),
+          ["current"],
+        );
+        const receipts = yield* sql<{
+          stage: string;
+        }>`SELECT stage FROM scheduled_mutation_receipts WHERE task_id='legacy-mcp'`;
+        assert.deepEqual(
+          receipts.map((row) => row.stage),
+          ["confirmed"],
+        );
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
