@@ -157,10 +157,16 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
 
 /** Labels of the links a fill acts for; empty for local work. The broker repeats the check before typing. */
 const authorizeVaultLogin = Effect.gen(function* () {
-  const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
+  const caller = yield* loadCaller();
+  const linked = callerLinkOrigin(caller) !== undefined;
   const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
-  if (Option.isSome(authority)) return yield* authority.value.authorizeVault(scope);
-  if (callerLinkOrigin(yield* loadCaller()) === undefined) return [];
+  // Linked work that lost Browser access gets the refusal naming its link's setting.
+  if (Option.isSome(authority) && (linked || caller.scope.capabilities.has("preview")))
+    return yield* authority.value.authorizeVault(
+      yield* McpInvocationContext.requireThreadScope(caller.scope, "preview_fill_credential"),
+    );
+  yield* McpInvocationContext.requireThreadMcpCapability("preview");
+  if (!linked) return [];
   return yield* new OrchestratorMcpFailure({
     code: "capability_denied",
     message:

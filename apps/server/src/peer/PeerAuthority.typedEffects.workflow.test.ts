@@ -11801,6 +11801,11 @@ it.live(
         const { vault: _omitted, ...older } = grant;
         yield* b.authority.setGrant({ ...older, device: false });
         expect((yield* b.authority.grants)[0]).toMatchObject({ preview: true, vault: false });
+        // Its Browser access toggle still carries the vault, as the current Settings does.
+        yield* b.authority.setGrant({ ...older, preview: false });
+        expect((yield* b.authority.grants)[0]).toMatchObject({ preview: false, vault: false });
+        yield* b.authority.setGrant({ ...older, preview: true });
+        expect((yield* b.authority.grants)[0]).toMatchObject({ preview: true, vault: true });
         // Turned off while the fill waits on the vault: the browser checks again before typing.
         yield* b.authority.setGrant({ ...grant, vault: true });
         const reading = yield* Deferred.make<void>();
@@ -11912,6 +11917,11 @@ it.live("vault860: work a link delegated here fills only while that link grants 
       yield* b.authority.setGrant({ ...grant, vault: true });
       const restored = yield* fill("vault860-delegated-restored");
       expect(restored.structuredContent, json(restored)).toMatchObject({ filled: true });
+      expect(credentialFills()).toBe(typed + 2);
+      yield* b.authority.setGrant({ ...grant, preview: false });
+      const noBrowser = json(yield* fill("vault860-delegated-no-browser"));
+      expect(noBrowser).toContain("capability_denied");
+      expect(noBrowser).toContain("Browser access for this link");
       expect(credentialFills()).toBe(typed + 2);
     }),
   ).pipe(Effect.provide(vault860Layer)),

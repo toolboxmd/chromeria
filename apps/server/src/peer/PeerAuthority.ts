@@ -4074,7 +4074,13 @@ const make = Effect.gen(function* () {
           Effect.gen(function* () {
             yield* activeSession(input.sessionId);
             const previous = yield* grant(input.sessionId);
-            const next: PeerGrant = { ...input, vault: input.vault ?? previous.vault };
+            // Without `vault` (an older client), it follows a Browser access change, as in Settings.
+            const next: PeerGrant = {
+              ...input,
+              vault:
+                input.vault ??
+                (input.preview === previous.preview ? previous.vault : input.preview),
+            };
             const encoded = yield* encodeGrant(next).pipe(Effect.mapError(unavailable));
             const priorEncoded = yield* encodeGrant(previous).pipe(Effect.mapError(unavailable));
             if (priorEncoded !== encoded)
