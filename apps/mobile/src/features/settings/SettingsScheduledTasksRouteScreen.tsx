@@ -142,7 +142,7 @@ function describeSchedule(
     );
   }
   if (isForkScheduledTaskSchedule(task.schedule))
-    return ScheduledTaskFork.forkScheduleLabel(task.schedule, {}, resolve);
+    return ScheduledTaskFork.forkScheduleLabel(task.schedule, { formatTime }, resolve);
   if (task.schedule.type === "interval")
     return formatScheduledTaskInterval(task.schedule.everyMs, resolve);
   const days = task.schedule.weekdays?.length

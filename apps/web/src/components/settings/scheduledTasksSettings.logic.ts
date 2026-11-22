@@ -69,7 +69,10 @@ export function scheduleLabel(
     );
   }
   // Chromeria (toolboxmd fork): fork schedule kinds label themselves.
-  if (isForkScheduledTaskSchedule(schedule)) return forkScheduleLabel(schedule);
+  if (isForkScheduledTaskSchedule(schedule))
+    return forkScheduleLabel(schedule, {
+      formatTime: (time) => formatTimeOfDay(time, timestampFormat),
+    });
   if (schedule.type === "interval") {
     const minutes = schedule.everyMs / 60_000;
     return Number.isInteger(minutes)

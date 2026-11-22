@@ -4,10 +4,11 @@ import {
   type ScheduledTask,
   type ScheduledTaskUpsertSchedule,
 } from "@t3tools/contracts";
-import { forkScheduleLabel, forkTaskSummary } from "@t3tools/client-runtime/scheduled-task-fork";
+import { forkTaskSummary } from "@t3tools/client-runtime/scheduled-task-fork";
 import { T, useGT, Var } from "gt-react";
 import { useEffect, useState } from "react";
 
+import { useClientSettings } from "../../hooks/useSettings";
 import { useEnvironmentQuery } from "../../state/query";
 import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 import { serverEnvironment } from "../../state/server";
@@ -17,6 +18,7 @@ import { Label } from "../ui/label";
 import { Toggle as DayToggleBase } from "../ui/toggle";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { MONTH_DAYS, type FixedTimeForkDraft } from "./scheduledTaskFork.logic";
+import { scheduleLabel } from "./scheduledTasksSettings.logic";
 import { AbandonReportAction } from "./spectrumReportAction";
 
 /**
@@ -128,12 +130,13 @@ export function PreservedScheduleNote({
 }: {
   readonly schedule: ScheduledTaskUpsertSchedule | null;
 }) {
+  const timestampFormat = useClientSettings((settings) => settings.timestampFormat);
   return schedule === null || !isForkScheduledTaskSchedule(schedule) ? null : (
     <span className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
       <ChromeriaFeatureMark />
       <span>
         <T>
-          <Var>{forkScheduleLabel(schedule)}</Var> · change it through an agent
+          <Var>{scheduleLabel(schedule, timestampFormat)}</Var> · change it through an agent
         </T>
       </span>
     </span>
