@@ -975,7 +975,10 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
       const holdResultPage = yield* Ref.make(false);
       /** Tasks whose waiting observations hang, as a destination with nothing new does. */
       const quietWaits = yield* Ref.make<ReadonlySet<string>>(new Set());
-      /** Each task whose waiting observation started to hang. */
+      /**
+       * Each task whose own waiting observation started to hang. A snapshot wait watches an
+       * undelivered result here and ends when it is read, so it is not one.
+       */
       const quietWaitsHeld = yield* Queue.unbounded<string>();
       /** The tasks each shared quiet-job watch named. */
       const settledWatches = yield* Queue.unbounded<ReadonlyArray<string>>();
@@ -1056,7 +1059,8 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
                 operation.wait === true &&
                 (yield* Ref.get(quietWaits)).has(args[2].pair.taskId)
               ) {
-                yield* Queue.offer(quietWaitsHeld, args[2].pair.taskId);
+                if (operation.type === "observe")
+                  yield* Queue.offer(quietWaitsHeld, args[2].pair.taskId);
                 return yield* Effect.never;
               }
               const result = yield* peers.taskLifecycle!(...args);
