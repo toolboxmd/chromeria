@@ -46,6 +46,13 @@ const PERMISSIONS = [
     msg("Share browser logins"),
     msg("Let its agents copy this environment's browser sessions for the sites they name."),
   ],
+  [
+    "vault",
+    msg("Use credential vault"),
+    msg(
+      "Let its agents sign in here with this environment's vault logins. A fill never returns the value.",
+    ),
+  ],
 ] as const;
 
 function GrantEditor({
@@ -117,6 +124,7 @@ function GrantEditor({
             <label key={key} className="flex items-start gap-3 text-xs">
               <Checkbox
                 checked={isPeerGrantPermissionEnabled(draft, key)}
+                disabled={key === "vault" && !draft.preview}
                 onCheckedChange={(checked) =>
                   commit(setPeerGrantPermission(draft, key, checked === true))
                 }

@@ -9611,6 +9611,8 @@
   "c8800fc97470eafc": "Permitir ferramentas e saída autorizadas de simuladores e emuladores.",
   "d8b56edfb94b3d20": "Compartilhar logins do navegador",
   "9e3f5a43f08692f5": "Permite que os agentes dele copiem as sessões de navegador deste ambiente para os sites que indicarem.",
+  "ab033fae0a5b79c8": "Usar o cofre de credenciais",
+  "c021490d7808bef3": "Permite que os agentes dele entrem aqui com as credenciais do cofre deste ambiente. Um preenchimento nunca retorna o valor.",
   "8501b15306e745b1": "Não foi possível salvar as permissões do link",
   "cc4e20ae31beabb0": "O acesso total permite que os agentes desta máquina usem todas as permissões abaixo. Remover uma permissão também limita o trabalho existente.",
   "41593c48eb8fe534": "Acesso total para {label}",

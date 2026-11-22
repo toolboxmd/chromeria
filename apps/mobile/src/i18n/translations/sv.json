@@ -3351,6 +3351,7 @@
   "720ed56b24820720": "Webbläsaråtkomst",
   "e011053544d361ff": "Enhetsåtkomst",
   "d8b56edfb94b3d20": "Dela webbläsarinloggningar",
+  "ab033fae0a5b79c8": "Använd valvet för inloggningar",
   "8501b15306e745b1": "Det gick inte att spara länkbehörigheterna",
   "95ce18305181dd2e": "Länkad miljö: {label}",
   "1f0c295494fa2d04": "Nytt arbete använder de här behörigheterna. Befintligt arbete behåller sitt ursprungliga tak. Att ta bort en behörighet begränsar även befintligt arbete.",

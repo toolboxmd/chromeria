@@ -1,10 +1,10 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
 import { AuthSessionId, EnvironmentId, ThreadId, RunId, NodeId } from "./baseSchemas.ts";
 import { RuntimeMode, ProviderInteractionMode } from "./providerPolicy.ts";
 
-/** Explicit human consent, separate from runtime mode. Missing legacy fields grant nothing. */
-export const PeerGrant = Schema.Struct({
+const peerGrantFields = {
   sessionId: AuthSessionId,
   resourceScope: Schema.Literals(["created-work", "environment-resources"]),
   onward: Schema.Boolean,
@@ -12,7 +12,32 @@ export const PeerGrant = Schema.Struct({
   device: Schema.Boolean,
   /** "Share browser logins": copying this environment's cookies out, separate from driving its browser. */
   browserExport: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** "Use credential vault": filling logins from this environment's vault into its own browser. */
+  vault: Schema.Boolean,
+};
+/** A grant stored or sent before "Use credential vault" existed follows its Browser access. */
+const vaultFollowsPreview = <G extends { readonly preview: boolean; readonly vault?: boolean }>(
+  grant: G,
+) => ({ ...grant, vault: grant.vault ?? grant.preview });
+const peerGrantSummaryFields = {
+  ...peerGrantFields,
+  environmentId: EnvironmentId,
+  label: Schema.String,
+};
+
+/** A grant change. A client that predates `vault` omits it, and the stored choice stays. */
+export const PeerGrantUpdate = Schema.Struct({
+  ...peerGrantFields,
+  vault: Schema.optionalKey(Schema.Boolean),
 });
+export type PeerGrantUpdate = typeof PeerGrantUpdate.Type;
+/** Explicit human consent, separate from runtime mode. Missing legacy fields grant nothing. */
+export const PeerGrant = PeerGrantUpdate.pipe(
+  Schema.decodeTo(Schema.toType(Schema.Struct(peerGrantFields)), {
+    decode: SchemaGetter.transform(vaultFollowsPreview),
+    encode: SchemaGetter.passthroughSubtype(),
+  }),
+);
 export type PeerGrant = typeof PeerGrant.Type;
 /** Every grant on ("Full access") or every grant off, without the session. */
 export const uniformPeerGrant = (enabled: boolean) =>
@@ -22,18 +47,24 @@ export const uniformPeerGrant = (enabled: boolean) =>
     preview: enabled,
     device: enabled,
     browserExport: enabled,
+    vault: enabled,
   }) satisfies Omit<PeerGrant, "sessionId">;
 export const isFullPeerGrant = (grant: PeerGrant) =>
   grant.resourceScope === "environment-resources" &&
   grant.onward &&
   grant.preview &&
   grant.device &&
-  grant.browserExport;
+  grant.browserExport &&
+  grant.vault;
 export const PeerGrantSummary = Schema.Struct({
-  ...PeerGrant.fields,
-  environmentId: EnvironmentId,
-  label: Schema.String,
-});
+  ...peerGrantSummaryFields,
+  vault: Schema.optionalKey(Schema.Boolean),
+}).pipe(
+  Schema.decodeTo(Schema.toType(Schema.Struct(peerGrantSummaryFields)), {
+    decode: SchemaGetter.transform(vaultFollowsPreview),
+    encode: SchemaGetter.passthroughSubtype(),
+  }),
+);
 export type PeerGrantSummary = typeof PeerGrantSummary.Type;
 
 /** Capabilities that cross environments. Older peers decode exactly this set, so local-only
@@ -53,7 +84,7 @@ export const peerCapabilities = (capabilities: Iterable<string>): Array<PeerCapa
 export const PeerCeiling = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
-  resourceScope: PeerGrant.fields.resourceScope,
+  resourceScope: peerGrantFields.resourceScope,
   onward: Schema.Boolean,
   capabilities: Schema.Array(PeerCapability),
 });

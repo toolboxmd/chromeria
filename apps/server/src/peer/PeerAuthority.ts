@@ -39,6 +39,7 @@ import {
   PeerAuthorityEnvelope,
   PeerCeiling,
   PeerGrant,
+  type PeerGrantUpdate,
   uniformPeerGrant,
   PeerGrantSummary,
   PeerReturnPair,
@@ -51,6 +52,7 @@ import {
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Result from "effect/Result";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -205,6 +207,13 @@ const decodeExpiry = Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString);
 const encodeGrant = Schema.encodeEffect(Schema.fromJsonString(PeerGrant));
 const denied = (message: string) =>
   new OrchestratorMcpFailure({ code: "capability_denied", message });
+const vaultGrantOff =
+  "grant_off: This environment does not let this link use its credential vault. The user can turn on Browser access and Use credential vault for it in Connections settings.";
+/** Link sessions whose grants an authority walk read; only `authorizeVault` collects them. */
+class GrantReads extends Context.Reference<Set<string> | undefined>(
+  "t3/peer/PeerAuthority/GrantReads",
+  { defaultValue: () => undefined },
+) {}
 const unavailable = () =>
   new OrchestratorMcpFailure({
     code: "orchestration_error",
@@ -349,9 +358,13 @@ export class PeerAuthority extends Context.Service<
       credentialIdentity?: string,
     ) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly grants: Effect.Effect<ReadonlyArray<PeerGrantSummary>, OrchestratorMcpFailure>;
-    readonly setGrant: (grant: PeerGrant) => Effect.Effect<PeerGrant, OrchestratorMcpFailure>;
+    readonly setGrant: (grant: PeerGrantUpdate) => Effect.Effect<PeerGrant, OrchestratorMcpFailure>;
     /** Whether the calling link's grant shares browser logins. A hint for routing, never a gate. */
     readonly browserExportGranted: (scope: Invocation.McpInvocationScope) => Effect.Effect<boolean>;
+    /** The gate before a vault fill: every link the caller acts for grants Browser access and the vault. Returns their labels. */
+    readonly authorizeVault: (
+      scope: Invocation.McpThreadInvocationScope,
+    ) => Effect.Effect<ReadonlyArray<string>, OrchestratorMcpFailure>;
     /** The gate before any cookie read: an accepted direct peer action under a current export grant. */
     readonly authorizeBrowserExport: (
       scope: Invocation.McpInvocationScope,
@@ -619,6 +632,7 @@ const make = Effect.gen(function* () {
       Effect.mapError(unavailable),
     );
     if (!rows[0]) return undefined;
+    (yield* GrantReads)?.add(rows[0].session_id);
     return {
       sessionId: rows[0].session_id,
       ceiling: yield* decodeStoredCeiling(rows[0].ceiling_json).pipe(Effect.mapError(unavailable)),
@@ -657,6 +671,7 @@ const make = Effect.gen(function* () {
       return yield* denied("The original native client no longer permits this viewer operation.");
   });
   const grant = Effect.fn("PeerAuthority.grant")(function* (sessionId: string) {
+    (yield* GrantReads)?.add(sessionId);
     yield* activeSession(sessionId);
     const rows = yield* sql<{
       grant_json: string;
@@ -1076,6 +1091,7 @@ const make = Effect.gen(function* () {
         }
         for (const owner of certificate.graph.legacy) {
           if (owner.environmentId !== here) continue;
+          (yield* GrantReads)?.add(owner.sessionId);
           yield* activeSession(owner.sessionId);
           if (nextPurpose === "interactive") {
             const live = yield* captureLegacy(owner, {
@@ -1897,6 +1913,45 @@ const make = Effect.gen(function* () {
           Effect.orElseSucceed(() => false),
         )
       : Effect.succeed(false);
+  // The walk that decides Browser access also names every link the caller acts for,
+  // including links whose authority a locally created thread or schedule picked up later.
+  const authorizeVault: PeerAuthority["Service"]["authorizeVault"] = Effect.fn(
+    "PeerAuthority.authorizeVault",
+  )(function* (scope) {
+    const links = new Set<string>();
+    const walked = yield* checkInvocation(scope, "preview", scope.thread.threadId, {
+      type: "run",
+    }).pipe(Effect.provideService(GrantReads, links), Effect.result);
+    const linked =
+      links.size > 0 ||
+      scope.client?.linked === true ||
+      (yield* threads.getThreadShell(scope.thread.threadId).pipe(Effect.mapError(unavailable)))
+        ?.linkOrigin !== undefined;
+    if (Result.isFailure(walked)) {
+      // Local work without Browser access keeps the caller's own capability refusal.
+      if (!linked && !scope.capabilities.has("preview")) return [];
+      return yield* walked.failure;
+    }
+    if (links.size === 0) {
+      if (linked) return yield* denied(vaultGrantOff);
+      return [];
+    }
+    const labels: Array<string> = [];
+    for (const sessionId of links) {
+      const current = yield* grant(sessionId);
+      if (!current.preview || !current.vault) return yield* denied(vaultGrantOff);
+      const session = yield* authSessions
+        .getById({ sessionId: AuthSessionId.make(sessionId) })
+        .pipe(Effect.mapError(unavailable));
+      labels.push(
+        Option.match(session, {
+          onNone: () => sessionId,
+          onSome: (s) => s.client.label ?? sessionId,
+        }),
+      );
+    }
+    return labels;
+  });
   const authorizeBrowserExport: PeerAuthority["Service"]["authorizeBrowserExport"] = Effect.fn(
     "PeerAuthority.authorizeBrowserExport",
   )(function* (scope) {
@@ -3583,7 +3638,11 @@ const make = Effect.gen(function* () {
       )).filter((name) => ceiling === undefined || ceiling.capabilities.includes(name)),
     );
     if (intent !== "thread-resource" && !capabilities.has(intent))
-      return yield* denied("The original invocation no longer has the required capability.");
+      return yield* denied(
+        intent === "preview"
+          ? "The original invocation no longer has browser access. The user can turn on Agent browser access in Settings, or Browser access for this link in Connections settings."
+          : "The original invocation no longer has the required capability.",
+      );
     return {
       ...scope,
       capabilities,
@@ -3987,6 +4046,7 @@ const make = Effect.gen(function* () {
     returnNotice,
     registerPair,
     browserExportGranted,
+    authorizeVault,
     authorizeBrowserExport,
     grants: Effect.gen(function* () {
       const now = yield* DateTime.now;
@@ -4020,9 +4080,21 @@ const make = Effect.gen(function* () {
         .withTransaction(
           Effect.gen(function* () {
             yield* activeSession(input.sessionId);
-            const encoded = yield* encodeGrant(input).pipe(Effect.mapError(unavailable));
             const previous = yield* grant(input.sessionId);
-            const priorEncoded = yield* encodeGrant(previous).pipe(Effect.mapError(unavailable));
+            // Without `vault` (an older client), it follows a Browser access change, as in Settings.
+            // It is stored on only with Browser access, the only way it is used.
+            const next: PeerGrant = {
+              ...input,
+              vault:
+                input.preview &&
+                (input.vault ??
+                  (input.preview === previous.preview ? previous.vault : input.preview)),
+            };
+            const encoded = yield* encodeGrant(next).pipe(Effect.mapError(unavailable));
+            // Each fill checks the vault grant, so changing only it leaves accepted schedules running.
+            const priorEncoded = yield* encodeGrant({ ...previous, vault: next.vault }).pipe(
+              Effect.mapError(unavailable),
+            );
             if (priorEncoded !== encoded)
               yield* Automation.invalidateAutomationSessions([input.sessionId], "retired").pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
@@ -4034,7 +4106,7 @@ const make = Effect.gen(function* () {
               );
             if (rows.length !== 1)
               return yield* denied("This session has no authenticated peer link.");
-            return input;
+            return next;
           }),
         )
         .pipe(

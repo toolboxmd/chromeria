@@ -57,6 +57,8 @@ logins that cannot move between devices. The agent's rbw login tool,
 `preview_fill_credential`, works only in agent-browser tabs. It refuses native
 desktop tabs. It fills only on https pages in the same registrable domain as one
 of the vault item's URIs, so `www.example.com` covers `portal.example.com`.
+An agent on another linked environment can use it only while that link's
+**Browser access** and **Use credential vault** permissions are both on.
 
 ## Values an agent sees on a page
 

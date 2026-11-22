@@ -33,6 +33,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -45,6 +46,7 @@ import {
   automationReply,
   automationWorkspace,
   awaitAutomationRunning,
+  credentialFills,
   decodeAutomationAck,
   decodeAutomationCertificate,
   decodeAutomationScheduleReceipt,
@@ -2563,6 +2565,156 @@ it.live.each(["browser-off-after", "device-default", "browser-off-nested"] as co
         expect(started.length).toBeGreaterThan(startsBefore);
         yield* b.authority.setGrant({ ...grant, preview: false, device: false });
         expect((yield* Effect.result(b.authority.checkThread(threadId)))._tag).toBe("Failure");
+      }),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.merge(NodeServices.layer, layerFixtureHostServices),
+          FetchHttpClient.layer,
+          ServerSettings.layerTest(),
+        ),
+      ),
+    ),
+);
+const decodeVault860Tab = Schema.decodeUnknownEffect(
+  Schema.Struct({ resource: Schema.Struct({ tabId: Schema.String }) }),
+);
+it.live.each(["none", "a", "c", "a-browser"] as const)(
+  "vault860: a local schedule two links edited fills only while every link grants the vault (off: %s)",
+  (vaultOff) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const source = (id: string) =>
+          makeNode(
+            descriptorOf(`vault860-${vaultOff}-${id}`, id.toUpperCase(), { peerAuthority: 1 }),
+            "disk",
+            { productionKernel: true, attachmentRequests: true },
+          );
+        const a = yield* source("a");
+        const c = yield* source("c");
+        const b = yield* makeNode(
+          descriptorOf(`vault860-${vaultOff}-b`, "Destination", { peerAuthority: 1 }),
+          "disk",
+          {
+            productionKernel: true,
+            attachmentRequests: true,
+            preferencesOwner: true,
+            browserOwner: true,
+            previewControlsOwner: true,
+            ownerWorkspace: yield* automationWorkspace,
+            // No reply, so the scheduled run stays live while it signs in.
+            providerAdapter: automationAdapter([], [], () => Effect.void),
+            manualScheduler: Scheduler.Scheduler.of({ register: () => Effect.void }),
+          },
+        );
+        const local = ThreadId.make(`vault860-${vaultOff}-local`);
+        yield* seedParent(b, local);
+        const created = yield* nativeCall(b, local, "schedule_task", {
+          projectId: b.project.id,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+          title: "Keep the session alive",
+          prompt: "Sign in",
+          schedule: { type: "interval", everyMs: 60_000 },
+          bindToCurrentThread: false,
+          clientRequestId: `vault860-${vaultOff}-create`,
+        });
+        expect(created.isError, json(created)).not.toBe(true);
+        const { scheduledTaskId } = yield* decodeAutomationScheduleReceipt(
+          created.structuredContent,
+        );
+        for (const [peer, id] of [
+          [a, "a"],
+          [c, "c"],
+        ] as const) {
+          yield* linkTo(peer.links, b, "full-access");
+          const parent = ThreadId.make(`vault860-${vaultOff}-${id}-parent`);
+          yield* seedParent(peer, parent);
+          const enrolled = yield* nativeCall(peer, parent, "t3_project_list", {
+            environmentId: b.environmentId,
+          });
+          expect(enrolled.isError, json(enrolled)).not.toBe(true);
+          const grant = (yield* b.authority.grants).find(
+            (g) => g.environmentId === peer.environmentId,
+          )!;
+          if (vaultOff === id) yield* b.authority.setGrant({ ...grant, vault: false });
+          if (vaultOff === `${id}-browser`)
+            yield* b.authority.setGrant({ ...grant, preview: false });
+          const edited = yield* nativeCall(peer, parent, "update_scheduled_task", {
+            purposeIntent: { version: 1, intent: { type: "unscoped" } },
+            environmentId: b.environmentId,
+            scheduledTaskId,
+            prompt: `Sign in, as edited from ${id}`,
+            clientRequestId: `vault860-${vaultOff}-${id}-edit`,
+          });
+          expect(edited.isError, json(edited)).not.toBe(true);
+        }
+        yield* b.scheduled.runNow({ id: scheduledTaskId });
+        const sql = Context.get(b.database, SqlClient.SqlClient);
+        const threadId = ThreadId.make(
+          (yield* sql<{
+            thread_id: string;
+          }>`SELECT thread_id FROM orchestration_v2_projection_threads WHERE project_id=${b.project.id} AND thread_id<>${local}`)[0]!
+            .thread_id,
+        );
+        // The run keeps the local creation stamp; only its authority names the links.
+        expect((yield* b.threads.getThreadShell(threadId))?.linkOrigin).toBeUndefined();
+        yield* awaitAutomationRunning(b, threadId);
+        const capabilities = new Set(["orchestration", "preview"] as const);
+        // One agent session for the run, which owns the tab it opens.
+        const credential = yield* b.registry.issue({
+          threadId,
+          providerInstanceId: instanceId,
+          capabilities,
+        });
+        const call = (tool: string, input: Record<string, unknown>) =>
+          nativeCall(b, threadId, tool, input, capabilities, credential);
+        const fill = (tabId: string, key: string) =>
+          call("preview_fill_credential", {
+            tabId,
+            item: "synthetic-item",
+            field: "password",
+            locator: "#password",
+            clientRequestId: `vault860-${vaultOff}-${key}`,
+          });
+        const typed = credentialFills();
+        if (vaultOff === "a-browser") {
+          // Without Browser access the run cannot open a tab; the refusal names the link's setting.
+          const refused = json(yield* fill("vault860-tab", "no-browser"));
+          expect(refused).toContain("capability_denied");
+          expect(refused).toContain("Browser access for this link");
+          expect(credentialFills()).toBe(typed);
+          return;
+        }
+        const opened = yield* call("preview_open", {
+          url: "https://example.test/login",
+          profileId: "default",
+          show: false,
+          clientRequestId: `vault860-${vaultOff}-open`,
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { resource } = yield* decodeVault860Tab(opened.structuredContent);
+        const filled = yield* fill(resource.tabId, "fill");
+        if (vaultOff !== "none") {
+          expect(json(filled)).toContain("capability_denied");
+          expect(json(filled)).toContain("Use credential vault");
+          expect(credentialFills()).toBe(typed);
+          return;
+        }
+        expect(filled.structuredContent, json(filled)).toMatchObject({ filled: true });
+        expect(credentialFills()).toBe(typed + 1);
+        // Turning the vault off for an accepted schedule refuses its fills but keeps it running.
+        const grantA = (yield* b.authority.grants).find(
+          (g) => g.environmentId === a.environmentId,
+        )!;
+        yield* b.authority.setGrant({ ...grantA, vault: false });
+        expect((yield* Effect.result(b.authority.checkThread(threadId)))._tag).toBe("Success");
+        const revoked = json(yield* fill(resource.tabId, "revoked"));
+        expect(revoked).toContain("Use credential vault");
+        expect(credentialFills()).toBe(typed + 1);
+        yield* b.authority.setGrant({ ...grantA, vault: true });
+        const restored = yield* fill(resource.tabId, "restored");
+        expect(restored.structuredContent, json(restored)).toMatchObject({ filled: true });
+        expect(credentialFills()).toBe(typed + 2);
       }),
     ).pipe(
       Effect.provide(

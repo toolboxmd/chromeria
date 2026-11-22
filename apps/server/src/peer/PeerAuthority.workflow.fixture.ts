@@ -1567,9 +1567,13 @@ export const makeNode = Effect.fn("PeerAuthority.makeNode")(
         ? yield* NativeBrowser.layer.pipe(
             Layer.provide(Layer.succeedContext(runtime)),
             Layer.provide(
+              // A synthetic item, so an authorized fill types into the external browser leaf.
               Layer.mock(CredentialVault.CredentialVault)({
-                uris: () => Effect.die("No real vault access in the peer authority fixture"),
-                read: () => Effect.die("No real vault access in the peer authority fixture"),
+                uris: () => Effect.succeed(["https://example.test"]),
+                read: () =>
+                  Effect.suspend(() => fixtureVaultBoundary.beforeRead).pipe(
+                    Effect.as("synthetic-value"),
+                  ),
               }),
             ),
             Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
@@ -3603,6 +3607,17 @@ export const { createPreviewStreamClient } = decodeBrowserSender(
 export const browserExternalContexts: ReturnType<typeof makeExternalBrowserContext>[] = [];
 
 export const browserExternalBoundary = { beforeContextReturn: async () => {} };
+
+/** Runs when a fill reads the synthetic vault item, before the browser types it. */
+export const fixtureVaultBoundary: { beforeRead: Effect.Effect<void> } = {
+  beforeRead: Effect.void,
+};
+
+/** Credential fills the external browser leaves have typed. */
+export const credentialFills = () =>
+  browserExternalContexts
+    .flatMap((context) => context.effects)
+    .filter((e) => e === "credential-fill").length;
 
 vi.mock("../preview/ServerBrowserContexts.ts", () => ({
   presentAsChrome: async () => {},

@@ -27,7 +27,25 @@ export function makeExternalBrowserContext(onClose?: (context: BrowserContext) =
     afterInput: async (_method: string) => {},
     afterClose: async () => {},
   };
+  let typed = "";
+  // One text input, so a credential fill runs to the end; the effect records that it typed.
+  const field = {
+    evaluate: async <R>(read: (element: unknown) => R) =>
+      read({
+        localName: "input",
+        getAttribute: (name: string) => (name === "type" ? "password" : null),
+      }),
+    isEditable: async () => true,
+    ownerFrame: async () => page,
+    fill: async (value: string) => {
+      typed = value;
+      effects.push("credential-fill");
+    },
+    inputValue: async () => typed,
+    dispose: async () => {},
+  };
   const locator = {
+    elementHandle: async () => field,
     scrollIntoViewIfNeeded: async () => {
       effects.push("scroll-target");
     },
@@ -101,6 +119,7 @@ export function makeExternalBrowserContext(onClose?: (context: BrowserContext) =
     context: () => context,
     mainFrame: () => page,
     frames: () => [page],
+    isDetached: () => false,
     url: () => url,
     title: async () => "External browser leaf",
     viewportSize: () => viewport,

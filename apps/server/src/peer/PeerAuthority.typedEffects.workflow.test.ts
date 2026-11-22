@@ -14,6 +14,7 @@ import {
   decodeTyped383Artifact,
   typed383Pair,
   activate,
+  attachedChild,
   seedParent,
   caller,
   json,
@@ -29,6 +30,8 @@ import {
   browserExternalContexts,
   makeNativePromiseBridge,
   idleResource383Pair,
+  credentialFills,
+  fixtureVaultBoundary,
   backgroundRoster383,
   localBackground383,
   stageInput383,
@@ -11755,41 +11758,173 @@ const decodeVault379Open = Schema.decodeUnknownEffect(
   Schema.Struct({ resource: PreviewViewerResource }),
 );
 
-it.live("vault379: preview-granted authority-v1 peers cannot use the destination's vault", () =>
+const vault860Fill = (tabId: string, key: string) => ({
+  tabId,
+  item: "synthetic-item",
+  field: "password",
+  locator: "#password",
+  clientRequestId: key,
+});
+const vault860Layer = Layer.mergeAll(
+  Layer.merge(NodeServices.layer, layerFixtureHostServices),
+  FetchHttpClient.layer,
+);
+
+it.live(
+  "vault860: a linked peer fills from the destination's vault only while its link grants it",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { b, call, assertIdle } = yield* idleResource383Pair("vault860-linked");
+        const opened = yield* call("preview_open", {
+          url: "https://example.test/login",
+          profileId: "default",
+          show: false,
+          clientRequestId: "vault860-open",
+        });
+        expect(opened.isError, json(opened)).not.toBe(true);
+        const { resource } = yield* decodeVault379Open(opened.structuredContent);
+        const fill = (key: string) =>
+          call("preview_fill_credential", vault860Fill(resource.tabId, key));
+        const typed = credentialFills();
+        const granted = yield* fill("vault860-on");
+        expect(granted.structuredContent, json(granted)).toMatchObject({ filled: true });
+        expect(credentialFills()).toBe(typed + 1);
+        const grant = (yield* b.authority.grants)[0]!;
+        expect(grant).toMatchObject({ preview: true, vault: true });
+        yield* b.authority.setGrant({ ...grant, vault: false });
+        const refused = yield* fill("vault860-off");
+        expect(json(refused)).toContain("capability_denied");
+        expect(json(refused)).toContain("Use credential vault");
+        expect(credentialFills()).toBe(typed + 1);
+        // A Settings client that predates the vault saves without it; the opt-out stays.
+        const { vault: _omitted, ...older } = grant;
+        yield* b.authority.setGrant({ ...older, device: false });
+        expect((yield* b.authority.grants)[0]).toMatchObject({ preview: true, vault: false });
+        // Its Browser access toggle still carries the vault, as the current Settings does.
+        yield* b.authority.setGrant({ ...older, preview: false });
+        expect((yield* b.authority.grants)[0]).toMatchObject({ preview: false, vault: false });
+        yield* b.authority.setGrant({ ...older, preview: true });
+        expect((yield* b.authority.grants)[0]).toMatchObject({ preview: true, vault: true });
+        // Turned off while the fill waits on the vault: the browser checks again before typing.
+        yield* b.authority.setGrant({ ...grant, vault: true });
+        const reading = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        fixtureVaultBoundary.beforeRead = Deferred.succeed(reading, undefined).pipe(
+          Effect.andThen(Deferred.await(release)),
+        );
+        const pending = yield* fill("vault860-pending").pipe(
+          Effect.ensuring(Effect.sync(() => (fixtureVaultBoundary.beforeRead = Effect.void))),
+          Effect.forkScoped,
+        );
+        yield* Deferred.await(reading);
+        yield* b.authority.setGrant({ ...grant, vault: false });
+        yield* Deferred.succeed(release, undefined);
+        const revoked = yield* Fiber.join(pending);
+        expect(revoked.isError, json(revoked)).toBe(true);
+        expect(credentialFills()).toBe(typed + 1);
+        yield* b.authority.setGrant({ ...grant, preview: false, vault: true });
+        expect(json(yield* fill("vault860-no-browser"))).toContain("Browser access");
+        expect(credentialFills()).toBe(typed + 1);
+        yield* assertIdle;
+      }),
+    ).pipe(Effect.provide(vault860Layer)),
+);
+
+it.live("vault860: work a link delegated here fills only while that link grants the vault", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const { b, child, call, assertIdle } = yield* idleResource383Pair("vault379-linked");
-      const opened = yield* call("preview_open", {
-        url: "https://example.test/login",
-        profileId: "default",
-        show: false,
-        clientRequestId: "vault379-open",
+      const a = yield* makeNode(
+        descriptorOf("vault860-delegated-a", "A", { peerAuthority: 1 }),
+        "disk",
+        { productionKernel: true, attachmentRequests: true },
+      );
+      const b = yield* makeNode(
+        descriptorOf("vault860-delegated-b", "B", { peerAuthority: 1 }),
+        "disk",
+        {
+          productionKernel: true,
+          attachmentRequests: true,
+          preferencesOwner: true,
+          browserOwner: true,
+          previewControlsOwner: true,
+        },
+      );
+      yield* linkTo(a.links, b, "full-access");
+      const parent = ThreadId.make("vault860-delegated-parent");
+      yield* seedParent(a, parent);
+      const enrolled = yield* nativeCall(a, parent, "t3_project_list", {
+        environmentId: b.environmentId,
       });
+      expect(enrolled.isError, json(enrolled)).not.toBe(true);
+      const { taskId } = yield* a.remote.delegate(
+        { ...caller(a, parent), capabilities: new Set(["orchestration", "preview"]) },
+        {
+          task: "Sign in",
+          target: {
+            environmentId: b.environmentId,
+            projectId: b.project.id,
+            providerInstanceId: instanceId,
+            model: "gpt-5.4",
+          },
+          mode: "async",
+          clientRequestId: "vault860-delegated-child",
+        },
+      );
+      const childId = yield* attachedChild(a, parent, taskId);
+      yield* activate(b, childId);
+      // One agent session for the child, which owns the tab it opens.
+      const capabilities = new Set(["orchestration", "preview"] as const);
+      const credential = yield* b.registry.issue({
+        threadId: childId,
+        providerInstanceId: instanceId,
+        capabilities,
+      });
+      const opened = yield* nativeCall(
+        b,
+        childId,
+        "preview_open",
+        {
+          url: "https://example.test/login",
+          profileId: "default",
+          show: false,
+          clientRequestId: "vault860-delegated-open",
+        },
+        capabilities,
+        credential,
+      );
       expect(opened.isError, json(opened)).not.toBe(true);
       const { resource } = yield* decodeVault379Open(opened.structuredContent);
-      const before = yield* b.nativePreviewManager!.list({ threadId: child });
-      const filled = yield* call("preview_fill_credential", {
-        tabId: resource.tabId,
-        item: "synthetic-item",
-        field: "password",
-        locator: "#password",
-        clientRequestId: "vault379-fill",
-      });
-      expect(json(filled)).toContain("capability_denied");
-      expect(yield* b.nativePreviewManager!.list({ threadId: child })).toEqual(before);
-      const status = yield* call("preview_status", { tabId: resource.tabId });
-      expect(status.isError, json(status)).not.toBe(true);
-      expect(json(status)).toContain("https://example.test/login");
-      yield* assertIdle;
+      const fill = (key: string) =>
+        nativeCall(
+          b,
+          childId,
+          "preview_fill_credential",
+          vault860Fill(resource.tabId, key),
+          capabilities,
+          credential,
+        );
+      const typed = credentialFills();
+      const granted = yield* fill("vault860-delegated-on");
+      expect(granted.structuredContent, json(granted)).toMatchObject({ filled: true });
+      expect(credentialFills()).toBe(typed + 1);
+      const grant = (yield* b.authority.grants)[0]!;
+      yield* b.authority.setGrant({ ...grant, vault: false });
+      const refused = yield* fill("vault860-delegated-off");
+      expect(json(refused)).toContain("capability_denied");
+      expect(json(refused)).toContain("Use credential vault");
+      expect(credentialFills()).toBe(typed + 1);
+      yield* b.authority.setGrant({ ...grant, vault: true });
+      const restored = yield* fill("vault860-delegated-restored");
+      expect(restored.structuredContent, json(restored)).toMatchObject({ filled: true });
+      expect(credentialFills()).toBe(typed + 2);
+      yield* b.authority.setGrant({ ...grant, preview: false });
+      const noBrowser = json(yield* fill("vault860-delegated-no-browser"));
+      expect(noBrowser).toContain("capability_denied");
+      expect(noBrowser).toContain("Browser access for this link");
+      expect(credentialFills()).toBe(typed + 2);
     }),
-  ).pipe(
-    Effect.provide(
-      Layer.mergeAll(
-        Layer.merge(NodeServices.layer, layerFixtureHostServices),
-        FetchHttpClient.layer,
-      ),
-    ),
-  ),
+  ).pipe(Effect.provide(vault860Layer)),
 );
 
 const decodeAttachmentResource = Schema.decodeUnknownEffect(
