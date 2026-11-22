@@ -104,6 +104,12 @@ project starts a new thread there on its next run.
 Deleting a thread also deletes tasks that post into that thread. Tasks that start
 a new thread on each run survive deletion of their previous threads.
 
+The list shows every environment's tasks together: one-time tasks that are still
+due come first, soonest at the top, then recurring tasks. One-time tasks that
+already ran move to **History**, which stays closed until you open it. When a
+task's last run failed, **Failing** appears above the list and shows only those
+tasks.
+
 You can edit, pause, resume, run immediately, or delete a task from the list.
 Webhook tasks only run when their URL is called, so they can't be run
 immediately.
