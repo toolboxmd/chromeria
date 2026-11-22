@@ -904,6 +904,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       </div>
     </div>
   );
+  // Fork: a server wake attributed to T3 Code is not announced as the user's own message.
+  const ownAuthor =
+    userMessage.attribution === "t3code"
+      ? gt("Sent by T3 Code")
+      : gt("You", { $context: "author of the user's own message" });
   return (
     <div
       className="group @container flex flex-col items-end gap-1"
@@ -934,9 +939,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       {mediaAboveText ? (
         <div className="flex max-w-[80%] justify-end">
           {/* The heading leads the media so screen readers reach it before the images. */}
-          <MessageAuthorHeading>
-            {gt("You", { $context: "author of the user's own message" })}
-          </MessageAuthorHeading>
+          <MessageAuthorHeading>{ownAuthor}</MessageAuthorHeading>
           {mediaBlock}
         </div>
       ) : null}
@@ -961,7 +964,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             {folded
               ? senderLabel
               : userMessage.guestName === undefined
-                ? gt("You", { $context: "author of the user's own message" })
+                ? ownAuthor
                 : gt("{name} (guest)", { name: userMessage.guestName })}
           </MessageAuthorHeading>
         )}

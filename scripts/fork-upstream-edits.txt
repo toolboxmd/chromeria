@@ -789,3 +789,5 @@ packages/provider-opencode/src/server/v2/OpenCode2Server.ts
 packages/provider-opencode/src/server/v2/OpenCode2Server.test.ts
 packages/provider-opencode/src/server/OpenCodeServerOwner.test.ts
 docs/internals/providers.md
+packages/client-runtime/src/userMessage.test.ts
+packages/client-runtime/src/userMessage.ts
