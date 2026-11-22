@@ -550,9 +550,8 @@ it.effect("honours TinyFish Retry-After without blocking the SearXNG lane", () =
       expect(result.engines.find((engine) => engine.engine === "google cse")?.status).toBe("ok");
       const limited = result.engines.find((engine) => engine.source === "tinyfish");
       expect(limited).toMatchObject({ status: "rate_limited", reason: "retry_after" });
-      // Remaining time depends on whether the lane is checked before or after the 25 s pace.
-      expect(limited?.retryAfterMs).toBeGreaterThanOrEqual(95_000);
-      expect(limited?.retryAfterMs).toBeLessThanOrEqual(120_000);
+      // The lane's real secret file read races the 25 s TestClock pace.
+      expect([95_000, 120_000]).toContain(limited?.retryAfterMs);
       expect(
         f.seen.filter((entry) => entry.request.url.startsWith("https://treg.to")),
       ).toHaveLength(1);
