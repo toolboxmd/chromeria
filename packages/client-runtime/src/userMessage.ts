@@ -59,6 +59,16 @@ export function resolveUserMessageFileCards(message: {
   return remaining.trim() === "" ? files : null;
 }
 
+// Fork: the descendant-request relay (apps/server/src/childThreads/requestWake.ts) wakes ancestors as the system.
+const isDescendantRequestWake = (message: {
+  readonly id?: string;
+  readonly createdBy?: OrchestrationV2Actor;
+  readonly creationSource?: OrchestrationV2CreationSource;
+}) =>
+  message.createdBy === "system" &&
+  message.creationSource === "server" &&
+  message.id?.startsWith("child-request:") === true;
+
 export function resolveUserMessagePresentation(message: {
   readonly id?: string;
   readonly role: string;
@@ -109,11 +119,13 @@ export function resolveUserMessagePresentation(message: {
     // The agent needs words to start a turn; people sent only the attachments.
     text: isAttachmentOnlyBootstrapPrompt(message.text) ? "" : message.text,
     attribution:
-      message.createdBy !== "agent"
-        ? null
-        : message.creationSource === "server"
+      message.createdBy === "agent"
+        ? message.creationSource === "server"
           ? "t3code"
-          : "agent",
+          : "agent"
+        : isDescendantRequestWake(message)
+          ? "t3code"
+          : null,
     scheduledTaskId: undefined,
   };
 }
