@@ -80,6 +80,7 @@ import {
   isSubjectOfPullRequest,
   LenientPullRequestList,
   LenientPullRequestSearch,
+  LenientPullRequestSearchWithStacks,
   pageRows,
   pullRequestLookup,
   toLabelCandidates,
@@ -1056,7 +1057,11 @@ const GRAPHQL_MERGE_METHODS: Partial<
 
 const PullRequestGraphQLGroup = GraphQLGroup.merge(
   PullRequestBatchesGraphQLGroup,
-  GraphQLGroup.make(LenientPullRequestSearch, LenientPullRequestList),
+  GraphQLGroup.make(
+    LenientPullRequestSearch,
+    LenientPullRequestSearchWithStacks,
+    LenientPullRequestList,
+  ),
   PullRequestReadsGraphQLGroup,
   PullRequestReviewsGraphQLGroup,
   PullRequestMutationsGraphQLGroup,
@@ -1868,6 +1873,12 @@ export const make = Effect.gen(function* () {
     RequestResolver.setDelay(SUMMARY_BATCH_WINDOW),
     RequestResolver.batchN(STAT_ALIASES_PER_REQUEST),
   );
+  const stackedSummaryResolver = GraphQLResolver.aliased(client.PullRequestSummaryWithStacks, {
+    batchKey: GitHubGraphQlClient.batchKey,
+  }).pipe(
+    RequestResolver.setDelay(SUMMARY_BATCH_WINDOW),
+    RequestResolver.batchN(STAT_ALIASES_PER_REQUEST),
+  );
   const getPullRequestSummary: GitHubPullRequestApi["Service"]["getPullRequestSummary"] = Effect.fn(
     "GitHubPullRequestApi.getPullRequestSummary",
   )(
@@ -1879,10 +1890,10 @@ export const make = Effect.gen(function* () {
           operation: "getPullRequestSummary",
         });
       }
-      const result = yield* GraphQLResolver.request(
-        { ...lookup, stacks: input.host.toLowerCase() === "github.com" },
-        summaryResolver,
-      );
+      const result =
+        input.host.toLowerCase() === "github.com"
+          ? yield* GraphQLResolver.request(lookup, stackedSummaryResolver)
+          : yield* GraphQLResolver.request(lookup, summaryResolver);
       const pullRequest = result.repository?.pullRequest;
       if (pullRequest == null) {
         return yield* new GitHubRequestPolicy.GitHubApiNotFoundError({
@@ -1975,12 +1986,12 @@ export const make = Effect.gen(function* () {
         collect(requestedRows, (after, rows) =>
           (continues
             ? client
+                // Not `PullRequestSearchWithStacks`: stack badges come from their own batched
+                // read below, for the rows that stay.
                 .PullRequestSearch({
                   q: query,
                   first: pageRows(rows),
                   after,
-                  // Stack badges come from their own batched read below, for the rows that stay.
-                  stacks: false,
                   stats: true,
                 })
                 .pipe(Effect.map((result) => toPage(toPullRequestRows(result.search))))
@@ -1991,7 +2002,6 @@ export const make = Effect.gen(function* () {
                   states: LIST_STATES[input.state],
                   first: pageRows(rows),
                   after,
-                  stacks: false,
                   stats: true,
                 })
                 .pipe(
@@ -2115,25 +2125,30 @@ export const make = Effect.gen(function* () {
         truncated,
       } = yield* collect(
         Math.min(input.limit + 1, PULL_REQUEST_SEARCH_MAX_ROWS) + seenAt.size,
-        (after, rows) =>
-          client
-            .PullRequestSearch({ q: query, first: pageRows(rows), after, stacks, stats: false })
-            .pipe(
-              graphql({ ...input, operation: "searchPullRequests" }),
-              Effect.map(({ search }) => {
-                const page = toPullRequestRows(search);
-                // A short page that says it has more is where this read stops, not a gap to read past.
-                const short = page.endCursor !== null && page.rawCount < pageRows(rows);
-                if (short) endedShort = true;
-                return {
-                  items: page.rows.flatMap(({ item, repository }) =>
-                    repository === null ? [] : [{ ...item, repository }],
-                  ),
-                  rawCount: page.rawCount,
-                  endCursor: short ? null : page.endCursor,
-                };
-              }),
-            ),
+        (after, rows) => {
+          const variables = { q: query, first: pageRows(rows), after, stats: false };
+          return (
+            stacks
+              ? client.PullRequestSearchWithStacks(variables)
+              : client.PullRequestSearch(variables)
+          ).pipe(
+            graphql({ ...input, operation: "searchPullRequests" }),
+            Effect.map(({ search }) => {
+              const page = toPullRequestRows(search);
+              // A short page that says it has more is where this read stops, not a gap to read past.
+              const short = page.endCursor !== null && page.rawCount < pageRows(rows);
+              if (short) endedShort = true;
+              return {
+                // A search row names its repository; one that does not cannot be placed on a page.
+                items: page.rows.flatMap(({ item, repository }) =>
+                  repository === null ? [] : [{ ...item, repository }],
+                ),
+                rawCount: page.rawCount,
+                endCursor: short ? null : page.endCursor,
+              };
+            }),
+          );
+        },
       );
       const items = rawItems.filter(
         (item) =>
