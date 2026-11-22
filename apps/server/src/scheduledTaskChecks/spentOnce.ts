@@ -74,22 +74,28 @@ interface Candidate {
   readonly last_run_at: string;
 }
 
-/** Every message id `runTask` and keyed Run Now can give the fire that started at `lastRunAt`. */
+/**
+ * The message ids the fire that started at `lastRunAt` can have, most specific first: a keyed Run
+ * Now and a local Run Now are unique to that start, while a scheduled fire keeps its slot's id.
+ */
 const fireMessageIds = (
   row: Candidate,
   task: Parameters<typeof forkFireKey>[0],
   keyedRequestIds: ReadonlyArray<string>,
 ) => {
   const startedAt = DateTime.makeUnsafe(row.last_run_at);
+  const key = (trigger: "scheduled" | "manual") =>
+    `scheduled-task-message:${
+      forkFireKey(task, trigger, startedAt) ??
+      `${row.task_id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
+    }`;
   return [
-    ...(["scheduled", "manual"] as const).map(
-      (trigger) =>
-        `scheduled-task-message:${
-          forkFireKey(task, trigger, startedAt) ??
-          `${row.task_id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
-        }`,
-    ),
-    ...keyedRequestIds.map((requestId) => `scheduled-task-message:manual:${requestId}`),
+    ...keyedRequestIds.map((requestId) => ({
+      id: `scheduled-task-message:manual:${requestId}`,
+      unique: true,
+    })),
+    { id: key("manual"), unique: true },
+    { id: key("scheduled"), unique: false },
   ];
 };
 
@@ -136,7 +142,9 @@ export const pruneSpentForkOnceTasks = Effect.fn("ScheduledTaskChecks.pruneSpent
         keyed.filter((request) => request.task_id === row.task_id).map((r) => r.request_id),
       ),
     }));
-    const messageIds = yield* encodeIds(candidates.flatMap((c) => c.messageIds));
+    const messageIds = yield* encodeIds(
+      candidates.flatMap((candidate) => candidate.messageIds.map(({ id }) => id)),
+    );
     const runs = yield* sql<{ message_id: string; status: string; requested_at: string }>`
       SELECT message_id, status, requested_at FROM (
         SELECT json_extract(payload_json, '$.userMessageId') AS message_id, status, requested_at
@@ -146,13 +154,17 @@ export const pruneSpentForkOnceTasks = Effect.fn("ScheduledTaskChecks.pruneSpent
       WHERE message_id IN (SELECT value FROM json_each(${messageIds}))
     `;
     const runsByMessage = Map.groupBy(runs, (run) => run.message_id);
-    // A scheduled fire keeps its slot's id and can be requeued under it, so a completed run of that
-    // id cannot tell which fire it was. Any of the fire's runs that did not complete keeps the task.
+    // The last fire is the most specific id with a run; its newest run decides. A requeued
+    // scheduled message also runs again under its id, so only a run after the start counts there.
     const spent = candidates.filter(({ row, messageIds }) => {
-      const fireRuns = messageIds.flatMap((id) => runsByMessage.get(id) ?? []);
+      const fire = messageIds.find(({ id }) => runsByMessage.has(id));
+      const newest = (fire === undefined ? [] : (runsByMessage.get(fire.id) ?? [])).toSorted(
+        (a, b) => Date.parse(b.requested_at) - Date.parse(a.requested_at),
+      )[0];
       return (
-        fireRuns.every((run) => run.status === "completed") &&
-        fireRuns.some((run) => Date.parse(run.requested_at) >= Date.parse(row.last_run_at))
+        fire !== undefined &&
+        newest?.status === "completed" &&
+        (fire.unique || Date.parse(newest.requested_at) >= Date.parse(row.last_run_at))
       );
     });
     const removed = yield* sql.withTransaction(

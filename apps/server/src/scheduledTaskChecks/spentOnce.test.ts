@@ -126,11 +126,6 @@ const rows: ReadonlyArray<Row> = [
     otherRuns: [
       {
         messageId: scheduledMessage("requeued-scheduled", spentAt),
-        status: "cancelled",
-        requestedAt: "2026-10-08T10:00:01.000Z",
-      },
-      {
-        messageId: scheduledMessage("requeued-scheduled", spentAt),
         status: "completed",
         requestedAt: "2026-10-08T10:00:06.000Z",
       },
@@ -138,6 +133,55 @@ const rows: ReadonlyArray<Row> = [
     run: { messageId: manualMessage("requeued-scheduled"), status: "running" },
     onCompletion: true,
     pruned: false,
+  },
+  // A scheduled fire cancelled by a steer completes when it is requeued.
+  {
+    id: "requeued-completed",
+    schedule: at(spentAt),
+    otherRuns: [
+      {
+        messageId: scheduledMessage("requeued-completed", spentAt),
+        status: "cancelled",
+        requestedAt: "2026-10-08T10:00:05.000Z",
+      },
+    ],
+    run: {
+      messageId: scheduledMessage("requeued-completed", spentAt),
+      status: "completed",
+      requestedAt: "2026-10-08T10:00:07.000Z",
+    },
+    onCompletion: true,
+    pruned: true,
+  },
+  {
+    id: "keyed-after-cancelled",
+    schedule: at(spentAt),
+    keyedRequestId: "request:after-cancelled",
+    otherRuns: [
+      {
+        messageId: scheduledMessage("keyed-after-cancelled", spentAt),
+        status: "cancelled",
+        requestedAt: "2026-10-08T10:00:01.000Z",
+      },
+    ],
+    run: {
+      messageId: "scheduled-task-message:manual:request:after-cancelled",
+      status: "completed",
+    },
+    onCompletion: true,
+    pruned: true,
+  },
+  // A Run Now's id is unique to its start, so a clock stepped back does not matter.
+  {
+    id: "manual-clock-back",
+    schedule: at(spentAt),
+    run: {
+      messageId: manualMessage("manual-clock-back"),
+      status: "completed",
+      requestedAt: "2026-10-08T10:00:04.000Z",
+    },
+    onCompletion: true,
+    pruned: true,
   },
   {
     id: "keyed-run-now",
