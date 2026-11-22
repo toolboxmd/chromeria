@@ -1389,9 +1389,20 @@ export const layer = Layer.effect(
       // Read before reserving: nothing between the reservation and its release may fail.
       const startedAt = yield* localNow;
       const startedAtIso = iso(startedAt);
+      // Only a run that marked the task running may release it; another holder's row is not ours.
+      let markedRunning = false;
       const run = Effect.gen(function* () {
         // Re-read stale poll snapshots so deleted, paused or postponed tasks cannot fire.
         const active = yield* findTask(task.id);
+        // Outcome writes are fenced by the start time, so two runs must not share one.
+        if (
+          trigger === "manual" &&
+          active?.lastRunAt != null &&
+          Date.parse(active.lastRunAt) === DateTime.toEpochMillis(startedAt)
+        )
+          return yield* taskError("This task already started a run at this instant; try again.", {
+            taskId: task.id,
+          });
         if (active === null) {
           if (webhook !== undefined) {
             return yield* new WebhookDeliverySkipped({
@@ -1491,6 +1502,7 @@ export const layer = Layer.effect(
                 )}`
             : "";
 
+        markedRunning = true;
         if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
         else
           yield* sql
@@ -1612,27 +1624,11 @@ export const layer = Layer.effect(
         return { task: recorded, threadId, dispatchFailed: !runSucceeded };
       }).pipe(
         Effect.onError((cause) =>
-          releaseStuckRun(task, startedAtIso, errorMessage(cause), webhook?.deliveryId),
+          markedRunning
+            ? releaseStuckRun(task, startedAtIso, errorMessage(cause), webhook?.deliveryId)
+            : Effect.void,
         ),
       );
-
-      // Outcome writes are fenced by the start time, so two runs must not share one.
-      // Checked outside `run`: its cleanup would fail a keyed run that holds this instant.
-      const refuseSameInstant =
-        trigger !== "manual"
-          ? Effect.void
-          : findTask(task.id).pipe(
-              Effect.flatMap((current) =>
-                current?.lastRunAt != null &&
-                Date.parse(current.lastRunAt) === DateTime.toEpochMillis(startedAt)
-                  ? Effect.fail(
-                      taskError("This task already started a run at this instant; try again.", {
-                        taskId: task.id,
-                      }),
-                    )
-                  : Effect.void,
-              ),
-            );
 
       // Reserve and release as one bracket so an interrupt cannot leave the task marked busy.
       return yield* Effect.acquireUseRelease(
@@ -1644,7 +1640,7 @@ export const layer = Layer.effect(
         }),
         (reserved) =>
           reserved
-            ? Effect.andThen(refuseSameInstant, run)
+            ? run
             : trigger !== "scheduled"
               ? Effect.fail(taskError("Schedule task is already running.", { taskId: task.id }))
               : Effect.succeed({ task, threadId: null, dispatchFailed: false }),
