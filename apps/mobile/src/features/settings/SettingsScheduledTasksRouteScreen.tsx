@@ -506,6 +506,7 @@ export function SettingsScheduledTasksRouteScreen() {
       >
         {visibleEnvironments.length > 0 || disconnectedEnvironments.length > 0 ? (
           <ScheduledTaskFork.ScheduledTaskList
+            now={now}
             environments={visibleEnvironments}
             disconnected={disconnectedEnvironments}
             projectIds={(environmentId) =>

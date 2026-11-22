@@ -117,12 +117,14 @@ const SCOPE_SUMMARY_TEMPLATES = {
  * tasks, then the one-time tasks that already ran, collapsed until asked for.
  */
 export function ScheduledTaskList({
+  now,
   environments,
   disconnected,
   projectIds,
   projectName,
   renderRow,
 }: {
+  readonly now: number;
   readonly environments: ReadonlyArray<EnvironmentPresentation>;
   readonly disconnected: ReadonlyArray<EnvironmentPresentation>;
   /** Null when no project is selected. */
@@ -160,7 +162,10 @@ export function ScheduledTaskList({
   const anyFailing = entries.some((entry) => entry.task.lastRunStatus === "failed");
   // The chip hides once nothing fails, so its selection must not wait for the next failure.
   if (failingOnly && !anyFailing) setFailingOnly(false);
-  const sections = scheduledTaskSections(entries, { failingOnly: failingOnly && anyFailing });
+  const sections = scheduledTaskSections(entries, {
+    now,
+    failingOnly: failingOnly && anyFailing,
+  });
   const everyMachine = [...environments, ...disconnected];
   const machineLabels = uniqueMachineLabels(
     everyMachine.map((environment) => ({

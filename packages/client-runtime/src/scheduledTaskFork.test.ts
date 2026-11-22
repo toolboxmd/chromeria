@@ -161,6 +161,8 @@ describe("command failure alerts", () => {
   });
 });
 
+const NOW = Date.parse("2026-11-22T12:00:00.000Z");
+
 describe("scheduled task sections", () => {
   const task = (id: string, fields: Partial<ScheduledTask>) =>
     ({
@@ -266,6 +268,28 @@ describe("scheduled task sections", () => {
       }),
       "upcoming",
     ],
+    [
+      "the same imported one-shot rescheduled for later and paused",
+      task("t", {
+        schedule: once("2026-12-01T10:00:00Z"),
+        enabled: false,
+        command: {
+          command: "make",
+          run: {
+            id: "run",
+            stage: "done",
+            exitCode: 0,
+            timedOut: false,
+            endedAt: null,
+            error: null,
+            imported: true,
+          },
+          failureStreak: 0,
+          lastSuccessfulRunId: null,
+        },
+      }),
+      "upcoming",
+    ],
     ["an interval", task("t", {}), "recurring"],
     [
       "a webhook",
@@ -273,37 +297,40 @@ describe("scheduled task sections", () => {
       "recurring",
     ],
   ] as const)("put %s in %s", (_name, value, section) => {
-    const sections = scheduledTaskSections([entry("e", value)]);
+    const sections = scheduledTaskSections([entry("e", value)], { now: NOW });
     expect(keys(sections[section])).toEqual(["e/t"]);
   });
 
   it("order each section by what runs next and keep equal task ids from two environments apart", () => {
     const webhook = { type: "webhook" } as ScheduledTask["schedule"];
-    const sections = scheduledTaskSections([
-      entry("rocky", task("late", { schedule: once("2026-11-25T10:00:00Z") })),
-      entry("bestia", task("late", { schedule: once("2026-11-24T10:00:00Z") })),
-      entry("bestia", task("paused", { enabled: false, nextRunAt: null })),
-      entry("bestia", task("hook", { schedule: webhook })),
-      entry("rocky", task("blocked", { blockedByPolicy: "No webhooks", schedule: webhook })),
-      entry("rocky", task("soon", { nextRunAt: "2026-11-22T13:00:00.000Z" })),
-      entry("bestia", task("later", { nextRunAt: "2026-11-22T14:00:00.000Z" })),
-      entry(
-        "bestia",
-        task("old", {
-          schedule: once("2026-11-01T10:00:00Z"),
-          lastRunAt: "2026-11-01T10:00:00.000Z",
-          lastRunStatus: "succeeded",
-        }),
-      ),
-      entry(
-        "rocky",
-        task("recent", {
-          schedule: once("2026-11-21T10:00:00Z"),
-          lastRunAt: "2026-11-21T10:00:00.000Z",
-          lastRunStatus: "succeeded",
-        }),
-      ),
-    ]);
+    const sections = scheduledTaskSections(
+      [
+        entry("rocky", task("late", { schedule: once("2026-11-25T10:00:00Z") })),
+        entry("bestia", task("late", { schedule: once("2026-11-24T10:00:00Z") })),
+        entry("bestia", task("paused", { enabled: false, nextRunAt: null })),
+        entry("bestia", task("hook", { schedule: webhook })),
+        entry("rocky", task("blocked", { blockedByPolicy: "No webhooks", schedule: webhook })),
+        entry("rocky", task("soon", { nextRunAt: "2026-11-22T13:00:00.000Z" })),
+        entry("bestia", task("later", { nextRunAt: "2026-11-22T14:00:00.000Z" })),
+        entry(
+          "bestia",
+          task("old", {
+            schedule: once("2026-11-01T10:00:00Z"),
+            lastRunAt: "2026-11-01T10:00:00.000Z",
+            lastRunStatus: "succeeded",
+          }),
+        ),
+        entry(
+          "rocky",
+          task("recent", {
+            schedule: once("2026-11-21T10:00:00Z"),
+            lastRunAt: "2026-11-21T10:00:00.000Z",
+            lastRunStatus: "succeeded",
+          }),
+        ),
+      ],
+      { now: NOW },
+    );
     expect(keys(sections.upcoming)).toEqual(["bestia/late", "rocky/late"]);
     expect(keys(sections.recurring)).toEqual([
       "rocky/soon",
@@ -323,9 +350,9 @@ describe("scheduled task sections", () => {
       entry("e", task("loop", failed)),
       entry("e", task("fine", { lastRunStatus: "succeeded" })),
     ];
-    const all = scheduledTaskSections(entries);
+    const all = scheduledTaskSections(entries, { now: NOW });
     expect([all.failing, all.historyFailing]).toEqual([3, 1]);
-    const narrowed = scheduledTaskSections(entries, { failingOnly: true });
+    const narrowed = scheduledTaskSections(entries, { now: NOW, failingOnly: true });
     expect([keys(narrowed.upcoming), keys(narrowed.recurring), keys(narrowed.history)]).toEqual([
       ["e/due"],
       ["e/loop"],

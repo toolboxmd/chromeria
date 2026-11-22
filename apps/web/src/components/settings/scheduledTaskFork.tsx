@@ -21,6 +21,7 @@ import { msg, T, useGT, useMessages, Var } from "gt-react";
 import { BotIcon, TerminalIcon } from "lucide-react";
 import { Fragment, type ReactNode, useEffect, useState } from "react";
 
+import { useNowMinute } from "../../hooks/useNowMinute";
 import { useClientSettings } from "../../hooks/useSettings";
 import { environmentAtomList, environmentIdsKey } from "../../state/environmentAtomList";
 import type { EnvironmentPresentation } from "../../state/environments";
@@ -94,6 +95,7 @@ export function ScheduledTaskList({
   const messages = useMessages();
   const gt = useGT();
   const { scope, environments, groups } = useSettingsScope();
+  const now = Date.parse(`${useNowMinute()}:00.000Z`);
   const [failingOnly, setFailingOnly] = useState(false);
   const [pendingHistoryLink, setPendingHistoryLink] = useAtom(pendingHistoryLinkAtom);
   const [historyOpen, setHistoryOpen] = useState(() => pendingHistoryLink !== null);
@@ -142,7 +144,7 @@ export function ScheduledTaskList({
       ? scheduledTaskEntryKey({ environmentId, task: linkedTask })
       : null;
   const historyLink =
-    linkedTask !== undefined && isScheduledTaskHistory(linkedTask) ? linkedKey : null;
+    linkedTask !== undefined && isScheduledTaskHistory(linkedTask, now) ? linkedKey : null;
   // A newly loaded link shows its row: History opens and Failing stops hiding it, then the
   // user owns both.
   if (linkedKey !== shownLink) {
@@ -165,7 +167,10 @@ export function ScheduledTaskList({
     },
     [setPendingHistoryLink],
   );
-  const sections = scheduledTaskSections(entries, { failingOnly: failingOnly && anyFailing });
+  const sections = scheduledTaskSections(entries, {
+    now,
+    failingOnly: failingOnly && anyFailing,
+  });
 
   const loaded = states.filter((state) => state.connected && state.error === null && state.tasks);
   const populated = loaded.some((state) => state.tasks && state.tasks.length > 0);

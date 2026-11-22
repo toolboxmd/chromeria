@@ -215,16 +215,15 @@ function oneTimeSlot(schedule: ScheduledTask["schedule"]): number | null {
 }
 
 /**
- * In History: an enabled one-time task that ran at or after its slot and is not still running,
- * or one imported from Chromeria v1 with its run and not scheduled again. A paused task stays out
- * otherwise, since an edit keeps `lastRunAt` from an earlier schedule, and a manual run before
- * the slot leaves the slot due.
+ * In History: an enabled one-shot that ran at or after its slot and is not running, or a v1
+ * import with its run whose slot passed and that is not scheduled again. Paused tasks stay out:
+ * an edit keeps `lastRunAt` from an earlier schedule, and a manual early run leaves the slot due.
  */
-export function isScheduledTaskHistory(task: ScheduledTask): boolean {
+export function isScheduledTaskHistory(task: ScheduledTask, now: number): boolean {
   const slot = oneTimeSlot(task.schedule);
   if (slot === null) return false;
-  if ((task.outcomeCheck?.run ?? task.command?.run)?.imported === true && task.nextRunAt === null)
-    return true;
+  const imported = (task.outcomeCheck?.run ?? task.command?.run)?.imported === true;
+  if (imported && task.nextRunAt === null && slot <= now) return true;
   if (!task.enabled || task.lastRunAt === null) return false;
   return task.lastRunStatus !== "running" && Date.parse(task.lastRunAt) >= slot;
 }
@@ -257,7 +256,7 @@ export interface ScheduledTaskSections<E extends ScheduledTaskListEntry> {
 /** Every environment's tasks as one list, ordered by what runs next. */
 export function scheduledTaskSections<E extends ScheduledTaskListEntry>(
   entries: ReadonlyArray<E>,
-  options: { readonly failingOnly?: boolean } = {},
+  options: { readonly now: number; readonly failingOnly?: boolean },
 ): ScheduledTaskSections<E> {
   const upcoming: E[] = [];
   const recurring: E[] = [];
@@ -267,7 +266,7 @@ export function scheduledTaskSections<E extends ScheduledTaskListEntry>(
   for (const entry of entries) {
     const failed = entry.task.lastRunStatus === "failed";
     if (failed) failing += 1;
-    const spent = isScheduledTaskHistory(entry.task);
+    const spent = isScheduledTaskHistory(entry.task, options.now);
     if (spent && failed) historyFailing += 1;
     if (options.failingOnly && !failed) continue;
     if (spent) history.push(entry);
@@ -285,9 +284,15 @@ export function scheduledTaskSections<E extends ScheduledTaskListEntry>(
       timeOf(a.task.nextRunAt, Infinity) - timeOf(b.task.nextRunAt, Infinity) ||
       byTitle(a, b),
   );
-  // Imported v1 runs leave lastRunAt empty; a command run still records when it ended.
+  // Imported v1 runs leave lastRunAt empty; their command end or check verdict still dates them.
   const ranAt = (task: ScheduledTask) =>
-    timeOf(task.lastRunAt ?? task.command?.run?.endedAt ?? null, -Infinity);
+    timeOf(
+      task.lastRunAt ??
+        task.command?.run?.endedAt ??
+        task.outcomeCheck?.lastVerdict?.checkedAt ??
+        null,
+      -Infinity,
+    );
   history.sort((a, b) => ranAt(b.task) - ranAt(a.task) || byTitle(a, b));
   return { upcoming, recurring, history, failing, historyFailing };
 }
