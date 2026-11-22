@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
 import {
   forkTaskSummary,
+  isScheduledTaskHistory,
   type ScheduledTaskListEntry,
   scheduledTaskEntryKey,
   scheduledTaskSections,
@@ -81,7 +82,11 @@ export function ScheduledTaskList({
   const gt = useGT();
   const { scope, environments, groups } = useSettingsScope();
   const [failingOnly, setFailingOnly] = useState(false);
-  const [historyToggled, setHistoryToggled] = useState<boolean | null>(null);
+  // A toggle holds only for the link it was made under, so a new link into History opens it.
+  const [historyToggle, setHistoryToggle] = useState<{
+    readonly link: string | null;
+    readonly open: boolean;
+  } | null>(null);
   const connectedIds = environments.flatMap((environment) =>
     environment.connection.phase === "connected" && environment.serverConfig !== null
       ? [environment.environmentId]
@@ -121,7 +126,9 @@ export function ScheduledTaskList({
       ? scheduledTaskEntryKey({ environmentId, task: linkedTask })
       : null;
   const historyOpen =
-    historyToggled ?? sections.history.some((entry) => scheduledTaskEntryKey(entry) === linkedKey);
+    historyToggle !== null && historyToggle.link === linkedKey
+      ? historyToggle.open
+      : linkedTask !== undefined && isScheduledTaskHistory(linkedTask);
 
   const loaded = states.filter((state) => state.connected && state.error === null && state.tasks);
   const populated = loaded.some((state) => state.tasks && state.tasks.length > 0);
@@ -236,7 +243,7 @@ export function ScheduledTaskList({
           <CollapsibleSectionHeader
             expanded={historyOpen}
             tone="emphasized"
-            onClick={() => setHistoryToggled(!historyOpen)}
+            onClick={() => setHistoryToggle({ link: linkedKey, open: !historyOpen })}
             accessory={
               <span className="text-xs text-muted-foreground">
                 {sections.historyFailing > 0

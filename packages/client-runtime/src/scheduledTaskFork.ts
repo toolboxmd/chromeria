@@ -215,13 +215,14 @@ function oneTimeSlot(schedule: ScheduledTask["schedule"]): number | null {
 }
 
 /**
- * Spent: it ran at or after its slot and is not still running. A paused task has no
- * `nextRunAt`, and a manual run before the slot leaves the slot due, so neither proves it.
+ * In History: an enabled one-time task that ran at or after its slot and is not still running.
+ * A paused task stays out, since an edit keeps `lastRunAt` from an earlier schedule, and a
+ * manual run before the slot leaves the slot due.
  */
-function isSpentOneTime(task: ScheduledTask): boolean {
+export function isScheduledTaskHistory(task: ScheduledTask): boolean {
   const slot = oneTimeSlot(task.schedule);
-  if (slot === null || task.lastRunAt === null || task.lastRunStatus === "running") return false;
-  return Date.parse(task.lastRunAt) >= slot;
+  if (slot === null || !task.enabled || task.lastRunAt === null) return false;
+  return task.lastRunStatus !== "running" && Date.parse(task.lastRunAt) >= slot;
 }
 
 const recurringRank = (task: ScheduledTask) => {
@@ -262,7 +263,7 @@ export function scheduledTaskSections<E extends ScheduledTaskListEntry>(
   for (const entry of entries) {
     const failed = entry.task.lastRunStatus === "failed";
     if (failed) failing += 1;
-    const spent = isSpentOneTime(entry.task);
+    const spent = isScheduledTaskHistory(entry.task);
     if (spent && failed) historyFailing += 1;
     if (options.failingOnly && !failed) continue;
     if (spent) history.push(entry);

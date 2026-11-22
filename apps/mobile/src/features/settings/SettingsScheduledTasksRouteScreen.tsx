@@ -463,6 +463,15 @@ export function SettingsScheduledTasksRouteScreen() {
     selectedTargets,
     selectedProjectKey === null ? null : selectedGroup,
   );
+  const disconnectedEnvironments = environments.filter(
+    (entry) =>
+      !availableTargets.some((target) => target.environmentId === entry.environmentId) &&
+      (selectedIds === null || selectedIds.has(entry.environmentId)) &&
+      (selectedProjectKey === null ||
+        selectedGroup?.members.some(
+          (member) => member.project.environmentId === entry.environmentId,
+        ) === true),
+  );
   const { startEditor, resetEditor } = useScheduledTaskEditor();
   const navigation = useNavigation<NativeStackNavigationProp<ScheduledTaskRoutes>>();
   const insets = useSafeAreaInsets();
@@ -495,14 +504,10 @@ export function SettingsScheduledTasksRouteScreen() {
         contentContainerClassName="gap-5 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
-        {visibleEnvironments.length > 0 ? (
+        {visibleEnvironments.length > 0 || disconnectedEnvironments.length > 0 ? (
           <ScheduledTaskFork.ScheduledTaskList
             environments={visibleEnvironments}
-            disconnected={environments.filter(
-              (entry) =>
-                !availableTargets.some((target) => target.environmentId === entry.environmentId) &&
-                (selectedIds === null || selectedIds.has(entry.environmentId)),
-            )}
+            disconnected={disconnectedEnvironments}
             projectIds={(environmentId) =>
               selectedProjectKey === null
                 ? null

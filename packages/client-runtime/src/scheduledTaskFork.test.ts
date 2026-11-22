@@ -203,9 +203,18 @@ describe("scheduled task sections", () => {
       "upcoming",
     ],
     [
-      "a paused one-shot that ran its slot",
+      "a paused one-shot whose last run, perhaps of an earlier schedule, is after its slot",
       task("t", {
         enabled: false,
+        schedule: once("2026-11-20T10:00:00Z"),
+        lastRunAt: "2026-11-20T10:00:01.000Z",
+        lastRunStatus: "failed",
+      }),
+      "upcoming",
+    ],
+    [
+      "a one-shot that ran its slot",
+      task("t", {
         schedule: once("2026-11-20T10:00:00Z"),
         lastRunAt: "2026-11-20T10:00:01.000Z",
         lastRunStatus: "failed",
