@@ -388,7 +388,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        # Chromeria: a 4 vCPU runner opens 3 Vitest pages, and each page's renderer grows with
+        # every file it runs until Chromium drops it ("Render process gone", about 2 GB in CI).
+        # Four shards give each page about half the files; release.yml keeps upstream's split.
+        shard: [1, 2, 3, 4]
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
