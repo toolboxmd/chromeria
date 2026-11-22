@@ -222,6 +222,28 @@ describe("scheduled task sections", () => {
       }),
       "history",
     ],
+    [
+      "a one-shot imported from Chromeria v1 with its run, paused and without lastRunAt",
+      task("t", {
+        enabled: false,
+        schedule: once("2026-10-01T10:00:00Z"),
+        command: {
+          command: "make",
+          run: {
+            id: "run",
+            stage: "done",
+            exitCode: 0,
+            timedOut: false,
+            endedAt: null,
+            error: null,
+            imported: true,
+          },
+          failureStreak: 0,
+          lastSuccessfulRunId: null,
+        },
+      }),
+      "history",
+    ],
     ["an interval", task("t", {}), "recurring"],
     [
       "a webhook",

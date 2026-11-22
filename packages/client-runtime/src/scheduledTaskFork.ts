@@ -215,13 +215,16 @@ function oneTimeSlot(schedule: ScheduledTask["schedule"]): number | null {
 }
 
 /**
- * In History: an enabled one-time task that ran at or after its slot and is not still running.
- * A paused task stays out, since an edit keeps `lastRunAt` from an earlier schedule, and a
- * manual run before the slot leaves the slot due.
+ * In History: an enabled one-time task that ran at or after its slot and is not still running,
+ * or one imported from Chromeria v1 with its run, which never resumes. A paused task stays out
+ * otherwise, since an edit keeps `lastRunAt` from an earlier schedule, and a manual run before
+ * the slot leaves the slot due.
  */
 export function isScheduledTaskHistory(task: ScheduledTask): boolean {
   const slot = oneTimeSlot(task.schedule);
-  if (slot === null || !task.enabled || task.lastRunAt === null) return false;
+  if (slot === null) return false;
+  if ((task.outcomeCheck?.run ?? task.command?.run)?.imported === true) return true;
+  if (!task.enabled || task.lastRunAt === null) return false;
   return task.lastRunStatus !== "running" && Date.parse(task.lastRunAt) >= slot;
 }
 
