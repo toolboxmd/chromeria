@@ -1,6 +1,6 @@
 import { RegistryContext } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
-import { Atom, AtomRegistry } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import {
   DEFAULT_UNIFIED_SETTINGS,
   EnvironmentId,
@@ -107,6 +107,7 @@ vi.mock(import("./SettingsScopeContext"), async (original) => {
           : [entry]
         : [],
       environment: entry,
+      groups: [],
       target: null,
       targets: [],
     };
@@ -123,6 +124,8 @@ vi.mock(import("../../state/server"), async (original) => {
     ...actual,
     serverEnvironment: {
       ...actual.serverEnvironment,
+      // The list reads every environment's live tasks through atoms, not the query hook.
+      scheduledTasksLive: (() => Atom.make(AsyncResult.success({ tasks: [task] }))) as never,
       deleteScheduledTask: {
         ...actual.serverEnvironment.deleteScheduledTask,
         run: state.remove,

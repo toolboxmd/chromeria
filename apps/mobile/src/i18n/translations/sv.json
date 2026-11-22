@@ -3703,8 +3703,6 @@
   "eaf9f9833be0d8aa": "Kunde inte köra uppgiften",
   "b39dfcb0982653a9": "Kunde inte uppdatera uppgiften",
   "4e4998d7da22f352": "Kunde inte ta bort uppgiften",
-  "91f7d63c53ad0823": "Inga schemalagda uppgifter än.",
-  "f2a7d3519fbf9962": "Inga uppgifter i det här projektet.",
   "8c42d7dc363a0a69": "Redigera {title}",
   "fb5c68c6583d0fb0": "{schedule} · Pausad",
   "89ad3085151e0607": "{schedule} · {nextRun}",
@@ -3730,7 +3728,6 @@
   "831c6136a8c83755": "Tiden använder miljöns tidszon, som kan skilja sig från telefonens.",
   "377aa4ea24aa0c3b": "Spara uppgiften för att få dess webhook-URL.",
   "b10990191d5d5b76": "Signaturkontroll konfigurerad på skrivbordet/webben.",
-  "adae883fd7189da7": "Läser in uppgifter…",
   "6ad38baa7c6fc96e": [
     "Senaste körningen misslyckades: ",
     {
@@ -3933,6 +3930,16 @@
   "68a9939219dd1622": "Tidsgränsen överskreds vid sökning efter uppdateringar. Försök igen.",
   "c0b576266d462f4b": "Tråd {id}",
   "48d011999584fbec": "Kör nu",
+  "987167a51fcdd1e7": "Inte ansluten: {environments}",
+  "8792ce1caba45445": "Läser in schemalagda uppgifter på {environments}",
+  "6c8d4ee4bbbf40bc": "Kunde inte läsa in schemalagda uppgifter: {environments}",
+  "91f7d63c53ad0823": "Inga schemalagda uppgifter än.",
+  "b3d562c23d8272c3": "Kommande",
+  "8bafe4cff51a0221": "Återkommande",
+  "fdda00532a10bdad": "Historik",
+  "c56dcbea1a3e9e08": "{count} · {failed} misslyckades",
+  "495331f7616ff1a3": "Skalkommandouppgift",
+  "3c5aa3b0c0ada9b4": "Agentuppgift",
   "bbe818245ef3ec53": [
     {
       "i": 1,
@@ -3948,6 +3955,14 @@
       "v": "v"
     },
     " · ändra det via en agent"
+  ],
+  "574815afb7ac4a3b": [
+    "Misslyckas · ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
   ],
   "3d6b0d3f296a27d0": "Varje vecka",
   "e7f1de16fdf4fcad": "{count, plural, one {{count} vecka} other {{count} veckor}}",

@@ -197,3 +197,92 @@ export function commandTasksTurnedFailing(
   }
   return { health, failing };
 }
+
+/** One environment's task in the merged list; clients extend it with what they need to act on it. */
+export interface ScheduledTaskListEntry {
+  readonly environmentId: string;
+  readonly task: ScheduledTask;
+}
+
+export const scheduledTaskEntryKey = (entry: ScheduledTaskListEntry) =>
+  `${entry.environmentId}\n${entry.task.id}`;
+
+/** A one-time task's decoded slot; upstream and fork one-shots name it differently. */
+function oneTimeSlot(schedule: ScheduledTask["schedule"]): number | null {
+  if (schedule.type !== "once") return null;
+  const at = Date.parse("runAt" in schedule ? schedule.runAt : schedule.at);
+  return Number.isFinite(at) ? at : null;
+}
+
+/**
+ * Spent: it ran at or after its slot and is not still running. A paused task has no
+ * `nextRunAt`, and a manual run before the slot leaves the slot due, so neither proves it.
+ */
+function isSpentOneTime(task: ScheduledTask): boolean {
+  const slot = oneTimeSlot(task.schedule);
+  if (slot === null || task.lastRunAt === null || task.lastRunStatus === "running") return false;
+  return Date.parse(task.lastRunAt) >= slot;
+}
+
+const recurringRank = (task: ScheduledTask) => {
+  if (!task.enabled || task.blockedByPolicy !== undefined) return 2;
+  if (task.nextRunAt !== null) return 0;
+  return task.schedule.type === "webhook" ? 1 : 2;
+};
+
+const byTitle = (a: ScheduledTaskListEntry, b: ScheduledTaskListEntry) =>
+  a.task.title.localeCompare(b.task.title) ||
+  scheduledTaskEntryKey(a).localeCompare(scheduledTaskEntryKey(b));
+
+const timeOf = (value: string | null, missing: number) =>
+  value === null ? missing : Date.parse(value);
+
+export interface ScheduledTaskSections<E extends ScheduledTaskListEntry> {
+  /** One-time tasks still due, soonest first. */
+  readonly upcoming: ReadonlyArray<E>;
+  /** Active by next run, then listening webhooks, then paused, blocked or unscheduled. */
+  readonly recurring: ReadonlyArray<E>;
+  /** One-time tasks that already ran, latest first. */
+  readonly history: ReadonlyArray<E>;
+  /** Tasks whose last run failed, before `failingOnly` narrows the sections. */
+  readonly failing: number;
+  readonly historyFailing: number;
+}
+
+/** Every environment's tasks as one list, ordered by what runs next. */
+export function scheduledTaskSections<E extends ScheduledTaskListEntry>(
+  entries: ReadonlyArray<E>,
+  options: { readonly failingOnly?: boolean } = {},
+): ScheduledTaskSections<E> {
+  const upcoming: E[] = [];
+  const recurring: E[] = [];
+  const history: E[] = [];
+  let failing = 0;
+  let historyFailing = 0;
+  for (const entry of entries) {
+    const failed = entry.task.lastRunStatus === "failed";
+    if (failed) failing += 1;
+    const spent = isSpentOneTime(entry.task);
+    if (spent && failed) historyFailing += 1;
+    if (options.failingOnly && !failed) continue;
+    if (spent) history.push(entry);
+    else if (entry.task.schedule.type === "once") upcoming.push(entry);
+    else recurring.push(entry);
+  }
+  upcoming.sort(
+    (a, b) =>
+      (oneTimeSlot(a.task.schedule) ?? Infinity) - (oneTimeSlot(b.task.schedule) ?? Infinity) ||
+      byTitle(a, b),
+  );
+  recurring.sort(
+    (a, b) =>
+      recurringRank(a.task) - recurringRank(b.task) ||
+      timeOf(a.task.nextRunAt, Infinity) - timeOf(b.task.nextRunAt, Infinity) ||
+      byTitle(a, b),
+  );
+  history.sort(
+    (a, b) =>
+      timeOf(b.task.lastRunAt, -Infinity) - timeOf(a.task.lastRunAt, -Infinity) || byTitle(a, b),
+  );
+  return { upcoming, recurring, history, failing, historyFailing };
+}

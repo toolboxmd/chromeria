@@ -3697,8 +3697,6 @@
   "eaf9f9833be0d8aa": "No se pudo ejecutar la tarea",
   "b39dfcb0982653a9": "No se pudo actualizar la tarea",
   "4e4998d7da22f352": "No se pudo eliminar la tarea",
-  "91f7d63c53ad0823": "Aún no hay tareas programadas.",
-  "f2a7d3519fbf9962": "No hay tareas en este proyecto.",
   "8c42d7dc363a0a69": "Editar {title}",
   "fb5c68c6583d0fb0": "{schedule} · En pausa",
   "89ad3085151e0607": "{schedule} · {nextRun}",
@@ -3724,7 +3722,6 @@
   "831c6136a8c83755": "La hora usa la zona horaria del entorno, que puede ser distinta de la de tu teléfono.",
   "377aa4ea24aa0c3b": "Guarda la tarea para obtener su URL de webhook.",
   "b10990191d5d5b76": "Comprobación de firma configurada en el escritorio o la web.",
-  "adae883fd7189da7": "Cargando tareas…",
   "6ad38baa7c6fc96e": [
     "La última ejecución falló: ",
     {
@@ -3927,6 +3924,16 @@
   "68a9939219dd1622": "Se agotó el tiempo de búsqueda de actualizaciones. Inténtalo de nuevo.",
   "c0b576266d462f4b": "Hilo {id}",
   "48d011999584fbec": "Ejecutar ahora",
+  "987167a51fcdd1e7": "Sin conexión: {environments}",
+  "8792ce1caba45445": "Cargando tareas programadas en {environments}",
+  "6c8d4ee4bbbf40bc": "No se pudieron cargar las tareas programadas: {environments}",
+  "91f7d63c53ad0823": "Aún no hay tareas programadas.",
+  "b3d562c23d8272c3": "Próximas",
+  "8bafe4cff51a0221": "Recurrentes",
+  "fdda00532a10bdad": "Historial",
+  "c56dcbea1a3e9e08": "{count} · {failed} con fallos",
+  "495331f7616ff1a3": "Tarea de comando de shell",
+  "3c5aa3b0c0ada9b4": "Tarea de agente",
   "bbe818245ef3ec53": [
     {
       "i": 1,
@@ -3942,6 +3949,14 @@
       "v": "v"
     },
     " · cámbialo mediante un agente"
+  ],
+  "574815afb7ac4a3b": [
+    "Con fallos · ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
   ],
   "3d6b0d3f296a27d0": "Cada semana",
   "e7f1de16fdf4fcad": "{count, plural, one {{count} semana} other {{count} semanas}}",

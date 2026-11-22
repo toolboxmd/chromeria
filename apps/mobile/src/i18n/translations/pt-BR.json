@@ -3697,8 +3697,6 @@
   "eaf9f9833be0d8aa": "Não foi possível executar a tarefa",
   "b39dfcb0982653a9": "Não foi possível atualizar a tarefa",
   "4e4998d7da22f352": "Não foi possível excluir a tarefa",
-  "91f7d63c53ad0823": "Nenhuma tarefa agendada ainda.",
-  "f2a7d3519fbf9962": "Nenhuma tarefa neste projeto.",
   "8c42d7dc363a0a69": "Editar {title}",
   "fb5c68c6583d0fb0": "{schedule} · Pausada",
   "89ad3085151e0607": "{schedule} · {nextRun}",
@@ -3724,7 +3722,6 @@
   "831c6136a8c83755": "O horário usa o fuso horário do ambiente, que pode ser diferente do seu celular.",
   "377aa4ea24aa0c3b": "Salve a tarefa para obter a URL do webhook.",
   "b10990191d5d5b76": "Verificação de assinatura configurada no desktop/web.",
-  "adae883fd7189da7": "Carregando tarefas…",
   "6ad38baa7c6fc96e": [
     "A última execução falhou: ",
     {
@@ -3927,6 +3924,16 @@
   "68a9939219dd1622": "A verificação de atualizações demorou demais. Tente novamente.",
   "c0b576266d462f4b": "Thread {id}",
   "48d011999584fbec": "Executar agora",
+  "987167a51fcdd1e7": "Não conectado: {environments}",
+  "8792ce1caba45445": "Carregando tarefas agendadas em {environments}",
+  "6c8d4ee4bbbf40bc": "Não foi possível carregar as tarefas agendadas: {environments}",
+  "91f7d63c53ad0823": "Nenhuma tarefa agendada ainda.",
+  "b3d562c23d8272c3": "Próximas",
+  "8bafe4cff51a0221": "Recorrentes",
+  "fdda00532a10bdad": "Histórico",
+  "c56dcbea1a3e9e08": "{count} · {failed} com falha",
+  "495331f7616ff1a3": "Tarefa de comando de shell",
+  "3c5aa3b0c0ada9b4": "Tarefa de agente",
   "bbe818245ef3ec53": [
     {
       "i": 1,
@@ -3942,6 +3949,14 @@
       "v": "v"
     },
     " · altere por meio de um agente"
+  ],
+  "574815afb7ac4a3b": [
+    "Com falha · ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
   ],
   "3d6b0d3f296a27d0": "Toda semana",
   "e7f1de16fdf4fcad": "{count, plural, one {{count} semana} other {{count} semanas}}",

@@ -7,6 +7,7 @@ import {
   forkScheduleLabel,
   forkTaskSummary,
   outcomeCheckLabel,
+  scheduledTaskSections,
 } from "./scheduledTaskFork.ts";
 
 describe("fork schedule labels", () => {
@@ -156,5 +157,126 @@ describe("command failure alerts", () => {
         (entry) => entry.id,
       ),
     ).toEqual(["b"]);
+  });
+});
+
+describe("scheduled task sections", () => {
+  const task = (id: string, fields: Partial<ScheduledTask>) =>
+    ({
+      id,
+      title: id,
+      enabled: true,
+      schedule: { type: "interval", everyMs: 60_000 },
+      nextRunAt: null,
+      lastRunAt: null,
+      lastRunStatus: "never",
+      ...fields,
+    }) as unknown as ScheduledTask;
+  const once = (at: string) => ({ type: "once", at }) as const;
+  const entry = (environmentId: string, value: ScheduledTask) => ({ environmentId, task: value });
+  const keys = (entries: ReadonlyArray<{ environmentId: string; task: ScheduledTask }>) =>
+    entries.map(({ environmentId, task: value }) => `${environmentId}/${value.id}`);
+
+  it.each([
+    ["a due one-shot", task("t", { schedule: once("2026-11-23T10:00:00Z") }), "upcoming"],
+    [
+      "a paused one-shot that has not reached its slot",
+      task("t", { enabled: false, schedule: once("2026-11-23T10:00:00Z") }),
+      "upcoming",
+    ],
+    [
+      "a one-shot run by hand before its slot",
+      task("t", {
+        schedule: { type: "once", runAt: "2026-11-23T10:00:00+01:00" } as ScheduledTask["schedule"],
+        lastRunAt: "2026-11-22T12:00:00.000Z",
+        lastRunStatus: "succeeded",
+      }),
+      "upcoming",
+    ],
+    [
+      "a one-shot still running its slot",
+      task("t", {
+        schedule: once("2026-11-20T10:00:00Z"),
+        lastRunAt: "2026-11-20T10:00:00.000Z",
+        lastRunStatus: "running",
+      }),
+      "upcoming",
+    ],
+    [
+      "a paused one-shot that ran its slot",
+      task("t", {
+        enabled: false,
+        schedule: once("2026-11-20T10:00:00Z"),
+        lastRunAt: "2026-11-20T10:00:01.000Z",
+        lastRunStatus: "failed",
+      }),
+      "history",
+    ],
+    ["an interval", task("t", {}), "recurring"],
+    [
+      "a webhook",
+      task("t", { schedule: { type: "webhook" } as ScheduledTask["schedule"] }),
+      "recurring",
+    ],
+  ] as const)("put %s in %s", (_name, value, section) => {
+    const sections = scheduledTaskSections([entry("e", value)]);
+    expect(keys(sections[section])).toEqual(["e/t"]);
+  });
+
+  it("order each section by what runs next and keep equal task ids from two environments apart", () => {
+    const webhook = { type: "webhook" } as ScheduledTask["schedule"];
+    const sections = scheduledTaskSections([
+      entry("rocky", task("late", { schedule: once("2026-11-25T10:00:00Z") })),
+      entry("bestia", task("late", { schedule: once("2026-11-24T10:00:00Z") })),
+      entry("bestia", task("paused", { enabled: false, nextRunAt: null })),
+      entry("bestia", task("hook", { schedule: webhook })),
+      entry("rocky", task("blocked", { blockedByPolicy: "No webhooks", schedule: webhook })),
+      entry("rocky", task("soon", { nextRunAt: "2026-11-22T13:00:00.000Z" })),
+      entry("bestia", task("later", { nextRunAt: "2026-11-22T14:00:00.000Z" })),
+      entry(
+        "bestia",
+        task("old", {
+          schedule: once("2026-11-01T10:00:00Z"),
+          lastRunAt: "2026-11-01T10:00:00.000Z",
+          lastRunStatus: "succeeded",
+        }),
+      ),
+      entry(
+        "rocky",
+        task("recent", {
+          schedule: once("2026-11-21T10:00:00Z"),
+          lastRunAt: "2026-11-21T10:00:00.000Z",
+          lastRunStatus: "succeeded",
+        }),
+      ),
+    ]);
+    expect(keys(sections.upcoming)).toEqual(["bestia/late", "rocky/late"]);
+    expect(keys(sections.recurring)).toEqual([
+      "rocky/soon",
+      "bestia/later",
+      "bestia/hook",
+      "rocky/blocked",
+      "bestia/paused",
+    ]);
+    expect(keys(sections.history)).toEqual(["rocky/recent", "bestia/old"]);
+  });
+
+  it("count failing tasks across every section and narrow all sections to them", () => {
+    const failed = { lastRunAt: "2026-11-21T10:00:00.000Z", lastRunStatus: "failed" } as const;
+    const entries = [
+      entry("e", task("spent", { ...failed, schedule: once("2026-11-21T10:00:00Z") })),
+      entry("e", task("due", { ...failed, schedule: once("2026-11-30T10:00:00Z") })),
+      entry("e", task("loop", failed)),
+      entry("e", task("fine", { lastRunStatus: "succeeded" })),
+    ];
+    const all = scheduledTaskSections(entries);
+    expect([all.failing, all.historyFailing]).toEqual([3, 1]);
+    const narrowed = scheduledTaskSections(entries, { failingOnly: true });
+    expect([keys(narrowed.upcoming), keys(narrowed.recurring), keys(narrowed.history)]).toEqual([
+      ["e/due"],
+      ["e/loop"],
+      ["e/spent"],
+    ]);
+    expect(narrowed.failing).toBe(3);
   });
 });
