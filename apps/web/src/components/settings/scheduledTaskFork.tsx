@@ -58,10 +58,13 @@ const scheduledTasksListAtom = environmentAtomList("web-scheduled-tasks-list", (
   serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
 );
 
-/** Kept for the session: Settings remounts this page on scope and link changes. */
-const historyOpenAtom = Atom.make(false).pipe(
+/**
+ * A link into History, carried across the remount Settings does when the editor closes and the
+ * link leaves the URL. The next mount without a link takes it once; leaving the page drops it.
+ */
+const pendingHistoryLinkAtom = Atom.make<string | null>(null).pipe(
   Atom.keepAlive,
-  Atom.withLabel("web-scheduled-tasks-history-open"),
+  Atom.withLabel("web-scheduled-tasks-pending-history-link"),
 );
 
 const SCOPE_SUMMARY_TEMPLATES = {
@@ -88,7 +91,8 @@ export function ScheduledTaskList({
   const gt = useGT();
   const { scope, environments, groups } = useSettingsScope();
   const [failingOnly, setFailingOnly] = useState(false);
-  const [historyOpen, setHistoryOpen] = useAtom(historyOpenAtom);
+  const [pendingHistoryLink, setPendingHistoryLink] = useAtom(pendingHistoryLinkAtom);
+  const [historyOpen, setHistoryOpen] = useState(() => pendingHistoryLink !== null);
   const [shownLink, setShownLink] = useState<string | null>(null);
   const connectedIds = environments.flatMap((environment) =>
     environment.connection.phase === "connected" && environment.serverConfig !== null
@@ -126,19 +130,29 @@ export function ScheduledTaskList({
       : null;
   const historyLink =
     linkedTask !== undefined && isScheduledTaskHistory(linkedTask) ? linkedKey : null;
-  // A newly loaded link shows its row: Failing stops hiding it, then the user owns the filter.
+  // A newly loaded link shows its row: History opens and Failing stops hiding it, then the
+  // user owns both.
   if (linkedKey !== shownLink) {
     setShownLink(linkedKey);
+    if (historyLink !== null) setHistoryOpen(true);
     if (linkedTask !== undefined && linkedTask.lastRunStatus !== "failed") setFailingOnly(false);
   }
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- A link from the URL opens History in shared state, which outlives the remount when the editor closes and drops the link.
+  const anyFailing = entries.some((entry) => entry.task.lastRunStatus === "failed");
+  // The chip hides once nothing fails, so its selection must not wait for the next failure.
+  if (failingOnly && !anyFailing && entries.length > 0) setFailingOnly(false);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Carries a URL link into History across the remount that drops it, in a store outside this component.
   useEffect(() => {
-    if (historyLink !== null) setHistoryOpen(true);
-  }, [historyLink, setHistoryOpen]);
-  // The chip hides once nothing fails, so its filter must lapse with it.
-  const sections = scheduledTaskSections(entries, {
-    failingOnly: failingOnly && entries.some((entry) => entry.task.lastRunStatus === "failed"),
-  });
+    if (historyLink !== null) setPendingHistoryLink(historyLink);
+    else if (taskId === undefined) setPendingHistoryLink(null);
+  }, [historyLink, taskId, setPendingHistoryLink]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Leaving the page drops a carried link, so a later visit starts with History closed.
+  useEffect(
+    () => () => {
+      if (window.location.pathname !== "/settings/scheduled-tasks") setPendingHistoryLink(null);
+    },
+    [setPendingHistoryLink],
+  );
+  const sections = scheduledTaskSections(entries, { failingOnly: failingOnly && anyFailing });
 
   const loaded = states.filter((state) => state.connected && state.error === null && state.tasks);
   const populated = loaded.some((state) => state.tasks && state.tasks.length > 0);

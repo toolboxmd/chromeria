@@ -153,10 +153,10 @@ export function ScheduledTaskList({
       timeZone,
     })),
   );
-  // The chip hides once nothing fails, so its filter must lapse with it.
-  const sections = scheduledTaskSections(entries, {
-    failingOnly: failingOnly && entries.some((entry) => entry.task.lastRunStatus === "failed"),
-  });
+  const anyFailing = entries.some((entry) => entry.task.lastRunStatus === "failed");
+  // The chip hides once nothing fails, so its selection must not wait for the next failure.
+  if (failingOnly && !anyFailing && entries.length > 0) setFailingOnly(false);
+  const sections = scheduledTaskSections(entries, { failingOnly: failingOnly && anyFailing });
   const summaries = {
     notConnected: disconnected.map(
       (environment) =>
