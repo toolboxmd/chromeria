@@ -3904,19 +3904,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : projection.runs.find((candidate) => candidate.id === mailbox.parentRunId)
               ?.delegatedCompletion?.delivery;
       const reserved = reservation?.messageId === message.id;
-      // A mailbox wake whose results the parent already read through task_status has nothing left.
-      const delivered =
-        mailbox !== undefined &&
-        (reserved
-          ? reservation.taskIds.length === 0
-          : (yield* projectionStore.getThreadRecords(threadId, ["subagents"], {
-              subagentIds: mailbox.taskIds,
-            })).subagents.every(
-              (task) =>
-                !mailbox.taskIds.includes(task.id) ||
-                task.completionDelivery?.state === "acknowledged" ||
-                task.completionDelivery?.state === "disposed",
-            ));
+      // Once accepted, only the mailbox knows which results are still owed, so it is not replayed.
+      const delivered = mailbox !== undefined && (!reserved || reservation.taskIds.length === 0);
       if (item.type === "notification" && delivered) {
         yield* writeSystemEvents([settledWakeItemEvent(item, yield* DateTime.now)]);
         continue;
@@ -4005,7 +3994,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         text: message.text,
         ...(message.context ? { context: message.context } : {}),
         attachments: message.attachments,
-        // A mailbox wake keeps its reservation until accepted; once accepted it returns as its notice.
+        // A mailbox wake replays with its reservation; any other wake returns as the notice it showed.
         ...(item.type === "notification" && !reserved
           ? {
               // It was steered into this run because their purposes matched.

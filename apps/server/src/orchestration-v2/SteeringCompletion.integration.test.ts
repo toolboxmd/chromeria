@@ -4280,7 +4280,6 @@ it.effect.each([
   ["accepted delegated completion", "restart"],
   ["held delegated completion", "restart"],
   ["emptied delegated completion", "restart"],
-  ["acknowledged delegated completion", "restart"],
   ["wakes around a user steer", "restart"],
   ["user steer", "stop"],
   ["delegated task question", "stop"],
@@ -4300,7 +4299,7 @@ it.effect.each([
       name,
       false,
       undefined,
-      kind === "accepted delegated completion"
+      kind === "delegated task question"
         ? {
             firstPurposeIntent: {
               version: 1,
@@ -4319,6 +4318,8 @@ it.effect.each([
         dispatchMode: { type: "queue_after_active" },
         createdBy: "agent",
         creationSource: "server",
+        // A task's question carries the purpose of the run that delegated it.
+        purposeSource: executionPurposeOf(parent),
         notification: {
           source: { kind: "delegated_task", taskIds: [taskId] },
           outcome: "updated",
@@ -4334,8 +4335,7 @@ it.effect.each([
       const mailbox =
         kind === "accepted delegated completion" ||
         kind === "held delegated completion" ||
-        kind === "emptied delegated completion" ||
-        kind === "acknowledged delegated completion";
+        kind === "emptied delegated completion";
       const completionSource = {
         runId: RunId.make(`run:${name}:child`),
         purpose: executionPurposeOf(parent),
@@ -4426,13 +4426,11 @@ it.effect.each([
           ? [userSteer]
           : kind === "delegated task question"
             ? [question]
-            : kind === "accepted delegated completion"
-              ? [mailboxSend]
-              : kind === "held delegated completion" ||
-                  kind === "emptied delegated completion" ||
-                  kind === "acknowledged delegated completion"
-                ? [userSteer, mailboxSend]
-                : [question, userSteer, question];
+            : kind === "accepted delegated completion" ||
+                kind === "held delegated completion" ||
+                kind === "emptied delegated completion"
+              ? [userSteer, mailboxSend]
+              : [question, userSteer, question];
       const messageIds = sends.map((send, index) =>
         send === mailboxSend ? mailboxId : MessageId.make(`message:${name}:${index}`),
       );
@@ -4451,18 +4449,6 @@ it.effect.each([
       assert.lengthOf(steered, sends.length);
       if (kind === "held delegated completion") yield* writeReservation("held");
       if (kind === "emptied delegated completion") yield* writeReservation("emptied", true);
-      // The parent reads the result through task_status after the wake was accepted.
-      if (kind === "acknowledged delegated completion") {
-        yield* orchestrator.dispatch({
-          type: "delegated_task.completion-delivery.acknowledge",
-          commandId: CommandId.make(`${name}:acknowledge`),
-          parentThreadId: threadId,
-          taskId,
-          observedByRunId: parent.id,
-        });
-        yield* worker.drain();
-      }
-
       const turn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
       const ingested = yield* orchestrator.streamDomainEvents.pipe(
         Stream.filter((event) => event.type === "provider-turn.updated"),
@@ -4536,7 +4522,8 @@ it.effect.each([
       );
       yield* recovery.reconcile("startup");
       const requeued =
-        kind === "emptied delegated completion" || kind === "acknowledged delegated completion"
+        // Once accepted, a mailbox wake's results are the mailbox's to redeliver.
+        kind === "accepted delegated completion" || kind === "emptied delegated completion"
           ? messageIds.filter((messageId) => messageId !== mailboxId)
           : messageIds;
       for (let pass = 0; pass < 2; pass += 1) {
@@ -4545,11 +4532,11 @@ it.effect.each([
         // The cut run holds the queue, so the requeued steers wait there, in the order they were sent.
         assert.deepEqual(yield* queued, requeued);
       }
-      if (kind === "accepted delegated completion") {
-        const wake = (yield* read).runs.find(
-          (run) => run.status === "queued" && run.userMessageId === mailboxId,
+      if (kind === "delegated task question") {
+        assert.deepEqual(
+          (yield* read).runs.find((run) => run.status === "queued")?.purpose?.scope,
+          issueScope,
         );
-        assert.deepEqual(wake?.purpose?.scope, issueScope);
       }
       assert.isFalse(
         (yield* read).turnItems.some(

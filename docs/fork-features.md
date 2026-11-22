@@ -3776,7 +3776,7 @@ sources and reasons.
 ```json
 {
   "id": "steered-wake-recovery",
-  "purpose": "A notification wake (delegated-task question, command notice, mailbox delivery) steered into a running turn keeps the provider's unread status, so a restart before the provider reads it requeues it in its place like a steered user message (an accepted mailbox wake returns as its notice), and Stop drops it without a resend notice. Drop when upstream tracks unread steers for notification items.",
+  "purpose": "A notification wake (delegated-task question, command notice, mailbox delivery) steered into a running turn keeps the provider's unread status, so a restart before the provider reads it requeues it in its place like a steered user message (a mailbox wake only while it holds its reservation; #883 tracks accepted ones), and Stop drops it without a resend notice. Drop when upstream tracks unread steers for notification items.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/875"],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/879"],
   "newFiles": [],
