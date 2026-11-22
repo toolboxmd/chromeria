@@ -1479,6 +1479,17 @@ export const layer = Layer.effect(
           .decide({ task: active, trigger, startedAt })
           .pipe(Effect.mapError((error) => taskError(error.message, { taskId: active.id })));
         if (decision._tag === "skip") return { task: active, threadId: null };
+        // The clock can step back, so a Run Now keyed by time alone could replay an earlier run.
+        const runNowKey =
+          trigger === "manual"
+            ? `:${yield* random
+                .uuidV4()
+                .pipe(
+                  Effect.mapError((cause) =>
+                    taskError("Could not start schedule task run.", { taskId: active.id, cause }),
+                  ),
+                )}`
+            : "";
 
         if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
         else
@@ -1501,7 +1512,7 @@ export const layer = Layer.effect(
         const fireKey =
           webhook === undefined
             ? (forkFireKey(active, trigger, startedAt) ??
-              `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`)
+              `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}${runNowKey}`)
             : `${active.id}:webhook:${webhook.deliveryId}`;
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
