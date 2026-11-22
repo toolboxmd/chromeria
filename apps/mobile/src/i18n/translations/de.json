@@ -3703,8 +3703,6 @@
   "eaf9f9833be0d8aa": "Aufgabe konnte nicht ausgeführt werden",
   "b39dfcb0982653a9": "Aufgabe konnte nicht aktualisiert werden",
   "4e4998d7da22f352": "Aufgabe konnte nicht gelöscht werden",
-  "91f7d63c53ad0823": "Noch keine geplanten Aufgaben.",
-  "f2a7d3519fbf9962": "Keine Aufgaben in diesem Projekt.",
   "8c42d7dc363a0a69": "{title} bearbeiten",
   "fb5c68c6583d0fb0": "{schedule} · Pausiert",
   "89ad3085151e0607": "{schedule} · {nextRun}",
@@ -3730,7 +3728,6 @@
   "831c6136a8c83755": "Die Uhrzeit verwendet die Zeitzone der Umgebung, die von der deines Smartphones abweichen kann.",
   "377aa4ea24aa0c3b": "Speichere die Aufgabe, um ihre Webhook-URL zu erhalten.",
   "b10990191d5d5b76": "Signaturprüfung auf Desktop/Web konfiguriert.",
-  "adae883fd7189da7": "Aufgaben werden geladen…",
   "6ad38baa7c6fc96e": [
     "Letzte Ausführung fehlgeschlagen: ",
     {
@@ -3933,6 +3930,17 @@
   "68a9939219dd1622": "Zeitüberschreitung bei der Suche nach Updates. Versuch es erneut.",
   "c0b576266d462f4b": "Thread {id}",
   "48d011999584fbec": "Jetzt ausführen",
+  "987167a51fcdd1e7": "Nicht verbunden: {environments}",
+  "8792ce1caba45445": "Geplante Aufgaben auf {environments} werden geladen",
+  "6c8d4ee4bbbf40bc": "Geplante Aufgaben konnten nicht geladen werden: {environments}",
+  "f2a7d3519fbf9962": "Keine Aufgaben in diesem Projekt.",
+  "91f7d63c53ad0823": "Noch keine geplanten Aufgaben.",
+  "b3d562c23d8272c3": "Anstehend",
+  "8bafe4cff51a0221": "Wiederkehrend",
+  "fdda00532a10bdad": "Verlauf",
+  "c56dcbea1a3e9e08": "{count} · {failed} fehlgeschlagen",
+  "495331f7616ff1a3": "Shell-Befehl-Aufgabe",
+  "3c5aa3b0c0ada9b4": "Agent-Aufgabe",
   "bbe818245ef3ec53": [
     {
       "i": 1,
@@ -3948,6 +3956,14 @@
       "v": "v"
     },
     " · über einen Agent ändern"
+  ],
+  "574815afb7ac4a3b": [
+    "Fehlschläge · ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
   ],
   "3d6b0d3f296a27d0": "Jede Woche",
   "e7f1de16fdf4fcad": "{count, plural, one {{count} Woche} other {{count} Wochen}}",

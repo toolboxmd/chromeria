@@ -197,3 +197,135 @@ export function commandTasksTurnedFailing(
   }
   return { health, failing };
 }
+
+/** One environment's task in the merged list; clients extend it with what they need to act on it. */
+export interface ScheduledTaskListEntry {
+  readonly environmentId: string;
+  readonly task: ScheduledTask;
+}
+
+export const scheduledTaskEntryKey = (entry: ScheduledTaskListEntry) =>
+  `${entry.environmentId}\n${entry.task.id}`;
+
+/** A one-time task's decoded slot; upstream and fork one-shots name it differently. */
+function oneTimeSlot(schedule: ScheduledTask["schedule"]): number | null {
+  if (schedule.type !== "once") return null;
+  const at = Date.parse("runAt" in schedule ? schedule.runAt : schedule.at);
+  return Number.isFinite(at) ? at : null;
+}
+
+/**
+ * In History: an enabled one-shot that ran at or after its slot and is not running, or a v1
+ * import with its run whose slot passed and that is not scheduled again. Paused tasks stay out:
+ * an edit keeps `lastRunAt` from an earlier schedule, and a manual early run leaves the slot due.
+ */
+export function isScheduledTaskHistory(task: ScheduledTask, now: number): boolean {
+  const slot = oneTimeSlot(task.schedule);
+  if (slot === null) return false;
+  const imported = (task.outcomeCheck?.run ?? task.command?.run)?.imported === true;
+  if (imported && task.nextRunAt === null && slot <= now) return true;
+  if (!task.enabled || task.lastRunAt === null) return false;
+  return task.lastRunStatus !== "running" && Date.parse(task.lastRunAt) >= slot;
+}
+
+const recurringRank = (task: ScheduledTask) => {
+  if (!task.enabled || task.blockedByPolicy !== undefined) return 2;
+  if (task.nextRunAt !== null) return 0;
+  return task.schedule.type === "webhook" ? 1 : 2;
+};
+
+const byTitle = (a: ScheduledTaskListEntry, b: ScheduledTaskListEntry) =>
+  a.task.title.localeCompare(b.task.title) ||
+  scheduledTaskEntryKey(a).localeCompare(scheduledTaskEntryKey(b));
+
+const timeOf = (value: string | null, missing: number) =>
+  value === null ? missing : Date.parse(value);
+
+export interface ScheduledTaskSections<E extends ScheduledTaskListEntry> {
+  /** One-time tasks still due, soonest first. */
+  readonly upcoming: ReadonlyArray<E>;
+  /** Active by next run, then listening webhooks, then paused, blocked or unscheduled. */
+  readonly recurring: ReadonlyArray<E>;
+  /** One-time tasks that already ran, latest first. */
+  readonly history: ReadonlyArray<E>;
+  /** Tasks whose last run failed, before `failingOnly` narrows the sections. */
+  readonly failing: number;
+  readonly historyFailing: number;
+}
+
+/** Every environment's tasks as one list, ordered by what runs next. */
+export function scheduledTaskSections<E extends ScheduledTaskListEntry>(
+  entries: ReadonlyArray<E>,
+  options: { readonly now: number; readonly failingOnly?: boolean },
+): ScheduledTaskSections<E> {
+  const upcoming: E[] = [];
+  const recurring: E[] = [];
+  const history: E[] = [];
+  let failing = 0;
+  let historyFailing = 0;
+  for (const entry of entries) {
+    const failed = entry.task.lastRunStatus === "failed";
+    if (failed) failing += 1;
+    const spent = isScheduledTaskHistory(entry.task, options.now);
+    if (spent && failed) historyFailing += 1;
+    if (options.failingOnly && !failed) continue;
+    if (spent) history.push(entry);
+    else if (entry.task.schedule.type === "once") upcoming.push(entry);
+    else recurring.push(entry);
+  }
+  upcoming.sort(
+    (a, b) =>
+      (oneTimeSlot(a.task.schedule) ?? Infinity) - (oneTimeSlot(b.task.schedule) ?? Infinity) ||
+      byTitle(a, b),
+  );
+  recurring.sort(
+    (a, b) =>
+      recurringRank(a.task) - recurringRank(b.task) ||
+      timeOf(a.task.nextRunAt, Infinity) - timeOf(b.task.nextRunAt, Infinity) ||
+      byTitle(a, b),
+  );
+  // Imported v1 runs leave lastRunAt empty; their command end or check verdict still dates them.
+  const ranAt = (task: ScheduledTask) =>
+    timeOf(
+      task.lastRunAt ??
+        task.command?.run?.endedAt ??
+        task.outcomeCheck?.lastVerdict?.checkedAt ??
+        null,
+      -Infinity,
+    );
+  history.sort((a, b) => ranAt(b.task) - ranAt(a.task) || byTitle(a, b));
+  return { upcoming, recurring, history, failing, historyFailing };
+}
+
+/**
+ * One label per machine for the merged list, which has no per-machine headings. A label two
+ * machines share gets each machine's `detail`, such as its address; if that still collides,
+ * the environment id.
+ */
+export function uniqueMachineLabels(
+  machines: ReadonlyArray<{
+    readonly environmentId: string;
+    readonly label: string;
+    readonly detail: () => string;
+  }>,
+): ReadonlyMap<string, string> {
+  const shared = (labels: ReadonlyArray<string>) => {
+    const counts = new Map<string, number>();
+    for (const label of labels) counts.set(label, (counts.get(label) ?? 0) + 1);
+    return (label: string) => (counts.get(label) ?? 0) > 1;
+  };
+  const isShared = shared(machines.map((machine) => machine.label));
+  const detailed = machines.map((machine) =>
+    isShared(machine.label) ? `${machine.label} · ${machine.detail()}` : machine.label,
+  );
+  const stillShared = shared(detailed);
+  return new Map(
+    machines.map((machine, index) => {
+      const label = detailed[index]!;
+      return [
+        machine.environmentId,
+        stillShared(label) ? `${label} · ${machine.environmentId}` : label,
+      ];
+    }),
+  );
+}

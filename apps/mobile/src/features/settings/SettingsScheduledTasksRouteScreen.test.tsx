@@ -130,6 +130,7 @@ vi.mock("../../state/server", () => ({
     upsertScheduledTask: { permissionAtom: () => Atom.make(true) },
   },
 }));
+vi.mock("../../state/environments", () => ({ useEnvironments: () => ({ environments: [] }) }));
 vi.mock("../../state/query", () => ({
   useEnvironmentQuery: () => ({ data: { tasks: mocks.tasks, threads: [] } }),
 }));

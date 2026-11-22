@@ -3698,8 +3698,6 @@
   "eaf9f9833be0d8aa": "Impossible d’exécuter la tâche",
   "b39dfcb0982653a9": "Impossible de mettre à jour la tâche",
   "4e4998d7da22f352": "Impossible de supprimer la tâche",
-  "91f7d63c53ad0823": "Aucune tâche planifiée pour l’instant.",
-  "f2a7d3519fbf9962": "Aucune tâche dans ce projet.",
   "8c42d7dc363a0a69": "Modifier {title}",
   "fb5c68c6583d0fb0": "{schedule} · En pause",
   "89ad3085151e0607": "{schedule} · {nextRun}",
@@ -3725,7 +3723,6 @@
   "831c6136a8c83755": "L’heure suit le fuseau horaire de l’environnement, qui peut différer de celui de votre téléphone.",
   "377aa4ea24aa0c3b": "Enregistrez la tâche pour obtenir son URL de webhook.",
   "b10990191d5d5b76": "Vérification de signature configurée sur bureau/web.",
-  "adae883fd7189da7": "Chargement des tâches…",
   "6ad38baa7c6fc96e": [
     "La dernière exécution a échoué : ",
     {
@@ -3928,6 +3925,17 @@
   "68a9939219dd1622": "La recherche de mises à jour a expiré. Réessayez.",
   "c0b576266d462f4b": "Fil {id}",
   "48d011999584fbec": "Exécuter maintenant",
+  "987167a51fcdd1e7": "Non connecté : {environments}",
+  "8792ce1caba45445": "Chargement des tâches planifiées sur {environments}",
+  "6c8d4ee4bbbf40bc": "Impossible de charger les tâches planifiées : {environments}",
+  "f2a7d3519fbf9962": "Aucune tâche dans ce projet.",
+  "91f7d63c53ad0823": "Aucune tâche planifiée pour l’instant.",
+  "b3d562c23d8272c3": "À venir",
+  "8bafe4cff51a0221": "Récurrentes",
+  "fdda00532a10bdad": "Historique",
+  "c56dcbea1a3e9e08": "{count} · {failed} en échec",
+  "495331f7616ff1a3": "Tâche de commande shell",
+  "3c5aa3b0c0ada9b4": "Tâche d’agent",
   "bbe818245ef3ec53": [
     {
       "i": 1,
@@ -3943,6 +3951,14 @@
       "v": "v"
     },
     " · modifiez-le via un agent"
+  ],
+  "574815afb7ac4a3b": [
+    "En échec · ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
   ],
   "3d6b0d3f296a27d0": "Toutes les semaines",
   "e7f1de16fdf4fcad": "{count, plural, one {{count} semaine} other {{count} semaines}}",

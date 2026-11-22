@@ -200,6 +200,8 @@ apps/server/src/scheduledTasks/Schedule.ts
 apps/server/src/scheduledTasks/ScheduledTaskService.ts
 apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.ts
 apps/web/src/components/ThreadNotificationCoordinator.tsx
+apps/web/src/components/settings/EnvironmentRow.tsx
+apps/web/src/components/settings/ScheduledTasksSettings.browser.test.tsx
 apps/web/src/components/settings/ScheduledTasksSettings.tsx
 apps/web/src/components/settings/scheduledTasksSettings.logic.ts
 docs/user/project-settings.md
