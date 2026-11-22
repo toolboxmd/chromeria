@@ -4280,6 +4280,7 @@ it.effect.each([
   ["accepted delegated completion", "restart"],
   ["held delegated completion", "restart"],
   ["emptied delegated completion", "restart"],
+  ["acknowledged delegated completion", "restart"],
   ["wakes around a user steer", "restart"],
   ["user steer", "stop"],
   ["delegated task question", "stop"],
@@ -4333,7 +4334,8 @@ it.effect.each([
       const mailbox =
         kind === "accepted delegated completion" ||
         kind === "held delegated completion" ||
-        kind === "emptied delegated completion";
+        kind === "emptied delegated completion" ||
+        kind === "acknowledged delegated completion";
       const completionSource = {
         runId: RunId.make(`run:${name}:child`),
         purpose: executionPurposeOf(parent),
@@ -4426,7 +4428,9 @@ it.effect.each([
             ? [question]
             : kind === "accepted delegated completion"
               ? [mailboxSend]
-              : kind === "held delegated completion" || kind === "emptied delegated completion"
+              : kind === "held delegated completion" ||
+                  kind === "emptied delegated completion" ||
+                  kind === "acknowledged delegated completion"
                 ? [userSteer, mailboxSend]
                 : [question, userSteer, question];
       const messageIds = sends.map((send, index) =>
@@ -4447,6 +4451,17 @@ it.effect.each([
       assert.lengthOf(steered, sends.length);
       if (kind === "held delegated completion") yield* writeReservation("held");
       if (kind === "emptied delegated completion") yield* writeReservation("emptied", true);
+      // The parent reads the result through task_status after the wake was accepted.
+      if (kind === "acknowledged delegated completion") {
+        yield* orchestrator.dispatch({
+          type: "delegated_task.completion-delivery.acknowledge",
+          commandId: CommandId.make(`${name}:acknowledge`),
+          parentThreadId: threadId,
+          taskId,
+          observedByRunId: parent.id,
+        });
+        yield* worker.drain();
+      }
 
       const turn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
       const ingested = yield* orchestrator.streamDomainEvents.pipe(
@@ -4521,7 +4536,7 @@ it.effect.each([
       );
       yield* recovery.reconcile("startup");
       const requeued =
-        kind === "emptied delegated completion"
+        kind === "emptied delegated completion" || kind === "acknowledged delegated completion"
           ? messageIds.filter((messageId) => messageId !== mailboxId)
           : messageIds;
       for (let pass = 0; pass < 2; pass += 1) {

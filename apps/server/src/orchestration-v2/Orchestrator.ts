@@ -3904,8 +3904,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           : projection.runs.find((candidate) => candidate.id === mailbox.parentRunId)
               ?.delegatedCompletion?.delivery;
       const reserved = reservation?.messageId === message.id;
-      // The parent read every result before accepting the wake, so nothing is left to deliver.
-      if (item.type === "notification" && reserved && reservation.taskIds.length === 0) {
+      // A mailbox wake whose results the parent already read through task_status has nothing left.
+      const delivered =
+        mailbox !== undefined &&
+        (reserved
+          ? reservation.taskIds.length === 0
+          : (yield* projectionStore.getThreadRecords(threadId, ["subagents"], {
+              subagentIds: mailbox.taskIds,
+            })).subagents.every(
+              (task) =>
+                !mailbox.taskIds.includes(task.id) ||
+                task.completionDelivery?.state === "acknowledged" ||
+                task.completionDelivery?.state === "disposed",
+            ));
+      if (item.type === "notification" && delivered) {
         yield* writeSystemEvents([settledWakeItemEvent(item, yield* DateTime.now)]);
         continue;
       }
