@@ -35,8 +35,12 @@ interface Row {
     readonly status: string;
     readonly requestedAt?: string;
   };
-  /** An earlier fire's run of the same task. */
-  readonly earlierRun?: { readonly messageId: string; readonly requestedAt: string };
+  /** Other runs of the same task's messages. */
+  readonly otherRuns?: ReadonlyArray<{
+    readonly messageId: string;
+    readonly status: string;
+    readonly requestedAt: string;
+  }>;
   /** The keyed Run Now request that started the last fire. */
   readonly keyedRequestId?: string;
   readonly onCompletion: boolean;
@@ -104,11 +108,34 @@ const rows: ReadonlyArray<Row> = [
   {
     id: "rerun-running",
     schedule: at(spentAt),
-    earlierRun: {
-      messageId: scheduledMessage("rerun-running", spentAt),
-      requestedAt: "2026-10-08T10:00:01.000Z",
-    },
+    otherRuns: [
+      {
+        messageId: scheduledMessage("rerun-running", spentAt),
+        status: "completed",
+        requestedAt: "2026-10-08T10:00:01.000Z",
+      },
+    ],
     run: { messageId: manualMessage("rerun-running"), status: "running" },
+    onCompletion: true,
+    pruned: false,
+  },
+  // The scheduled message was requeued behind that Run Now and completed after it started.
+  {
+    id: "requeued-scheduled",
+    schedule: at(spentAt),
+    otherRuns: [
+      {
+        messageId: scheduledMessage("requeued-scheduled", spentAt),
+        status: "cancelled",
+        requestedAt: "2026-10-08T10:00:01.000Z",
+      },
+      {
+        messageId: scheduledMessage("requeued-scheduled", spentAt),
+        status: "completed",
+        requestedAt: "2026-10-08T10:00:06.000Z",
+      },
+    ],
+    run: { messageId: manualMessage("requeued-scheduled"), status: "running" },
     onCompletion: true,
     pruned: false,
   },
@@ -239,11 +266,8 @@ const seed = Effect.gen(function* () {
       yield* sql`INSERT INTO fork_scheduled_task_checks (task_id, revision, state_json)
         VALUES (${row.id}, 1, ${JSON.stringify({ taskId: row.id, kind: row.check })})`;
     if (row.run !== undefined) yield* insertRun(sql, `run:${row.id}`, ordinal * 2, row.run);
-    if (row.earlierRun !== undefined)
-      yield* insertRun(sql, `run:${row.id}:earlier`, ordinal * 2 + 1, {
-        ...row.earlierRun,
-        status: "completed",
-      });
+    for (const [index, other] of (row.otherRuns ?? []).entries())
+      yield* insertRun(sql, `run:${row.id}:${index}`, 1000 + ordinal * 10 + index, other);
     if (row.keyedRequestId !== undefined)
       yield* sql`INSERT INTO scheduled_manual_requests VALUES (${row.keyedRequestId}, 'g', 'd', ${row.id}, 'i', '{}', ${RAN}, 'admitted', NULL, NULL)`;
   }

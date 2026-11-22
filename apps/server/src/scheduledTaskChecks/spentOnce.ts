@@ -137,21 +137,24 @@ export const pruneSpentForkOnceTasks = Effect.fn("ScheduledTaskChecks.pruneSpent
       ),
     }));
     const messageIds = yield* encodeIds(candidates.flatMap((c) => c.messageIds));
-    const runs = yield* sql<{ message_id: string; requested_at: string }>`
-      SELECT message_id, requested_at FROM (
-        SELECT json_extract(payload_json, '$.userMessageId') AS message_id, requested_at
+    const runs = yield* sql<{ message_id: string; status: string; requested_at: string }>`
+      SELECT message_id, status, requested_at FROM (
+        SELECT json_extract(payload_json, '$.userMessageId') AS message_id, status, requested_at
         FROM orchestration_v2_projection_runs
-        WHERE status = 'completed' AND json_valid(payload_json)
+        WHERE json_valid(payload_json)
       )
-      WHERE message_id IN (
-        SELECT value FROM json_each(${messageIds})
-      )
+      WHERE message_id IN (SELECT value FROM json_each(${messageIds}))
     `;
-    // A scheduled fire keeps its slot's id, so an older fire's run must not vouch for a later one.
-    const completedAt = new Map(runs.map((run) => [run.message_id, Date.parse(run.requested_at)]));
-    const spent = candidates.filter(({ row, messageIds }) =>
-      messageIds.some((id) => (completedAt.get(id) ?? -Infinity) >= Date.parse(row.last_run_at)),
-    );
+    const runsByMessage = Map.groupBy(runs, (run) => run.message_id);
+    // A scheduled fire keeps its slot's id and can be requeued under it, so a completed run of that
+    // id cannot tell which fire it was. Any of the fire's runs that did not complete keeps the task.
+    const spent = candidates.filter(({ row, messageIds }) => {
+      const fireRuns = messageIds.flatMap((id) => runsByMessage.get(id) ?? []);
+      return (
+        fireRuns.every((run) => run.status === "completed") &&
+        fireRuns.some((run) => Date.parse(run.requested_at) >= Date.parse(row.last_run_at))
+      );
+    });
     const removed = yield* sql.withTransaction(
       Effect.forEach(spent, ({ row }) =>
         sql`
