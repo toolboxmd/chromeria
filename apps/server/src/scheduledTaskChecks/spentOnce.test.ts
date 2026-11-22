@@ -228,6 +228,26 @@ const rows: ReadonlyArray<Row> = [
     onCompletion: true,
     pruned: false,
   },
+  // The same, with the queued run's clock stepped back before the start.
+  {
+    id: "same-ms-clock-back",
+    schedule: at(spentAt),
+    keyedRequestId: "request:same-ms-clock-back",
+    otherRuns: [
+      {
+        messageId: "scheduled-task-message:manual:request:same-ms-clock-back",
+        status: "completed",
+        requestedAt: RAN,
+      },
+    ],
+    run: {
+      messageId: scheduledMessage("same-ms-clock-back", spentAt),
+      status: "queued",
+      requestedAt: "2026-10-08T10:00:04.999Z",
+    },
+    onCompletion: true,
+    pruned: false,
+  },
   {
     id: "keyed-run-now",
     schedule: at(spentAt),
