@@ -522,7 +522,17 @@ it.effect.each([
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
-it.effect("a one-time task is removed once its turn completes", () =>
+// Fork: `at` is the fork's one-time trigger; accepted automation wraps either form.
+it.effect.each([
+  { name: "runAt", schedule: { type: "once", runAt: "2026-11-01T07:01:00.000Z" }, wrapped: false },
+  { name: "at", schedule: { type: "once", at: "2026-11-01T08:01:00+01:00" }, wrapped: false },
+  {
+    name: "wrapped runAt",
+    schedule: { type: "once", runAt: "2026-11-01T07:01:00.000Z" },
+    wrapped: true,
+  },
+  { name: "wrapped at", schedule: { type: "once", at: "2026-11-01T07:01:00Z" }, wrapped: true },
+] as const)("a one-time $name task is removed once its turn completes", ({ schedule, wrapped }) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(Date.parse("2026-11-01T07:00:00.000Z"));
     const projectId = ProjectId.make("project:test");
@@ -565,7 +575,7 @@ it.effect("a one-time task is removed once its turn completes", () =>
         title: "Release notes",
         prompt: "Draft the release notes",
         enabled: true,
-        schedule: { type: "once", runAt: "2026-11-01T07:01:00.000Z" },
+        schedule,
         projectId,
         threadId: ThreadId.make("thread:once"),
         purposeIntent: { version: 1, intent: { type: "unscoped" } },
@@ -574,6 +584,12 @@ it.effect("a one-time task is removed once its turn completes", () =>
         runtimeMode: "full-access",
         interactionMode: "default",
       });
+      if (wrapped) {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE scheduled_tasks SET schedule_json = json_object(
+          'type', 'destination-automation-v1', 'certificateId', 'certificate:once',
+          'schedule', json(schedule_json)) WHERE task_id = ${task.id}`;
+      }
       const dispatched = service.subscribeList().pipe(
         Stream.map(({ tasks }) => tasks.find((candidate) => candidate.id === task.id)),
         Stream.filter((current) => current?.lastRunStatus === "succeeded"),

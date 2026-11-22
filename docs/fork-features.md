@@ -1640,6 +1640,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/scheduledTaskChecks/schedules.test.ts",
     "apps/server/src/scheduledTaskChecks/schedules.ts",
     "apps/server/src/scheduledTaskChecks/spectra.testkit.ts",
+    "apps/server/src/scheduledTaskChecks/spentOnce.test.ts",
+    "apps/server/src/scheduledTaskChecks/spentOnce.ts",
     "apps/server/src/scheduledTaskChecks/state.ts",
     "apps/server/src/scheduledTaskChecks/store.ts",
     "apps/server/src/scheduledTaskChecks/v1Import.actual.integration.test.ts",
