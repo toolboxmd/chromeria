@@ -810,12 +810,7 @@ export const make = Effect.gen(function* () {
             // A link card waits on the user, not the run, and answers by message.
             candidate.type !== "link_request" &&
             // The orchestrator queues a steer the provider never reported reading.
-            !(
-              candidate.type === "user_message" &&
-              candidate.status === "pending" &&
-              (candidate.inputIntent === "steer" ||
-                candidate.inputIntent === "promoted_queued_to_steer")
-            ) &&
+            !(candidate.status === "pending" && ProjectionStore.isSteerTurnItem(candidate)) &&
             (candidate.status === "pending" ||
               candidate.status === "running" ||
               candidate.status === "waiting"),

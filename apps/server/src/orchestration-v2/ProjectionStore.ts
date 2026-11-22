@@ -5348,11 +5348,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               return sql`
                 SELECT item.thread_id FROM orchestration_v2_projection_turn_items AS item
                 JOIN orchestration_v2_projection_runs AS run ON run.run_id = item.run_id
-                WHERE item.type = 'user_message' AND item.status = 'pending'
+                WHERE item.type IN ('user_message', 'notification') AND item.status = 'pending'
                   AND run.status IN ('completed', 'interrupted', 'failed', 'cancelled')
-                  AND CASE WHEN json_valid(item.payload_json)
+                  AND (item.type = 'notification' OR CASE WHEN json_valid(item.payload_json)
                     THEN json_extract(item.payload_json, '$.inputIntent') IN ('steer', 'promoted_queued_to_steer')
-                    ELSE 0 END
+                    ELSE 0 END)
               `;
             case "delegated-completions":
               return sql`
@@ -10293,6 +10293,15 @@ function applyToProjectionReplayState(
   return true;
 }
 
+// Only steer delivery leaves a notification item pending, and it keeps no input intent.
+export function isSteerTurnItem(item: OrchestrationV2TurnItem): boolean {
+  return (
+    item.type === "notification" ||
+    (item.type === "user_message" &&
+      (item.inputIntent === "steer" || item.inputIntent === "promoted_queued_to_steer"))
+  );
+}
+
 function needsRecovery(
   projection: OrchestrationV2ThreadProjection,
   kind: ProjectionRecoveryKind,
@@ -10318,11 +10327,10 @@ function needsRecovery(
       );
       return projection.turnItems.some(
         (item) =>
-          item.type === "user_message" &&
           item.status === "pending" &&
           item.runId !== null &&
           settledRunIds.has(item.runId) &&
-          (item.inputIntent === "steer" || item.inputIntent === "promoted_queued_to_steer"),
+          isSteerTurnItem(item),
       );
     }
     case "restart-continuations":

@@ -74,6 +74,7 @@ const order = [
   "sidebar-thread-sort-order",
   "opencode-deferred-tools",
   "opencode2-session-process",
+  "steered-wake-recovery",
   "fork-maintenance",
 ];
 

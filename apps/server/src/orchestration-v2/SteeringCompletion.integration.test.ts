@@ -21,6 +21,7 @@ import {
   ThreadId,
   TurnItemId,
   type ModelSelection,
+  type PurposeIntent,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
@@ -45,6 +46,8 @@ import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
+import * as ProviderRuntimeRecovery from "./ProviderRuntimeRecoveryService.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import {
@@ -552,6 +555,7 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
       turn: ProviderAdapter.ProviderAdapterV2SteerInput,
     ) => Effect.Effect<void, ProviderAdapter.ProviderAdapterV2Error>;
     readonly extraAdapters?: ReadonlyArray<ProviderAdapter.ProviderAdapterV2["Service"]>;
+    readonly firstPurposeIntent?: PurposeIntent;
   } = {},
 ) {
   const driver = ProviderDriverKind.make(
@@ -733,6 +737,9 @@ const nextTurnSelectionHarness = Effect.fn("nextTurnSelectionHarness")(function*
       text: "first",
       attachments: [],
       modelSelection: runSelection,
+      ...(options.firstPurposeIntent === undefined
+        ? {}
+        : { purposeIntent: options.firstPurposeIntent }),
       dispatchMode: { type: "start_immediately" },
       createdBy: "user",
       creationSource: "web",
@@ -4263,6 +4270,280 @@ it.effect("replays an accepted steer after its target turn completes", () =>
         ),
       ),
     );
+  }),
+);
+
+// The provider accepted the steers but had not read them when the server went down or Stop ended it.
+it.effect.each([
+  ["user steer", "restart"],
+  ["delegated task question", "restart"],
+  ["accepted delegated completion", "restart"],
+  ["held delegated completion", "restart"],
+  ["emptied delegated completion", "restart"],
+  ["wakes around a user steer", "restart"],
+  ["user steer", "stop"],
+  ["delegated task question", "stop"],
+] as const)("handles a %s the provider left unread at %s", ([kind, ending]) =>
+  Effect.gen(function* () {
+    const name = `unread-${kind.replaceAll(" ", "-")}-${ending}`;
+    const issueScope = {
+      type: "single",
+      reference: {
+        host: "github.com",
+        repository: "toolboxmd/chromeria",
+        kind: "issue",
+        number: 875,
+      },
+    } as const;
+    const { events, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+      name,
+      false,
+      undefined,
+      kind === "delegated task question"
+        ? {
+            firstPurposeIntent: {
+              version: 1,
+              intent: { type: "reference", reference: issueScope.reference },
+            },
+          }
+        : {},
+    );
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const threadId = yield* startFirstTurn;
+      const parent = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+      const taskId = NodeId.make(`task:${name}`);
+      const question = {
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "agent",
+        creationSource: "server",
+        // A task's question carries the purpose of the run that delegated it.
+        purposeSource: executionPurposeOf(parent),
+        notification: {
+          source: { kind: "delegated_task", taskIds: [taskId] },
+          outcome: "updated",
+          summary: "Delegated task has a question",
+        },
+      } as const;
+      const userSteer = {
+        dispatchMode: { type: "steer_active", targetRunId: parent.id },
+        createdBy: "user",
+        creationSource: "web",
+      } as const;
+      const mailboxId = MessageId.make(`message:${name}:mailbox`);
+      const mailbox =
+        kind === "accepted delegated completion" ||
+        kind === "held delegated completion" ||
+        kind === "emptied delegated completion";
+      const completionSource = {
+        runId: RunId.make(`run:${name}:child`),
+        purpose: executionPurposeOf(parent),
+      };
+      const cohort = {
+        disposition: "open",
+        nextGeneration: 2,
+        delivery: {
+          generation: 1,
+          messageId: mailboxId,
+          taskIds: [taskId],
+          purposeCauses: [{ taskId, ...completionSource }],
+        },
+      } as const;
+      // The reserved cohort and claimed task an acceptance that never committed leaves behind.
+      // An emptied one is what the parent leaves by reading the last result before acceptance commits.
+      const writeReservation = (label: string, emptied = false) =>
+        Effect.gen(function* () {
+          const now = yield* DateTime.now;
+          const run = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (candidate) => candidate.id === parent.id,
+          )!;
+          const task: OrchestrationV2Subagent = {
+            id: taskId,
+            threadId,
+            runId: parent.id,
+            parentNodeId: parent.rootNodeId!,
+            origin: "app_owned",
+            createdBy: "agent",
+            driver,
+            providerInstanceId: instanceId,
+            providerThreadId: null,
+            childThreadId: null,
+            nativeTaskRef: null,
+            prompt: "Do background work",
+            title: "Background test",
+            model: null,
+            completionWake: "always",
+            completionDelivery: emptied
+              ? { state: "acknowledged", observedByRunId: parent.id }
+              : { state: "claimed", observedByRunId: null },
+            completionSource,
+            status: "completed",
+            result: "done",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+          };
+          yield* (yield* EventSink.EventSinkV2).write({
+            events: [
+              {
+                id: EventId.make(`event:${name}:${label}:cohort`),
+                type: "run.updated",
+                threadId,
+                runId: parent.id,
+                occurredAt: now,
+                payload: {
+                  ...run,
+                  delegatedCompletion: emptied
+                    ? {
+                        ...cohort,
+                        delivery: { ...cohort.delivery, taskIds: [], purposeCauses: [] },
+                      }
+                    : cohort,
+                },
+              },
+              {
+                id: EventId.make(`event:${name}:${label}:task`),
+                type: "subagent.updated",
+                threadId,
+                runId: parent.id,
+                nodeId: taskId,
+                occurredAt: now,
+                payload: task,
+              },
+            ],
+          });
+        });
+      if (mailbox) yield* writeReservation("reserved");
+      const mailboxSend = {
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "agent",
+        creationSource: "server",
+        delegatedCompletion: { parentRunId: parent.id, generation: 1, taskIds: [taskId] },
+      } as const;
+      const sends =
+        kind === "user steer"
+          ? [userSteer]
+          : kind === "delegated task question"
+            ? [question]
+            : kind === "accepted delegated completion" ||
+                kind === "held delegated completion" ||
+                kind === "emptied delegated completion"
+              ? [userSteer, mailboxSend]
+              : [question, userSteer, question];
+      const messageIds = sends.map((send, index) =>
+        send === mailboxSend ? mailboxId : MessageId.make(`message:${name}:${index}`),
+      );
+      for (const [index, send] of sends.entries()) {
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${name}:${index}`),
+          threadId,
+          messageId: messageIds[index]!,
+          text: `Wake ${index}`,
+          attachments: [],
+          ...send,
+        });
+        yield* worker.drain();
+      }
+      assert.lengthOf(steered, sends.length);
+      if (kind === "held delegated completion") yield* writeReservation("held");
+      if (kind === "emptied delegated completion") yield* writeReservation("emptied", true);
+      const turn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
+      const ingested = yield* orchestrator.streamDomainEvents.pipe(
+        Stream.filter((event) => event.type === "provider-turn.updated"),
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      for (const messageId of messageIds) {
+        yield* Queue.offer(events, {
+          type: "steer.updated",
+          driver,
+          threadId,
+          runId: parent.id,
+          messageId,
+          status: "pending",
+        });
+      }
+      yield* Queue.offer(events, { type: "provider_turn.updated", driver, providerTurn: turn });
+      yield* Fiber.join(ingested);
+      const read = orchestrator.getThreadProjection(threadId);
+      const queued = Effect.map(read, (projection) =>
+        projection.runs
+          .filter((run) => run.status === "queued")
+          .toSorted(
+            (left, right) =>
+              (left.queuePosition ?? left.ordinal) - (right.queuePosition ?? right.ordinal),
+          )
+          .map((run) => run.userMessageId),
+      );
+
+      if (ending === "stop") {
+        const dropped = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "turn-item.updated" &&
+              (event.payload.type === "user_message" || event.payload.type === "notification") &&
+              event.payload.status === "cancelled",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped({ startImmediately: true }),
+        );
+        yield* orchestrator.dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make(`stop:${name}`),
+          threadId,
+          runId: parent.id,
+          holdQueue: true,
+        });
+        yield* worker.drain();
+        yield* Fiber.join(dropped);
+        // Nobody can resend a wake, so only a person's steer gets the notice.
+        assert.equal(
+          (yield* read).turnItems.some(
+            (item) =>
+              item.type === "system_notice" && item.title === "Steer delivery not confirmed",
+          ),
+          kind === "user steer",
+        );
+        assert.deepEqual(yield* queued, []);
+        return;
+      }
+
+      // Startup reconciles the run the restart cut, then requeues what the provider never read.
+      const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService.pipe(
+        Effect.provide(
+          ProviderRuntimeRecovery.layer.pipe(
+            Layer.provide(Layer.mergeAll(ServerSettings.layerTest(), IdAllocator.layer)),
+          ),
+        ),
+      );
+      yield* recovery.reconcile("startup");
+      const requeued =
+        // Once accepted, a mailbox wake's results are the mailbox's to redeliver.
+        kind === "accepted delegated completion" || kind === "emptied delegated completion"
+          ? messageIds.filter((messageId) => messageId !== mailboxId)
+          : messageIds;
+      for (let pass = 0; pass < 2; pass += 1) {
+        yield* orchestrator.recoverDelegatedTasks;
+        yield* worker.drain();
+        // The cut run holds the queue, so the requeued steers wait there, in the order they were sent.
+        assert.deepEqual(yield* queued, requeued);
+      }
+      if (kind === "delegated task question") {
+        assert.deepEqual(
+          (yield* read).runs.find((run) => run.status === "queued")?.purpose?.scope,
+          issueScope,
+        );
+      }
+      assert.isFalse(
+        (yield* read).turnItems.some(
+          (item) => item.runId === parent.id && item.status === "pending",
+        ),
+      );
+    }).pipe(Effect.provide(layer));
   }),
 );
 

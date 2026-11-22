@@ -262,6 +262,7 @@ import {
   type ActiveThreadListEntry,
   type OlderSettledThreadsQuery,
   type ShellSnapshotOptions,
+  isSteerTurnItem,
 } from "./ProjectionStore.ts";
 import { ProviderAdapterRegistryV2 } from "./ProviderAdapterRegistry.ts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
@@ -3842,6 +3843,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
   });
 
+  // A wake's notice stays on the run it steered until a queued run takes it over.
+  const settledWakeItemEvent = (
+    item: Extract<OrchestrationV2TurnItem, { readonly type: "notification" }>,
+    now: DateTime.Utc,
+  ) => ({
+    type: "turn-item.updated" as const,
+    threadId: item.threadId,
+    ...(item.runId === null ? {} : { runId: item.runId }),
+    ...(item.nodeId === null ? {} : { nodeId: item.nodeId }),
+    occurredAt: now,
+    payload: { ...item, status: "cancelled" as const, completedAt: now, updatedAt: now },
+  });
+
   // A steer still pending after its run ended was never read: the provider marks one it read
   // completed, and one Stop dropped cancelled. It runs next, in its place among waiting messages.
   const requeueUnreadSteers = Effect.fn("Orchestrator.requeueUnreadSteers")(function* (
@@ -3849,33 +3863,57 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     runIds?: ReadonlyArray<RunId>,
   ) {
     const { turnItems } = yield* projectionStore.getThreadRecords(threadId, ["turnItems"], {
-      turnItemTypes: ["user_message"],
+      turnItemTypes: ["user_message", "notification"],
       turnItemStatuses: ["pending"],
       ...(runIds === undefined ? {} : { turnItemRunIds: runIds }),
     });
-    const unread = turnItems.filter(
-      (item) =>
-        item.type === "user_message" &&
-        (item.inputIntent === "steer" || item.inputIntent === "promoted_queued_to_steer"),
-    );
+    const unread = turnItems.filter(isSteerTurnItem);
     if (unread.length === 0) return;
     const projection = yield* projectionStore.getThreadRecords(threadId, ["runs", "messages"], {
       messageIds: unread.flatMap((item) => (item.type === "user_message" ? [item.messageId] : [])),
     });
+    const wakeRunIds = unread.flatMap((item) =>
+      item.type === "notification" && item.runId !== null ? [item.runId] : [],
+    );
+    // A wake's notification item drops its message id; its message derives the item's id.
+    const wakeMessages =
+      wakeRunIds.length === 0
+        ? []
+        : (yield* projectionStore.getThreadRecords(threadId, ["messages"], {
+            messageRoles: ["user"],
+            messageRunIds: wakeRunIds,
+          })).messages;
     const placed = [];
     for (const item of unread) {
       const run = projection.runs.find((candidate) => candidate.id === item.runId);
-      const message = projection.messages.find(
-        (candidate) =>
-          item.type === "user_message" &&
-          candidate.id === item.messageId &&
-          candidate.runId === item.runId,
-      );
+      const message =
+        item.type === "user_message"
+          ? projection.messages.find(
+              (candidate) => candidate.id === item.messageId && candidate.runId === item.runId,
+            )
+          : wakeMessages.find(
+              (candidate) =>
+                candidate.runId === item.runId &&
+                idAllocator.derive.userTurnItem({ messageId: candidate.id }) === item.id,
+            );
       if (run === undefined || message === undefined || isActiveRun(run)) continue;
+      const mailbox = message.delegatedCompletion;
+      const reservation =
+        mailbox === undefined
+          ? undefined
+          : projection.runs.find((candidate) => candidate.id === mailbox.parentRunId)
+              ?.delegatedCompletion?.delivery;
+      const reserved = reservation?.messageId === message.id;
+      // Once accepted, only the mailbox knows which results are still owed, so it is not replayed.
+      const delivered = mailbox !== undefined && (!reserved || reservation.taskIds.length === 0);
+      if (item.type === "notification" && delivered) {
+        yield* writeSystemEvents([settledWakeItemEvent(item, yield* DateTime.now)]);
+        continue;
+      }
       // Stop drops a steer it reached; say so, as the adapter does for steers it still held.
       if (yield* projectionStore.hasRunInterruptRequest(threadId, run.id)) {
         const now = yield* DateTime.now;
-        yield* writeSystemEvents([
+        const dropped: Array<Omit<OrchestrationV2DomainEvent, "id">> = [
           {
             type: "turn-item.updated",
             threadId,
@@ -3914,7 +3952,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               updatedAt: now,
             },
           },
-        ]);
+        ];
+        // Nobody can resend a wake, so only a person's steer gets the notice.
+        yield* writeSystemEvents(item.type === "notification" ? dropped.slice(0, 1) : dropped);
         continue;
       }
       // The message's first steer effect recorded which runs were queued before it was sent; a
@@ -3933,14 +3973,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ),
         ),
       );
-      placed.push({ item, run, message, steer, afterRunOrdinal });
+      placed.push({ item, run, message, steer, afterRunOrdinal, reserved });
     }
     // Each requeue starts the queue once it commits, so earlier places go first.
     placed.sort(
       (left, right) =>
         left.afterRunOrdinal - right.afterRunOrdinal || left.item.ordinal - right.item.ordinal,
     );
-    for (const { run, message, steer, afterRunOrdinal } of placed) {
+    for (const { item, run, message, steer, afterRunOrdinal, reserved } of placed) {
       yield* dispatchWithReceiptEffect({
         type: "message.dispatch",
         commandId: CommandId.make(`command:unread-steer:${run.id}:${message.id}`),
@@ -3954,10 +3994,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         text: message.text,
         ...(message.context ? { context: message.context } : {}),
         attachments: message.attachments,
-        ...(message.delegatedCompletion === undefined
-          ? {}
-          : { delegatedCompletion: message.delegatedCompletion }),
-        ...(message.notification === undefined ? {} : { notification: message.notification }),
+        // A mailbox wake replays with its reservation; any other wake returns as the notice it showed.
+        ...(item.type === "notification" && !reserved
+          ? {
+              // It was steered into this run because their purposes matched.
+              purposeSource: {
+                version: 1,
+                scope: executionPurposeOf(run).scope,
+                provenance: { type: "source_run", threadId, runId: run.id },
+              },
+              notification: {
+                source: item.source,
+                outcome: item.outcome,
+                summary: item.summary,
+                ...(item.detail === undefined ? {} : { detail: item.detail }),
+              },
+            }
+          : {
+              ...(message.delegatedCompletion === undefined
+                ? {}
+                : { delegatedCompletion: message.delegatedCompletion }),
+              ...(message.notification === undefined ? {} : { notification: message.notification }),
+            }),
         dispatchMode: { type: "queue_after_active" },
         createdBy: message.createdBy,
         creationSource: message.creationSource,
@@ -7959,6 +8017,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
     if (yield* isStaleQuestionWake(projection, command.messageId, command.notification)) {
+      const steeredWakeItem =
+        command.steerFollowUpOfRunId === undefined
+          ? null
+          : yield* projectionStore
+              .getTurnItem({
+                threadId: command.threadId,
+                itemId: idAllocator.derive.userTurnItem({ messageId: command.messageId }),
+              })
+              .pipe(
+                Effect.mapError(
+                  (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+                ),
+              );
+      if (
+        steeredWakeItem?.type === "notification" &&
+        steeredWakeItem.status === "pending" &&
+        steeredWakeItem.runId === command.steerFollowUpOfRunId
+      ) {
+        yield* emit(events, command)(settledWakeItemEvent(steeredWakeItem, yield* DateTime.now));
+      }
       yield* emit(
         events,
         command,
@@ -9066,20 +9144,52 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.creationSource === "provider" &&
         !(yield* stopReachedRun(command, command.threadId, activeRun.id));
       let steerFollowUpQueuePosition: number | undefined;
+      let steerFollowUpWakeItem:
+        | Extract<OrchestrationV2TurnItem, { readonly type: "notification" }>
+        | undefined;
       if (
         command.steerFollowUpOfRunId !== undefined &&
         command.steerFollowUpAfterRunOrdinal !== undefined
       ) {
         const afterRunOrdinal = command.steerFollowUpAfterRunOrdinal;
+        // The command projection omits notification items, where a wake keeps its place.
+        const notificationItem = (messageId: MessageId) =>
+          projectionStore
+            .getTurnItem({
+              threadId: command.threadId,
+              itemId: idAllocator.derive.userTurnItem({ messageId }),
+            })
+            .pipe(
+              Effect.map((item) => (item?.type === "notification" ? item : undefined)),
+              Effect.mapError(
+                (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+              ),
+            );
+        steerFollowUpWakeItem = yield* notificationItem(command.messageId);
         const steerOrdinal =
           projection.turnItems.find(
             (item) => item.type === "user_message" && item.messageId === command.messageId,
-          )?.ordinal ?? -1;
+          )?.ordinal ??
+          steerFollowUpWakeItem?.ordinal ??
+          -1;
         // Earlier declined steers have newer runs but retain their original turn-item ordinals.
         const earlierSteerMessageIds = new Set(
           projection.turnItems.flatMap((item) =>
             item.type === "user_message" && item.ordinal < steerOrdinal ? [item.messageId] : [],
           ),
+        );
+        const earlierWakeMessageIds = new Set(
+          yield* Effect.forEach(
+            projection.runs.filter((candidate) => candidate.status === "queued"),
+            (candidate) =>
+              notificationItem(candidate.userMessageId).pipe(
+                Effect.map((item) =>
+                  item !== undefined && item.ordinal < steerOrdinal
+                    ? [candidate.userMessageId]
+                    : [],
+                ),
+              ),
+          ).pipe(Effect.map((ids) => ids.flat())),
         );
         steerFollowUpQueuePosition =
           Math.max(
@@ -9089,7 +9199,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 (candidate) =>
                   candidate.status === "queued" &&
                   (candidate.ordinal <= afterRunOrdinal ||
-                    earlierSteerMessageIds.has(candidate.userMessageId)),
+                    earlierSteerMessageIds.has(candidate.userMessageId) ||
+                    earlierWakeMessageIds.has(candidate.userMessageId)),
               )
               .map((candidate) => candidate.queuePosition ?? candidate.ordinal),
           ) + 1;
@@ -9302,6 +9413,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             updatedAt: now,
           },
         });
+      }
+      if (
+        steerFollowUpWakeItem?.status === "pending" &&
+        steerFollowUpWakeItem.runId === command.steerFollowUpOfRunId
+      ) {
+        yield* emitEvent(settledWakeItemEvent(steerFollowUpWakeItem, now));
       }
       if (queuedRunStop !== undefined) {
         return yield* stopRunForQueuedCommand({
@@ -20000,6 +20117,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }),
       ),
     );
+    // Recovery leaves a steer the provider had not read pending, and no run update follows it.
+    // It goes first so a mailbox wake still holding its reservation keeps its place in the queue.
+    yield* projectionStore.getRecoveryThreadIds("unread-steers").pipe(
+      Effect.flatMap((threadIds) =>
+        Effect.forEach(
+          threadIds,
+          (threadId) =>
+            threadDispatch.withLock(threadId, requeueUnreadSteers(threadId)).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Failed to requeue an unread steer during recovery", {
+                  threadId,
+                  cause,
+                }),
+              ),
+            ),
+          { discard: true },
+        ),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Failed to inspect unread steers during recovery", { cause }),
+      ),
+    );
     yield* projectionStore.getRecoveryThreadIds("delegated-completions").pipe(
       Effect.tap((threadIds) =>
         Effect.annotateCurrentSpan("recovery.delegatedCompletionThreads", threadIds.length),
@@ -20060,27 +20199,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         Effect.logWarning("Failed to inspect delegated completion delivery during recovery", {
           cause,
         }),
-      ),
-    );
-    // Recovery leaves a steer the provider had not read pending, and no run update follows it.
-    yield* projectionStore.getRecoveryThreadIds("unread-steers").pipe(
-      Effect.flatMap((threadIds) =>
-        Effect.forEach(
-          threadIds,
-          (threadId) =>
-            threadDispatch.withLock(threadId, requeueUnreadSteers(threadId)).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logWarning("Failed to requeue an unread steer during recovery", {
-                  threadId,
-                  cause,
-                }),
-              ),
-            ),
-          { discard: true },
-        ),
-      ),
-      Effect.catchCause((cause) =>
-        Effect.logWarning("Failed to inspect unread steers during recovery", { cause }),
       ),
     );
   });
