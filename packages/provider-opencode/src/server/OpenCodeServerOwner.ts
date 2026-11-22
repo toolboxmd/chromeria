@@ -15,6 +15,11 @@ interface OpenCodeServerOwnerState {
   serverScope: Scope.Closeable | null;
   borrowers: number;
   idleCloseFiber: Fiber.Fiber<void, never> | null;
+  starting: Fiber.Fiber<
+    OpenCodeRuntime.OpenCodeServerProcess,
+    OpenCodeRuntime.OpenCodeRuntimeError
+  > | null;
+  closed: boolean;
 }
 
 export class OpenCodeServerOwner extends Context.Service<
@@ -32,6 +37,7 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
   readonly serverPassword?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly verify?: (url: string) => Effect.Effect<string, OpenCodeRuntime.OpenCodeRuntimeError>;
+  readonly threadId?: string;
 }) {
   const runtime = yield* OpenCodeRuntime.OpenCodeRuntime;
   const ownerScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
@@ -43,6 +49,8 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
     serverScope: null,
     borrowers: 0,
     idleCloseFiber: null,
+    starting: null,
+    closed: false,
   };
 
   const cancelIdleClose = Effect.fn("OpenCodeServerOwner.cancelIdleClose")(function* () {
@@ -82,8 +90,15 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
     );
   });
 
+  // A borrower that outlives the owner, such as a reconnect, must not start an unowned process.
+  const closedError = new OpenCodeRuntime.OpenCodeRuntimeError({
+    operation: "startOpenCodeServerProcess",
+    detail: "The OpenCode server was closed with its owner.",
+  });
+
   const acquireServer = mutex.withPermit(
     Effect.gen(function* () {
+      if (state.closed) return yield* closedError;
       yield* cancelIdleClose();
       if (state.server !== null) {
         if (yield* state.server.isRunning) {
@@ -92,10 +107,13 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
         }
         yield* closeServer(state.server);
       }
+      // Shutdown may have begun while the dead process was cleaned up.
+      if (state.closed) return yield* closedError;
 
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           const serverScope = yield* Scope.make();
+          // Startup holds the mutex until readiness, so closing interrupts it through this fiber.
           const started = yield* Effect.exit(
             restore(
               runtime
@@ -107,10 +125,23 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
                     : {}),
                   ...(input.environment ? { environment: input.environment } : {}),
                   ...(input.verify ? { verify: input.verify } : {}),
+                  ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
                 })
-                .pipe(Effect.provideService(Scope.Scope, serverScope)),
+                .pipe(
+                  Effect.provideService(Scope.Scope, serverScope),
+                  Effect.forkChild,
+                  // Shutdown that began before this registration finds no startup to stop.
+                  Effect.tap((fiber) =>
+                    Effect.suspend(() => {
+                      state.starting = fiber;
+                      return state.closed ? Fiber.interrupt(fiber) : Effect.void;
+                    }),
+                  ),
+                  Effect.flatMap(Fiber.join),
+                ),
             ),
           );
+          state.starting = null;
           if (Exit.isFailure(started)) {
             yield* Scope.close(serverScope, Exit.void).pipe(Effect.ignore);
             return yield* Effect.failCause(started.cause);
@@ -156,12 +187,19 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
     );
 
   yield* Effect.addFinalizer(() =>
-    mutex.withPermit(
-      Effect.gen(function* () {
-        yield* cancelIdleClose();
-        state.borrowers = 0;
-        yield* closeServer();
-      }),
+    Effect.suspend(() => {
+      state.closed = true;
+      return state.starting === null ? Effect.void : Fiber.interrupt(state.starting);
+    }).pipe(
+      Effect.andThen(
+        mutex.withPermit(
+          Effect.gen(function* () {
+            yield* cancelIdleClose();
+            state.borrowers = 0;
+            yield* closeServer();
+          }),
+        ),
+      ),
     ),
   );
 
