@@ -77,6 +77,7 @@ import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import { dispatchVia, ScheduledTaskDispatchPolicy } from "../scheduledTaskChecks/DispatchPolicy.ts";
 import { forkFireKey } from "../scheduledTaskChecks/schedules.ts";
 import { migrateLegacyCalendarSchedules } from "../scheduledTaskChecks/fixedTimeMigration.ts";
+import { deleteSpentOnceTask } from "../scheduledTaskChecks/spentOnce.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
@@ -1336,15 +1337,11 @@ export const layer = Layer.effect(
       });
       if (run === null || !ThreadManagementService.isTerminalRunStatus(run.status)) return;
       if (run.status === "completed") {
-        const removed = yield* sql`
-          DELETE FROM scheduled_tasks
-          WHERE task_id = ${taskId} AND last_run_at = ${startedAtIso}
-            AND last_run_status = 'succeeded' AND next_run_at IS NULL
-            AND json_extract(schedule_json, '$.type') = 'once'
-            AND julianday(last_run_at) >= julianday(json_extract(schedule_json, '$.runAt'))
-          RETURNING task_id
-        `;
-        if (removed.length > 0) yield* notifyChanged;
+        // Fork: also the fork's `at` and automation-wrapped schedules.
+        const removed = yield* deleteSpentOnceTask(taskId, startedAtIso).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
+        if (removed) yield* notifyChanged;
         return;
       }
       // Only the run's failed errors feed latestRootProviderFailure; a long-lived task
