@@ -35,7 +35,6 @@ import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MONTH_DAYS, type FixedTimeForkDraft } from "./scheduledTaskFork.logic";
 import { matchesScheduledTaskScope, scheduleLabel } from "./scheduledTasksSettings.logic";
-import { useEnvironmentTransportLabel } from "./EnvironmentRow";
 import { SettingsGroup } from "./SettingsGroup";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { settingsScopeEnvironmentLabel } from "./settingsScopeAxis";
@@ -287,7 +286,6 @@ function ScheduledTaskOrigin({
   readonly project: string | undefined;
 }) {
   const gt = useGT();
-  const transport = useEnvironmentTransportLabel(environment);
   const command = task.command !== undefined;
   const kind = command ? gt("Shell command task") : gt("Agent task");
   return (
@@ -301,12 +299,9 @@ function ScheduledTaskOrigin({
         kind={resolveEnvironmentMachineKind(environment.serverConfig)}
         className="size-3.5 shrink-0"
       />
-      <Tooltip>
-        <TooltipTrigger render={<span className="truncate" />}>
-          {project === undefined ? machine : `${machine} · ${project}`}
-        </TooltipTrigger>
-        <TooltipPopup>{transport}</TooltipPopup>
-      </Tooltip>
+      <span className="truncate">
+        {project === undefined ? machine : `${machine} · ${project}`}
+      </span>
     </span>
   );
 }

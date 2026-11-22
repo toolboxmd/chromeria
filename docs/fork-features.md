@@ -1664,6 +1664,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
     "apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.ts",
     "apps/web/src/components/ThreadNotificationCoordinator.tsx",
+    "apps/web/src/components/settings/EnvironmentRow.tsx",
+    "apps/web/src/components/settings/ScheduledTasksSettings.browser.test.tsx",
     "apps/web/src/components/settings/ScheduledTasksSettings.tsx",
     "apps/web/src/components/settings/scheduledTasksSettings.logic.ts",
     "docs/user/project-settings.md",
