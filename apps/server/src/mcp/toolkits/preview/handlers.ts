@@ -158,20 +158,21 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
 /** Labels of the links a fill acts for; empty for local work. The broker repeats the check before typing. */
 const authorizeVaultLogin = Effect.gen(function* () {
   const caller = yield* loadCaller();
-  const linked = callerLinkOrigin(caller) !== undefined;
   const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
-  // Linked work that lost Browser access gets the refusal naming its link's setting.
-  if (Option.isSome(authority) && (linked || caller.scope.capabilities.has("preview")))
-    return yield* authority.value.authorizeVault(
-      yield* McpInvocationContext.requireThreadScope(caller.scope, "preview_fill_credential"),
-    );
+  // Linked work, known from its durable authority, gets refusals naming its link's settings.
+  const links = Option.isSome(authority)
+    ? yield* authority.value.authorizeVault(
+        yield* McpInvocationContext.requireThreadScope(caller.scope, "preview_fill_credential"),
+      )
+    : [];
   yield* McpInvocationContext.requireThreadMcpCapability("preview");
-  if (!linked) return [];
-  return yield* new OrchestratorMcpFailure({
-    code: "capability_denied",
-    message:
-      "Linked callers cannot use this environment's credential vault without a current link grant.",
-  });
+  if (Option.isNone(authority) && callerLinkOrigin(caller) !== undefined)
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message:
+        "Linked callers cannot use this environment's credential vault without a current link grant.",
+    });
+  return links;
 });
 
 const invokeTargeted = <A extends object>(

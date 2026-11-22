@@ -2579,7 +2579,7 @@ it.live.each(["browser-off-after", "device-default", "browser-off-nested"] as co
 const decodeVault860Tab = Schema.decodeUnknownEffect(
   Schema.Struct({ resource: Schema.Struct({ tabId: Schema.String }) }),
 );
-it.live.each(["none", "a", "c"] as const)(
+it.live.each(["none", "a", "c", "a-browser"] as const)(
   "vault860: a local schedule two links edited fills only while every link grants the vault (off: %s)",
   (vaultOff) =>
     Effect.scoped(
@@ -2637,6 +2637,8 @@ it.live.each(["none", "a", "c"] as const)(
             (g) => g.environmentId === peer.environmentId,
           )!;
           if (vaultOff === id) yield* b.authority.setGrant({ ...grant, vault: false });
+          if (vaultOff === `${id}-browser`)
+            yield* b.authority.setGrant({ ...grant, preview: false });
           const edited = yield* nativeCall(peer, parent, "update_scheduled_task", {
             purposeIntent: { version: 1, intent: { type: "unscoped" } },
             environmentId: b.environmentId,
@@ -2666,6 +2668,23 @@ it.live.each(["none", "a", "c"] as const)(
         });
         const call = (tool: string, input: Record<string, unknown>) =>
           nativeCall(b, threadId, tool, input, capabilities, credential);
+        const fill = (tabId: string, key: string) =>
+          call("preview_fill_credential", {
+            tabId,
+            item: "synthetic-item",
+            field: "password",
+            locator: "#password",
+            clientRequestId: `vault860-${vaultOff}-${key}`,
+          });
+        const typed = credentialFills();
+        if (vaultOff === "a-browser") {
+          // Without Browser access the run cannot open a tab; the refusal names the link's setting.
+          const refused = json(yield* fill("vault860-tab", "no-browser"));
+          expect(refused).toContain("capability_denied");
+          expect(refused).toContain("Browser access for this link");
+          expect(credentialFills()).toBe(typed);
+          return;
+        }
         const opened = yield* call("preview_open", {
           url: "https://example.test/login",
           profileId: "default",
@@ -2674,22 +2693,28 @@ it.live.each(["none", "a", "c"] as const)(
         });
         expect(opened.isError, json(opened)).not.toBe(true);
         const { resource } = yield* decodeVault860Tab(opened.structuredContent);
-        const typed = credentialFills();
-        const filled = yield* call("preview_fill_credential", {
-          tabId: resource.tabId,
-          item: "synthetic-item",
-          field: "password",
-          locator: "#password",
-          clientRequestId: `vault860-${vaultOff}-fill`,
-        });
-        if (vaultOff === "none") {
-          expect(filled.structuredContent, json(filled)).toMatchObject({ filled: true });
-          expect(credentialFills()).toBe(typed + 1);
-        } else {
+        const filled = yield* fill(resource.tabId, "fill");
+        if (vaultOff !== "none") {
           expect(json(filled)).toContain("capability_denied");
           expect(json(filled)).toContain("Use credential vault");
           expect(credentialFills()).toBe(typed);
+          return;
         }
+        expect(filled.structuredContent, json(filled)).toMatchObject({ filled: true });
+        expect(credentialFills()).toBe(typed + 1);
+        // Turning the vault off for an accepted schedule refuses its fills but keeps it running.
+        const grantA = (yield* b.authority.grants).find(
+          (g) => g.environmentId === a.environmentId,
+        )!;
+        yield* b.authority.setGrant({ ...grantA, vault: false });
+        expect((yield* Effect.result(b.authority.checkThread(threadId)))._tag).toBe("Success");
+        const revoked = json(yield* fill(resource.tabId, "revoked"));
+        expect(revoked).toContain("Use credential vault");
+        expect(credentialFills()).toBe(typed + 1);
+        yield* b.authority.setGrant({ ...grantA, vault: true });
+        const restored = yield* fill(resource.tabId, "restored");
+        expect(restored.structuredContent, json(restored)).toMatchObject({ filled: true });
+        expect(credentialFills()).toBe(typed + 2);
       }),
     ).pipe(
       Effect.provide(

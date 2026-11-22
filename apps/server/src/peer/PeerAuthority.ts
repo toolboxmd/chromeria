@@ -52,6 +52,7 @@ import {
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Result from "effect/Result";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -1918,15 +1919,21 @@ const make = Effect.gen(function* () {
     "PeerAuthority.authorizeVault",
   )(function* (scope) {
     const links = new Set<string>();
-    yield* checkInvocation(scope, "preview", scope.thread.threadId, { type: "run" }).pipe(
-      Effect.provideService(GrantReads, links),
-    );
+    const walked = yield* checkInvocation(scope, "preview", scope.thread.threadId, {
+      type: "run",
+    }).pipe(Effect.provideService(GrantReads, links), Effect.result);
+    const linked =
+      links.size > 0 ||
+      scope.client?.linked === true ||
+      (yield* threads.getThreadShell(scope.thread.threadId).pipe(Effect.mapError(unavailable)))
+        ?.linkOrigin !== undefined;
+    if (Result.isFailure(walked)) {
+      // Local work without Browser access keeps the caller's own capability refusal.
+      if (!linked && !scope.capabilities.has("preview")) return [];
+      return yield* walked.failure;
+    }
     if (links.size === 0) {
-      const thread = yield* threads
-        .getThreadShell(scope.thread.threadId)
-        .pipe(Effect.mapError(unavailable));
-      if (scope.client?.linked === true || thread?.linkOrigin !== undefined)
-        return yield* denied(vaultGrantOff);
+      if (linked) return yield* denied(vaultGrantOff);
       return [];
     }
     const labels: Array<string> = [];
@@ -4075,14 +4082,19 @@ const make = Effect.gen(function* () {
             yield* activeSession(input.sessionId);
             const previous = yield* grant(input.sessionId);
             // Without `vault` (an older client), it follows a Browser access change, as in Settings.
+            // It is stored on only with Browser access, the only way it is used.
             const next: PeerGrant = {
               ...input,
               vault:
-                input.vault ??
-                (input.preview === previous.preview ? previous.vault : input.preview),
+                input.preview &&
+                (input.vault ??
+                  (input.preview === previous.preview ? previous.vault : input.preview)),
             };
             const encoded = yield* encodeGrant(next).pipe(Effect.mapError(unavailable));
-            const priorEncoded = yield* encodeGrant(previous).pipe(Effect.mapError(unavailable));
+            // Each fill checks the vault grant, so changing only it leaves accepted schedules running.
+            const priorEncoded = yield* encodeGrant({ ...previous, vault: next.vault }).pipe(
+              Effect.mapError(unavailable),
+            );
             if (priorEncoded !== encoded)
               yield* Automation.invalidateAutomationSessions([input.sessionId], "retired").pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
