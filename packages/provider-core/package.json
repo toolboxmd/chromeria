@@ -190,6 +190,18 @@
     "./server/usageLimits": {
       "types": "./src/server/usageLimits.ts",
       "import": "./src/server/usageLimits.ts"
+    },
+    "./server/toolPolicy": {
+      "types": "./src/server/toolPolicy.ts",
+      "import": "./src/server/toolPolicy.ts"
+    },
+    "./server/bareLaunch": {
+      "types": "./src/server/bareLaunch.ts",
+      "import": "./src/server/bareLaunch.ts"
+    },
+    "./server/BareProviderRuntime": {
+      "types": "./src/server/BareProviderRuntime.ts",
+      "import": "./src/server/BareProviderRuntime.ts"
     }
   },
   "scripts": {
@@ -199,7 +211,8 @@
   "dependencies": {
     "@t3tools/contracts": "workspace:*",
     "@t3tools/shared": "workspace:*",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "jsonc-parser": "3.3.1"
   },
   "devDependencies": {
     "@effect/platform-node": "catalog:",
