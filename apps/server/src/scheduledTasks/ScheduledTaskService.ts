@@ -1392,15 +1392,6 @@ export const layer = Layer.effect(
       const run = Effect.gen(function* () {
         // Re-read stale poll snapshots so deleted, paused or postponed tasks cannot fire.
         const active = yield* findTask(task.id);
-        // Outcome writes are fenced by the start time, so two runs must not share one.
-        if (
-          trigger === "manual" &&
-          active?.lastRunAt != null &&
-          Date.parse(active.lastRunAt) === DateTime.toEpochMillis(startedAt)
-        )
-          return yield* taskError("This task already started a run at this instant; try again.", {
-            taskId: task.id,
-          });
         if (active === null) {
           if (webhook !== undefined) {
             return yield* new WebhookDeliverySkipped({
@@ -1625,6 +1616,24 @@ export const layer = Layer.effect(
         ),
       );
 
+      // Outcome writes are fenced by the start time, so two runs must not share one.
+      // Checked outside `run`: its cleanup would fail a keyed run that holds this instant.
+      const refuseSameInstant =
+        trigger !== "manual"
+          ? Effect.void
+          : findTask(task.id).pipe(
+              Effect.flatMap((current) =>
+                current?.lastRunAt != null &&
+                Date.parse(current.lastRunAt) === DateTime.toEpochMillis(startedAt)
+                  ? Effect.fail(
+                      taskError("This task already started a run at this instant; try again.", {
+                        taskId: task.id,
+                      }),
+                    )
+                  : Effect.void,
+              ),
+            );
+
       // Reserve and release as one bracket so an interrupt cannot leave the task marked busy.
       return yield* Effect.acquireUseRelease(
         Ref.modify(activeRuns, (active) => {
@@ -1635,7 +1644,7 @@ export const layer = Layer.effect(
         }),
         (reserved) =>
           reserved
-            ? run
+            ? Effect.andThen(refuseSameInstant, run)
             : trigger !== "scheduled"
               ? Effect.fail(taskError("Schedule task is already running.", { taskId: task.id }))
               : Effect.succeed({ task, threadId: null, dispatchFailed: false }),

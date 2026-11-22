@@ -833,8 +833,14 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
 
       assert.equal((yield* service.runNow({ id: input.id })).threadId, launched);
       // Outcome writes are fenced by the start time, so a second start at that instant is refused.
+      // A keyed run can hold the instant without the local reservation; the refusal leaves it alone.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE scheduled_tasks SET last_run_status = 'running' WHERE task_id = ${input.id}`;
       const sameInstant = yield* Effect.flip(service.runNow({ id: input.id }));
       assert.include(sameInstant.message, "already started a run at this instant");
+      const held = (yield* service.list()).tasks.find((task) => task.id === input.id)!;
+      assert.equal(held.lastRunStatus, "running");
+      assert.equal(held.runCount, 1);
       yield* TestClock.adjust(5);
       // A form opened before the first run saves no thread; the binding stays.
       const { task } = yield* service.upsert({
