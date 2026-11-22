@@ -70,15 +70,44 @@ interface Candidate {
 }
 
 const MESSAGE_PREFIX = "scheduled-task-message:";
-// What follows `<task id>:` in a fire's message id; a longer task id that shares the prefix leaves
-// a remainder that matches neither form.
+// What follows `<task id>:` in a scheduled or Run Now fire's message id. A longer task id that
+// shares the prefix leaves a remainder that matches neither form.
 const FIRE_SUFFIX =
   /^(?:(?:once|weekly|monthly):\d{4}-\d{2}-\d{2}T[\d:.]+Z|\d+:(?:scheduled|manual))$/;
 
-/** Whether `messageId` is one `runTask` gave a fire of `taskId`, under any slot. */
-const isTaskFireMessage = (messageId: string, taskId: string) => {
-  const prefix = `${MESSAGE_PREFIX}${taskId}:`;
-  return messageId.startsWith(prefix) && FIRE_SUFFIX.test(messageId.slice(prefix.length));
+interface TaskRun {
+  readonly status: string;
+  readonly requested_at: string;
+  /** Run by a scheduled or Run Now fire of this task, not only filed under its prefix. */
+  readonly fire: boolean;
+  readonly messageId: string;
+}
+
+/**
+ * Each run under `scheduled-task-message:<task id>:` for every candidate task id, whatever follows:
+ * a webhook delivery or a task id that extends this one lands here too, which only keeps more.
+ */
+const runsByTask = (
+  runs: ReadonlyArray<{ message_id: string; status: string; requested_at: string }>,
+  taskIds: ReadonlySet<string>,
+) => {
+  const byTask = new Map<string, Array<TaskRun>>();
+  for (const run of runs) {
+    if (!run.message_id.startsWith(MESSAGE_PREFIX)) continue;
+    const rest = run.message_id.slice(MESSAGE_PREFIX.length);
+    for (let at = rest.indexOf(":"); at !== -1; at = rest.indexOf(":", at + 1)) {
+      const taskId = rest.slice(0, at);
+      if (!taskIds.has(taskId)) continue;
+      const entry = {
+        status: run.status,
+        requested_at: run.requested_at,
+        fire: FIRE_SUFFIX.test(rest.slice(at + 1)),
+        messageId: run.message_id,
+      };
+      byTask.set(taskId, [...(byTask.get(taskId) ?? []), entry]);
+    }
+  }
+  return byTask;
 };
 
 /** The local Run Now id of the fire that started at `lastRunAt`, unique to that start. */
@@ -130,11 +159,12 @@ export const pruneSpentForkOnceTasks = Effect.fn("ScheduledTaskChecks.pruneSpent
       )
       WHERE message_id LIKE 'scheduled-task-message:%'
     `;
+    const byTask = runsByTask(runs, new Set(spentRows.map(({ row }) => row.task_id)));
     const runsByMessage = Map.groupBy(runs, (run) => run.message_id);
     // Which fire a run belonged to cannot be told apart in every history (requeues, edits, clock
-    // steps, restarts), so every run of the task's fires, under any slot, must have completed. The
-    // last fire's own run must also be there: under its Run Now id, which is unique to the start, or
-    // any run requested from the start on. Any other history keeps the task.
+    // steps, restarts), so every run filed under the task, and every run of its keyed requests, must
+    // have completed. The last fire's own run must also be there: under its Run Now id, or a fire
+    // run of the task requested from the start on. Any other history keeps the task.
     const spent = spentRows.filter(({ row, task }) => {
       const requests = keyedByTask.get(row.task_id) ?? [];
       const atStart = requests.filter((request) => request.started_at === row.last_run_at);
@@ -144,18 +174,21 @@ export const pruneSpentForkOnceTasks = Effect.fn("ScheduledTaskChecks.pruneSpent
         manualMessageId(row, task),
         ...atStart.map((request) => `${MESSAGE_PREFIX}manual:${request.request_id}`),
       ]);
-      const keyedIds = new Set(
-        requests.map((request) => `${MESSAGE_PREFIX}manual:${request.request_id}`),
+      const keyedRuns = requests.flatMap((request) =>
+        (runsByMessage.get(`${MESSAGE_PREFIX}manual:${request.request_id}`) ?? []).map((run) => ({
+          status: run.status,
+          requested_at: run.requested_at,
+          fire: true,
+          messageId: run.message_id,
+        })),
       );
-      const taskRuns = [...runsByMessage].flatMap(([messageId, messageRuns]) =>
-        keyedIds.has(messageId) || isTaskFireMessage(messageId, row.task_id)
-          ? messageRuns.map((run) => ({ ...run, own: ownIds.has(messageId) }))
-          : [],
-      );
+      const taskRuns = [...(byTask.get(row.task_id) ?? []), ...keyedRuns];
       return (
         taskRuns.every((run) => run.status === "completed") &&
         taskRuns.some(
-          (run) => run.own || Date.parse(run.requested_at) >= Date.parse(row.last_run_at),
+          (run) =>
+            ownIds.has(run.messageId) ||
+            (run.fire && Date.parse(run.requested_at) >= Date.parse(row.last_run_at)),
         )
       );
     });

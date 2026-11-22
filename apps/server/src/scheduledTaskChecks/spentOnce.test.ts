@@ -287,13 +287,14 @@ const rows: ReadonlyArray<Row> = [
     onCompletion: true,
     pruned: false,
   },
-  // A task whose id extends another's: its runs are not the shorter task's.
+  // A task whose id extends another's: its unfinished runs also keep the shorter task (the safe
+  // direction), and its completed runs never count as the shorter task's own.
   {
     id: "prefix",
     schedule: at(spentAt),
     run: { messageId: scheduledMessage("prefix", spentAt), status: "completed" },
     onCompletion: true,
-    pruned: true,
+    pruned: false,
   },
   {
     id: "prefix:longer",
@@ -301,6 +302,35 @@ const rows: ReadonlyArray<Row> = [
     run: { messageId: scheduledMessage("prefix:longer", spentAt), status: "failed" },
     onCompletion: true,
     pruned: false,
+  },
+  // A webhook delivery queued before an edit to a one-time schedule.
+  {
+    id: "webhook-queued",
+    schedule: at(spentAt),
+    keyedRequestId: "request:webhook-queued",
+    otherRuns: [
+      {
+        messageId: "scheduled-task-message:webhook-queued:webhook:delivery:1",
+        status: "queued",
+        requestedAt: "2026-10-08T09:00:00.000Z",
+      },
+    ],
+    run: { messageId: "scheduled-task-message:manual:request:webhook-queued", status: "completed" },
+    onCompletion: true,
+    pruned: false,
+  },
+  {
+    id: "short",
+    schedule: at(spentAt),
+    onCompletion: true,
+    pruned: false,
+  },
+  {
+    id: "short:once",
+    schedule: at(spentAt),
+    run: { messageId: scheduledMessage("short:once", spentAt), status: "completed" },
+    onCompletion: true,
+    pruned: true,
   },
   {
     id: "keyed-run-now",
