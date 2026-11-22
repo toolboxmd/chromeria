@@ -1,4 +1,4 @@
-import { useAtomValue } from "@effect/atom-react";
+import { useAtom, useAtomValue } from "@effect/atom-react";
 import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
 import {
   forkTaskSummary,
@@ -15,7 +15,7 @@ import {
   type ScheduledTaskId,
   type ScheduledTaskUpsertSchedule,
 } from "@t3tools/contracts";
-import { AsyncResult } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
 import { BotIcon, TerminalIcon } from "lucide-react";
 import { Fragment, type ReactNode, useEffect, useState } from "react";
@@ -58,6 +58,12 @@ const scheduledTasksListAtom = environmentAtomList("web-scheduled-tasks-list", (
   serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
 );
 
+/** Kept for the session: Settings remounts this page on scope and link changes. */
+const historyOpenAtom = Atom.make(false).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("web-scheduled-tasks-history-open"),
+);
+
 const SCOPE_SUMMARY_TEMPLATES = {
   notConnected: msg("Not connected: {environments}"),
   loading: msg("Loading scheduled tasks on {environments}"),
@@ -82,11 +88,8 @@ export function ScheduledTaskList({
   const gt = useGT();
   const { scope, environments, groups } = useSettingsScope();
   const [failingOnly, setFailingOnly] = useState(false);
-  // A toggle holds only for the link it was made under, so a new link into History opens it.
-  const [historyToggle, setHistoryToggle] = useState<{
-    readonly link: string | null;
-    readonly open: boolean;
-  } | null>(null);
+  const [historyOpen, setHistoryOpen] = useAtom(historyOpenAtom);
+  const [shownLink, setShownLink] = useState<string | null>(null);
   const connectedIds = environments.flatMap((environment) =>
     environment.connection.phase === "connected" && environment.serverConfig !== null
       ? [environment.environmentId]
@@ -115,20 +118,27 @@ export function ScheduledTaskList({
       environment,
     })),
   );
-  // The chip hides once nothing fails, so its filter must lapse with it.
-  const sections = scheduledTaskSections(entries, {
-    failingOnly: failingOnly && entries.some((entry) => entry.task.lastRunStatus === "failed"),
-  });
   const linkedState = states.find((state) => state.environment.environmentId === environmentId);
   const linkedTask = linkedState?.tasks?.find((task) => task.id === taskId);
   const linkedKey =
     linkedTask && environmentId !== undefined
       ? scheduledTaskEntryKey({ environmentId, task: linkedTask })
       : null;
-  const historyOpen =
-    historyToggle !== null && historyToggle.link === linkedKey
-      ? historyToggle.open
-      : linkedTask !== undefined && isScheduledTaskHistory(linkedTask);
+  const historyLink =
+    linkedTask !== undefined && isScheduledTaskHistory(linkedTask) ? linkedKey : null;
+  // A newly loaded link shows its row: Failing stops hiding it, then the user owns the filter.
+  if (linkedKey !== shownLink) {
+    setShownLink(linkedKey);
+    if (linkedTask !== undefined && linkedTask.lastRunStatus !== "failed") setFailingOnly(false);
+  }
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- A link from the URL opens History in shared state, which outlives the remount when the editor closes and drops the link.
+  useEffect(() => {
+    if (historyLink !== null) setHistoryOpen(true);
+  }, [historyLink, setHistoryOpen]);
+  // The chip hides once nothing fails, so its filter must lapse with it.
+  const sections = scheduledTaskSections(entries, {
+    failingOnly: failingOnly && entries.some((entry) => entry.task.lastRunStatus === "failed"),
+  });
 
   const loaded = states.filter((state) => state.connected && state.error === null && state.tasks);
   const populated = loaded.some((state) => state.tasks && state.tasks.length > 0);
@@ -166,10 +176,11 @@ export function ScheduledTaskList({
             machine={settingsScopeEnvironmentLabel(entry.environment, environments)}
             project={
               groups.find((group) =>
-                group.memberProjects.some(
-                  (member) =>
-                    member.environmentId === entry.environmentId &&
-                    member.id === entry.task.projectId,
+                // Refs keep every registration of a grouped checkout, members only the newest.
+                group.memberProjectRefs.some(
+                  (ref) =>
+                    ref.environmentId === entry.environmentId &&
+                    ref.projectId === entry.task.projectId,
                 ),
               )?.displayName
             }
@@ -243,7 +254,7 @@ export function ScheduledTaskList({
           <CollapsibleSectionHeader
             expanded={historyOpen}
             tone="emphasized"
-            onClick={() => setHistoryToggle({ link: linkedKey, open: !historyOpen })}
+            onClick={() => setHistoryOpen(!historyOpen)}
             accessory={
               <span className="text-xs text-muted-foreground">
                 {sections.historyFailing > 0

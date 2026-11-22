@@ -517,10 +517,9 @@ export function SettingsScheduledTasksRouteScreen() {
             }
             projectName={(environmentId, projectId) =>
               projectGroups.find((group) =>
-                group.members.some(
-                  (member) =>
-                    member.project.environmentId === environmentId &&
-                    member.project.id === projectId,
+                // Refs keep every registration of a grouped checkout, members only the newest.
+                group.memberProjectRefs.some(
+                  (ref) => ref.environmentId === environmentId && ref.projectId === projectId,
                 ),
               )?.label
             }

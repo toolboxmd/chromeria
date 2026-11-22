@@ -199,7 +199,6 @@ export function ScheduledTaskList({
             role="status"
             textRole="footnote"
             className="px-2 text-foreground-muted"
-            numberOfLines={2}
           >
             {messages(SCOPE_SUMMARY_TEMPLATES[key as keyof typeof summaries], {
               environments: labels.join(", "),
