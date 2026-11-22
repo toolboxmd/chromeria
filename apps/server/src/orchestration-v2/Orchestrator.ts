@@ -3861,6 +3861,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const requeueUnreadSteers = Effect.fn("Orchestrator.requeueUnreadSteers")(function* (
     threadId: ThreadId,
     runIds?: ReadonlyArray<RunId>,
+    afterRestart = false,
   ) {
     const { turnItems } = yield* projectionStore.getThreadRecords(threadId, ["turnItems"], {
       turnItemTypes: ["user_message", "notification"],
@@ -3995,11 +3996,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(message.context ? { context: message.context } : {}),
         attachments: message.attachments,
         // It was steered into this run because their purposes matched; a mailbox wake's own causes win.
-        purposeSource: {
-          version: 1,
-          scope: executionPurposeOf(run).scope,
-          provenance: { type: "source_run", threadId, runId: run.id },
-        },
+        ...(afterRestart || (item.type === "notification" && !reserved)
+          ? {
+              purposeSource: {
+                version: 1,
+                scope: executionPurposeOf(run).scope,
+                provenance: { type: "source_run", threadId, runId: run.id },
+              },
+            }
+          : {}),
         // A mailbox wake replays with its reservation; any other wake returns as the notice it showed.
         ...(item.type === "notification" && !reserved
           ? {
@@ -20124,7 +20129,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         Effect.forEach(
           threadIds,
           (threadId) =>
-            threadDispatch.withLock(threadId, requeueUnreadSteers(threadId)).pipe(
+            threadDispatch.withLock(threadId, requeueUnreadSteers(threadId, undefined, true)).pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("Failed to requeue an unread steer during recovery", {
                   threadId,

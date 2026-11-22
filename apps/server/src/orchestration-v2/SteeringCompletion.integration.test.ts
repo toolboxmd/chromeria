@@ -4488,15 +4488,23 @@ it.effect.each([
         Stream.runDrain,
         Effect.forkScoped({ startImmediately: true }),
       );
-      for (const messageId of ending === "restart" || ending === "stop" ? messageIds : []) {
-        yield* Queue.offer(events, {
-          type: "steer.updated",
-          driver,
-          threadId,
-          runId: parent.id,
-          messageId,
-          status: "pending",
-        });
+      const steerStatuses =
+        ending === "restart" || ending === "stop"
+          ? (["pending"] as const)
+          : ending === "restart after reading"
+            ? (["pending", "completed"] as const)
+            : [];
+      for (const messageId of messageIds) {
+        for (const status of steerStatuses) {
+          yield* Queue.offer(events, {
+            type: "steer.updated",
+            driver,
+            threadId,
+            runId: parent.id,
+            messageId,
+            status,
+          });
+        }
       }
       yield* Queue.offer(events, { type: "provider_turn.updated", driver, providerTurn: turn });
       yield* Fiber.join(ingested);
