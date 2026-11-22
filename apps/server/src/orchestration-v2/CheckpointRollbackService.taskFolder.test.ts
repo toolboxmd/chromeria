@@ -1,4 +1,5 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as ContextmdServing from "../contextmd/ContextmdServing.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -162,6 +163,8 @@ const layerFor = (state: State, options: Options) => {
       ),
     ),
     CheckpointRollbackService.layer.pipe(
+      // Chromeria: rollback refreshes ContextMD serving, which these fixtures do not run.
+      Layer.provide(Layer.mock(ContextmdServing.ContextmdServing)({})),
       Layer.provide(
         Layer.mergeAll(
           layerCheckpoints,
