@@ -3856,22 +3856,42 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
     const unread = turnItems.filter(isSteerTurnItem);
     if (unread.length === 0) return;
-    // A notification item drops its message id, so match messages by the item id they derive.
     const projection = yield* projectionStore.getThreadRecords(threadId, ["runs", "messages"], {
-      messageRoles: ["user"],
-      messageRunIds: unread.flatMap((item) => (item.runId === null ? [] : [item.runId])),
+      messageIds: unread.flatMap((item) => (item.type === "user_message" ? [item.messageId] : [])),
     });
+    const wakeRunIds = unread.flatMap((item) =>
+      item.type === "notification" && item.runId !== null ? [item.runId] : [],
+    );
+    // A wake's notification item drops its message id; its message derives the item's id.
+    const wakeMessages =
+      wakeRunIds.length === 0
+        ? []
+        : (yield* projectionStore.getThreadRecords(threadId, ["messages"], {
+            messageRoles: ["user"],
+            messageRunIds: wakeRunIds,
+          })).messages;
     const placed = [];
     for (const item of unread) {
       const run = projection.runs.find((candidate) => candidate.id === item.runId);
-      const message = projection.messages.find(
-        (candidate) =>
-          candidate.runId === item.runId &&
-          (item.type === "user_message"
-            ? candidate.id === item.messageId
-            : idAllocator.derive.userTurnItem({ messageId: candidate.id }) === item.id),
-      );
+      const message =
+        item.type === "user_message"
+          ? projection.messages.find(
+              (candidate) => candidate.id === item.messageId && candidate.runId === item.runId,
+            )
+          : wakeMessages.find(
+              (candidate) =>
+                candidate.runId === item.runId &&
+                idAllocator.derive.userTurnItem({ messageId: candidate.id }) === item.id,
+            );
       if (run === undefined || message === undefined || isActiveRun(run)) continue;
+      // Delegated completion recovery redelivers a mailbox wake that still holds its reservation.
+      const mailbox = message.delegatedCompletion;
+      if (
+        mailbox !== undefined &&
+        projection.runs.find((candidate) => candidate.id === mailbox.parentRunId)
+          ?.delegatedCompletion?.delivery?.messageId === message.id
+      )
+        continue;
       // Stop drops a steer it reached; say so, as the adapter does for steers it still held.
       if (yield* projectionStore.hasRunInterruptRequest(threadId, run.id)) {
         const now = yield* DateTime.now;
@@ -3942,7 +3962,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (left, right) =>
         left.afterRunOrdinal - right.afterRunOrdinal || left.item.ordinal - right.item.ordinal,
     );
-    for (const { run, message, steer, afterRunOrdinal } of placed) {
+    for (const { item, run, message, steer, afterRunOrdinal } of placed) {
       yield* dispatchWithReceiptEffect({
         type: "message.dispatch",
         commandId: CommandId.make(`command:unread-steer:${run.id}:${message.id}`),
@@ -3956,10 +3976,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         text: message.text,
         ...(message.context ? { context: message.context } : {}),
         attachments: message.attachments,
-        ...(message.delegatedCompletion === undefined
-          ? {}
-          : { delegatedCompletion: message.delegatedCompletion }),
-        ...(message.notification === undefined ? {} : { notification: message.notification }),
+        // An accepted mailbox wake gave up its reservation, so it returns as the notice it showed.
+        ...(item.type === "notification"
+          ? {
+              notification: {
+                source: item.source,
+                outcome: item.outcome,
+                summary: item.summary,
+                ...(item.detail === undefined ? {} : { detail: item.detail }),
+              },
+            }
+          : {
+              ...(message.delegatedCompletion === undefined
+                ? {}
+                : { delegatedCompletion: message.delegatedCompletion }),
+              ...(message.notification === undefined ? {} : { notification: message.notification }),
+            }),
         dispatchMode: { type: "queue_after_active" },
         createdBy: message.createdBy,
         creationSource: message.creationSource,
@@ -3969,6 +4001,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(message.senderThreadId === undefined ? {} : { senderThreadId: message.senderThreadId }),
         ...(message.linkedSender === undefined ? {} : { linkedSender: message.linkedSender }),
       }).pipe(
+        // Queueing moves a user item to its new run but leaves a wake's item behind until it starts.
+        Effect.andThen(
+          Effect.gen(function* () {
+            if (item.type !== "notification") return;
+            const current = yield* projectionStore.getTurnItem({ threadId, itemId: item.id });
+            if (current?.status !== "pending" || current.runId !== run.id) return;
+            const now = yield* DateTime.now;
+            yield* writeSystemEvents([
+              {
+                type: "turn-item.updated",
+                threadId,
+                runId: run.id,
+                ...(item.nodeId === null ? {} : { nodeId: item.nodeId }),
+                providerInstanceId: run.providerInstanceId,
+                occurredAt: now,
+                payload: { ...current, status: "cancelled", completedAt: now, updatedAt: now },
+              },
+            ]);
+          }),
+        ),
         Effect.catchCause((cause) =>
           Effect.logWarning("Failed to requeue an unread steer", {
             threadId,
@@ -9073,15 +9125,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         command.steerFollowUpAfterRunOrdinal !== undefined
       ) {
         const afterRunOrdinal = command.steerFollowUpAfterRunOrdinal;
+        // The command projection omits notification items; a wake's item keeps its place.
+        const { turnItems: wakeItems } = yield* loadProjectionForCommand(command, ["turnItems"], {
+          turnItemTypes: ["notification"],
+        });
+        const wakeItemId = idAllocator.derive.userTurnItem({ messageId: command.messageId });
         const steerOrdinal =
           projection.turnItems.find(
             (item) => item.type === "user_message" && item.messageId === command.messageId,
-          )?.ordinal ?? -1;
+          )?.ordinal ??
+          wakeItems.find((item) => item.id === wakeItemId)?.ordinal ??
+          -1;
         // Earlier declined steers have newer runs but retain their original turn-item ordinals.
         const earlierSteerMessageIds = new Set(
           projection.turnItems.flatMap((item) =>
             item.type === "user_message" && item.ordinal < steerOrdinal ? [item.messageId] : [],
           ),
+        );
+        // A wake's notification item drops its message id; its message derives the item's id.
+        const earlierWakeItemIds = new Set(
+          wakeItems.flatMap((item) => (item.ordinal < steerOrdinal ? [item.id] : [])),
         );
         steerFollowUpQueuePosition =
           Math.max(
@@ -9091,7 +9154,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 (candidate) =>
                   candidate.status === "queued" &&
                   (candidate.ordinal <= afterRunOrdinal ||
-                    earlierSteerMessageIds.has(candidate.userMessageId)),
+                    earlierSteerMessageIds.has(candidate.userMessageId) ||
+                    earlierWakeItemIds.has(
+                      idAllocator.derive.userTurnItem({ messageId: candidate.userMessageId }),
+                    )),
               )
               .map((candidate) => candidate.queuePosition ?? candidate.ordinal),
           ) + 1;
