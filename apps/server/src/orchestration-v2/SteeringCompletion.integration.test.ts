@@ -4273,6 +4273,7 @@ it.effect.each([
   ["user steer", "restart"],
   ["delegated task question", "restart"],
   ["accepted delegated completion", "restart"],
+  ["held delegated completion", "restart"],
   ["wakes around a user steer", "restart"],
   ["user steer", "stop"],
   ["delegated task question", "stop"],
@@ -4302,92 +4303,94 @@ it.effect.each([
         creationSource: "web",
       } as const;
       const mailboxId = MessageId.make(`message:${name}:mailbox`);
-      if (kind === "accepted delegated completion") {
-        const now = yield* DateTime.now;
-        const completionSource = {
-          runId: RunId.make(`run:${name}:child`),
-          purpose: executionPurposeOf(parent),
-        };
-        yield* (yield* EventSink.EventSinkV2).write({
-          events: [
-            {
-              id: EventId.make(`event:${name}:cohort`),
-              type: "run.updated",
-              threadId,
-              runId: parent.id,
-              occurredAt: now,
-              payload: {
-                ...parent,
-                delegatedCompletion: {
-                  disposition: "open",
-                  nextGeneration: 2,
-                  delivery: {
-                    generation: 1,
-                    messageId: mailboxId,
-                    taskIds: [taskId],
-                    purposeCauses: [{ taskId, ...completionSource }],
-                  },
-                },
-              },
-            },
-            {
-              id: EventId.make(`event:${name}:task`),
-              type: "subagent.updated",
-              threadId,
-              runId: parent.id,
-              nodeId: taskId,
-              occurredAt: now,
-              payload: {
-                id: taskId,
+      const mailbox =
+        kind === "accepted delegated completion" || kind === "held delegated completion";
+      const completionSource = {
+        runId: RunId.make(`run:${name}:child`),
+        purpose: executionPurposeOf(parent),
+      };
+      const cohort = {
+        disposition: "open",
+        nextGeneration: 2,
+        delivery: {
+          generation: 1,
+          messageId: mailboxId,
+          taskIds: [taskId],
+          purposeCauses: [{ taskId, ...completionSource }],
+        },
+      } as const;
+      // The reserved cohort and claimed task an acceptance that never committed leaves behind.
+      const writeReservation = (label: string) =>
+        Effect.gen(function* () {
+          const now = yield* DateTime.now;
+          const run = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (candidate) => candidate.id === parent.id,
+          )!;
+          const task: OrchestrationV2Subagent = {
+            id: taskId,
+            threadId,
+            runId: parent.id,
+            parentNodeId: parent.rootNodeId!,
+            origin: "app_owned",
+            createdBy: "agent",
+            driver,
+            providerInstanceId: instanceId,
+            providerThreadId: null,
+            childThreadId: null,
+            nativeTaskRef: null,
+            prompt: "Do background work",
+            title: "Background test",
+            model: null,
+            completionWake: "always",
+            completionDelivery: { state: "claimed", observedByRunId: null },
+            completionSource,
+            status: "completed",
+            result: "done",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+          };
+          yield* (yield* EventSink.EventSinkV2).write({
+            events: [
+              {
+                id: EventId.make(`event:${name}:${label}:cohort`),
+                type: "run.updated",
                 threadId,
                 runId: parent.id,
-                parentNodeId: parent.rootNodeId!,
-                origin: "app_owned",
-                createdBy: "agent",
-                driver,
-                providerInstanceId: instanceId,
-                providerThreadId: null,
-                childThreadId: null,
-                nativeTaskRef: null,
-                prompt: "Do background work",
-                title: "Background test",
-                model: null,
-                completionWake: "always",
-                completionDelivery: { state: "claimed", observedByRunId: null },
-                completionSource,
-                status: "completed",
-                result: "done",
-                startedAt: now,
-                completedAt: now,
-                updatedAt: now,
+                occurredAt: now,
+                payload: { ...run, delegatedCompletion: cohort },
               },
-            },
-          ],
+              {
+                id: EventId.make(`event:${name}:${label}:task`),
+                type: "subagent.updated",
+                threadId,
+                runId: parent.id,
+                nodeId: taskId,
+                occurredAt: now,
+                payload: task,
+              },
+            ],
+          });
         });
-      }
+      if (mailbox) yield* writeReservation("reserved");
+      const mailboxSend = {
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "agent",
+        creationSource: "server",
+        delegatedCompletion: { parentRunId: parent.id, generation: 1, taskIds: [taskId] },
+      } as const;
       const sends =
         kind === "user steer"
           ? [userSteer]
           : kind === "delegated task question"
             ? [question]
             : kind === "accepted delegated completion"
-              ? [
-                  {
-                    dispatchMode: { type: "queue_after_active" },
-                    createdBy: "agent",
-                    creationSource: "server",
-                    delegatedCompletion: {
-                      parentRunId: parent.id,
-                      generation: 1,
-                      taskIds: [taskId],
-                    },
-                  } as const,
-                ]
-              : [question, userSteer, question];
-      const messageIds = sends.map((_, index) =>
-        kind === "accepted delegated completion"
-          ? mailboxId
-          : MessageId.make(`message:${name}:${index}`),
+              ? [mailboxSend]
+              : kind === "held delegated completion"
+                ? [userSteer, mailboxSend]
+                : [question, userSteer, question];
+      const messageIds = sends.map((send, index) =>
+        send === mailboxSend ? mailboxId : MessageId.make(`message:${name}:${index}`),
       );
       for (const [index, send] of sends.entries()) {
         yield* orchestrator.dispatch({
@@ -4402,6 +4405,7 @@ it.effect.each([
         yield* worker.drain();
       }
       assert.lengthOf(steered, sends.length);
+      if (kind === "held delegated completion") yield* writeReservation("held");
 
       const turn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
       const ingested = yield* orchestrator.streamDomainEvents.pipe(
