@@ -422,7 +422,8 @@ export function ScheduledTasksSettings(target: {
       ? serverEnvironment.scheduledTasksLive({ environmentId: linkedEnvironmentId, input: {} })
       : null,
   );
-  const linkedTask = linkedTasksQuery.data?.tasks.find(
+  // A failed stream keeps its last list; only a live one may open an editor.
+  const linkedTask = (linkedTasksQuery.isSuccess ? linkedTasksQuery.data : null)?.tasks.find(
     (task) =>
       task.id === target.taskId &&
       linkedEnvironmentId !== undefined &&
@@ -2156,7 +2157,7 @@ function ScheduledTaskEditorForm({
             saving ||
             editingTaskMissing ||
             !connected ||
-            !tasksQuery.data ||
+            !tasksQuery.isSuccess ||
             automaticBaseRefLoading ||
             (draft.enabled && draft.scheduleMode === "webhook" && webhookDenial !== undefined)
           }
