@@ -8,6 +8,8 @@ import {
 } from "@t3tools/shared/toolOutput";
 import * as DateTime from "effect/DateTime";
 
+import { subagentChildTarget } from "../state/threadRelationships.ts";
+
 const MAX_TEXT_BLOCK_DEPTH = 4;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -291,7 +293,7 @@ export function turnItemHasDetail(item: OrchestrationV2TurnItem): boolean {
     case "todo_list":
       return item.steps.length > 0;
     case "subagent":
-      return item.childThreadId !== null;
+      return subagentChildTarget(item) !== null;
     default:
       return false;
   }

@@ -6,6 +6,11 @@ import { AssetCreateUrlResult, AttachmentCreateUploadUrlResult } from "./assets.
 import { ORCHESTRATION_V2_WS_METHODS } from "./orchestrationV2.ts";
 import { WS_METHODS, WsRpcGroup } from "./rpc.ts";
 
+const getSettings = WsRpcGroup.requests.get(WS_METHODS.serverGetSettings);
+if (getSettings === undefined) throw new Error("server.getSettings is not registered");
+const decodeSettings = Schema.decodeSync(getSettings.successSchema);
+const decodeSettingsError = Schema.decodeExit(getSettings.errorSchema);
+
 describe("WebSocket RPC contracts", () => {
   it("only accepts asset and upload URLs on their own server routes", () => {
     const decodeAsset = Schema.decodeUnknownExit(AssetCreateUrlResult);
@@ -39,6 +44,31 @@ describe("WebSocket RPC contracts", () => {
         Exit.isFailure(decodeUpload({ relativeUrl, expiresAt, attachmentId: "attachment" })),
       ).toBe(true);
     }
+  });
+
+  it("lists scheduled tasks through a non-stream RPC alongside subscriptions", () => {
+    expect(WS_METHODS).toHaveProperty("scheduledTasksList", "scheduledTasks.list");
+    const list = WsRpcGroup.requests.get("scheduledTasks.list");
+    if (list === undefined) throw new Error("scheduledTasks.list is not registered");
+    const decodeInput = Schema.decodeUnknownSync(list.payloadSchema);
+    const decodeResult = Schema.decodeUnknownSync(list.successSchema);
+    expect(decodeInput({})).toEqual({});
+    expect(decodeResult({ tasks: [] })).toEqual({ tasks: [] });
+    expect(WsRpcGroup.requests.has(WS_METHODS.scheduledTasksSubscribe)).toBe(true);
+  });
+
+  it("reads settings through the settings RPC and preserves settings errors", () => {
+    const settings = decodeSettings({});
+    expect(settings).toHaveProperty("providerInstances");
+    expect(
+      Exit.isSuccess(
+        decodeSettingsError({
+          _tag: "ServerSettingsError",
+          settingsPath: "/settings.json",
+          operation: "read-file",
+        }),
+      ),
+    ).toBe(true);
   });
 
   it("rejects server-internal commands sent to dispatchCommand", () => {

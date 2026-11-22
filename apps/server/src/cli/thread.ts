@@ -413,7 +413,7 @@ const readTimeline = Effect.fn("cli.thread.readTimeline")(function* (
   view: "messages" | "activity",
 ) {
   const items: Array<OrchestratorMcpThreadTimelineItem> = [];
-  let afterPosition: number | undefined;
+  let afterPosition = -1;
   let page: OrchestratorMcpThreadReadResult;
   do {
     page = yield* tools.call(
@@ -424,13 +424,13 @@ const readTimeline = Effect.fn("cli.thread.readTimeline")(function* (
         limit: READ_PAGE_LIMIT,
         maxCharsPerItem: READ_ITEM_MAX_CHARS,
         runLimit: 1,
-        ...(afterPosition === undefined ? {} : { afterPosition }),
+        afterPosition,
       },
       OrchestratorMcpThreadReadResult,
     );
     items.push(...page.items);
-    afterPosition = page.nextPosition ?? undefined;
-  } while (page.hasMore && afterPosition !== undefined);
+    afterPosition = page.nextPosition ?? afterPosition;
+  } while (page.hasMore && page.nextPosition !== null);
   return { thread: page.thread, items };
 });
 
@@ -470,7 +470,7 @@ export const readLatestMessages = Effect.fn("cli.thread.readLatestMessages")(fun
           limit: READ_PAGE_LIMIT,
           maxCharsPerItem: READ_ITEM_MAX_CHARS,
           runLimit: 1,
-          ...(afterPosition < 0 ? {} : { afterPosition }),
+          afterPosition,
         },
         OrchestratorMcpThreadReadResult,
       );
@@ -1007,7 +1007,8 @@ const threadSendCommand = Command.make("send", {
             { threadId, message, mode: "queue", ...output },
             OrchestratorMcpThreadSendResult,
           );
-          if (flags.wait) {
+          // A pending cross-environment send has no run to wait on yet.
+          if (flags.wait && sent.runId !== null) {
             return yield* finishRun(tools, {
               threadId,
               runId: sent.runId,

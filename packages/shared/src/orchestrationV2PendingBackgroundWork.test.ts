@@ -357,6 +357,30 @@ describe("derivePendingBackgroundWork kinds", () => {
           childThreadId: "thread:other" as never,
         },
         {
+          id: "item-remote-bestia" as never,
+          type: "subagent",
+          status: "running",
+          title: "Review src/math.ts",
+          childThreadId: null,
+          remoteChild: {
+            environmentId: "environment:bestia" as never,
+            threadId: "thread:remote" as never,
+            label: "bestia",
+          },
+        },
+        {
+          id: "item-remote-rocky" as never,
+          type: "subagent",
+          status: "running",
+          title: "Review src/math.ts",
+          childThreadId: null,
+          remoteChild: {
+            environmentId: "environment:rocky" as never,
+            threadId: "thread:remote" as never,
+            label: "rocky",
+          },
+        },
+        {
           id: "item-cmd" as never,
           type: "command_execution",
           status: "running",
@@ -383,7 +407,62 @@ describe("derivePendingBackgroundWork kinds", () => {
         kind: "subagent",
         childThreadId: "thread:other",
       },
+      {
+        taskId: "item-remote-bestia",
+        description: "Review src/math.ts",
+        kind: "subagent",
+        childThreadId: "thread:remote",
+        childEnvironmentId: "environment:bestia",
+      },
+      {
+        taskId: "item-remote-rocky",
+        description: "Review src/math.ts",
+        kind: "subagent",
+        childThreadId: "thread:remote",
+        childEnvironmentId: "environment:rocky",
+      },
       { taskId: "cmd", description: "npm test", kind: "command" },
+    ]);
+  });
+
+  it("carries a remote delegated task's thread and environment from remoteChild", () => {
+    const tasks = derivePendingBackgroundWork({
+      latestRun: { id: "run-1" as never, ordinal: 1, status: "completed" },
+      providerThreads: [],
+      turnItems: [
+        {
+          id: "item-remote" as never,
+          type: "subagent",
+          status: "running",
+          title: "Remote roast",
+          nativeItemRef: { nativeId: "remote-sub" },
+          childThreadId: null,
+          remoteChild: {
+            environmentId: "environment:cavallo" as never,
+            threadId: "thread:remote-child" as never,
+            label: "cavallo",
+          },
+        },
+        {
+          id: "item-unattached" as never,
+          type: "subagent",
+          status: "running",
+          title: "Launching roast",
+          nativeItemRef: { nativeId: "unattached-sub" },
+          childThreadId: null,
+          remoteChild: { environmentId: "environment:cavallo" as never, label: "cavallo" },
+        },
+      ],
+    });
+    expect(tasks).toEqual([
+      {
+        taskId: "remote-sub",
+        description: "Remote roast",
+        kind: "subagent",
+        childThreadId: "thread:remote-child",
+        childEnvironmentId: "environment:cavallo",
+      },
+      { taskId: "unattached-sub", description: "Launching roast", kind: "subagent" },
     ]);
   });
 

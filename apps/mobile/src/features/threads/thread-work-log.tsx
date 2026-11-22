@@ -1,4 +1,6 @@
 import { Button } from "../../components/ui/Button";
+import { hasSourceRemoteTaskView } from "@t3tools/client-runtime/state/remote-tasks";
+import { RemoteTaskViewer } from "./RemoteTaskViewer";
 import { ThreadSubagentGroup } from "./thread-subagent-group";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import {
@@ -55,6 +57,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 import * as DateTime from "effect/DateTime";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { useServerConfigs } from "../../state/entities";
 import { environmentThreadDetails, threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { toolActivityFaviconUrl } from "@t3tools/shared/favicon";
@@ -94,7 +97,11 @@ import {
   type ToolGroupSummaryKind,
   workEntryViewedImagePath,
 } from "@t3tools/client-runtime/work-log/presentation";
-import { notificationChildThreadId } from "@t3tools/client-runtime/state/thread-execution";
+import {
+  notificationChildThreadId,
+  notificationSubagentId,
+} from "@t3tools/client-runtime/state/thread-execution";
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import type { MarkdownImageRenderer } from "../../native/SelectableMarkdownText";
 import type { FilePreviewSource } from "../../components/ui/FilePreviewModal";
 import { FilePreviewGallery } from "../../components/ui/FilePreviewGallery";
@@ -914,6 +921,23 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
       ? { environmentId: props.environmentId, row: row.projectedItem }
       : null,
   );
+  const serverConfigs = useServerConfigs();
+  // A remote delegated task's notification names only the task, so resolve
+  // its work through the parent's live record, including negotiated source viewing.
+  const notifiedTaskId =
+    row.projectedItem.item.type === "notification"
+      ? notificationSubagentId(row.projectedItem.item.source)
+      : undefined;
+  const [viewRemote, setViewRemote] = useState(false);
+  const notifiedAgent = useAtomValue(
+    environmentThreadDetails.threadAtom(
+      scopeThreadRef(props.environmentId, row.projectedItem.item.threadId),
+    ),
+    (thread) => {
+      if (notifiedTaskId === undefined) return null;
+      return thread?.projection.subagents.find((agent) => agent.id === notifiedTaskId) ?? null;
+    },
+  );
   const failureItem = row.projectedItem.item;
   if (failureItem.type === "error" && failureItem.status === "failed") {
     const warning = failureItem.failure.class === "usage_limit";
@@ -1016,8 +1040,22 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
       : null;
   // Signed in, the notice is an ordinary row again.
   const opensMcpSignIn = mcpSignInTarget !== null && !mcpSignedIn;
+  const sourceView = hasSourceRemoteTaskView(notifiedAgent ?? undefined);
+  const remoteTarget = notifiedAgent === null ? null : subagentChildTarget(notifiedAgent);
+  const notifiedTarget =
+    notifiedSubagentThreadId !== undefined
+      ? { threadId: notifiedSubagentThreadId, environmentId: props.environmentId }
+      : remoteTarget !== null &&
+          (sourceView ||
+            remoteTarget.environmentId === null ||
+            serverConfigs.has(remoteTarget.environmentId))
+        ? {
+            threadId: remoteTarget.threadId,
+            environmentId: remoteTarget.environmentId ?? props.environmentId,
+          }
+        : null;
   // A sign-in notice opens its sheet instead; a nested button would be out of VoiceOver's reach.
-  const canExpand = row.canExpand && notifiedSubagentThreadId === undefined && !opensMcpSignIn;
+  const canExpand = row.canExpand && notifiedTarget === null && !opensMcpSignIn;
   const reasoning = row.projectedItem.item.type === "reasoning" ? row.projectedItem.item : null;
   const fetchedItem = fetchedDetail.data?.item ?? null;
   const isRead = toolGroupAction(row.workEntry) === "read";
@@ -1092,11 +1130,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
     >
       <WorkLogPressable
         accessibilityRole={
-          notifiedSubagentThreadId !== undefined
-            ? "link"
-            : canExpand || opensMcpSignIn
-              ? "button"
-              : undefined
+          notifiedTarget !== null ? "link" : canExpand || opensMcpSignIn ? "button" : undefined
         }
         accessibilityLabel={
           failed
@@ -1106,7 +1140,7 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
               : accessiblePreview
         }
         accessibilityHint={
-          notifiedSubagentThreadId !== undefined
+          notifiedTarget !== null
             ? gt("Opens this agent's thread. Long press to copy.")
             : opensMcpSignIn
               ? gt("Opens the sign-in. Long press to copy.")
@@ -1118,10 +1152,14 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
         }
         accessibilityState={canExpand ? { expanded } : undefined}
         onPress={() => {
-          if (notifiedSubagentThreadId !== undefined) {
+          if (sourceView) {
+            setViewRemote(true);
+            return;
+          }
+          if (notifiedTarget !== null) {
             openLinkedThread({
-              environmentId: String(props.environmentId),
-              threadId: String(notifiedSubagentThreadId),
+              environmentId: String(notifiedTarget.environmentId),
+              threadId: String(notifiedTarget.threadId),
             });
             return;
           }
@@ -1393,6 +1431,13 @@ const ThreadWorkLogRow = function ThreadWorkLogRow(
             </>
           ) : null}
         </Animated.View>
+      ) : null}
+      {viewRemote && sourceView && notifiedAgent !== null ? (
+        <RemoteTaskViewer
+          environmentId={props.environmentId}
+          task={notifiedAgent}
+          onClose={() => setViewRemote(false)}
+        />
       ) : null}
     </Animated.View>
   );
