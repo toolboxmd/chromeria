@@ -33,6 +33,7 @@ const PERMISSIONS: ReadonlyArray<readonly [PeerGrantPermission, string, string?]
   ["preview", msg("Browser access")],
   ["device", msg("Device access")],
   ["browserExport", msg("Share browser logins")],
+  ["vault", msg("Use credential vault")],
 ];
 
 function GrantEditor({
@@ -96,7 +97,7 @@ function GrantEditor({
               label={messages(label)}
               subtitle={subtitle === undefined ? undefined : messages(subtitle)}
               value={isPeerGrantPermissionEnabled(draft, key)}
-              disabled={disabled}
+              disabled={disabled || (key === "vault" && !draft.preview)}
               onValueChange={(value) => commit(setPeerGrantPermission(draft, key, value))}
             />
           ))

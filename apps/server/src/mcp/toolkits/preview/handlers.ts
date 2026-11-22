@@ -156,13 +156,19 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
 });
 
 const authorizeVaultLogin = Effect.gen(function* () {
-  const caller = yield* loadCaller();
-  // Browser consent does not grant use of the destination's vault.
-  if (callerLinkOrigin(caller) !== undefined)
+  const origin = callerLinkOrigin(yield* loadCaller());
+  if (origin === undefined) return undefined;
+  const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
+  if (Option.isNone(authority))
     return yield* new OrchestratorMcpFailure({
       code: "capability_denied",
-      message: "Linked callers cannot use this environment's credential vault.",
+      message:
+        "Linked callers cannot use this environment's credential vault without a current link grant.",
     });
+  yield* authority.value.authorizeVault(
+    yield* McpInvocationContext.requireThreadMcpCapability("preview"),
+  );
+  return origin.label;
 });
 
 const invokeTargeted = <A extends object>(
@@ -502,13 +508,14 @@ const handlers = {
     "preview",
     (input) =>
       Effect.gen(function* () {
-        yield* authorizeVaultLogin;
+        const link = yield* authorizeVaultLogin;
         const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
         // The audit line takes nothing from the page: only the matched vault host.
         const audit = (site: string | null, result: string) =>
           recordCredentialFill({
             environmentId: scope.environmentId,
             threadId: scope.thread.threadId,
+            ...(link === undefined ? {} : { link }),
             item: input.item,
             field: input.field,
             site,

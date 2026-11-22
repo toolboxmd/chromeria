@@ -3345,6 +3345,7 @@
   "720ed56b24820720": "Accès au navigateur",
   "e011053544d361ff": "Accès aux appareils",
   "d8b56edfb94b3d20": "Partager les connexions du navigateur",
+  "ab033fae0a5b79c8": "Utiliser le coffre d’identifiants",
   "8501b15306e745b1": "Impossible d’enregistrer les permissions du lien",
   "95ce18305181dd2e": "Environnement associé : {label}",
   "1f0c295494fa2d04": "Le nouveau travail utilise ces permissions. Le travail existant conserve son plafond d’origine. Retirer une permission limite aussi le travail existant.",

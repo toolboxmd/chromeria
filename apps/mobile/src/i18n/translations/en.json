@@ -3352,6 +3352,7 @@
   "720ed56b24820720": "Browser access",
   "e011053544d361ff": "Device access",
   "d8b56edfb94b3d20": "Share browser logins",
+  "ab033fae0a5b79c8": "Use credential vault",
   "8501b15306e745b1": "Could not save link permissions",
   "95ce18305181dd2e": "Linked environment: {label}",
   "1f0c295494fa2d04": "New work uses these permissions. Existing work keeps its original ceiling. Removing permission also limits existing work.",

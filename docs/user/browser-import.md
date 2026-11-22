@@ -103,14 +103,20 @@ not `evilshopify.com`. Public suffixes such as `github.io` or `co.uk` never wide
 
 Fills run only in the server's own browser tabs, not in tabs the desktop app hosts.
 
+Agents started from another linked environment, including runs of schedules it created here, can
+fill from this vault while that link has **Browser access** and **Use credential vault** on in
+**Settings > Connections**. **Use credential vault** turns on and off with **Browser access**,
+including for links made before it existed. Turn it off on its own to let a link's agents drive
+this browser without your logins. Turning it off stops later fills.
+
 The agent keeps reading the page while it signs in, so it sees what the site asks after the
 password, such as a passkey error, a "Try another way" link or a one-time code step, and finishes
 the sign-in in the same tab. Password fields stay masked in its snapshots and screenshots, and the
 fill's result never contains the value.
 
 Each attempt appends a line to `credential-fills.jsonl` in the `userdata` directory. The line
-records the time, environment, thread, item, field, the vault site that matched and the outcome,
-but never the value or anything from the page.
+records the time, environment, thread, the link a linked agent acted for, item, field, the vault
+site that matched and the outcome, but never the value or anything from the page.
 
 This keeps values out of the fill's results and audit line, and stops fills on the wrong site. It
 does not hide a value the page itself shows, such as a username or one-time code in a visible

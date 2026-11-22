@@ -205,6 +205,11 @@ const decodeExpiry = Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString);
 const encodeGrant = Schema.encodeEffect(Schema.fromJsonString(PeerGrant));
 const denied = (message: string) =>
   new OrchestratorMcpFailure({ code: "capability_denied", message });
+/** Link sessions whose grants an authority walk read; only `authorizeVault` collects them. */
+class GrantReads extends Context.Reference<Set<string> | undefined>(
+  "t3/peer/PeerAuthority/GrantReads",
+  { defaultValue: () => undefined },
+) {}
 const unavailable = () =>
   new OrchestratorMcpFailure({
     code: "orchestration_error",
@@ -352,6 +357,10 @@ export class PeerAuthority extends Context.Service<
     readonly setGrant: (grant: PeerGrant) => Effect.Effect<PeerGrant, OrchestratorMcpFailure>;
     /** Whether the calling link's grant shares browser logins. A hint for routing, never a gate. */
     readonly browserExportGranted: (scope: Invocation.McpInvocationScope) => Effect.Effect<boolean>;
+    /** The gate before a vault fill by linked work: every link it acts for grants Browser access and the vault. */
+    readonly authorizeVault: (
+      scope: Invocation.McpThreadInvocationScope,
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
     /** The gate before any cookie read: an accepted direct peer action under a current export grant. */
     readonly authorizeBrowserExport: (
       scope: Invocation.McpInvocationScope,
@@ -619,6 +628,7 @@ const make = Effect.gen(function* () {
       Effect.mapError(unavailable),
     );
     if (!rows[0]) return undefined;
+    (yield* GrantReads)?.add(rows[0].session_id);
     return {
       sessionId: rows[0].session_id,
       ceiling: yield* decodeStoredCeiling(rows[0].ceiling_json).pipe(Effect.mapError(unavailable)),
@@ -657,6 +667,7 @@ const make = Effect.gen(function* () {
       return yield* denied("The original native client no longer permits this viewer operation.");
   });
   const grant = Effect.fn("PeerAuthority.grant")(function* (sessionId: string) {
+    (yield* GrantReads)?.add(sessionId);
     yield* activeSession(sessionId);
     const rows = yield* sql<{
       grant_json: string;
@@ -1076,6 +1087,7 @@ const make = Effect.gen(function* () {
         }
         for (const owner of certificate.graph.legacy) {
           if (owner.environmentId !== here) continue;
+          (yield* GrantReads)?.add(owner.sessionId);
           yield* activeSession(owner.sessionId);
           if (nextPurpose === "interactive") {
             const live = yield* captureLegacy(owner, {
@@ -1897,6 +1909,26 @@ const make = Effect.gen(function* () {
           Effect.orElseSucceed(() => false),
         )
       : Effect.succeed(false);
+  // The walk that decides Browser access also names every link the caller acts for.
+  const authorizeVault: PeerAuthority["Service"]["authorizeVault"] = Effect.fn(
+    "PeerAuthority.authorizeVault",
+  )(function* (scope) {
+    const links = new Set<string>();
+    yield* checkInvocation(scope, "preview", scope.thread.threadId, { type: "run" }).pipe(
+      Effect.provideService(GrantReads, links),
+    );
+    if (links.size === 0)
+      return yield* denied(
+        "Linked work needs a current link grant to use this environment's vault.",
+      );
+    for (const sessionId of links) {
+      const current = yield* grant(sessionId);
+      if (!current.preview || !current.vault)
+        return yield* denied(
+          "grant_off: This environment does not let this link use its credential vault. The user can turn on Use credential vault for it in Connections settings.",
+        );
+    }
+  });
   const authorizeBrowserExport: PeerAuthority["Service"]["authorizeBrowserExport"] = Effect.fn(
     "PeerAuthority.authorizeBrowserExport",
   )(function* (scope) {
@@ -3987,6 +4019,7 @@ const make = Effect.gen(function* () {
     returnNotice,
     registerPair,
     browserExportGranted,
+    authorizeVault,
     authorizeBrowserExport,
     grants: Effect.gen(function* () {
       const now = yield* DateTime.now;

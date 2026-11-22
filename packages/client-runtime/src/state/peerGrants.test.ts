@@ -13,6 +13,7 @@ const saved: PeerGrant = {
   preview: false,
   device: false,
   browserExport: false,
+  vault: false,
 };
 
 async function toggleBrowserAccess(result: AtomCommandResult<void, unknown>) {
@@ -35,21 +36,36 @@ async function toggleBrowserAccess(result: AtomCommandResult<void, unknown>) {
 describe("autosavePeerGrant", () => {
   it("keeps a saved toggle", async () => {
     const { shown, errors, sent } = await toggleBrowserAccess(AsyncResult.success(undefined));
-    expect(sent).toEqual([{ ...saved, preview: true }]);
-    expect(shown).toEqual([{ ...saved, preview: true }]);
+    expect(sent).toEqual([{ ...saved, preview: true, vault: true }]);
+    expect(shown).toEqual([{ ...saved, preview: true, vault: true }]);
     expect(errors).toEqual([]);
   });
 
   it("reverts a failed toggle and reports the error", async () => {
     const failure = new Error("permission denied");
     const { shown, errors } = await toggleBrowserAccess(AsyncResult.failure(Cause.fail(failure)));
-    expect(shown).toEqual([{ ...saved, preview: true }, saved]);
+    expect(shown).toEqual([{ ...saved, preview: true, vault: true }, saved]);
     expect(errors).toEqual([failure]);
   });
 
   it("reverts an interrupted toggle without an error", async () => {
     const { shown, errors } = await toggleBrowserAccess(AsyncResult.failure(Cause.interrupt()));
-    expect(shown).toEqual([{ ...saved, preview: true }, saved]);
+    expect(shown).toEqual([{ ...saved, preview: true, vault: true }, saved]);
     expect(errors).toEqual([]);
+  });
+});
+
+describe("setPeerGrantPermission", () => {
+  it("turns Use credential vault on and off with Browser access, and alone", () => {
+    const browsing = setPeerGrantPermission(saved, "preview", true);
+    expect(browsing).toMatchObject({ preview: true, vault: true });
+    expect(setPeerGrantPermission(browsing, "vault", false)).toMatchObject({
+      preview: true,
+      vault: false,
+    });
+    expect(setPeerGrantPermission(browsing, "preview", false)).toMatchObject({
+      preview: false,
+      vault: false,
+    });
   });
 });

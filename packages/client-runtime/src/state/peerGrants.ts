@@ -15,7 +15,8 @@ export type PeerGrantPermission =
   | "onward"
   | "preview"
   | "device"
-  | "browserExport";
+  | "browserExport"
+  | "vault";
 
 export function isPeerGrantPermissionEnabled(grant: PeerGrant, key: PeerGrantPermission) {
   return key === "resourceScope" ? grant.resourceScope === "environment-resources" : grant[key];
@@ -26,14 +27,16 @@ export function setPeerGrantPermission<G extends PeerGrant>(
   key: PeerGrantPermission,
   enabled: boolean,
 ): G {
-  return key === "resourceScope"
-    ? { ...grant, resourceScope: enabled ? "environment-resources" : "created-work" }
-    : { ...grant, [key]: enabled };
+  if (key === "resourceScope")
+    return { ...grant, resourceScope: enabled ? "environment-resources" : "created-work" };
+  // The vault follows Browser access, the only way it is used, unless turned off on its own.
+  if (key === "preview") return { ...grant, preview: enabled, vault: enabled };
+  return { ...grant, [key]: enabled };
 }
 
 /** Changes whenever the saved permissions change, so an editor can adopt them without remounting. */
 export const peerGrantRevision = (grant: PeerGrant) =>
-  `${grant.resourceScope}:${grant.onward}:${grant.preview}:${grant.device}:${grant.browserExport}`;
+  `${grant.resourceScope}:${grant.onward}:${grant.preview}:${grant.device}:${grant.browserExport}:${grant.vault}`;
 
 /** Shows `next` at once and saves it; a failed save shows `previous` again. Interruptions stay silent. */
 export async function autosavePeerGrant<G, A, E>(input: {
