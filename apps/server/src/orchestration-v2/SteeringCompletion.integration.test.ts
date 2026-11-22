@@ -4266,6 +4266,129 @@ it.effect("replays an accepted steer after its target turn completes", () =>
   }),
 );
 
+// The provider accepted the steer but had not read it when the server went down or Stop ended it.
+it.effect.each([
+  ["user steer", "restart"],
+  ["delegated task question", "restart"],
+  ["user steer", "stop"],
+  ["delegated task question", "stop"],
+] as const)("handles a %s the provider left unread at %s", ([kind, ending]) =>
+  Effect.gen(function* () {
+    const name = `unread-${kind.replaceAll(" ", "-")}-${ending}`;
+    const { events, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(name);
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const threadId = yield* startFirstTurn;
+      const parent = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+      const messageId = MessageId.make(`message:${name}`);
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(name),
+        threadId,
+        messageId,
+        text: "Delegated task has a question",
+        attachments: [],
+        ...(kind === "user steer"
+          ? {
+              dispatchMode: { type: "steer_active", targetRunId: parent.id },
+              createdBy: "user",
+              creationSource: "web",
+            }
+          : {
+              dispatchMode: { type: "queue_after_active" },
+              createdBy: "agent",
+              creationSource: "server",
+              notification: {
+                source: { kind: "delegated_task", taskIds: [NodeId.make("task:question")] },
+                outcome: "updated",
+                summary: "Delegated task has a question",
+              },
+            }),
+      });
+      yield* worker.drain();
+      assert.lengthOf(steered, 1);
+
+      const turn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
+      const ingested = yield* orchestrator.streamDomainEvents.pipe(
+        Stream.filter((event) => event.type === "provider-turn.updated"),
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      yield* Queue.offer(events, {
+        type: "steer.updated",
+        driver,
+        threadId,
+        runId: parent.id,
+        messageId,
+        status: "pending",
+      });
+      yield* Queue.offer(events, { type: "provider_turn.updated", driver, providerTurn: turn });
+      yield* Fiber.join(ingested);
+      const queued = Effect.map(orchestrator.getThreadProjection(threadId), (projection) =>
+        projection.runs.flatMap((run) => (run.status === "queued" ? [run.userMessageId] : [])),
+      );
+
+      if (ending === "stop") {
+        const dropped = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "turn-item.updated" &&
+              (event.payload.type === "user_message" || event.payload.type === "notification") &&
+              event.payload.status === "cancelled",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped({ startImmediately: true }),
+        );
+        yield* orchestrator.dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make(`stop:${name}`),
+          threadId,
+          runId: parent.id,
+          holdQueue: true,
+        });
+        yield* worker.drain();
+        yield* Fiber.join(dropped);
+        const stopped = yield* orchestrator.getThreadProjection(threadId);
+        // Nobody can resend a wake, so only a person's steer gets the notice.
+        assert.equal(
+          stopped.turnItems.some(
+            (item) =>
+              item.type === "system_notice" && item.title === "Steer delivery not confirmed",
+          ),
+          kind === "user steer",
+        );
+        assert.deepEqual(yield* queued, []);
+        return;
+      }
+
+      // Startup recovery cancels the run the restart cut and leaves the unread steer pending.
+      const now = yield* DateTime.now;
+      yield* (yield* EventSink.EventSinkV2).write({
+        commandId: CommandId.make(`command:runtime-reconcile:startup:${name}`),
+        events: [
+          {
+            id: EventId.make(`event:${name}:recovered`),
+            type: "run.updated",
+            threadId,
+            runId: parent.id,
+            occurredAt: now,
+            payload: { ...parent, status: "cancelled", completedAt: now },
+          },
+        ],
+      });
+      // The cancelled run holds the queue, so the requeued steer waits there.
+      for (let recovery = 0; recovery < 2; recovery += 1) {
+        yield* orchestrator.recoverDelegatedTasks;
+        yield* worker.drain();
+        assert.deepEqual(yield* queued, [messageId]);
+      }
+    }).pipe(Effect.provide(layer));
+  }),
+);
+
 it.effect("queues a goal clear without stopping work when no goal drives it", () =>
   Effect.scoped(
     Effect.gen(function* () {

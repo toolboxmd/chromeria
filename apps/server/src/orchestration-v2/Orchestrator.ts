@@ -262,6 +262,7 @@ import {
   type ActiveThreadListEntry,
   type OlderSettledThreadsQuery,
   type ShellSnapshotOptions,
+  isSteerTurnItem,
 } from "./ProjectionStore.ts";
 import { ProviderAdapterRegistryV2 } from "./ProviderAdapterRegistry.ts";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
@@ -3849,33 +3850,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     runIds?: ReadonlyArray<RunId>,
   ) {
     const { turnItems } = yield* projectionStore.getThreadRecords(threadId, ["turnItems"], {
-      turnItemTypes: ["user_message"],
+      turnItemTypes: ["user_message", "notification"],
       turnItemStatuses: ["pending"],
       ...(runIds === undefined ? {} : { turnItemRunIds: runIds }),
     });
-    const unread = turnItems.filter(
-      (item) =>
-        item.type === "user_message" &&
-        (item.inputIntent === "steer" || item.inputIntent === "promoted_queued_to_steer"),
-    );
+    const unread = turnItems.filter(isSteerTurnItem);
     if (unread.length === 0) return;
+    // A notification item drops its message id, so match messages by the item id they derive.
     const projection = yield* projectionStore.getThreadRecords(threadId, ["runs", "messages"], {
-      messageIds: unread.flatMap((item) => (item.type === "user_message" ? [item.messageId] : [])),
+      messageRoles: ["user"],
+      messageRunIds: unread.flatMap((item) => (item.runId === null ? [] : [item.runId])),
     });
     const placed = [];
     for (const item of unread) {
       const run = projection.runs.find((candidate) => candidate.id === item.runId);
       const message = projection.messages.find(
         (candidate) =>
-          item.type === "user_message" &&
-          candidate.id === item.messageId &&
-          candidate.runId === item.runId,
+          candidate.runId === item.runId &&
+          (item.type === "user_message"
+            ? candidate.id === item.messageId
+            : idAllocator.derive.userTurnItem({ messageId: candidate.id }) === item.id),
       );
       if (run === undefined || message === undefined || isActiveRun(run)) continue;
       // Stop drops a steer it reached; say so, as the adapter does for steers it still held.
       if (yield* projectionStore.hasRunInterruptRequest(threadId, run.id)) {
         const now = yield* DateTime.now;
-        yield* writeSystemEvents([
+        const dropped: Array<Omit<OrchestrationV2DomainEvent, "id">> = [
           {
             type: "turn-item.updated",
             threadId,
@@ -3914,7 +3914,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               updatedAt: now,
             },
           },
-        ]);
+        ];
+        // Nobody can resend a wake, so only a person's steer gets the notice.
+        yield* writeSystemEvents(item.type === "notification" ? dropped.slice(0, 1) : dropped);
         continue;
       }
       // The message's first steer effect recorded which runs were queued before it was sent; a

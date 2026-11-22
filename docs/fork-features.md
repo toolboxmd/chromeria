@@ -3770,3 +3770,22 @@ sources and reasons.
   "keywords": ["forSession", "T3_MCP_SERVER_NAME", "OpenCode2LegacySharedSessionError", "portInUse"]
 }
 ```
+
+## steered-wake-recovery
+
+```json
+{
+  "id": "steered-wake-recovery",
+  "purpose": "A notification wake (delegated-task question, command notice, mailbox delivery) steered into a running turn keeps the provider's unread status, so a restart before the provider reads it requeues it like a steered user message, and Stop drops it without a resend notice. Drop when upstream tracks unread steers for notification items.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/875"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...fix/875-steered-wake-loss"],
+  "newFiles": [],
+  "upstreamFiles": ["apps/server/src/orchestration-v2/ProviderEventIngestor.ts"],
+  "sharedFiles": [
+    "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.ts",
+    "apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts"
+  ],
+  "keywords": ["isSteerTurnItem", "requeueUnreadSteers", "unread-steers"]
+}
+```
