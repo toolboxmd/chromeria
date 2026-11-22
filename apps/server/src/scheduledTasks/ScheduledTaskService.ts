@@ -1389,6 +1389,18 @@ export const layer = Layer.effect(
       // Read before reserving: nothing between the reservation and its release may fail.
       const startedAt = yield* localNow;
       const startedAtIso = iso(startedAt);
+      // The clock can step back, so a Run Now keyed by time alone could replay an earlier run.
+      // Drawn before any policy admits the run, so a failure here admits nothing.
+      const runNowKey =
+        trigger === "manual"
+          ? `:${yield* random
+              .uuidV4()
+              .pipe(
+                Effect.mapError((cause) =>
+                  taskError("Could not start schedule task run.", { taskId: task.id, cause }),
+                ),
+              )}`
+          : "";
       // Only a run that marked the task running may release it; another holder's row is not ours.
       let markedRunning = false;
       const run = Effect.gen(function* () {
@@ -1490,17 +1502,6 @@ export const layer = Layer.effect(
           .decide({ task: active, trigger, startedAt })
           .pipe(Effect.mapError((error) => taskError(error.message, { taskId: active.id })));
         if (decision._tag === "skip") return { task: active, threadId: null };
-        // The clock can step back, so a Run Now keyed by time alone could replay an earlier run.
-        const runNowKey =
-          trigger === "manual"
-            ? `:${yield* random
-                .uuidV4()
-                .pipe(
-                  Effect.mapError((cause) =>
-                    taskError("Could not start schedule task run.", { taskId: active.id, cause }),
-                  ),
-                )}`
-            : "";
 
         markedRunning = true;
         if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
