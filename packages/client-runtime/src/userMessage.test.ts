@@ -215,6 +215,20 @@ describe("resolveUserMessagePresentation", () => {
         resolveUserMessagePresentation({ role: "user", createdBy: "agent", creationSource, text }),
       ).toMatchObject({ attribution: "agent" });
     }
+    // Fork: the descendant-request relay (childThreads/requestWake.ts) wakes ancestors as the system.
+    const wake = {
+      id: "child-request:thread:child:runtime-request:1:thread:parent",
+      role: "user",
+      creationSource: "server" as const,
+      text: "Descendant thread:child is waiting for an approval (runtime-request:1).",
+    };
+    expect(resolveUserMessagePresentation({ ...wake, createdBy: "system" })).toMatchObject({
+      attribution: "t3code",
+    });
+    // A client send is stamped as the user whatever source and id it claims.
+    expect(resolveUserMessagePresentation({ ...wake, createdBy: "user" })).toMatchObject({
+      attribution: null,
+    });
   });
 
   it("recovers the triggering automation from older scheduler message ids", () => {
