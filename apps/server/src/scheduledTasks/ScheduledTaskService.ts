@@ -585,6 +585,8 @@ export const layer = Layer.effect(
     yield* sql`CREATE TABLE IF NOT EXISTS scheduled_task_request_incarnations (task_id TEXT PRIMARY KEY, incarnation TEXT NOT NULL, active_request_id TEXT)`;
     yield* sql`CREATE TRIGGER IF NOT EXISTS scheduled_task_request_created AFTER INSERT ON scheduled_tasks BEGIN INSERT OR REPLACE INTO scheduled_task_request_incarnations VALUES (new.task_id,lower(hex(randomblob(16))),NULL); END`;
     yield* sql`CREATE TRIGGER IF NOT EXISTS scheduled_task_request_deleted AFTER DELETE ON scheduled_tasks BEGIN DELETE FROM scheduled_task_request_incarnations WHERE task_id=old.task_id; END`;
+    // Tasks stored before the created trigger existed get their first incarnation here.
+    yield* sql`INSERT INTO scheduled_task_request_incarnations (task_id,incarnation) SELECT task_id,lower(hex(randomblob(16))) FROM scheduled_tasks WHERE task_id IS NOT NULL ON CONFLICT DO NOTHING`;
     yield* sql`CREATE TABLE IF NOT EXISTS scheduled_manual_requests (request_id TEXT PRIMARY KEY, generation TEXT NOT NULL, input_digest TEXT NOT NULL, task_id TEXT NOT NULL, incarnation TEXT NOT NULL, snapshot_json TEXT NOT NULL, started_at TEXT NOT NULL, stage TEXT NOT NULL, reference_json TEXT, result_json TEXT)`;
 
     const bareLaunch = yield* BareLaunch.BareLaunch;
