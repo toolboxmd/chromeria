@@ -165,12 +165,8 @@ export function ScheduledTaskList({
   const machineLabels = uniqueMachineLabels(
     everyMachine.map((environment) => ({
       environmentId: environment.environmentId,
-      label: everyMachine.some(
-        (other) =>
-          other.environmentId !== environment.environmentId && other.label === environment.label,
-      )
-        ? `${environment.label} (${environment.displayUrl ?? environment.environmentId})`
-        : environment.label,
+      label: environment.label,
+      detail: () => environment.displayUrl ?? environment.environmentId,
     })),
   );
   const machineLabel = (environment: EnvironmentPresentation) =>
@@ -331,8 +327,13 @@ function ScheduledTaskOrigin({
         }
       />
       <AppText className="shrink text-sm text-foreground-muted" numberOfLines={1}>
-        {project === undefined ? machine : `${machine} · ${project}`}
+        {machine}
       </AppText>
+      {project === undefined ? null : (
+        <AppText className="shrink text-sm text-foreground-muted" numberOfLines={1}>
+          · {project}
+        </AppText>
+      )}
     </View>
   );
 }

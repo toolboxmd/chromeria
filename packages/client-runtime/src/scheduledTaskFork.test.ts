@@ -292,12 +292,20 @@ describe("scheduled task sections", () => {
 });
 
 describe("machine labels", () => {
-  it("keep distinct labels and add the environment id only where labels still collide", () => {
+  it("add a shared label's detail, then the environment id where that still collides", () => {
     const labels = uniqueMachineLabels([
-      { environmentId: "a", label: "Dev (host)" },
-      { environmentId: "b", label: "Dev (host)" },
-      { environmentId: "c", label: "rocky" },
+      { environmentId: "a", label: "Dev", detail: () => "SSH me@host:2222" },
+      { environmentId: "b", label: "Dev", detail: () => "SSH me@host:2223" },
+      { environmentId: "c", label: "Lab", detail: () => "https://lab" },
+      { environmentId: "d", label: "Lab", detail: () => "https://lab" },
+      { environmentId: "e", label: "rocky", detail: () => "https://rocky" },
     ]);
-    expect([...labels.values()]).toEqual(["Dev (host) · a", "Dev (host) · b", "rocky"]);
+    expect([...labels.values()]).toEqual([
+      "Dev · SSH me@host:2222",
+      "Dev · SSH me@host:2223",
+      "Lab · https://lab · c",
+      "Lab · https://lab · d",
+      "rocky",
+    ]);
   });
 });

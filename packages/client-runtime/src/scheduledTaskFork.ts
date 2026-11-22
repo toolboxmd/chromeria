@@ -289,18 +289,34 @@ export function scheduledTaskSections<E extends ScheduledTaskListEntry>(
 }
 
 /**
- * One label per machine for the merged list, which has no per-machine headings: a label two
- * machines still share after the client's own disambiguation gets the environment id.
+ * One label per machine for the merged list, which has no per-machine headings. A label two
+ * machines share gets each machine's `detail`, such as its address; if that still collides,
+ * the environment id.
  */
 export function uniqueMachineLabels(
-  machines: ReadonlyArray<{ readonly environmentId: string; readonly label: string }>,
+  machines: ReadonlyArray<{
+    readonly environmentId: string;
+    readonly label: string;
+    readonly detail: () => string;
+  }>,
 ): ReadonlyMap<string, string> {
-  const counts = new Map<string, number>();
-  for (const { label } of machines) counts.set(label, (counts.get(label) ?? 0) + 1);
+  const shared = (labels: ReadonlyArray<string>) => {
+    const counts = new Map<string, number>();
+    for (const label of labels) counts.set(label, (counts.get(label) ?? 0) + 1);
+    return (label: string) => (counts.get(label) ?? 0) > 1;
+  };
+  const isShared = shared(machines.map((machine) => machine.label));
+  const detailed = machines.map((machine) =>
+    isShared(machine.label) ? `${machine.label} · ${machine.detail()}` : machine.label,
+  );
+  const stillShared = shared(detailed);
   return new Map(
-    machines.map(({ environmentId, label }) => [
-      environmentId,
-      (counts.get(label) ?? 0) > 1 ? `${label} · ${environmentId}` : label,
-    ]),
+    machines.map((machine, index) => {
+      const label = detailed[index]!;
+      return [
+        machine.environmentId,
+        stillShared(label) ? `${label} · ${machine.environmentId}` : label,
+      ];
+    }),
   );
 }

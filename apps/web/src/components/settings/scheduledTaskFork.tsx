@@ -37,6 +37,7 @@ import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MONTH_DAYS, type FixedTimeForkDraft } from "./scheduledTaskFork.logic";
 import { matchesScheduledTaskScope, scheduleLabel } from "./scheduledTasksSettings.logic";
+import { environmentTransportLabel } from "./EnvironmentRow";
 import { SettingsGroup } from "./SettingsGroup";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { settingsScopeEnvironmentLabel } from "./settingsScopeAxis";
@@ -131,6 +132,7 @@ export function ScheduledTaskList({
     environments.map((environment) => ({
       environmentId: environment.environmentId,
       label: settingsScopeEnvironmentLabel(environment, environments),
+      detail: () => environmentTransportLabel(environment, null, messages),
     })),
   );
   const linkedState = states.find((state) => state.environment.environmentId === environmentId);
