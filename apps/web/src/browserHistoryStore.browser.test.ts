@@ -164,6 +164,8 @@ it("bounds saved thread mappings while keeping live registrations", async () => 
   }
 });
 
+let documentCount = 0;
+
 async function openHistoryDocument(
   disposables: DisposableStack,
   { withoutIndexedDB = false } = {},
@@ -171,6 +173,15 @@ async function openHistoryDocument(
   const source = new URL(import.meta.url);
   source.pathname = source.pathname.replace(/\.browser\.test\.ts$/, ".ts");
   source.search = "";
+  if (!withoutIndexedDB) {
+    // A fresh store instance has its own connection and channel like another tab, without
+    // an iframe booting the app's whole module graph again, which overran the CI timeout.
+    source.search = `?document=${++documentCount}`;
+    const instance: typeof import("./browserHistoryStore") = await import(
+      /* @vite-ignore */ source.href
+    );
+    return instance.useBrowserHistoryStore;
+  }
   const frame = document.createElement("iframe");
   disposables.defer(() => frame.remove());
   frame.srcdoc = `${withoutIndexedDB ? '<script>Object.defineProperty(window, "indexedDB", { value: { open() { throw new Error("blocked"); } } });</script>' : ""}

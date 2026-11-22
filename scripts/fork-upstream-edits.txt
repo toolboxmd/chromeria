@@ -791,3 +791,6 @@ packages/provider-opencode/src/server/OpenCodeServerOwner.test.ts
 docs/internals/providers.md
 packages/client-runtime/src/userMessage.test.ts
 packages/client-runtime/src/userMessage.ts
+
+# Browser history test simulates tabs with store instances, not iframes (#876).
+apps/web/src/browserHistoryStore.browser.test.ts
