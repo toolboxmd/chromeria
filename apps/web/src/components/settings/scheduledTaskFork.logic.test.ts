@@ -9,6 +9,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   scheduleDraftErrors,
   scheduleFromDraft,
+  scheduleLabel,
   taskToDraft,
 } from "./scheduledTasksSettings.logic";
 
@@ -109,5 +110,30 @@ describe("fork scheduled triggers", () => {
       expect(scheduleFromDraft(invalid)).toBeNull();
       expect(scheduleDraftErrors(invalid)).toHaveLength(1);
     }
+  });
+});
+
+describe("fork schedule labels", () => {
+  const clock = (hour12: boolean, hour: number, minute: number) =>
+    new Intl.DateTimeFormat(undefined, {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12,
+      timeZone: "UTC",
+    }).format(Date.UTC(2000, 0, 1, hour, minute));
+
+  it("show an extended fixed_time's times in the Time format setting", () => {
+    const schedule = {
+      type: "fixed_time",
+      timeOfDay: "17:30",
+      extraTimes: ["9:05"],
+      weekdays: [0, 1, 2, 3, 4, 5, 6],
+      timeZone: "Europe/Warsaw",
+      chosen: [{ requested: "17:30", offsetMinutes: 7 }],
+    } as const;
+    for (const hour12 of [false, true])
+      expect(scheduleLabel(schedule, hour12 ? "12-hour" : "24-hour")).toBe(
+        `Daily at ${clock(hour12, 17, 30)} (+7 min), ${clock(hour12, 9, 5)} (Europe/Warsaw)`,
+      );
   });
 });

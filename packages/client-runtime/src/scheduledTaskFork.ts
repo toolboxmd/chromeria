@@ -37,10 +37,17 @@ const placedTime = (time: string, offsetMinutes: number, resolve: MFunctionType)
         offset: `${offsetMinutes > 0 ? "+" : "-"}${Math.abs(offsetMinutes)}`,
       });
 
-/** A one-shot's instant, or an extended `fixed_time`'s days, requested times with any move, and time zone. */
+/**
+ * A one-shot's instant, or an extended `fixed_time`'s days, requested times with any move, and time zone.
+ * `formatTime` renders each `H:MM` wall time, so a client can apply its clock setting.
+ */
 export function forkScheduleLabel(
   schedule: ScheduledTaskForkSchedule,
-  options: { readonly locale?: string; readonly timeZone?: string } = {},
+  options: {
+    readonly locale?: string;
+    readonly timeZone?: string;
+    readonly formatTime?: (timeOfDay: string) => string;
+  } = {},
   resolve: MFunctionType = mFallback,
 ): string {
   if (schedule.type === "once") {
@@ -86,7 +93,7 @@ export function forkScheduleLabel(
   const times = requested
     .map((time) =>
       placedTime(
-        time,
+        options.formatTime?.(time) ?? time,
         schedule.chosen?.find((choice) => minuteOf(choice.requested) === minuteOf(time))
           ?.offsetMinutes ?? 0,
         resolve,
