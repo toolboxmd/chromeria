@@ -241,6 +241,8 @@ export interface EffectOutboxV2Shape {
     threadId: ThreadId,
     messageId: MessageId,
   ) => Effect.Effect<Option.Option<OrchestrationEffectV2>, EffectOutboxError>;
+  /** Steer effects no worker ever claimed, so their message never reached the provider. */
+  readonly unsentSteers: Effect.Effect<ReadonlyArray<OrchestrationEffectV2>, EffectOutboxError>;
   readonly cancelUnsettled: (input: {
     readonly threadId: ThreadId;
     readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
@@ -512,6 +514,20 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               : new EffectOutboxError({ operation: "first-steer", cause }),
           ),
         ),
+      unsentSteers: sql<EffectRow>`
+        SELECT *
+        FROM orchestration_v2_effect_outbox
+        WHERE status = 'pending' AND effect_type = 'provider-turn.steer' AND attempt_count = 0
+        ORDER BY rowid ASC
+      `.pipe(
+        NodeSqliteClient.readOnly,
+        Effect.flatMap((rows) => decodeRows("unsent-steers", rows)),
+        Effect.mapError((cause) =>
+          isEffectOutboxError(cause)
+            ? cause
+            : new EffectOutboxError({ operation: "unsent-steers", cause }),
+        ),
+      ),
       cancelUnsettled: Effect.fn("EffectOutbox.cancelUnsettled")(
         function* ({ threadId, effectTypes, reason }) {
           if (effectTypes.length === 0) return [];

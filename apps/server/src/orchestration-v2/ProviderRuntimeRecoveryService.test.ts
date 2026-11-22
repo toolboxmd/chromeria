@@ -67,6 +67,7 @@ it.effect("expires orphaned runtime requests before command readiness", () => {
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
           get: () => Effect.succeedNone,
+          unsentSteers: Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),
@@ -121,6 +122,7 @@ it.effect("preserves async questions across startup and shutdown", () => {
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
           get: () => Effect.succeedNone,
+          unsentSteers: Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           cancelUnsettled: () => Effect.succeed([]),
           signalCancellations: () => Effect.void,
@@ -209,6 +211,7 @@ it.effect(
                   status: "running",
                 },
               ] as never),
+            unsentSteers: Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 1, cancelled: 0 }),
           }),
         ),
@@ -348,6 +351,7 @@ it.effect(
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
             get: () => Effect.succeedNone,
+            unsentSteers: Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
         ),
@@ -417,6 +421,7 @@ it.effect("cancels a stale waiting run when no checkpoint capture can finish it"
         Layer.mock(EffectOutbox.EffectOutboxV2)({
           get: () => Effect.succeedNone,
           listByCommandId: () => Effect.succeed([]),
+          unsentSteers: Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),
@@ -514,6 +519,7 @@ it.effect("recovery closes a secret card but leaves a link card and an unread st
         Layer.mock(EffectOutbox.EffectOutboxV2)({
           get: () => Effect.succeedNone,
           listByCommandId: () => Effect.succeed([]),
+          unsentSteers: Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),
@@ -753,6 +759,7 @@ it.effect.each([
                 : [],
             ),
           get: () => Effect.succeedNone,
+          unsentSteers: Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),
@@ -918,6 +925,7 @@ it.effect(
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
             get: () => Effect.succeedNone,
+            unsentSteers: Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
         ),
@@ -1053,6 +1061,7 @@ it.effect("cancels workflow members and child roots without run ids after restar
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
           get: () => Effect.succeedNone,
+          unsentSteers: Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),
@@ -1224,6 +1233,7 @@ it.effect(
           Layer.mock(EffectOutbox.EffectOutboxV2)({
             get: () => Effect.succeedNone,
             listByCommandId: () => Effect.succeed([]),
+            unsentSteers: Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
         ),
@@ -1384,6 +1394,7 @@ it.effect(
           Layer.mock(EffectOutbox.EffectOutboxV2)({
             get: () => Effect.succeedNone,
             listByCommandId: () => Effect.succeed([]),
+            unsentSteers: Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
         ),
@@ -1517,6 +1528,7 @@ it.effect(
           Layer.mock(EffectOutbox.EffectOutboxV2)({
             get: () => Effect.succeedNone,
             listByCommandId: () => Effect.succeed([]),
+            unsentSteers: Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
         ),
@@ -1680,6 +1692,7 @@ it.effect("leaves delegated tasks to their own child threads after process loss"
         Layer.mock(EffectOutbox.EffectOutboxV2)({
           get: () => Effect.succeedNone,
           listByCommandId: () => Effect.succeed([]),
+          unsentSteers: Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),

@@ -38,6 +38,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -4273,7 +4274,8 @@ it.effect("replays an accepted steer after its target turn completes", () =>
   }),
 );
 
-// The provider accepted the steers but had not read them when the server went down or Stop ended it.
+// The provider accepted the steers but had not read them when the server went down or Stop ended it,
+// or the server went down before sending them.
 it.effect.each([
   ["user steer", "restart"],
   ["delegated task question", "restart"],
@@ -4281,6 +4283,12 @@ it.effect.each([
   ["held delegated completion", "restart"],
   ["emptied delegated completion", "restart"],
   ["wakes around a user steer", "restart"],
+  ["user steer", "restart before sending"],
+  ["delegated task question", "restart before sending"],
+  ["held delegated completion", "restart before sending"],
+  ["wakes around a user steer", "restart before sending"],
+  ["user steer", "restart after reading"],
+  ["user steer", "restart after a failed send"],
   ["user steer", "stop"],
   ["delegated task question", "stop"],
 ] as const)("handles a %s the provider left unread at %s", ([kind, ending]) =>
@@ -4295,18 +4303,34 @@ it.effect.each([
         number: 875,
       },
     } as const;
+    const scoped = kind === "delegated task question";
     const { events, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
       name,
       false,
       undefined,
-      kind === "delegated task question"
-        ? {
-            firstPurposeIntent: {
-              version: 1,
-              intent: { type: "reference", reference: issueScope.reference },
-            },
-          }
-        : {},
+      {
+        ...(scoped
+          ? {
+              firstPurposeIntent: {
+                version: 1,
+                intent: { type: "reference", reference: issueScope.reference },
+              },
+            }
+          : {}),
+        // The provider got the steer, but the worker saw an error and will retry it.
+        ...(ending === "restart after a failed send"
+          ? {
+              onSteer: (turn: ProviderAdapter.ProviderAdapterV2SteerInput) =>
+                Effect.fail(
+                  new ProviderAdapter.ProviderAdapterSteerRunError({
+                    driver,
+                    providerThreadId: turn.providerThread.id,
+                    providerTurnId: turn.providerTurnId,
+                  }),
+                ),
+            }
+          : {}),
+      },
     );
     yield* Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -4328,6 +4352,8 @@ it.effect.each([
       } as const;
       const userSteer = {
         dispatchMode: { type: "steer_active", targetRunId: parent.id },
+        // The composer steers with a target purpose.
+        purposeIntent: { version: 1, intent: { type: "target" } },
         createdBy: "user",
         creationSource: "web",
       } as const;
@@ -4444,9 +4470,15 @@ it.effect.each([
           attachments: [],
           ...send,
         });
-        yield* worker.drain();
+        if (ending !== "restart before sending") yield* worker.drain();
       }
-      assert.lengthOf(steered, sends.length);
+      assert.lengthOf(steered, ending === "restart before sending" ? 0 : sends.length);
+      if (ending === "restart after a failed send") {
+        const retry = Option.getOrThrow(
+          yield* (yield* EffectOutbox.EffectOutboxV2).firstSteer(threadId, messageIds[0]!),
+        );
+        assert.deepEqual([retry.status, retry.attemptCount], ["pending", 1]);
+      }
       if (kind === "held delegated completion") yield* writeReservation("held");
       if (kind === "emptied delegated completion") yield* writeReservation("emptied", true);
       const turn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
@@ -4456,15 +4488,23 @@ it.effect.each([
         Stream.runDrain,
         Effect.forkScoped({ startImmediately: true }),
       );
+      const steerStatuses =
+        ending === "restart" || ending === "stop"
+          ? (["pending"] as const)
+          : ending === "restart after reading"
+            ? (["pending", "completed"] as const)
+            : [];
       for (const messageId of messageIds) {
-        yield* Queue.offer(events, {
-          type: "steer.updated",
-          driver,
-          threadId,
-          runId: parent.id,
-          messageId,
-          status: "pending",
-        });
+        for (const status of steerStatuses) {
+          yield* Queue.offer(events, {
+            type: "steer.updated",
+            driver,
+            threadId,
+            runId: parent.id,
+            messageId,
+            status,
+          });
+        }
       }
       yield* Queue.offer(events, { type: "provider_turn.updated", driver, providerTurn: turn });
       yield* Fiber.join(ingested);
@@ -4522,17 +4562,19 @@ it.effect.each([
       );
       yield* recovery.reconcile("startup");
       const requeued =
-        // Once accepted, a mailbox wake's results are the mailbox's to redeliver.
-        kind === "accepted delegated completion" || kind === "emptied delegated completion"
-          ? messageIds.filter((messageId) => messageId !== mailboxId)
-          : messageIds;
+        ending === "restart after reading" || ending === "restart after a failed send"
+          ? []
+          : // Once accepted, a mailbox wake's results are the mailbox's to redeliver.
+            kind === "accepted delegated completion" || kind === "emptied delegated completion"
+            ? messageIds.filter((messageId) => messageId !== mailboxId)
+            : messageIds;
       for (let pass = 0; pass < 2; pass += 1) {
         yield* orchestrator.recoverDelegatedTasks;
         yield* worker.drain();
         // The cut run holds the queue, so the requeued steers wait there, in the order they were sent.
         assert.deepEqual(yield* queued, requeued);
       }
-      if (kind === "delegated task question") {
+      if (scoped && requeued.length > 0) {
         assert.deepEqual(
           (yield* read).runs.find((run) => run.status === "queued")?.purpose?.scope,
           issueScope,
