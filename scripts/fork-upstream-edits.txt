@@ -167,6 +167,8 @@ apps/server/src/mcp/toolkits/project/tools.ts
 apps/server/src/orchestration-v2/runtimeLayer.ts
 packages/provider-core/src/server/runtimeInstructions.ts
 packages/provider-core/src/server/runtimeInstructions.test.ts
+apps/server/src/orchestration-v2/testkit/fixtures/kiro_model_switch/kiro_transcript.ndjson
+apps/server/src/orchestration-v2/testkit/fixtures/kiro_unknown_model/kiro_transcript.ndjson
 packages/provider-core/src/server/orchestrationInstructions.ts
 apps/web/src/components/settings/SettingsSidebarNav.tsx
 apps/web/src/routeTree.gen.ts

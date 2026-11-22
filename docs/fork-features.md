@@ -1436,6 +1436,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
     "packages/provider-core/src/server/runtimeInstructions.ts",
     "packages/provider-core/src/server/runtimeInstructions.test.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/kiro_model_switch/kiro_transcript.ndjson",
+    "apps/server/src/orchestration-v2/testkit/fixtures/kiro_unknown_model/kiro_transcript.ndjson",
     "apps/server/src/provider/CodexDeveloperInstructions.ts",
     "packages/provider-core/src/server/orchestrationInstructions.ts",
     "apps/server/src/orchestration-v2/testkit/ReplayRuntimeInstructions.ts",

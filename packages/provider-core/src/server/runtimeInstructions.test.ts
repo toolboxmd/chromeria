@@ -13,7 +13,11 @@ describe("buildRuntimeInstructions", () => {
       pullRequestLinking: false,
     });
 
-    assert.include(instructions, "through the Antigravity harness, as gemini-3.8-flash.");
+    assert.include(
+      instructions,
+      "you are running in Chromeria, the fork of T3 Code, through the Antigravity harness, as gemini-3.8-flash.",
+    );
+    assert.include(instructions, "open it in Chromeria's files viewer.");
     assert.notInclude(instructions, "<pull_request_linking>");
   });
 
