@@ -4303,7 +4303,7 @@ it.effect.each([
         number: 875,
       },
     } as const;
-    const scoped = kind === "delegated task question" || kind === "user steer";
+    const scoped = kind === "delegated task question";
     const { events, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
       name,
       false,
