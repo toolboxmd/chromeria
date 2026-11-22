@@ -1,8 +1,9 @@
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { managedCapabilityDenial } from "@t3tools/client-runtime/contract-labels";
+import { savedPurposeIntentForScope } from "@t3tools/contracts";
+import { ExecutionPurposeControl } from "../chat/ExecutionPurposeControl";
+import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 import { useAtomValue } from "@effect/atom-react";
-import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
-import { AsyncResult } from "effect/reactivity";
 import {
   ChevronDownIcon,
   Clock3Icon,
@@ -28,6 +29,8 @@ import type {
   ScheduledTaskWebhookDeliverySummary,
   ThreadId,
 } from "@t3tools/contracts";
+import * as ScheduledTaskFork from "./scheduledTaskFork";
+import { fixedTimeForkDraft, fixedTimeZone } from "./scheduledTaskFork.logic";
 import {
   DEFAULT_WEBHOOK_PROMPT,
   emptyWebhookFilterDraft,
@@ -63,11 +66,7 @@ import { webhookAddress } from "@t3tools/client-runtime/webhook-address";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useNowMinute } from "../../hooks/useNowMinute";
-import {
-  useEnvironment,
-  useEnvironmentHttpBaseUrl,
-  type EnvironmentPresentation,
-} from "../../state/environments";
+import { useEnvironment, useEnvironmentHttpBaseUrl } from "../../state/environments";
 import {
   useProjects,
   useQuietThreadShell,
@@ -78,22 +77,19 @@ import { buildThreadRouteParams } from "../../threadRoutes";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { environmentAtomList, environmentIdsKey } from "../../state/environmentAtomList";
 import { usePaginatedBranches, useThreadSearch } from "../../state/queries";
-import { formatEnvironmentQueryError, useEnvironmentQuery } from "../../state/query";
+import { useEnvironmentQuery } from "../../state/query";
 import { EMPTY_SERVER_PROVIDERS, serverEnvironment } from "../../state/server";
 import { threadFamilies } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { WorktreeBaseBranchPicker } from "../WorktreeBaseBranchPicker";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
-import { ConnectionStatusDot, connectionPhaseDotClassName } from "../ConnectionStatusDot";
 import { AuthOrchestrationOperateScope, clampManagedRuntimeMode } from "@t3tools/contracts";
 import { resolvePastedPath } from "@t3tools/shared/path";
 import { useManagedPolicy } from "~/state/managedPolicy";
 import { ManagedNotice } from "../ManagedPolicy";
 import { readEnvironmentScope } from "~/state/session";
 import { useSettingsScope } from "./SettingsScopeContext";
-import { EnvironmentRow, useEnvironmentTransportLabel } from "./EnvironmentRow";
-import { SettingsGroup } from "./SettingsGroup";
-import { settingsScopeEnvironmentLabel, settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
+import { settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
 import {
   WEBHOOK_SIGNATURE_DEFAULTS,
   changeDraftProject,
@@ -145,7 +141,6 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useSearchableSetting } from "./settingsSearch";
 import {
   SettingsPageContainer,
@@ -174,14 +169,8 @@ const WORKSPACE_MODE_LABELS: Record<WorkspaceMode, string> = {
   existing_worktree: msg("Use a specific checkout"),
 };
 
-const SCOPE_SUMMARY_TEMPLATES: Record<string, string> = {
-  "Not connected:": msg("Not connected: {environments}"),
-  "Loading scheduled tasks on": msg("Loading scheduled tasks on {environments}"),
-  "Could not load scheduled tasks:": msg("Could not load scheduled tasks: {environments}"),
-  "No tasks on": msg("No tasks on {environments}"),
-};
-
 const EMPTY_DRAFT: DraftState = {
+  purposeScope: { type: "unscoped", reason: "deliberate" },
   editingId: null,
   title: "",
   prompt: "",
@@ -213,6 +202,8 @@ const EMPTY_DRAFT: DraftState = {
   coalesceWindowSeconds: "",
   filters: [],
   savedFilters: [],
+  preservedSchedule: null,
+  fixedTimeFork: fixedTimeForkDraft(null),
 };
 
 function WebhookFiltersField({
@@ -431,7 +422,8 @@ export function ScheduledTasksSettings(target: {
       ? serverEnvironment.scheduledTasksLive({ environmentId: linkedEnvironmentId, input: {} })
       : null,
   );
-  const linkedTask = linkedTasksQuery.data?.tasks.find(
+  // A failed stream keeps its last list; only a live one may open an editor.
+  const linkedTask = (linkedTasksQuery.isSuccess ? linkedTasksQuery.data : null)?.tasks.find(
     (task) =>
       task.id === target.taskId &&
       linkedEnvironmentId !== undefined &&
@@ -508,23 +500,21 @@ export function ScheduledTasksSettings(target: {
               </EmptyDescription>
             </EmptyHeader>
           </Empty>
-        ) : environments.length > 1 ? (
-          <ScheduledTaskEnvironmentList
+        ) : (
+          <ScheduledTaskFork.ScheduledTaskList
             environmentId={linkedEnvironmentId}
             taskId={target.taskId}
-            onEdit={openForEdit}
-          />
-        ) : (
-          <div className="space-y-8">
-            {environments.map((entry) => (
-              <ScheduledTaskEnvironmentSection
-                key={entry.environmentId}
-                environment={entry}
-                taskId={linkedEnvironmentId === entry.environmentId ? target.taskId : undefined}
-                onEdit={openForEdit}
+            renderRow={(row) => (
+              <ScheduledTaskRow
+                environmentId={row.environmentId}
+                task={row.task}
+                timeZone={row.timeZone}
+                name={row.name}
+                origin={row.origin}
+                onEdit={() => openForEdit(row.environmentId, row.task)}
               />
-            ))}
-          </div>
+            )}
+          />
         )}
       </SettingsSection>
       {editor ? (
@@ -544,249 +534,19 @@ const scheduledTaskCreatePermissionsAtom = environmentAtomList(
   serverEnvironment.upsertScheduledTask.permissionAtom,
 );
 
-const scheduledTasksListAtom = environmentAtomList("web-scheduled-tasks-list", (environmentId) =>
-  serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
-);
-
-function ScheduledTaskEnvironmentList({
-  environmentId,
-  taskId,
-  onEdit,
-}: {
-  readonly environmentId: EnvironmentId | undefined;
-  readonly taskId: ScheduledTaskId | undefined;
-  readonly onEdit: (environmentId: EnvironmentId, task: ScheduledTask) => void;
-}) {
-  const messages = useMessages();
-  const gt = useGT();
-  const { scope, environments } = useSettingsScope();
-  const connectedIds = environments.flatMap((environment) =>
-    environment.connection.phase === "connected" && environment.serverConfig !== null
-      ? [environment.environmentId]
-      : [],
-  );
-  const queries = useAtomValue(scheduledTasksListAtom(environmentIdsKey(connectedIds)));
-  const states = environments.map((environment) => {
-    const index = connectedIds.indexOf(environment.environmentId);
-    const query = index < 0 ? null : queries[index]!;
-    const data = query === null ? null : AsyncResult.getOrElse(query, () => null);
-    return {
-      environment,
-      connected: index >= 0,
-      timeZone: data?.timeZone,
-      tasks: data?.tasks.filter((task) =>
-        matchesScheduledTaskScope(scope, environment.environmentId, task.projectId),
-      ),
-      error: query?._tag === "Failure" ? formatEnvironmentQueryError(query.cause, messages) : null,
-    };
-  });
-  const linkedState = states.find((state) => state.environment.environmentId === environmentId);
-  const linkedTask = linkedState?.tasks?.find((task) => task.id === taskId);
-
-  const loaded = states.filter((state) => state.connected && state.error === null && state.tasks);
-  const populated = loaded.filter((state) => state.tasks && state.tasks.length > 0);
-  const summaries: Record<string, string[]> = {
-    "Not connected:": [],
-    "Loading scheduled tasks on": [],
-    "Could not load scheduled tasks:": [],
-    "No tasks on": [],
-  };
-  for (const { environment, connected, tasks, error } of states) {
-    const label = settingsScopeEnvironmentLabel(environment, environments);
-    if (!connected) {
-      summaries["Not connected:"]!.push(
-        `${label} (${connectionStatusTitle(environment.connection, messages)})`,
-      );
-    } else if (error !== null) {
-      summaries["Could not load scheduled tasks:"]!.push(`${label}: ${error}`);
-    } else if (!tasks) {
-      summaries["Loading scheduled tasks on"]!.push(label);
-    } else if (tasks.length === 0 && populated.length > 0) {
-      summaries["No tasks on"]!.push(label);
-    }
-  }
-
-  return (
-    <SettingsGroup>
-      {populated.map(({ environment, tasks, timeZone }) => {
-        const { primary, secondary } = settingsScopeEnvironmentLabels(environment, environments);
-        return (
-          <div key={environment.environmentId} className="divide-y divide-border/50">
-            <EnvironmentRow
-              kind={resolveEnvironmentMachineKind(environment.serverConfig)}
-              label={primary}
-              subtitle={
-                <ScheduledTaskEnvironmentSubtitle environment={environment} secondary={secondary} />
-              }
-            >
-              <ConnectionStatusDot
-                dotClassName={connectionPhaseDotClassName(environment.connection.phase)}
-                tooltipText={connectionStatusTitle(environment.connection, messages)}
-              />
-              <span className="text-xs text-muted-foreground">
-                {connectionStatusTitle(environment.connection, messages)}
-              </span>
-            </EnvironmentRow>
-            {tasks?.map((task) => (
-              <ScheduledTaskRow
-                key={task.id}
-                environmentId={environment.environmentId}
-                task={task}
-                timeZone={timeZone}
-                onEdit={() => onEdit(environment.environmentId, task)}
-              />
-            ))}
-          </div>
-        );
-      })}
-      {taskId && linkedState?.tasks && linkedState.error === null && !linkedTask ? (
-        <SettingsRow
-          title={gt("Task unavailable")}
-          description={gt(
-            "This task was deleted or belongs to a different project. Check your project filter.",
-          )}
-          role="status"
-        />
-      ) : null}
-      {populated.length === 0 && loaded.length > 0 ? (
-        <SettingsRow
-          title={gt("No scheduled tasks")}
-          description={gt("No tasks match this environment and project selection.")}
-        />
-      ) : null}
-      {Object.entries(summaries).map(([label, entries]) => {
-        if (entries.length === 0) return null;
-        const summary = messages(SCOPE_SUMMARY_TEMPLATES[label] ?? label, {
-          environments: entries.join(", "),
-        });
-        return (
-          <Tooltip key={label}>
-            <TooltipTrigger
-              render={
-                <p
-                  className="truncate px-3 py-2.5 text-xs text-muted-foreground sm:px-4"
-                  role="status"
-                />
-              }
-            >
-              {summary}
-            </TooltipTrigger>
-            <TooltipPopup>{summary}</TooltipPopup>
-          </Tooltip>
-        );
-      })}
-    </SettingsGroup>
-  );
-}
-
-function ScheduledTaskEnvironmentSubtitle({
-  environment,
-  secondary,
-}: {
-  readonly environment: EnvironmentPresentation;
-  readonly secondary: string;
-}) {
-  const transport = useEnvironmentTransportLabel(environment);
-  return (
-    <>
-      {secondary && secondary !== transport ? (
-        <span className="block truncate">{secondary}</span>
-      ) : null}
-      <span className="block truncate">{transport}</span>
-    </>
-  );
-}
-
-function ScheduledTaskEnvironmentSection({
-  environment,
-  taskId,
-  onEdit,
-}: {
-  readonly environment: EnvironmentPresentation;
-  readonly taskId?: ScheduledTaskId | undefined;
-  readonly onEdit: (environmentId: EnvironmentId, task: ScheduledTask) => void;
-}) {
-  const gt = useGT();
-  const { scope } = useSettingsScope();
-  const connected =
-    environment.connection.phase === "connected" && environment.serverConfig !== null;
-  const tasksQuery = useEnvironmentQuery(
-    connected
-      ? serverEnvironment.scheduledTasksLive({
-          environmentId: environment.environmentId,
-          input: {},
-        })
-      : null,
-    useMessages(),
-  );
-  const tasks = tasksQuery.data?.tasks.filter((task) =>
-    matchesScheduledTaskScope(scope, environment.environmentId, task.projectId),
-  );
-  const linkedTask = tasks?.find((task) => task.id === taskId);
-  return (
-    <SettingsSection
-      title={environment.label}
-      hideTitle
-      icon={
-        <EnvironmentMachineIcon
-          kind={resolveEnvironmentMachineKind(environment.serverConfig)}
-          className="size-3.5"
-        />
-      }
-    >
-      {!connected ? (
-        <SettingsRow
-          title={gt("Environment disconnected")}
-          description={gt("Reconnect {label} to view its scheduled tasks.", {
-            label: environment.label,
-          })}
-        />
-      ) : tasksQuery.error ? (
-        <SettingsRow title={gt("Could not load scheduled tasks")} description={tasksQuery.error} />
-      ) : !tasks ? (
-        <SettingsRow title={gt("Loading scheduled tasks…")} role="status" />
-      ) : (
-        <>
-          {taskId && !linkedTask ? (
-            <SettingsRow
-              title={gt("Task unavailable")}
-              description={gt(
-                "This task was deleted or belongs to a different project. Check your project filter.",
-              )}
-              role="status"
-            />
-          ) : null}
-          {tasks.length === 0 ? (
-            <SettingsRow
-              title={gt("No scheduled tasks")}
-              description={gt("No tasks match this environment and project selection.")}
-            />
-          ) : (
-            tasks.map((task) => (
-              <ScheduledTaskRow
-                key={task.id}
-                environmentId={environment.environmentId}
-                task={task}
-                timeZone={tasksQuery.data?.timeZone}
-                onEdit={() => onEdit(environment.environmentId, task)}
-              />
-            ))
-          )}
-        </>
-      )}
-    </SettingsSection>
-  );
-}
-
 function ScheduledTaskRow({
   environmentId,
   task,
   timeZone,
+  name,
+  origin,
   onEdit,
 }: {
   readonly environmentId: EnvironmentId;
   readonly task: ScheduledTask;
   readonly timeZone: string | undefined;
+  readonly name: string;
+  readonly origin: ReactNode;
   readonly onEdit: () => void;
 }) {
   const messages = useMessages();
@@ -811,7 +571,7 @@ function ScheduledTaskRow({
   const act = async (action: "toggle" | "run" | "delete") => {
     if (busy || !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
     if (action === "delete") {
-      const message = `${gt('Delete "{title}"?', { title: task.title })}\n${gt("This cannot be undone.")}`;
+      const message = `${gt('Delete "{title}"?', { title: name })}\n${gt("This cannot be undone.")}`;
       const confirmed =
         (await requestConfirmDialog(message, { variant: "destructive" })) ??
         window.confirm(message);
@@ -841,6 +601,7 @@ function ScheduledTaskRow({
       description={<span className="line-clamp-2">{task.prompt}</span>}
       status={
         <div className="flex flex-wrap items-center gap-2">
+          {origin}
           <span>
             {scheduleLabel(
               task.schedule,
@@ -874,6 +635,7 @@ function ScheduledTaskRow({
             <ScheduledTaskThreadLink environmentId={environmentId} threadId={task.threadId} />
           ) : null}
           {task.lastRunError ? <span className="text-destructive">{task.lastRunError}</span> : null}
+          <ScheduledTaskFork.ForkTaskSummary environmentId={environmentId} task={task} />
         </div>
       }
       control={
@@ -881,7 +643,7 @@ function ScheduledTaskRow({
           <Switch
             checked={task.enabled}
             disabled={busy || !canOperate}
-            aria-label={gt("Enable {title}", { title: task.title })}
+            aria-label={gt("Enable {title}", { title: name })}
             onCheckedChange={() => void act("toggle")}
           />
           <Menu>
@@ -891,7 +653,7 @@ function ScheduledTaskRow({
                   size="icon-sm"
                   variant="ghost"
                   disabled={busy || !canOperate}
-                  aria-label={gt("Actions for {title}", { title: task.title })}
+                  aria-label={gt("Actions for {title}", { title: name })}
                 />
               }
             >
@@ -1611,6 +1373,16 @@ function ScheduledTaskEditorForm({
       automaticBaseRefLoading
     )
       return;
+    if (
+      draft.purposeScope?.type === "unscoped" &&
+      draft.purposeScope.reason === "legacy_no_intent"
+    ) {
+      reportFailure(
+        gt("Choose this task's purpose"),
+        gt("Select an Issue or PR, or clear the purpose to choose unscoped work."),
+      );
+      return;
+    }
     const selection = activeSelection;
     if (
       !draft.title.trim() ||
@@ -1684,6 +1456,9 @@ function ScheduledTaskEditorForm({
               startFromOrigin: draft.startFromOrigin,
             };
     const input: ScheduledTaskUpsertInput = {
+      purposeIntent: savedPurposeIntentForScope(
+        draft.purposeScope ?? { type: "unscoped", reason: "deliberate" },
+      ),
       ...(draft.editingId ? { id: draft.editingId as ScheduledTaskId, requireExisting: true } : {}),
       title: draft.title.trim(),
       prompt: draft.prompt.trim(),
@@ -1938,6 +1713,22 @@ function ScheduledTaskEditorForm({
             </Field>
           ) : null}
 
+          <div className="flex items-start gap-1.5">
+            <div className="min-w-0 flex-1">
+              <ExecutionPurposeControl
+                scope={draft.purposeScope ?? { type: "unscoped", reason: "deliberate" }}
+                runs={[]}
+                disabled={saving || !canOperate}
+                onChange={async (scope) => {
+                  setDraft((current) => ({ ...current, purposeScope: scope }));
+                  return true;
+                }}
+              />
+            </div>
+            <span className="mt-3 inline-flex shrink-0">
+              <ChromeriaFeatureMark />
+            </span>
+          </div>
           <Field label={gt("Prompt")} htmlFor="scheduled-task-prompt">
             <Textarea
               id="scheduled-task-prompt"
@@ -1985,7 +1776,9 @@ function ScheduledTaskEditorForm({
               <Label>
                 <T>Schedule</T>
               </Label>
+              <ScheduledTaskFork.PreservedScheduleNote schedule={draft.preservedSchedule} />
               <ToggleGroup
+                disabled={draft.preservedSchedule !== null}
                 aria-label={gt("Schedule type")}
                 value={[draft.scheduleMode]}
                 onValueChange={(values) => {
@@ -2050,9 +1843,9 @@ function ScheduledTaskEditorForm({
               </ManagedNotice>
             ) : null}
             {/* A disabled task still saves, so keep its fields reachable for fixing. */}
-            {draft.scheduleMode === "webhook" &&
-            webhookDenial !== undefined &&
-            draft.enabled ? null : draft.scheduleMode === "webhook" ? (
+            {draft.scheduleMode === "preserved" ? null : draft.scheduleMode === "webhook" &&
+              webhookDenial !== undefined &&
+              draft.enabled ? null : draft.scheduleMode === "webhook" ? (
               <div className="space-y-4">
                 <WebhookEndpointField environmentId={environmentId} task={liveTask} />
                 <p className="text-xs text-muted-foreground">
@@ -2272,7 +2065,7 @@ function ScheduledTaskEditorForm({
                   />
                   {runAtZone === undefined ? null : (
                     <span id="scheduled-task-time-zone" className="text-xs text-muted-foreground">
-                      {runAtZone}
+                      {fixedTimeZone(draft.fixedTimeFork) ?? runAtZone}
                     </span>
                   )}
                   <span className="text-xs text-muted-foreground">
@@ -2282,6 +2075,7 @@ function ScheduledTaskEditorForm({
                   </span>
                 </div>
                 <ToggleGroup
+                  hidden={draft.fixedTimeFork.dayMode === "month"}
                   multiple
                   variant="outline"
                   size="sm"
@@ -2305,6 +2099,13 @@ function ScheduledTaskEditorForm({
                     </Toggle>
                   ))}
                 </ToggleGroup>
+                <ScheduledTaskFork.FixedTimeForkFields
+                  draft={draft.fixedTimeFork}
+                  serverTimeZone={tasksQuery.data?.timeZone}
+                  onChange={(fixedTimeFork) =>
+                    setDraft((current) => ({ ...current, fixedTimeFork }))
+                  }
+                />
               </div>
             ) : (
               <div className="flex items-center gap-2">
@@ -2358,7 +2159,7 @@ function ScheduledTaskEditorForm({
             saving ||
             editingTaskMissing ||
             !connected ||
-            !tasksQuery.data ||
+            !tasksQuery.isSuccess ||
             automaticBaseRefLoading ||
             (draft.enabled && draft.scheduleMode === "webhook" && webhookDenial !== undefined)
           }

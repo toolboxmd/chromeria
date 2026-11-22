@@ -1,6 +1,12 @@
-import { MIN_SCHEDULED_TASK_INTERVAL_MS, type ScheduledTaskSchedule } from "@t3tools/contracts";
+import {
+  isForkScheduledTaskSchedule,
+  MIN_SCHEDULED_TASK_INTERVAL_MS,
+  type ScheduledTaskSchedule,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
+
+import * as ForkSchedules from "../scheduledTaskChecks/schedules.ts";
 
 const MINUTE_MS = 60_000;
 
@@ -16,12 +22,14 @@ export function nextScheduledRunAt(
 ): DateTime.DateTime | null {
   if (schedule.type === "webhook") return null;
   if (schedule.type === "once") {
-    const runAt = DateTime.make(schedule.runAt);
+    const runAt = DateTime.make("runAt" in schedule ? schedule.runAt : schedule.at);
     return Option.isSome(runAt) &&
       DateTime.toEpochMillis(runAt.value) > DateTime.toEpochMillis(from)
       ? runAt.value
       : null;
   }
+  if (isForkScheduledTaskSchedule(schedule))
+    return ForkSchedules.forkNextScheduledRunAt(schedule, from);
   if (schedule.type === "interval") {
     // Intervals advance elapsed time, including across daylight-saving changes.
     return DateTime.addDuration(from, Math.max(schedule.everyMs, MIN_SCHEDULED_TASK_INTERVAL_MS));
@@ -52,6 +60,8 @@ function weekdayKey(weekdays: ReadonlyArray<number> | undefined): string {
 }
 
 export function isSameSchedule(a: ScheduledTaskSchedule, b: ScheduledTaskSchedule): boolean {
+  if (isForkScheduledTaskSchedule(a) || isForkScheduledTaskSchedule(b))
+    return ForkSchedules.forkSameSchedule(a, b);
   if (a.type === "interval") {
     return b.type === "interval" && a.everyMs === b.everyMs;
   }
@@ -77,6 +87,7 @@ export function isMissedFixedTimeRun(
   dueAt: DateTime.DateTime,
   now: DateTime.DateTime,
 ): boolean {
-  if (schedule.type !== "fixed_time") return false;
+  // Fork: an extended fixed_time catches up once for its latest slot (toolboxmd/chromeria#719).
+  if (schedule.type !== "fixed_time" || isForkScheduledTaskSchedule(schedule)) return false;
   return DateTime.toEpochMillis(now) - DateTime.toEpochMillis(dueAt) > MISSED_FIXED_TIME_GRACE_MS;
 }
