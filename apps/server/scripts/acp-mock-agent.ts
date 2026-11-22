@@ -15,9 +15,10 @@ import * as AcpSchema from "effect-acp/schema";
 import type * as AcpCompat from "effect-acp/compat";
 
 import { beginAcpMockPrompt } from "./acpMockCancellationState.ts";
+import { makeAcpMockRequestLogAppender } from "./acpMockRequestLog.ts";
 
 const requestLogPath = process.env.T3_ACP_REQUEST_LOG_PATH;
-let pendingRequestLogLine = "";
+const appendRequestLog = requestLogPath ? makeAcpMockRequestLogAppender(requestLogPath) : undefined;
 const antigravityProfile = process.env.T3_ACP_ANTIGRAVITY === "1";
 // GitHub Copilot CLI advertises URL-shaped session mode ids.
 const copilotModesProfile = process.env.T3_ACP_COPILOT_MODES === "1";
@@ -2204,7 +2205,7 @@ const program = Effect.gen(function* () {
 }).pipe(
   Effect.provide(
     EffectAcpAgent.layerStdio(
-      requestLogPath
+      appendRequestLog
         ? {
             logIncoming: true,
             logger: (event) => {
@@ -2215,13 +2216,7 @@ const program = Effect.gen(function* () {
                 return Effect.void;
               }
               const payload = event.payload;
-              return Effect.sync(() => {
-                // A stdin chunk can end mid-message, so log only complete lines.
-                const end = payload.lastIndexOf("\n") + 1;
-                const lines = pendingRequestLogLine + payload.slice(0, end);
-                pendingRequestLogLine = end === 0 ? lines + payload : payload.slice(end);
-                if (end > 0) NodeFS.appendFileSync(requestLogPath, lines, "utf8");
-              });
+              return Effect.sync(() => appendRequestLog(payload));
             },
           }
         : {},
