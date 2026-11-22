@@ -33,6 +33,7 @@ import {
   JUMP_HINT_SLOT_CLASS_NAME,
   JumpHintBadge,
 } from "./SidebarThreadRow";
+import { useDraftInPersonView } from "../people/usePersonView";
 
 const EMPTY_COMPOSER_PARTS = {
   prompt: "",
@@ -225,6 +226,7 @@ export function useSidebarDrafts(
   }
   const routeDraftComposer =
     frozenRoute.routeDraftId === routeDraftId ? frozenRoute.composer : null;
+  const draftInPersonView = useDraftInPersonView();
   const draftIds = useComposerDraftStore(
     useShallow((store) => {
       const listed: [string, DraftSessionState][] = [];
@@ -236,6 +238,7 @@ export function useSidebarDrafts(
         ) {
           continue;
         }
+        if (!draftInPersonView(session.environmentId)) continue;
         // Composer edits stay frozen while open; terminals come and go live.
         const isListed =
           draftTerminalLabel(session, terminalLabels) !== null ||
