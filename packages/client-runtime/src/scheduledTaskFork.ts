@@ -216,14 +216,15 @@ function oneTimeSlot(schedule: ScheduledTask["schedule"]): number | null {
 
 /**
  * In History: an enabled one-time task that ran at or after its slot and is not still running,
- * or one imported from Chromeria v1 with its run, which never resumes. A paused task stays out
+ * or one imported from Chromeria v1 with its run and not scheduled again. A paused task stays out
  * otherwise, since an edit keeps `lastRunAt` from an earlier schedule, and a manual run before
  * the slot leaves the slot due.
  */
 export function isScheduledTaskHistory(task: ScheduledTask): boolean {
   const slot = oneTimeSlot(task.schedule);
   if (slot === null) return false;
-  if ((task.outcomeCheck?.run ?? task.command?.run)?.imported === true) return true;
+  if ((task.outcomeCheck?.run ?? task.command?.run)?.imported === true && task.nextRunAt === null)
+    return true;
   if (!task.enabled || task.lastRunAt === null) return false;
   return task.lastRunStatus !== "running" && Date.parse(task.lastRunAt) >= slot;
 }
@@ -284,10 +285,10 @@ export function scheduledTaskSections<E extends ScheduledTaskListEntry>(
       timeOf(a.task.nextRunAt, Infinity) - timeOf(b.task.nextRunAt, Infinity) ||
       byTitle(a, b),
   );
-  history.sort(
-    (a, b) =>
-      timeOf(b.task.lastRunAt, -Infinity) - timeOf(a.task.lastRunAt, -Infinity) || byTitle(a, b),
-  );
+  // Imported v1 runs leave lastRunAt empty; a command run still records when it ended.
+  const ranAt = (task: ScheduledTask) =>
+    timeOf(task.lastRunAt ?? task.command?.run?.endedAt ?? null, -Infinity);
+  history.sort((a, b) => ranAt(b.task) - ranAt(a.task) || byTitle(a, b));
   return { upcoming, recurring, history, failing, historyFailing };
 }
 

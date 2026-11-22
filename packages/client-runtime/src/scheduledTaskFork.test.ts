@@ -244,6 +244,28 @@ describe("scheduled task sections", () => {
       }),
       "history",
     ],
+    [
+      "the same imported one-shot scheduled again",
+      task("t", {
+        schedule: once("2026-12-01T10:00:00Z"),
+        nextRunAt: "2026-12-01T10:00:00.000Z",
+        command: {
+          command: "make",
+          run: {
+            id: "run",
+            stage: "done",
+            exitCode: 0,
+            timedOut: false,
+            endedAt: null,
+            error: null,
+            imported: true,
+          },
+          failureStreak: 0,
+          lastSuccessfulRunId: null,
+        },
+      }),
+      "upcoming",
+    ],
     ["an interval", task("t", {}), "recurring"],
     [
       "a webhook",
