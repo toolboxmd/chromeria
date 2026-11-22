@@ -136,7 +136,8 @@ export function ScheduledTaskList({
   );
   const states = environments.map((environment, index) => {
     const query = queries[index]!;
-    const data = AsyncResult.getOrElse(query, () => null);
+    // A failed subscription can still hold its last list; its machine shows the error instead.
+    const data = query._tag === "Failure" ? null : AsyncResult.getOrElse(query, () => null);
     const selected = projectIds(environment.environmentId);
     return {
       environment,
@@ -155,7 +156,7 @@ export function ScheduledTaskList({
   );
   const anyFailing = entries.some((entry) => entry.task.lastRunStatus === "failed");
   // The chip hides once nothing fails, so its selection must not wait for the next failure.
-  if (failingOnly && !anyFailing && entries.length > 0) setFailingOnly(false);
+  if (failingOnly && !anyFailing) setFailingOnly(false);
   const sections = scheduledTaskSections(entries, { failingOnly: failingOnly && anyFailing });
   const summaries = {
     notConnected: disconnected.map(

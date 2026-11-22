@@ -103,7 +103,9 @@ export function ScheduledTaskList({
   const states = environments.map((environment) => {
     const index = connectedIds.indexOf(environment.environmentId);
     const query = index < 0 ? null : queries[index]!;
-    const data = query === null ? null : AsyncResult.getOrElse(query, () => null);
+    // A failed subscription can still hold its last list; its machine shows the error instead.
+    const data =
+      query === null || query._tag === "Failure" ? null : AsyncResult.getOrElse(query, () => null);
     return {
       environment,
       connected: index >= 0,
@@ -139,7 +141,7 @@ export function ScheduledTaskList({
   }
   const anyFailing = entries.some((entry) => entry.task.lastRunStatus === "failed");
   // The chip hides once nothing fails, so its selection must not wait for the next failure.
-  if (failingOnly && !anyFailing && entries.length > 0) setFailingOnly(false);
+  if (failingOnly && !anyFailing) setFailingOnly(false);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Carries a URL link into History across the remount that drops it, in a store outside this component.
   useEffect(() => {
     if (historyLink !== null) setPendingHistoryLink(historyLink);
