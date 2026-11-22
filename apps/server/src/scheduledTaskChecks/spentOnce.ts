@@ -154,9 +154,13 @@ export const pruneSpentForkOnceTasks = Effect.fn("ScheduledTaskChecks.pruneSpent
       WHERE message_id IN (SELECT value FROM json_each(${messageIds}))
     `;
     const runsByMessage = Map.groupBy(runs, (run) => run.message_id);
-    // The last fire is the most specific id with a run; its newest run decides. A requeued
-    // scheduled message also runs again under its id, so only a run after the start counts there.
+    // The last fire is the most specific id with a run; its newest run decides. Run Now ids are
+    // unique to a start, so two of them with runs (or two keyed requests) leave it unknown. A
+    // requeued scheduled message also runs again under its id, so only a run after the start counts.
     const spent = candidates.filter(({ row, messageIds }) => {
+      const unique = messageIds.filter((fire) => fire.unique);
+      if (unique.length > 2 || unique.filter(({ id }) => runsByMessage.has(id)).length > 1)
+        return false;
       const fire = messageIds.find(({ id }) => runsByMessage.has(id));
       const newest = (fire === undefined ? [] : (runsByMessage.get(fire.id) ?? [])).toSorted(
         (a, b) => Date.parse(b.requested_at) - Date.parse(a.requested_at),

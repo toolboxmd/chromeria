@@ -43,6 +43,8 @@ interface Row {
   }>;
   /** The keyed Run Now request that started the last fire. */
   readonly keyedRequestId?: string;
+  /** Another keyed request that started in the same millisecond. */
+  readonly extraKeyedRequestId?: string;
   readonly onCompletion: boolean;
   readonly pruned: boolean;
 }
@@ -183,6 +185,31 @@ const rows: ReadonlyArray<Row> = [
     onCompletion: true,
     pruned: true,
   },
+  // Two Run Now fires started in the same millisecond: the last one cannot be told apart.
+  {
+    id: "same-ms-keyed-and-local",
+    schedule: at(spentAt),
+    keyedRequestId: "request:same-ms",
+    otherRuns: [
+      {
+        messageId: "scheduled-task-message:manual:request:same-ms",
+        status: "completed",
+        requestedAt: RAN,
+      },
+    ],
+    run: { messageId: manualMessage("same-ms-keyed-and-local"), status: "running" },
+    onCompletion: true,
+    pruned: false,
+  },
+  {
+    id: "same-ms-keyed-twice",
+    schedule: at(spentAt),
+    keyedRequestId: "request:same-ms-first",
+    extraKeyedRequestId: "request:same-ms-second",
+    run: { messageId: "scheduled-task-message:manual:request:same-ms-first", status: "completed" },
+    onCompletion: true,
+    pruned: false,
+  },
   {
     id: "keyed-run-now",
     schedule: at(spentAt),
@@ -194,6 +221,7 @@ const rows: ReadonlyArray<Row> = [
   {
     id: "spent-run-at",
     schedule: JSON.stringify({ type: "once", runAt: "2026-10-08T10:00:00.000Z" }),
+    run: { messageId: scheduledMessage("spent-run-at", spentAt), status: "completed" },
     onCompletion: true,
     pruned: false,
   },
@@ -223,8 +251,9 @@ const rows: ReadonlyArray<Row> = [
   },
   {
     id: "due",
-    schedule: at("2026-10-09T10:00:00Z"),
+    schedule: at(spentAt),
     next: "2026-10-09T10:00:00.000Z",
+    run: { messageId: scheduledMessage("due", spentAt), status: "completed" },
     onCompletion: false,
     pruned: false,
   },
@@ -312,8 +341,9 @@ const seed = Effect.gen(function* () {
     if (row.run !== undefined) yield* insertRun(sql, `run:${row.id}`, ordinal * 2, row.run);
     for (const [index, other] of (row.otherRuns ?? []).entries())
       yield* insertRun(sql, `run:${row.id}:${index}`, 1000 + ordinal * 10 + index, other);
-    if (row.keyedRequestId !== undefined)
-      yield* sql`INSERT INTO scheduled_manual_requests VALUES (${row.keyedRequestId}, 'g', 'd', ${row.id}, 'i', '{}', ${RAN}, 'admitted', NULL, NULL)`;
+    for (const requestId of [row.keyedRequestId, row.extraKeyedRequestId])
+      if (requestId !== undefined)
+        yield* sql`INSERT INTO scheduled_manual_requests VALUES (${requestId}, 'g', 'd', ${row.id}, 'i', '{}', ${RAN}, 'admitted', NULL, NULL)`;
   }
 });
 
