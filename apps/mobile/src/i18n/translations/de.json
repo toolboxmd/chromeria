@@ -3932,6 +3932,7 @@
   "987167a51fcdd1e7": "Nicht verbunden: {environments}",
   "8792ce1caba45445": "Geplante Aufgaben auf {environments} werden geladen",
   "6c8d4ee4bbbf40bc": "Geplante Aufgaben konnten nicht geladen werden: {environments}",
+  "f2a7d3519fbf9962": "Keine Aufgaben in diesem Projekt.",
   "91f7d63c53ad0823": "Noch keine geplanten Aufgaben.",
   "b3d562c23d8272c3": "Anstehend",
   "8bafe4cff51a0221": "Wiederkehrend",

@@ -3933,6 +3933,7 @@
   "987167a51fcdd1e7": "Inte ansluten: {environments}",
   "8792ce1caba45445": "Läser in schemalagda uppgifter på {environments}",
   "6c8d4ee4bbbf40bc": "Kunde inte läsa in schemalagda uppgifter: {environments}",
+  "f2a7d3519fbf9962": "Inga uppgifter i det här projektet.",
   "91f7d63c53ad0823": "Inga schemalagda uppgifter än.",
   "b3d562c23d8272c3": "Kommande",
   "8bafe4cff51a0221": "Återkommande",

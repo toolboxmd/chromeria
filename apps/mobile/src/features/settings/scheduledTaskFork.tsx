@@ -227,7 +227,9 @@ export function ScheduledTaskList({
       ) : null}
       {loaded && entries.length === 0 ? (
         <AppText className="px-2 text-base text-foreground-muted">
-          {gt("No scheduled tasks yet.")}
+          {environments.some((entry) => projectIds(entry.environmentId) !== null)
+            ? gt("No tasks in this project.")
+            : gt("No scheduled tasks yet.")}
         </AppText>
       ) : null}
       {sections.upcoming.length > 0 ? (

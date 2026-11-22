@@ -3927,6 +3927,7 @@
   "987167a51fcdd1e7": "Não conectado: {environments}",
   "8792ce1caba45445": "Carregando tarefas agendadas em {environments}",
   "6c8d4ee4bbbf40bc": "Não foi possível carregar as tarefas agendadas: {environments}",
+  "f2a7d3519fbf9962": "Nenhuma tarefa neste projeto.",
   "91f7d63c53ad0823": "Nenhuma tarefa agendada ainda.",
   "b3d562c23d8272c3": "Próximas",
   "8bafe4cff51a0221": "Recorrentes",

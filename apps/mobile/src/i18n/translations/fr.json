@@ -3927,6 +3927,7 @@
   "987167a51fcdd1e7": "Non connecté : {environments}",
   "8792ce1caba45445": "Chargement des tâches planifiées sur {environments}",
   "6c8d4ee4bbbf40bc": "Impossible de charger les tâches planifiées : {environments}",
+  "f2a7d3519fbf9962": "Aucune tâche dans ce projet.",
   "91f7d63c53ad0823": "Aucune tâche planifiée pour l’instant.",
   "b3d562c23d8272c3": "À venir",
   "8bafe4cff51a0221": "Récurrentes",

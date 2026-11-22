@@ -3929,6 +3929,7 @@
   "987167a51fcdd1e7": "未连接：{environments}",
   "8792ce1caba45445": "正在加载 {environments} 上的定时任务",
   "6c8d4ee4bbbf40bc": "无法加载定时任务：{environments}",
+  "f2a7d3519fbf9962": "此项目中没有任务。",
   "91f7d63c53ad0823": "尚无定时任务。",
   "b3d562c23d8272c3": "即将运行",
   "8bafe4cff51a0221": "循环",
