@@ -1,16 +1,10 @@
-import {
-  isForkScheduledTaskSchedule,
-  OrchestrationV2Run,
-  ScheduledTask,
-  ScheduledTaskId,
-} from "@t3tools/contracts";
+import { isForkScheduledTaskSchedule, ScheduledTask, ScheduledTaskId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { isTerminalRunStatus } from "../orchestration-v2/ThreadManagementService.ts";
 import { forkFireKey } from "./schedules.ts";
 import { ensureCheckSchema } from "./store.ts";
 
@@ -22,8 +16,6 @@ const encodeIdsJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Sch
 const encodeFires = (fires: ReadonlyArray<readonly [string, string]>) =>
   encodeFiresJson(fires).pipe(Effect.orDie);
 const encodeIds = (ids: ReadonlyArray<string>) => encodeIdsJson(ids).pipe(Effect.orDie);
-const isRunStatus = Schema.is(OrchestrationV2Run.fields.status);
-const isFinishedRun = (status: string) => isRunStatus(status) && isTerminalRunStatus(status);
 const decodeTaskId = Schema.decodeUnknownOption(ScheduledTaskId);
 
 // The stored forms upstream's row decoder accepts: a schedule, or one wrapped by accepted automation.
@@ -162,27 +154,19 @@ export const pruneSpentForkOnceTasks = Effect.fn("ScheduledTaskChecks.pruneSpent
       WHERE message_id IN (SELECT value FROM json_each(${messageIds}))
     `;
     const runsByMessage = Map.groupBy(runs, (run) => run.message_id);
-    // Exactly one of the fire's ids may hold a current run, and its newest run decides. Run Now
-    // ids are unique to the start. The scheduled slot id also carries older fires and requeues, so
-    // only its runs from the start on count. Anything else leaves the last fire unknown, and an
-    // unfinished run under any of the ids keeps the task whatever the clock said.
+    // Which of these ids the last fire used cannot be told apart in every history, so all their
+    // runs must have completed. The fire's own run must also be there: under a Run Now id, which is
+    // unique to the start, or under the slot id from the start on. Any other history keeps the task.
     const spent = candidates.filter(({ row, messageIds }) => {
-      const startedMs = Date.parse(row.last_run_at);
       if (messageIds.filter((fire) => fire.unique).length > 2) return false;
-      const allRuns = messageIds.flatMap((fire) => runsByMessage.get(fire.id) ?? []);
-      if (allRuns.some((run) => !isFinishedRun(run.status))) return false;
-      const current = messageIds.flatMap((fire) => {
-        const fireRuns = (runsByMessage.get(fire.id) ?? []).filter(
-          (run) => fire.unique || Date.parse(run.requested_at) >= startedMs,
-        );
-        return fireRuns.length === 0 ? [] : [fireRuns];
-      });
-      const [only] = current;
-      if (only === undefined || current.length > 1) return false;
-      const newest = only.toSorted(
-        (a, b) => Date.parse(b.requested_at) - Date.parse(a.requested_at),
-      )[0];
-      return newest?.status === "completed";
+      const runsOf = (fire: (typeof messageIds)[number]) => runsByMessage.get(fire.id) ?? [];
+      if (!messageIds.every((fire) => runsOf(fire).every((run) => run.status === "completed")))
+        return false;
+      return messageIds.some((fire) =>
+        runsOf(fire).some(
+          (run) => fire.unique || Date.parse(run.requested_at) >= Date.parse(row.last_run_at),
+        ),
+      );
     });
     const removed = yield* sql.withTransaction(
       Effect.forEach(spent, ({ row }) =>

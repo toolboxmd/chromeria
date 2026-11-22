@@ -136,7 +136,8 @@ const rows: ReadonlyArray<Row> = [
     onCompletion: true,
     pruned: false,
   },
-  // A scheduled fire cancelled by a steer completes when it is requeued.
+  // A run that did not complete under one of the fire's ids leaves the fire unknown, even when a
+  // requeue or a later Run Now completed.
   {
     id: "requeued-completed",
     schedule: at(spentAt),
@@ -153,7 +154,7 @@ const rows: ReadonlyArray<Row> = [
       requestedAt: "2026-10-08T10:00:07.000Z",
     },
     onCompletion: true,
-    pruned: true,
+    pruned: false,
   },
   {
     id: "keyed-after-cancelled",
@@ -171,7 +172,7 @@ const rows: ReadonlyArray<Row> = [
       status: "completed",
     },
     onCompletion: true,
-    pruned: true,
+    pruned: false,
   },
   // A Run Now's id is unique to its start, so a clock stepped back does not matter.
   {
@@ -243,6 +244,25 @@ const rows: ReadonlyArray<Row> = [
     run: {
       messageId: scheduledMessage("same-ms-clock-back", spentAt),
       status: "queued",
+      requestedAt: "2026-10-08T10:00:04.999Z",
+    },
+    onCompletion: true,
+    pruned: false,
+  },
+  {
+    id: "cancelled-clock-back",
+    schedule: at(spentAt),
+    keyedRequestId: "request:cancelled-clock-back",
+    otherRuns: [
+      {
+        messageId: "scheduled-task-message:manual:request:cancelled-clock-back",
+        status: "completed",
+        requestedAt: RAN,
+      },
+    ],
+    run: {
+      messageId: scheduledMessage("cancelled-clock-back", spentAt),
+      status: "cancelled",
       requestedAt: "2026-10-08T10:00:04.999Z",
     },
     onCompletion: true,
