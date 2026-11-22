@@ -26,12 +26,14 @@ export function ForkTaskSummaryText({ task }: { readonly task: ScheduledTask }) 
 /** A fork trigger shown in place of the schedule picker, which it cannot express. */
 export function PreservedScheduleText({
   schedule,
+  formatTime,
 }: {
   readonly schedule: ScheduledTaskForkSchedule | null;
+  readonly formatTime: (timeOfDay: string) => string;
 }) {
   const messages = useMessages();
   if (schedule === null) return null;
-  const label = forkScheduleLabel(schedule, {}, messages);
+  const label = forkScheduleLabel(schedule, { formatTime }, messages);
   return (
     <Text className="px-4 py-3 text-base text-foreground-muted">
       {schedule.type === "fixed_time" ? (

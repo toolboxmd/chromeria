@@ -1172,7 +1172,10 @@ function TaskForm({
         </SettingsSection>
 
         <SettingsSection title={gt("Schedule", { $context: "noun, section heading" })}>
-          <ScheduledTaskFork.PreservedScheduleText schedule={draft.schedule.preserved} />
+          <ScheduledTaskFork.PreservedScheduleText
+            schedule={draft.schedule.preserved}
+            formatTime={formatTime}
+          />
           <View className={draft.schedule.preserved ? "hidden" : "px-4 py-3"}>
             <SegmentedControl
               variant="card"
