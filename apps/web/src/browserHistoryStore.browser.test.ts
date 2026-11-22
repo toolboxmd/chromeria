@@ -117,7 +117,7 @@ it("refreshes the open history when another document adds a visit", async () => 
       JSON.stringify({ state: { byProjectKey: { a: [page] } }, version: 1 }),
     );
 
-    using documents = new DisposableStack();
+    using documents = historyDocuments();
     const otherStore = await openHistoryDocument(documents);
     await vi.waitFor(() => expect(otherStore.getState().byProjectKey).toEqual({ a: [page] }));
     otherStore.getState().recordVisit("a", page.url, page.lastVisitedAt);
@@ -164,6 +164,24 @@ it("bounds saved thread mappings while keeping live registrations", async () => 
   }
 });
 
+// Closes the channels of the store instances a test opens, so they stop reading after it ends.
+function historyDocuments() {
+  const documents = new DisposableStack();
+  const channels: BroadcastChannel[] = [];
+  const NativeBroadcastChannel = window.BroadcastChannel;
+  window.BroadcastChannel = class extends NativeBroadcastChannel {
+    constructor(name: string) {
+      super(name);
+      channels.push(this);
+    }
+  };
+  documents.defer(() => {
+    window.BroadcastChannel = NativeBroadcastChannel;
+    for (const channel of channels) channel.close();
+  });
+  return documents;
+}
+
 async function openHistoryDocument(
   disposables: DisposableStack,
   { withoutIndexedDB = false } = {},
@@ -171,6 +189,15 @@ async function openHistoryDocument(
   const source = new URL(import.meta.url);
   source.pathname = source.pathname.replace(/\.browser\.test\.ts$/, ".ts");
   source.search = "";
+  if (!withoutIndexedDB) {
+    // A fresh store instance has its own connection and channel like another tab, without
+    // an iframe booting the app's whole module graph again, which overran the CI timeout.
+    source.search = `?document=${Math.random()}`;
+    const instance: typeof import("./browserHistoryStore") = await import(
+      /* @vite-ignore */ source.href
+    );
+    return instance.useBrowserHistoryStore;
+  }
   const frame = document.createElement("iframe");
   disposables.defer(() => frame.remove());
   frame.srcdoc = `${withoutIndexedDB ? '<script>Object.defineProperty(window, "indexedDB", { value: { open() { throw new Error("blocked"); } } });</script>' : ""}
@@ -210,7 +237,7 @@ it("moves the legacy snapshot into the shared database", async () => {
     JSON.stringify({ state: { byProjectKey: { a: [page] } }, version: 1 }),
   );
   try {
-    using documents = new DisposableStack();
+    using documents = historyDocuments();
     const first = await openHistoryDocument(documents);
     await vi.waitFor(() => expect(first.getState().byProjectKey).toEqual({ a: [page] }));
     expect(localStorage.getItem(storageKey)).toBeNull();
@@ -233,7 +260,7 @@ it("persists new visits from an open document after its history database is dele
     JSON.stringify({ state: { byProjectKey: { a: [page] } }, version: 1 }),
   );
   try {
-    using documents = new DisposableStack();
+    using documents = historyDocuments();
     const first = await openHistoryDocument(documents);
     await vi.waitFor(() => expect(first.getState().byProjectKey).toEqual({ a: [page] }));
     first.getState().removeUrl("a", page.url);
@@ -257,11 +284,11 @@ it("keeps overlapping visits from independent documents", async () => {
     JSON.stringify({ state: { byProjectKey: { a: [page] } }, version: 1 }),
   );
   try {
-    using documents = new DisposableStack();
-    const [first, second] = await Promise.all([
-      openHistoryDocument(documents),
-      openHistoryDocument(documents),
-    ]);
+    using documents = historyDocuments();
+    // Both opens settle before teardown, so a failed one cannot leave the other subscribed.
+    const opening = [openHistoryDocument(documents), openHistoryDocument(documents)] as const;
+    await Promise.allSettled(opening);
+    const [first, second] = await Promise.all(opening);
     first.getState().recordVisit("a", oldEntry.url, oldEntry.lastVisitedAt);
     second.getState().recordVisit("b", otherEntry.url, otherEntry.lastVisitedAt);
     const expected = { a: [page, oldEntry], b: [otherEntry] };
@@ -282,7 +309,7 @@ it("keeps overlapping visits from independent documents", async () => {
 it("keeps visits saved while IndexedDB could not open", async () => {
   await resetHistoryFixture();
   try {
-    using documents = new DisposableStack();
+    using documents = historyDocuments();
     const db = await openHistoryFixture(documents);
     await writeHistoryFixture(db, { byProjectKey: { a: [page] }, projectKeyByThreadKey: {} });
     const offline = await openHistoryDocument(documents, { withoutIndexedDB: true });
