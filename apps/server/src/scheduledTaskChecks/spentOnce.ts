@@ -1,58 +1,140 @@
+import { isForkScheduledTaskSchedule, ScheduledTask } from "@t3tools/contracts";
 import type { ScheduledTaskId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { forkFireKey } from "./schedules.ts";
 import { ensureCheckSchema } from "./store.ts";
 
-// The schedule, unwrapped from an accepted automation stamp when it carries one. A corrupt row
-// reads as NULL: json_extract throws on malformed JSON.
-const json = "CASE WHEN json_valid(schedule_json) THEN schedule_json END";
-const scheduleField = (field: string) =>
-  `COALESCE(json_extract(${json}, '$.schedule.${field}'), json_extract(${json}, '$.${field}'))`;
+// The stored forms upstream's row decoder accepts: a schedule, or one wrapped by accepted automation.
+const decodeStored = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Union([
+      ScheduledTask.fields.schedule,
+      Schema.Struct({
+        type: Schema.Literal("destination-automation-v1"),
+        certificateId: Schema.String,
+        schedule: ScheduledTask.fields.schedule,
+      }),
+    ]),
+  ),
+);
+
+/** The one-time schedule stored in `json`, when the run started at `lastRunAt` used it up. */
+const spentOnce = (json: string, lastRunAt: string) => {
+  const stored = Option.getOrUndefined(decodeStored(json));
+  if (stored === undefined) return undefined;
+  const schedule = stored.type === "destination-automation-v1" ? stored.schedule : stored;
+  if (schedule.type !== "once") return undefined;
+  // The scheduler's own comparison: a run started before the time does not use it up.
+  const at = Date.parse("at" in schedule ? schedule.at : schedule.runAt);
+  return Date.parse(lastRunAt) >= at ? schedule : undefined;
+};
 
 /**
- * A one-time task whose last dispatch succeeded at or after its time, upstream's `runAt` or the
- * fork's `at`. Outcome-checked and command tasks are kept: their check state owns the outcome.
+ * Removes a one-time task, upstream's `runAt` or the fork's `at`, once the run that `startedAtIso`
+ * dispatched completed. Outcome-checked and command tasks are kept: their check state owns the outcome.
  */
-const SPENT_ONCE = `
-  last_run_status = 'succeeded' AND next_run_at IS NULL
-  AND ${scheduleField("type")} = 'once'
-  AND julianday(last_run_at) >= julianday(COALESCE(${scheduleField("runAt")}, ${scheduleField("at")}))
-  AND NOT EXISTS (
-    SELECT 1 FROM fork_scheduled_task_checks AS checks
-    WHERE checks.task_id = scheduled_tasks.task_id
-  )
-`;
-
-/** Removes a one-time task once the run that `startedAtIso` dispatched completed. */
 export const deleteSpentOnceTask = Effect.fn("ScheduledTaskChecks.deleteSpentOnceTask")(function* (
   taskId: ScheduledTaskId,
   startedAtIso: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ schedule_json: string }>`
+    SELECT schedule_json FROM scheduled_tasks
+    WHERE task_id = ${taskId} AND last_run_at = ${startedAtIso}
+      AND last_run_status = 'succeeded' AND next_run_at IS NULL
+  `;
+  if (row === undefined || spentOnce(row.schedule_json, startedAtIso) === undefined) return false;
   const removed = yield* sql`
     DELETE FROM scheduled_tasks
-    WHERE task_id = ${taskId} AND last_run_at = ${startedAtIso} AND ${sql.literal(SPENT_ONCE)}
+    WHERE task_id = ${taskId} AND last_run_at = ${startedAtIso}
+      AND last_run_status = 'succeeded' AND next_run_at IS NULL
+      AND schedule_json = ${row.schedule_json}
+      AND NOT EXISTS (SELECT 1 FROM fork_scheduled_task_checks WHERE task_id = ${taskId})
     RETURNING task_id
   `;
   return removed.length > 0;
 });
 
+interface Candidate {
+  readonly task_id: string;
+  readonly schedule_json: string;
+  readonly last_run_at: string;
+}
+
+/** The message ids `runTask` gives the fire that started at `lastRunAt`, scheduled or by hand. */
+const fireMessageIds = (row: Candidate, schedule: ScheduledTask["schedule"]) => {
+  const startedAt = DateTime.makeUnsafe(row.last_run_at);
+  const task = { id: row.task_id as ScheduledTaskId, schedule, nextRunAt: null };
+  return (["scheduled", "manual"] as const).map(
+    (trigger) =>
+      `scheduled-task-message:${
+        forkFireKey(task, trigger, startedAt) ??
+        `${row.task_id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
+      }`,
+  );
+};
+
 /**
- * Fork `at` tasks were once kept after completion; this clears the
- * enabled ones already spent. Paused, failed, never-run and still-due tasks stay.
+ * Fork `at` tasks were once kept after completion; this clears the enabled ones already spent whose
+ * last fire's run completed. A dispatch alone proves nothing: its turn can still fail. Paused,
+ * failed, never-run, still-due and checked tasks stay.
  */
 export const pruneSpentForkOnceTasks = Effect.fn("ScheduledTaskChecks.pruneSpentForkOnceTasks")(
   function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* ensureCheckSchema;
-    const removed = yield* sql`
-      DELETE FROM scheduled_tasks
-      WHERE enabled = 1 AND ${sql.literal(`${scheduleField("at")} IS NOT NULL`)}
-        AND ${sql.literal(SPENT_ONCE)}
-      RETURNING task_id
+    // A cheap prefilter; each candidate is decoded before it is removed.
+    const rows = yield* sql<Candidate>`
+      SELECT task_id, schedule_json, last_run_at FROM scheduled_tasks AS tasks
+      WHERE enabled = 1 AND last_run_status = 'succeeded' AND next_run_at IS NULL
+        AND last_run_at IS NOT NULL AND schedule_json LIKE '%"once"%'
+        AND NOT EXISTS (
+          SELECT 1 FROM fork_scheduled_task_checks AS checks WHERE checks.task_id = tasks.task_id
+        )
     `;
-    if (removed.length > 0)
-      yield* Effect.logInfo("Removed spent one-time schedule tasks", { removed: removed.length });
+    const candidates = rows.flatMap((row) => {
+      const schedule = spentOnce(row.schedule_json, row.last_run_at);
+      return schedule !== undefined && isForkScheduledTaskSchedule(schedule)
+        ? [{ row, messageIds: fireMessageIds(row, schedule) }]
+        : [];
+    });
+    if (candidates.length === 0) return;
+    const completed = new Set(
+      (yield* sql<{ message_id: string }>`
+        SELECT message_id FROM (
+          SELECT json_extract(payload_json, '$.userMessageId') AS message_id
+          FROM orchestration_v2_projection_runs
+          WHERE status = 'completed' AND json_valid(payload_json)
+        )
+        WHERE ${sql.in(
+          "message_id",
+          candidates.flatMap((candidate) => candidate.messageIds),
+        )}
+      `).map((run) => run.message_id),
+    );
+    const spent = candidates.filter((candidate) =>
+      candidate.messageIds.some((id) => completed.has(id)),
+    );
+    const removed = yield* sql.withTransaction(
+      Effect.forEach(spent, ({ row }) =>
+        sql`
+          DELETE FROM scheduled_tasks
+          WHERE task_id = ${row.task_id} AND schedule_json = ${row.schedule_json}
+            AND last_run_at = ${row.last_run_at} AND enabled = 1
+            AND last_run_status = 'succeeded' AND next_run_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM fork_scheduled_task_checks WHERE task_id = ${row.task_id})
+          RETURNING task_id
+        `.pipe(Effect.map((deleted) => deleted.length)),
+      ),
+    );
+    yield* Effect.logInfo("Removed spent one-time schedule tasks", {
+      removed: removed.reduce((sum, count) => sum + count, 0),
+      kept: candidates.length - spent.length,
+    });
   },
 );
