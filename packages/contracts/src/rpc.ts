@@ -1,3 +1,10 @@
+import { RemotePendingRequestInput, RemotePendingRequestResult } from "./peerTask.ts";
+import { PeerTaskView, PeerTaskResource } from "./peerTask.ts";
+import { ThreadId, NodeId } from "./baseSchemas.ts";
+import { OrchestratorMcpTaskCancelResult } from "./orchestratorMcp.ts";
+import { PeerGrant, PeerGrantSummary, PeerGrantUpdate } from "./peerAuthority.ts";
+import { OrchestratorMcpFailure } from "./orchestratorMcp.ts";
+import { PromachosHomeRpcGroup } from "./promachosHome.ts";
 import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
@@ -48,6 +55,10 @@ import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { SecretSourceCheckResult } from "./settingsSecretValue.ts";
 import { SecretReference } from "./secretReference.ts";
+import { IssueRpcs } from "./issues.ts";
+import { FeatureMapRpcs } from "./featureMap.ts";
+import { IssueLinksRpcGroup } from "./issueLinks.ts";
+import { SpectrumRpcGroup } from "./spectrumRpc.ts";
 import {
   ProviderAuthCancelInput,
   ProviderAuthCompleteInput,
@@ -339,6 +350,10 @@ import {
   PreviewStopLocalServerError,
   PreviewStopLocalServerInput,
   PreviewOpenInput,
+  PreviewViewerOpenInput,
+  PreviewViewerCloseInput,
+  PreviewViewerAccess,
+  PreviewViewerUnavailableError,
   PreviewReportStatusInput,
   PreviewResizeInput,
   PreviewAdjustInput,
@@ -346,6 +361,9 @@ import {
 } from "./preview.ts";
 import {
   DeviceActionInput,
+  DeviceViewerOpenInput,
+  DeviceViewerCloseInput,
+  DeviceViewerAccess,
   DeviceCloseInput,
   DeviceConfigureInput,
   DeviceDetail,
@@ -544,6 +562,9 @@ export const WS_METHODS = {
   terminalClose: "terminal.close",
 
   previewOpen: "preview.open",
+  previewViewerOpen: "preview.viewerOpen",
+  previewViewerClose: "preview.viewerClose",
+  previewNavigate: "preview.navigate",
   previewResize: "preview.resize",
   previewAdjust: "preview.adjust",
   previewClose: "preview.close",
@@ -559,6 +580,8 @@ export const WS_METHODS = {
   deviceEasAccount: "device.easAccount",
   deviceSimlockIdentity: "device.simlockIdentity",
   deviceOpen: "device.open",
+  deviceViewerOpen: "device.viewerOpen",
+  deviceViewerClose: "device.viewerClose",
   deviceClose: "device.close",
   deviceShutdown: "device.shutdown",
   deviceDetail: "device.detail",
@@ -588,6 +611,12 @@ export const WS_METHODS = {
   peerLinksThreadItem: "peerLinks.threadItem",
   peerLinksPairClient: "peerLinks.pairClient",
   peerLinksPairLink: "peerLinks.pairLink",
+  remoteTaskView: "remoteTasks.view",
+  remoteTaskRequest: "remoteTasks.request",
+  remoteTaskRequestRead: "remoteTasks.requestRead",
+  remoteTaskStop: "remoteTasks.stop",
+  peerGrantsList: "peerGrants.list",
+  peerGrantsUpdate: "peerGrants.update",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
   serverDiscoverSourceControl: "server.discoverSourceControl",
@@ -617,6 +646,7 @@ export const WS_METHODS = {
   serverGetUsageSummary: "server.getUsageSummary",
   serverRefreshUsageRates: "server.refreshUsageRates",
 
+  scheduledTasksList: "scheduledTasks.list",
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
   scheduledTasksUpsert: "scheduledTasks.upsert",
   scheduledTasksSetEnabled: "scheduledTasks.setEnabled",
@@ -919,6 +949,49 @@ const WsServerGetDatabaseStorageRpc = Rpc.make(WS_METHODS.serverGetDatabaseStora
   success: Schema.NullOr(DatabaseStorageStatus),
   stream: true,
   error: EnvironmentAuthorizationError,
+});
+const WsRemoteTaskViewRpc = Rpc.make(WS_METHODS.remoteTaskView, {
+  payload: Schema.Struct({
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    resource: Schema.optional(PeerTaskResource),
+    after: NonNegativeInt,
+    textOffset: Schema.optional(NonNegativeInt),
+  }),
+  success: PeerTaskView,
+  error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
+});
+const WsRemoteTaskRequestReadRpc = Rpc.make(WS_METHODS.remoteTaskRequestRead, {
+  payload: RemotePendingRequestInput.mapFields((fields) => ({
+    ...fields,
+    operation: Schema.Struct({ type: Schema.Literal("read") }),
+  })),
+  success: RemotePendingRequestResult,
+  error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
+});
+const WsRemoteTaskRequestRpc = Rpc.make(WS_METHODS.remoteTaskRequest, {
+  payload: RemotePendingRequestInput,
+  success: RemotePendingRequestResult,
+  error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
+});
+const WsRemoteTaskStopRpc = Rpc.make(WS_METHODS.remoteTaskStop, {
+  payload: Schema.Struct({
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    clientRequestId: TrimmedNonEmptyString,
+  }),
+  success: OrchestratorMcpTaskCancelResult,
+  error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
+});
+const WsPeerGrantsListRpc = Rpc.make(WS_METHODS.peerGrantsList, {
+  payload: Schema.Struct({}),
+  success: Schema.Array(PeerGrantSummary),
+  error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
+});
+const WsPeerGrantsUpdateRpc = Rpc.make(WS_METHODS.peerGrantsUpdate, {
+  payload: PeerGrantUpdate,
+  success: PeerGrant,
+  error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
 });
 
 const WsServerReclaimDatabaseSpaceRpc = Rpc.make(WS_METHODS.serverReclaimDatabaseSpace, {
@@ -2043,6 +2116,18 @@ const WsDeviceOpenRpc = Rpc.make(WS_METHODS.deviceOpen, {
   error: Schema.Union([DeviceError, EnvironmentAuthorizationError]),
 });
 
+const WsDeviceViewerOpenRpc = Rpc.make(WS_METHODS.deviceViewerOpen, {
+  payload: DeviceViewerOpenInput,
+  success: DeviceViewerAccess,
+  error: Schema.Union([DeviceError, EnvironmentAuthorizationError]),
+});
+
+const WsDeviceViewerCloseRpc = Rpc.make(WS_METHODS.deviceViewerClose, {
+  payload: DeviceViewerCloseInput,
+  success: Schema.Boolean,
+  error: EnvironmentAuthorizationError,
+});
+
 const WsDeviceCloseRpc = Rpc.make(WS_METHODS.deviceClose, {
   payload: DeviceCloseInput,
   error: Schema.Union([DeviceError, EnvironmentAuthorizationError]),
@@ -2286,6 +2371,12 @@ const WsSubscribeServerLifecycleRpc = Rpc.make(WS_METHODS.subscribeServerLifecyc
   stream: true,
 });
 
+const WsScheduledTasksListRpc = Rpc.make(WS_METHODS.scheduledTasksList, {
+  payload: ScheduledTaskListInput,
+  success: ScheduledTaskListResult,
+  error: Schema.Union([ScheduledTaskError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksSubscribeRpc = Rpc.make(WS_METHODS.scheduledTasksSubscribe, {
   payload: ScheduledTaskListInput,
   success: ScheduledTaskListResult,
@@ -2379,6 +2470,32 @@ export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthori
   { error: EnvironmentAuthorizationError },
 ) {}
 
+export const SecretRequestClientRpcGroup =
+  RpcGroup.make(WsSecretsAnswerRequestRpc).middleware(RpcScopeAuthorization);
+
+export const DeviceViewerClientRpcGroup = RpcGroup.make(
+  WsDeviceViewerOpenRpc,
+  WsDeviceViewerCloseRpc,
+).middleware(RpcScopeAuthorization);
+
+export const PreviewViewerClientRpcGroup = RpcGroup.make(
+  Rpc.make(WS_METHODS.previewViewerOpen, {
+    payload: PreviewViewerOpenInput,
+    success: PreviewViewerAccess,
+    error: Schema.Union([PreviewViewerUnavailableError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(WS_METHODS.previewViewerClose, {
+    payload: PreviewViewerCloseInput,
+    success: Schema.Boolean,
+    error: EnvironmentAuthorizationError,
+  }),
+).middleware(RpcScopeAuthorization);
+
+export const PendingRequestClientRpcGroup = RpcGroup.make(
+  WsRemoteTaskRequestReadRpc,
+  WsRemoteTaskRequestRpc,
+).middleware(RpcScopeAuthorization);
+
 export const WsRpcGroup = RpcGroup.make(
   WsIssuesListRpc,
   WsIssuesDetailRpc,
@@ -2425,7 +2542,14 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetDatabaseStorageRpc,
   WsServerGetSettingsRpc,
   WsServerReclaimDatabaseSpaceRpc,
+  WsServerGetSettingsRpc,
   WsServerUpdateSettingsRpc,
+  WsRemoteTaskViewRpc,
+  WsRemoteTaskStopRpc,
+  WsRemoteTaskRequestRpc,
+  WsRemoteTaskRequestReadRpc,
+  WsPeerGrantsListRpc,
+  WsPeerGrantsUpdateRpc,
   WsPeerLinksListRpc,
   WsPeerLinksNamesRpc,
   WsPeerLinksLinkRpc,
@@ -2461,6 +2585,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetUsageSummaryRpc,
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,
+  WsScheduledTasksListRpc,
   WsScheduledTasksSubscribeRpc,
   WsScheduledTasksUpsertRpc,
   WsScheduledTasksSetEnabledRpc,
@@ -2628,4 +2753,16 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeThreadRpc,
   WsOrchestrationV2SubscribeCommandOutputRpc,
   WsOrchestrationV2SubscribePromptSuggestionRpc,
-).middleware(RpcScopeAuthorization);
+  // Fork: GitHub Issues (toolboxmd/t3code#27).
+  ...IssueRpcs,
+  // Fork: feature map (toolboxmd/chromeria#235).
+  ...FeatureMapRpcs,
+)
+  // Fork: Issue links (toolboxmd/t3code#28).
+  .merge(DeviceViewerClientRpcGroup)
+  .merge(PreviewViewerClientRpcGroup)
+  .merge(PromachosHomeRpcGroup)
+  .merge(IssueLinksRpcGroup)
+  // Fork: Spectrum report abandonment (toolboxmd/chromeria#176).
+  .merge(SpectrumRpcGroup)
+  .middleware(RpcScopeAuthorization);
