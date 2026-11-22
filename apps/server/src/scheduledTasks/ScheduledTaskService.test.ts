@@ -831,7 +831,8 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
       } as const;
       yield* service.upsert({ ...input, threadMode: "fresh_session" });
 
-      assert.equal((yield* service.runNow({ id: input.id })).threadId, launched);
+      const first = yield* service.runNow({ id: input.id });
+      assert.equal(first.threadId, launched);
       // A form opened before the first run saves no thread; the binding stays.
       const { task } = yield* service.upsert({
         ...input,
@@ -844,12 +845,14 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
       const legacy = yield* service.upsert({ ...input, threadId: null });
       assert.equal(legacy.task.threadId, launched);
       assert.equal(legacy.task.threadMode, "fresh_session");
-      yield* service.runNow({ id: input.id });
+      const second = yield* service.runNow({ id: input.id });
 
       assert.equal(yield* Ref.get(launches), 1);
       assert.deepEqual(yield* Ref.get(sends), [{ threadId: launched, freshContext: true }]);
       // Both Run Nows started at the same instant; each still sends its own message.
       assert.equal(new Set(yield* Ref.get(messageIds)).size, 2);
+      // Outcome writes are fenced by the start time, so each run needs its own.
+      assert.notEqual(second.task.lastRunAt, first.task.lastRunAt);
       // Its thread stays in the old project, so moving the task leaves it for a new one.
       const moved = yield* service.upsert({
         ...input,

@@ -436,6 +436,14 @@ it.effect("a one-shot is one run per instant: a replayed fire with another offse
     assert.isTrue(Exit.isFailure(manual));
     assert.include(String(manual), "already started at this instant");
     assert.equal(h.sent.length, 1);
+    // A keyed Run now has its own run id, so the instant's run does not block it.
+    const keyed = yield* h.runs.decide({
+      task: once,
+      trigger: "manual",
+      startedAt: DateTime.makeUnsafe(NOW),
+      manualRequestId: "a".repeat(64),
+    });
+    assert.equal(keyed._tag, "fork");
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 

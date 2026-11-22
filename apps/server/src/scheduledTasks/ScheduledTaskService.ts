@@ -1387,11 +1387,20 @@ export const layer = Layer.effect(
       },
     ) {
       // Read before reserving: nothing between the reservation and its release may fail.
-      const startedAt = yield* localNow;
-      const startedAtIso = iso(startedAt);
+      let startedAt = yield* localNow;
+      let startedAtIso = iso(startedAt);
       const run = Effect.gen(function* () {
         // Re-read stale poll snapshots so deleted, paused or postponed tasks cannot fire.
         const active = yield* findTask(task.id);
+        // Outcome writes are fenced by the start time, so a Run Now never reuses one,
+        // even after the clock steps back.
+        const lastStartMs = active?.lastRunAt == null ? NaN : Date.parse(active.lastRunAt);
+        if (trigger === "manual" && lastStartMs >= DateTime.toEpochMillis(startedAt)) {
+          startedAt = DateTime.add(startedAt, {
+            milliseconds: lastStartMs + 1 - DateTime.toEpochMillis(startedAt),
+          });
+          startedAtIso = iso(startedAt);
+        }
         if (active === null) {
           if (webhook !== undefined) {
             return yield* new WebhookDeliverySkipped({

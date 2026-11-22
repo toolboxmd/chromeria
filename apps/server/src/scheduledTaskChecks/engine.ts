@@ -656,7 +656,10 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
             }
             // A scheduled fork trigger is identified by its slot, so a replayed fire is the same run.
             const slot = forkScheduledSlot(task, trigger, input.startedAt) ?? iso(now);
-            if (state.runs.some((run) => run.id === `${task.id}:${slot}`)) {
+            if (
+              input.manualRequestId === undefined &&
+              state.runs.some((run) => run.id === `${task.id}:${slot}`)
+            ) {
               if (trigger !== "scheduled")
                 return yield* refuse(
                   "A run of this task already started at this instant; try again.",
