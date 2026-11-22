@@ -285,10 +285,10 @@ it("keeps overlapping visits from independent documents", async () => {
   );
   try {
     using documents = historyDocuments();
-    const [first, second] = await Promise.all([
-      openHistoryDocument(documents),
-      openHistoryDocument(documents),
-    ]);
+    // Both opens settle before teardown, so a failed one cannot leave the other subscribed.
+    const opening = [openHistoryDocument(documents), openHistoryDocument(documents)] as const;
+    await Promise.allSettled(opening);
+    const [first, second] = await Promise.all(opening);
     first.getState().recordVisit("a", oldEntry.url, oldEntry.lastVisitedAt);
     second.getState().recordVisit("b", otherEntry.url, otherEntry.lastVisitedAt);
     const expected = { a: [page, oldEntry], b: [otherEntry] };
