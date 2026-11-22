@@ -799,3 +799,6 @@ apps/web/src/browserHistoryStore.browser.test.ts
 
 # Steered wake recovery (#875)
 apps/server/src/orchestration-v2/ProviderEventIngestor.ts
+
+# ACP mock agent request log writes complete lines (#886)
+apps/server/scripts/acp-mock-agent.ts

@@ -3011,6 +3011,21 @@ sources and reasons.
 }
 ```
 
+## acp-mock-request-log
+
+```json
+{
+  "id": "acp-mock-request-log",
+  "purpose": "The ACP mock agent's request log writes only complete lines, so a message split across stdin reads no longer logs as two unparseable lines and flakes the tests that read it. Drop when upstream frames that log by line.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/886"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/887"],
+  "newFiles": [],
+  "upstreamFiles": ["apps/server/scripts/acp-mock-agent.ts"],
+  "sharedFiles": [],
+  "keywords": ["pendingRequestLogLine", "T3_ACP_REQUEST_LOG_PATH"]
+}
+```
+
 ## menu-escape-focus
 
 ```json
