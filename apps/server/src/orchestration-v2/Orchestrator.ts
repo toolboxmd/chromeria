@@ -3994,15 +3994,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         text: message.text,
         ...(message.context ? { context: message.context } : {}),
         attachments: message.attachments,
+        // It was steered into this run because their purposes matched; a mailbox wake's own causes win.
+        purposeSource: {
+          version: 1,
+          scope: executionPurposeOf(run).scope,
+          provenance: { type: "source_run", threadId, runId: run.id },
+        },
         // A mailbox wake replays with its reservation; any other wake returns as the notice it showed.
         ...(item.type === "notification" && !reserved
           ? {
-              // It was steered into this run because their purposes matched.
-              purposeSource: {
-                version: 1,
-                scope: executionPurposeOf(run).scope,
-                provenance: { type: "source_run", threadId, runId: run.id },
-              },
               notification: {
                 source: item.source,
                 outcome: item.outcome,

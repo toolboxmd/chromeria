@@ -1149,7 +1149,7 @@ export const make = Effect.gen(function* () {
           (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
         ),
       );
-    // A steer no worker sent never reached the provider, so it is unread like one the provider
+    // A steer no worker ever claimed never reached the provider, so it is unread like one the provider
     // holds. Marked before its effect is cancelled below, so a crash in between marks it again.
     const unsentSteers = yield* outbox.unsentSteers.pipe(
       Effect.mapError(
