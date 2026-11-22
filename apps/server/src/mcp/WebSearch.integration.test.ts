@@ -549,10 +549,12 @@ it.effect("honours TinyFish Retry-After without blocking the SearXNG lane", () =
       const result = yield* Fiber.join(second);
       expect(result.engines.find((engine) => engine.engine === "google cse")?.status).toBe("ok");
       const limited = result.engines.find((engine) => engine.source === "tinyfish");
-      expect(limited).toMatchObject({ status: "rate_limited", reason: "retry_after" });
-      // Remaining time depends on whether the lane is checked before or after the 25 s pace.
-      expect(limited?.retryAfterMs).toBeGreaterThanOrEqual(95_000);
-      expect(limited?.retryAfterMs).toBeLessThanOrEqual(120_000);
+      // The second search reads the TinyFish lane before the clock moves.
+      expect(limited).toMatchObject({
+        status: "rate_limited",
+        reason: "retry_after",
+        retryAfterMs: 120_000,
+      });
       expect(
         f.seen.filter((entry) => entry.request.url.startsWith("https://treg.to")),
       ).toHaveLength(1);

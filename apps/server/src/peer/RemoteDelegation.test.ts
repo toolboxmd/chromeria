@@ -3036,14 +3036,13 @@ it.effect.each(
               clientRequestId: "refused-child",
             });
             expect(response.isError).toBe(true);
-            // An empty catalog refuses as model_unavailable for an inherited model, or as
-            // provider_unavailable when the destination's Prism Colors are all unadvertised.
+            // The box's worker Color is unadvertised in an empty catalog, so Prism finds no candidate.
             expect(response.content).toMatchObject([
               {
                 type: "text",
                 text: expect.stringMatching(
                   unavailable === "catalog"
-                    ? /"code":"(model|provider)_unavailable".*not advertised/
+                    ? /"code":"provider_unavailable".*not advertised/
                     : `"code":"${unavailable === "base" ? "invalid_request" : "provider_unavailable"}"`,
                 ),
               },
