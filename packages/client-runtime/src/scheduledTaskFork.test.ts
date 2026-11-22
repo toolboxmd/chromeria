@@ -8,6 +8,7 @@ import {
   forkTaskSummary,
   outcomeCheckLabel,
   scheduledTaskSections,
+  uniqueMachineLabels,
 } from "./scheduledTaskFork.ts";
 
 describe("fork schedule labels", () => {
@@ -287,5 +288,16 @@ describe("scheduled task sections", () => {
       ["e/spent"],
     ]);
     expect(narrowed.failing).toBe(3);
+  });
+});
+
+describe("machine labels", () => {
+  it("keep distinct labels and add the environment id only where labels still collide", () => {
+    const labels = uniqueMachineLabels([
+      { environmentId: "a", label: "Dev (host)" },
+      { environmentId: "b", label: "Dev (host)" },
+      { environmentId: "c", label: "rocky" },
+    ]);
+    expect([...labels.values()]).toEqual(["Dev (host) · a", "Dev (host) · b", "rocky"]);
   });
 });

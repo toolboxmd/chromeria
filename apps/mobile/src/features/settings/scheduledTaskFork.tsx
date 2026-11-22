@@ -5,6 +5,7 @@ import {
   forkTaskSummary,
   scheduledTaskEntryKey,
   scheduledTaskSections,
+  uniqueMachineLabels,
 } from "@t3tools/client-runtime/scheduled-task-fork";
 import {
   type EnvironmentId,
@@ -160,16 +161,30 @@ export function ScheduledTaskList({
   // The chip hides once nothing fails, so its selection must not wait for the next failure.
   if (failingOnly && !anyFailing) setFailingOnly(false);
   const sections = scheduledTaskSections(entries, { failingOnly: failingOnly && anyFailing });
+  const everyMachine = [...environments, ...disconnected];
+  const machineLabels = uniqueMachineLabels(
+    everyMachine.map((environment) => ({
+      environmentId: environment.environmentId,
+      label: everyMachine.some(
+        (other) =>
+          other.environmentId !== environment.environmentId && other.label === environment.label,
+      )
+        ? `${environment.label} (${environment.displayUrl ?? environment.environmentId})`
+        : environment.label,
+    })),
+  );
+  const machineLabel = (environment: EnvironmentPresentation) =>
+    machineLabels.get(environment.environmentId) ?? environment.label;
   const summaries = {
     notConnected: disconnected.map(
       (environment) =>
-        `${environment.label} (${connectionStatusTitle(environment.connection, messages)})`,
+        `${machineLabel(environment)} (${connectionStatusTitle(environment.connection, messages)})`,
     ),
     loading: states.flatMap((state) =>
-      state.error === null && !state.tasks ? [state.environment.label] : [],
+      state.error === null && !state.tasks ? [machineLabel(state.environment)] : [],
     ),
     failed: states.flatMap((state) =>
-      state.error === null ? [] : [`${state.environment.label}: ${state.error}`],
+      state.error === null ? [] : [`${machineLabel(state.environment)}: ${state.error}`],
     ),
   };
   // Empty only once every selected machine answered; a loading, failed or offline one may hold tasks.
@@ -177,13 +192,6 @@ export function ScheduledTaskList({
     states.length > 0 &&
     disconnected.length === 0 &&
     states.every((state) => state.tasks !== undefined);
-  const machineLabel = (environment: EnvironmentPresentation) =>
-    [...environments, ...disconnected].some(
-      (other) =>
-        other.environmentId !== environment.environmentId && other.label === environment.label,
-    )
-      ? `${environment.label} (${environment.displayUrl ?? environment.environmentId})`
-      : environment.label;
 
   const rows = (list: ReadonlyArray<(typeof entries)[number]>) =>
     list.map((entry, index) => (

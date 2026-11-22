@@ -6,6 +6,7 @@ import {
   type ScheduledTaskListEntry,
   scheduledTaskEntryKey,
   scheduledTaskSections,
+  uniqueMachineLabels,
 } from "@t3tools/client-runtime/scheduled-task-fork";
 import {
   type EnvironmentId,
@@ -126,6 +127,12 @@ export function ScheduledTaskList({
       environment,
     })),
   );
+  const machineLabels = uniqueMachineLabels(
+    environments.map((environment) => ({
+      environmentId: environment.environmentId,
+      label: settingsScopeEnvironmentLabel(environment, environments),
+    })),
+  );
   const linkedState = states.find((state) => state.environment.environmentId === environmentId);
   const linkedTask = linkedState?.tasks?.find((task) => task.id === taskId);
   const linkedKey =
@@ -167,7 +174,7 @@ export function ScheduledTaskList({
     empty: [],
   };
   for (const { environment, connected, tasks, error } of states) {
-    const label = settingsScopeEnvironmentLabel(environment, environments);
+    const label = machineLabels.get(environment.environmentId) ?? environment.label;
     if (!connected) {
       summaries.notConnected.push(
         `${label} (${connectionStatusTitle(environment.connection, messages)})`,
@@ -187,12 +194,12 @@ export function ScheduledTaskList({
         environmentId: entry.environmentId,
         task: entry.task,
         timeZone: entry.timeZone,
-        name: `${entry.task.title} · ${settingsScopeEnvironmentLabel(entry.environment, environments)}`,
+        name: `${entry.task.title} · ${machineLabels.get(entry.environmentId) ?? entry.environment.label}`,
         origin: (
           <ScheduledTaskOrigin
             task={entry.task}
             environment={entry.environment}
-            machine={settingsScopeEnvironmentLabel(entry.environment, environments)}
+            machine={machineLabels.get(entry.environmentId) ?? entry.environment.label}
             project={
               groups.find((group) =>
                 // Refs keep every registration of a grouped checkout, members only the newest.

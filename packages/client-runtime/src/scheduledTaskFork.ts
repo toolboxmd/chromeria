@@ -287,3 +287,20 @@ export function scheduledTaskSections<E extends ScheduledTaskListEntry>(
   );
   return { upcoming, recurring, history, failing, historyFailing };
 }
+
+/**
+ * One label per machine for the merged list, which has no per-machine headings: a label two
+ * machines still share after the client's own disambiguation gets the environment id.
+ */
+export function uniqueMachineLabels(
+  machines: ReadonlyArray<{ readonly environmentId: string; readonly label: string }>,
+): ReadonlyMap<string, string> {
+  const counts = new Map<string, number>();
+  for (const { label } of machines) counts.set(label, (counts.get(label) ?? 0) + 1);
+  return new Map(
+    machines.map(({ environmentId, label }) => [
+      environmentId,
+      (counts.get(label) ?? 0) > 1 ? `${label} · ${environmentId}` : label,
+    ]),
+  );
+}
