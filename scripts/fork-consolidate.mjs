@@ -15,6 +15,7 @@ const order = [
   "macos-temp-realpath-tests",
   "secret-store-atomic-create",
   "launcher-test-fixtures",
+  "acp-mock-request-log",
   "legacy-terminal-labels",
   "login-shell-capture",
   "grok-reasoning-effort",
