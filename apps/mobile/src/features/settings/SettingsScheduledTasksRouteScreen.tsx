@@ -1641,6 +1641,7 @@ function ScheduledTaskItem({
   environment,
   task,
   timeZone,
+  machine,
   divided,
   origin,
   now,
@@ -1654,7 +1655,7 @@ function ScheduledTaskItem({
   const locale = useLocale();
   const environmentId = environment.environmentId;
   // One list holds every machine's tasks, so the machine tells same-named tasks apart.
-  const named = `${task.title} · ${environment.label}`;
+  const named = `${task.title} · ${machine}`;
   const canOperate = useAtomValue(
     serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
   );

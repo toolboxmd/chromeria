@@ -97,6 +97,8 @@ export interface ScheduledTaskListRow {
   readonly environment: EnvironmentPresentation;
   readonly task: ScheduledTask;
   readonly timeZone: string | undefined;
+  /** The machine's label, with its address when another selected machine shares the name. */
+  readonly machine: string;
   /** False for a section's first row, which draws no divider. */
   readonly divided: boolean;
   /** Kind, machine and project, shown first on the row. */
@@ -170,8 +172,18 @@ export function ScheduledTaskList({
       state.error === null ? [] : [`${state.environment.label}: ${state.error}`],
     ),
   };
-  // Empty only once every selected machine answered; a loading or failed one may hold tasks.
-  const loaded = states.length > 0 && states.every((state) => state.tasks !== undefined);
+  // Empty only once every selected machine answered; a loading, failed or offline one may hold tasks.
+  const loaded =
+    states.length > 0 &&
+    disconnected.length === 0 &&
+    states.every((state) => state.tasks !== undefined);
+  const machineLabel = (environment: EnvironmentPresentation) =>
+    [...environments, ...disconnected].some(
+      (other) =>
+        other.environmentId !== environment.environmentId && other.label === environment.label,
+    )
+      ? `${environment.label} (${environment.displayUrl ?? environment.environmentId})`
+      : environment.label;
 
   const rows = (list: ReadonlyArray<(typeof entries)[number]>) =>
     list.map((entry, index) => (
@@ -180,11 +192,13 @@ export function ScheduledTaskList({
           environment: entry.environment,
           task: entry.task,
           timeZone: entry.timeZone,
+          machine: machineLabel(entry.environment),
           divided: index > 0,
           origin: (
             <ScheduledTaskOrigin
               task={entry.task}
               environment={entry.environment}
+              machine={machineLabel(entry.environment)}
               project={projectName(entry.environmentId, entry.task.projectId)}
             />
           ),
@@ -281,10 +295,12 @@ export function ScheduledTaskList({
 function ScheduledTaskOrigin({
   task,
   environment,
+  machine,
   project,
 }: {
   readonly task: ScheduledTask;
   readonly environment: EnvironmentPresentation;
+  readonly machine: string;
   readonly project: string | undefined;
 }) {
   const gt = useGT();
@@ -307,7 +323,7 @@ function ScheduledTaskOrigin({
         }
       />
       <AppText className="shrink text-sm text-foreground-muted" numberOfLines={1}>
-        {project === undefined ? environment.label : `${environment.label} · ${project}`}
+        {project === undefined ? machine : `${machine} · ${project}`}
       </AppText>
     </View>
   );
