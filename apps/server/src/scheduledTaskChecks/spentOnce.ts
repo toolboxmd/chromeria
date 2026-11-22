@@ -8,13 +8,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { forkFireKey } from "./schedules.ts";
 import { ensureCheckSchema } from "./store.ts";
 
-const encodeFiresJson = Schema.encodeEffect(
-  Schema.fromJsonString(Schema.Array(Schema.Tuple([Schema.String, Schema.String]))),
-);
 const encodeIdsJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
 // Strings always encode; a failure here is a defect.
-const encodeFires = (fires: ReadonlyArray<readonly [string, string]>) =>
-  encodeFiresJson(fires).pipe(Effect.orDie);
 const encodeIds = (ids: ReadonlyArray<string>) => encodeIdsJson(ids).pipe(Effect.orDie);
 const decodeTaskId = Schema.decodeUnknownOption(ScheduledTaskId);
 
@@ -74,29 +69,25 @@ interface Candidate {
   readonly last_run_at: string;
 }
 
-/**
- * The message ids the fire that started at `lastRunAt` can have: a keyed Run Now and a local Run
- * Now are unique to that start, while a scheduled fire keeps its slot's id.
- */
-const fireMessageIds = (
-  row: Candidate,
-  task: Parameters<typeof forkFireKey>[0],
-  keyedRequestIds: ReadonlyArray<string>,
-) => {
+const MESSAGE_PREFIX = "scheduled-task-message:";
+// What follows `<task id>:` in a fire's message id; a longer task id that shares the prefix leaves
+// a remainder that matches neither form.
+const FIRE_SUFFIX =
+  /^(?:(?:once|weekly|monthly):\d{4}-\d{2}-\d{2}T[\d:.]+Z|\d+:(?:scheduled|manual))$/;
+
+/** Whether `messageId` is one `runTask` gave a fire of `taskId`, under any slot. */
+const isTaskFireMessage = (messageId: string, taskId: string) => {
+  const prefix = `${MESSAGE_PREFIX}${taskId}:`;
+  return messageId.startsWith(prefix) && FIRE_SUFFIX.test(messageId.slice(prefix.length));
+};
+
+/** The local Run Now id of the fire that started at `lastRunAt`, unique to that start. */
+const manualMessageId = (row: Candidate, task: Parameters<typeof forkFireKey>[0]) => {
   const startedAt = DateTime.makeUnsafe(row.last_run_at);
-  const key = (trigger: "scheduled" | "manual") =>
-    `scheduled-task-message:${
-      forkFireKey(task, trigger, startedAt) ??
-      `${row.task_id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
-    }`;
-  return [
-    ...keyedRequestIds.map((requestId) => ({
-      id: `scheduled-task-message:manual:${requestId}`,
-      unique: true,
-    })),
-    { id: key("manual"), unique: true },
-    { id: key("scheduled"), unique: false },
-  ];
+  return `${MESSAGE_PREFIX}${
+    forkFireKey(task, "manual", startedAt) ??
+    `${row.task_id}:${DateTime.toEpochMillis(startedAt)}:manual`
+  }`;
 };
 
 /**
@@ -125,47 +116,47 @@ export const pruneSpentForkOnceTasks = Effect.fn("ScheduledTaskChecks.pruneSpent
     });
     if (spentRows.length === 0) return;
     // One JSON parameter, so a pile of any size stays under SQLite's variable limit.
-    const fires = yield* encodeFires(
-      spentRows.map(({ row }) => [row.task_id, row.last_run_at] as const),
-    );
-    const keyed = yield* sql<{ task_id: string; request_id: string }>`
-      SELECT requests.task_id, requests.request_id FROM scheduled_manual_requests AS requests
-      JOIN json_each(${fires}) AS fire
-        ON requests.task_id = json_extract(fire.value, '$[0]')
-        AND requests.started_at = json_extract(fire.value, '$[1]')
+    const taskIds = yield* encodeIds(spentRows.map(({ row }) => row.task_id));
+    const keyed = yield* sql<{ task_id: string; request_id: string; started_at: string }>`
+      SELECT task_id, request_id, started_at FROM scheduled_manual_requests
+      WHERE task_id IN (SELECT value FROM json_each(${taskIds}))
     `;
-    const candidates = spentRows.map(({ row, task }) => ({
-      row,
-      messageIds: fireMessageIds(
-        row,
-        task,
-        keyed.filter((request) => request.task_id === row.task_id).map((r) => r.request_id),
-      ),
-    }));
-    const messageIds = yield* encodeIds(
-      candidates.flatMap((candidate) => candidate.messageIds.map(({ id }) => id)),
-    );
+    const keyedByTask = Map.groupBy(keyed, (request) => request.task_id);
     const runs = yield* sql<{ message_id: string; status: string; requested_at: string }>`
       SELECT message_id, status, requested_at FROM (
         SELECT json_extract(payload_json, '$.userMessageId') AS message_id, status, requested_at
         FROM orchestration_v2_projection_runs
         WHERE json_valid(payload_json)
       )
-      WHERE message_id IN (SELECT value FROM json_each(${messageIds}))
+      WHERE message_id LIKE 'scheduled-task-message:%'
     `;
     const runsByMessage = Map.groupBy(runs, (run) => run.message_id);
-    // Which of these ids the last fire used cannot be told apart in every history, so all their
-    // runs must have completed. The fire's own run must also be there: under a Run Now id, which is
-    // unique to the start, or under the slot id from the start on. Any other history keeps the task.
-    const spent = candidates.filter(({ row, messageIds }) => {
-      if (messageIds.filter((fire) => fire.unique).length > 2) return false;
-      const runsOf = (fire: (typeof messageIds)[number]) => runsByMessage.get(fire.id) ?? [];
-      if (!messageIds.every((fire) => runsOf(fire).every((run) => run.status === "completed")))
-        return false;
-      return messageIds.some((fire) =>
-        runsOf(fire).some(
-          (run) => fire.unique || Date.parse(run.requested_at) >= Date.parse(row.last_run_at),
-        ),
+    // Which fire a run belonged to cannot be told apart in every history (requeues, edits, clock
+    // steps, restarts), so every run of the task's fires, under any slot, must have completed. The
+    // last fire's own run must also be there: under its Run Now id, which is unique to the start, or
+    // any run requested from the start on. Any other history keeps the task.
+    const spent = spentRows.filter(({ row, task }) => {
+      const requests = keyedByTask.get(row.task_id) ?? [];
+      const atStart = requests.filter((request) => request.started_at === row.last_run_at);
+      // Two keyed requests at one start leave the fire unknown even when one has finished.
+      if (atStart.length > 1) return false;
+      const ownIds = new Set([
+        manualMessageId(row, task),
+        ...atStart.map((request) => `${MESSAGE_PREFIX}manual:${request.request_id}`),
+      ]);
+      const keyedIds = new Set(
+        requests.map((request) => `${MESSAGE_PREFIX}manual:${request.request_id}`),
+      );
+      const taskRuns = [...runsByMessage].flatMap(([messageId, messageRuns]) =>
+        keyedIds.has(messageId) || isTaskFireMessage(messageId, row.task_id)
+          ? messageRuns.map((run) => ({ ...run, own: ownIds.has(messageId) }))
+          : [],
+      );
+      return (
+        taskRuns.every((run) => run.status === "completed") &&
+        taskRuns.some(
+          (run) => run.own || Date.parse(run.requested_at) >= Date.parse(row.last_run_at),
+        )
       );
     });
     const removed = yield* sql.withTransaction(
@@ -182,7 +173,7 @@ export const pruneSpentForkOnceTasks = Effect.fn("ScheduledTaskChecks.pruneSpent
     );
     yield* Effect.logInfo("Removed spent one-time schedule tasks", {
       removed: removed.reduce((sum, count) => sum + count, 0),
-      kept: candidates.length - spent.length,
+      kept: spentRows.length - spent.length,
     });
   },
 );

@@ -268,6 +268,40 @@ const rows: ReadonlyArray<Row> = [
     onCompletion: true,
     pruned: false,
   },
+  // Edited after the fire: its unfinished run sits under the old slot's id.
+  {
+    id: "edited-after-fire",
+    schedule: at("2026-10-08T10:00:02Z"),
+    otherRuns: [
+      {
+        messageId: scheduledMessage("edited-after-fire", spentAt),
+        status: "running",
+        requestedAt: RAN,
+      },
+    ],
+    run: {
+      messageId: scheduledMessage("edited-after-fire", "2026-10-08T10:00:02Z"),
+      status: "completed",
+      requestedAt: "2026-10-08T10:00:06.000Z",
+    },
+    onCompletion: true,
+    pruned: false,
+  },
+  // A task whose id extends another's: its runs are not the shorter task's.
+  {
+    id: "prefix",
+    schedule: at(spentAt),
+    run: { messageId: scheduledMessage("prefix", spentAt), status: "completed" },
+    onCompletion: true,
+    pruned: true,
+  },
+  {
+    id: "prefix:longer",
+    schedule: at(spentAt),
+    run: { messageId: scheduledMessage("prefix:longer", spentAt), status: "failed" },
+    onCompletion: true,
+    pruned: false,
+  },
   {
     id: "keyed-run-now",
     schedule: at(spentAt),
