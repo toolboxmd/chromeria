@@ -4273,7 +4273,8 @@ it.effect("replays an accepted steer after its target turn completes", () =>
   }),
 );
 
-// The provider accepted the steers but had not read them when the server went down or Stop ended it.
+// The provider accepted the steers but had not read them when the server went down or Stop ended it,
+// or the server went down before sending them.
 it.effect.each([
   ["user steer", "restart"],
   ["delegated task question", "restart"],
@@ -4281,6 +4282,11 @@ it.effect.each([
   ["held delegated completion", "restart"],
   ["emptied delegated completion", "restart"],
   ["wakes around a user steer", "restart"],
+  ["user steer", "restart before sending"],
+  ["delegated task question", "restart before sending"],
+  ["held delegated completion", "restart before sending"],
+  ["wakes around a user steer", "restart before sending"],
+  ["user steer", "restart after reading"],
   ["user steer", "stop"],
   ["delegated task question", "stop"],
 ] as const)("handles a %s the provider left unread at %s", ([kind, ending]) =>
@@ -4444,9 +4450,9 @@ it.effect.each([
           attachments: [],
           ...send,
         });
-        yield* worker.drain();
+        if (ending !== "restart before sending") yield* worker.drain();
       }
-      assert.lengthOf(steered, sends.length);
+      assert.lengthOf(steered, ending === "restart before sending" ? 0 : sends.length);
       if (kind === "held delegated completion") yield* writeReservation("held");
       if (kind === "emptied delegated completion") yield* writeReservation("emptied", true);
       const turn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
@@ -4456,7 +4462,7 @@ it.effect.each([
         Stream.runDrain,
         Effect.forkScoped({ startImmediately: true }),
       );
-      for (const messageId of messageIds) {
+      for (const messageId of ending === "restart" || ending === "stop" ? messageIds : []) {
         yield* Queue.offer(events, {
           type: "steer.updated",
           driver,
@@ -4522,10 +4528,12 @@ it.effect.each([
       );
       yield* recovery.reconcile("startup");
       const requeued =
-        // Once accepted, a mailbox wake's results are the mailbox's to redeliver.
-        kind === "accepted delegated completion" || kind === "emptied delegated completion"
-          ? messageIds.filter((messageId) => messageId !== mailboxId)
-          : messageIds;
+        ending === "restart after reading"
+          ? []
+          : // Once accepted, a mailbox wake's results are the mailbox's to redeliver.
+            kind === "accepted delegated completion" || kind === "emptied delegated completion"
+            ? messageIds.filter((messageId) => messageId !== mailboxId)
+            : messageIds;
       for (let pass = 0; pass < 2; pass += 1) {
         yield* orchestrator.recoverDelegatedTasks;
         yield* worker.drain();

@@ -197,6 +197,7 @@ it.effect("recovers an admitted continuation after another crash before provider
           Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({}),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
             get: () => Effect.succeedNone,
+            unsentSteers: Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
         ),
@@ -323,6 +324,7 @@ it.effect.each([
             }),
             Layer.mock(EffectOutbox.EffectOutboxV2)({
               get: () => Effect.succeedNone,
+              unsentSteers: Effect.succeed([]),
               reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
             }),
           ),
@@ -387,6 +389,7 @@ it.effect("lets a cut blocking delegate_task wake its parent like an async task"
           Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({}),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
             get: () => Effect.succeedNone,
+            unsentSteers: Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
         ),
@@ -455,6 +458,7 @@ it.effect.each(["running", "waiting"])(
             Layer.mock(EffectOutbox.EffectOutboxV2)({
               get: () => Effect.succeedNone,
               listByCommandId: () => Effect.succeed([]),
+              unsentSteers: Effect.succeed([]),
               reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
             }),
           ),
@@ -748,6 +752,7 @@ it.effect.each([
                   );
                 },
                 listByCommandId: () => Effect.succeed([]),
+                unsentSteers: Effect.succeed([]),
                 reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
               }),
             ),
@@ -898,6 +903,7 @@ it.effect("does not cancel or resume a run that completes while shutdown intent 
           }),
           Layer.mock(EffectOutbox.EffectOutboxV2)({
             get: () => Effect.succeedNone,
+            unsentSteers: Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
         ),
@@ -1011,6 +1017,7 @@ it.effect.each([
               );
             },
             listByCommandId: () => Effect.succeed([]),
+            unsentSteers: Effect.succeed([]),
             reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
           }),
         ),

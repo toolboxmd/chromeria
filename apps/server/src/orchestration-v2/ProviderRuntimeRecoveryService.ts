@@ -1149,6 +1149,53 @@ export const make = Effect.gen(function* () {
           (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
         ),
       );
+    // A steer no worker sent never reached the provider, so it is unread like one the provider
+    // holds. Marked before its effect is cancelled below, so a crash in between marks it again.
+    const unsentSteers = yield* outbox.unsentSteers.pipe(
+      Effect.mapError(
+        (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
+      ),
+    );
+    for (const effect of unsentSteers) {
+      if (effect.request.type !== "provider-turn.steer") continue;
+      const threadId = effect.threadId;
+      const item = yield* projections
+        .getTurnItem({
+          threadId,
+          itemId: ids.derive.userTurnItem({ messageId: effect.request.messageId }),
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderRuntimeRecoveryError({ operation: "read-projections", threadId, cause }),
+          ),
+        );
+      if (item === null || item.status !== "completed" || !ProjectionStore.isSteerTurnItem(item)) {
+        continue;
+      }
+      const now = yield* DateTime.now;
+      const commandId = CommandId.make(`command:unsent-steer:${effect.id}`);
+      yield* Effect.gen(function* () {
+        yield* eventSink.write({
+          commandId,
+          events: [
+            {
+              id: yield* ids.allocate.event({ threadId, commandId }),
+              type: "turn-item.updated",
+              threadId,
+              ...(item.runId === null ? {} : { runId: item.runId }),
+              ...(item.nodeId === null ? {} : { nodeId: item.nodeId }),
+              occurredAt: now,
+              payload: { ...item, status: "pending", completedAt: null, updatedAt: now },
+            },
+          ],
+        });
+      }).pipe(
+        Effect.mapError(
+          (cause) => new ProviderRuntimeRecoveryError({ operation: "reconcile", threadId, cause }),
+        ),
+      );
+    }
     let terminalizedRuns = 0;
     let stoppedSessions = 0;
     let closedRequests = 0;
