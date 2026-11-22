@@ -11,6 +11,13 @@ const mocks = vi.hoisted(() => ({
   readStorage: vi.fn<() => Promise<void>>(),
 }));
 
+// Fork: session renewal is out of scope here; its storage and HTTP client are stubbed above.
+vi.mock("../connection/renewalStorage", async () => ({
+  layer: (await import("effect/Layer")).empty,
+}));
+vi.mock("@t3tools/client-runtime/authorization", async () => ({
+  SessionRenewal: { layerMobile: (await import("effect/Layer")).empty },
+}));
 vi.mock("expo", () => ({
   requireOptionalNativeModule: () => ({
     ...(mocks.nativeCheckSupported && {
