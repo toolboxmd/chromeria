@@ -831,8 +831,11 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
       } as const;
       yield* service.upsert({ ...input, threadMode: "fresh_session" });
 
-      const first = yield* service.runNow({ id: input.id });
-      assert.equal(first.threadId, launched);
+      assert.equal((yield* service.runNow({ id: input.id })).threadId, launched);
+      // Outcome writes are fenced by the start time, so a second start at that instant is refused.
+      const sameInstant = yield* Effect.flip(service.runNow({ id: input.id }));
+      assert.include(sameInstant.message, "already started a run at this instant");
+      yield* TestClock.adjust(5);
       // A form opened before the first run saves no thread; the binding stays.
       const { task } = yield* service.upsert({
         ...input,
@@ -845,14 +848,14 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
       const legacy = yield* service.upsert({ ...input, threadId: null });
       assert.equal(legacy.task.threadId, launched);
       assert.equal(legacy.task.threadMode, "fresh_session");
-      const second = yield* service.runNow({ id: input.id });
+      yield* service.runNow({ id: input.id });
 
       assert.equal(yield* Ref.get(launches), 1);
       assert.deepEqual(yield* Ref.get(sends), [{ threadId: launched, freshContext: true }]);
-      // Both Run Nows started at the same instant; each still sends its own message.
-      assert.equal(new Set(yield* Ref.get(messageIds)).size, 2);
-      // Outcome writes are fenced by the start time, so each run needs its own.
-      assert.notEqual(second.task.lastRunAt, first.task.lastRunAt);
+      // After the clock steps back to the first run's instant, a Run Now still sends its own message.
+      yield* TestClock.setTime(0);
+      yield* service.runNow({ id: input.id });
+      assert.equal(new Set(yield* Ref.get(messageIds)).size, 3);
       // Its thread stays in the old project, so moving the task leaves it for a new one.
       const moved = yield* service.upsert({
         ...input,
@@ -932,6 +935,7 @@ it.effect("a refused dispatch records its refusal, and opaque causes stay generi
       });
       for (const [cause, expected] of cases) {
         yield* Ref.set(failure, cause);
+        yield* TestClock.adjust(1);
         const result = yield* service.runNow({ id: task.id });
         assert.equal(result.task.lastRunStatus, "failed");
         assert.equal(result.task.lastRunError, expected);
