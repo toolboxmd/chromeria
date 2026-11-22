@@ -46,6 +46,7 @@ import {
   automationReply,
   automationWorkspace,
   awaitAutomationRunning,
+  credentialFills,
   decodeAutomationAck,
   decodeAutomationCertificate,
   decodeAutomationScheduleReceipt,
@@ -2578,18 +2579,21 @@ it.live.each(["browser-off-after", "device-default", "browser-off-nested"] as co
 const decodeVault860Tab = Schema.decodeUnknownEffect(
   Schema.Struct({ resource: Schema.Struct({ tabId: Schema.String }) }),
 );
-it.live.each([true, false] as const)(
-  "vault860: a run of a schedule a link created fills only while that link grants the vault (%s)",
-  (vault) =>
+it.live.each(["none", "a", "c"] as const)(
+  "vault860: a local schedule two links edited fills only while every link grants the vault (off: %s)",
+  (vaultOff) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const a = yield* makeNode(
-          descriptorOf(`vault860-schedule-${vault}-source`, "Source", { peerAuthority: 1 }),
-          "disk",
-          { productionKernel: true, attachmentRequests: true },
-        );
+        const source = (id: string) =>
+          makeNode(
+            descriptorOf(`vault860-${vaultOff}-${id}`, id.toUpperCase(), { peerAuthority: 1 }),
+            "disk",
+            { productionKernel: true, attachmentRequests: true },
+          );
+        const a = yield* source("a");
+        const c = yield* source("c");
         const b = yield* makeNode(
-          descriptorOf(`vault860-schedule-${vault}-dest`, "Destination", { peerAuthority: 1 }),
+          descriptorOf(`vault860-${vaultOff}-b`, "Destination", { peerAuthority: 1 }),
           "disk",
           {
             productionKernel: true,
@@ -2603,38 +2607,58 @@ it.live.each([true, false] as const)(
             manualScheduler: Scheduler.Scheduler.of({ register: () => Effect.void }),
           },
         );
-        yield* linkTo(a.links, b, "full-access");
-        const parent = ThreadId.make(`vault860-schedule-${vault}-parent`);
-        yield* seedParent(a, parent);
-        const enrolled = yield* nativeCall(a, parent, "t3_project_list", {
-          environmentId: b.environmentId,
-        });
-        expect(enrolled.isError, json(enrolled)).not.toBe(true);
-        const grant = (yield* b.authority.grants)[0]!;
-        if (!vault) yield* b.authority.setGrant({ ...grant, vault: false });
-        const created = yield* nativeCall(a, parent, "schedule_task", {
-          environmentId: b.environmentId,
+        const local = ThreadId.make(`vault860-${vaultOff}-local`);
+        yield* seedParent(b, local);
+        const created = yield* nativeCall(b, local, "schedule_task", {
           projectId: b.project.id,
           purposeIntent: { version: 1, intent: { type: "unscoped" } },
           title: "Keep the session alive",
           prompt: "Sign in",
           schedule: { type: "interval", everyMs: 60_000 },
           bindToCurrentThread: false,
-          clientRequestId: `vault860-schedule-${vault}-create`,
+          clientRequestId: `vault860-${vaultOff}-create`,
         });
         expect(created.isError, json(created)).not.toBe(true);
-        const receipt = yield* decodeAutomationScheduleReceipt(created.structuredContent);
-        yield* b.scheduled.runNow({ id: receipt.scheduledTaskId });
+        const { scheduledTaskId } = yield* decodeAutomationScheduleReceipt(
+          created.structuredContent,
+        );
+        for (const [peer, id] of [
+          [a, "a"],
+          [c, "c"],
+        ] as const) {
+          yield* linkTo(peer.links, b, "full-access");
+          const parent = ThreadId.make(`vault860-${vaultOff}-${id}-parent`);
+          yield* seedParent(peer, parent);
+          const enrolled = yield* nativeCall(peer, parent, "t3_project_list", {
+            environmentId: b.environmentId,
+          });
+          expect(enrolled.isError, json(enrolled)).not.toBe(true);
+          const grant = (yield* b.authority.grants).find(
+            (g) => g.environmentId === peer.environmentId,
+          )!;
+          if (vaultOff === id) yield* b.authority.setGrant({ ...grant, vault: false });
+          const edited = yield* nativeCall(peer, parent, "update_scheduled_task", {
+            purposeIntent: { version: 1, intent: { type: "unscoped" } },
+            environmentId: b.environmentId,
+            scheduledTaskId,
+            prompt: `Sign in, as edited from ${id}`,
+            clientRequestId: `vault860-${vaultOff}-${id}-edit`,
+          });
+          expect(edited.isError, json(edited)).not.toBe(true);
+        }
+        yield* b.scheduled.runNow({ id: scheduledTaskId });
         const sql = Context.get(b.database, SqlClient.SqlClient);
         const threadId = ThreadId.make(
           (yield* sql<{
             thread_id: string;
-          }>`SELECT thread_id FROM orchestration_v2_projection_threads WHERE project_id=${b.project.id}`)[0]!
+          }>`SELECT thread_id FROM orchestration_v2_projection_threads WHERE project_id=${b.project.id} AND thread_id<>${local}`)[0]!
             .thread_id,
         );
+        // The run keeps the local creation stamp; only its authority names the links.
+        expect((yield* b.threads.getThreadShell(threadId))?.linkOrigin).toBeUndefined();
         yield* awaitAutomationRunning(b, threadId);
         const capabilities = new Set(["orchestration", "preview"] as const);
-        // One credential for the run, as its agent holds; a grant change retires new issues.
+        // One agent session for the run, which owns the tab it opens.
         const credential = yield* b.registry.issue({
           threadId,
           providerInstanceId: instanceId,
@@ -2646,29 +2670,26 @@ it.live.each([true, false] as const)(
           url: "https://example.test/login",
           profileId: "default",
           show: false,
-          clientRequestId: `vault860-schedule-${vault}-open`,
+          clientRequestId: `vault860-${vaultOff}-open`,
         });
         expect(opened.isError, json(opened)).not.toBe(true);
         const { resource } = yield* decodeVault860Tab(opened.structuredContent);
-        const fill = (key: string) =>
-          call("preview_fill_credential", {
-            tabId: resource.tabId,
-            item: "synthetic-item",
-            field: "password",
-            locator: "#password",
-            clientRequestId: key,
-          });
-        const first = json(yield* fill(`vault860-schedule-${vault}-first`));
-        if (!vault) {
-          expect(first).toContain("capability_denied");
-          expect(first).toContain("Use credential vault");
-          return;
+        const typed = credentialFills();
+        const filled = yield* call("preview_fill_credential", {
+          tabId: resource.tabId,
+          item: "synthetic-item",
+          field: "password",
+          locator: "#password",
+          clientRequestId: `vault860-${vaultOff}-fill`,
+        });
+        if (vaultOff === "none") {
+          expect(filled.structuredContent, json(filled)).toMatchObject({ filled: true });
+          expect(credentialFills()).toBe(typed + 1);
+        } else {
+          expect(json(filled)).toContain("capability_denied");
+          expect(json(filled)).toContain("Use credential vault");
+          expect(credentialFills()).toBe(typed);
         }
-        // The fixture browser has no vault item, so an authorized fill reaches it and fails there.
-        expect(first).toContain("dispatch_started");
-        yield* b.authority.setGrant({ ...grant, vault: false });
-        // Any grant change retires the schedule's authority, so its run cannot act at all.
-        expect((yield* Effect.result(b.authority.checkThread(threadId)))._tag).toBe("Failure");
       }),
     ).pipe(
       Effect.provide(

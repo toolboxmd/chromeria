@@ -155,20 +155,17 @@ const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
   };
 });
 
+/** Labels of the links a fill acts for; empty for local work. The broker repeats the check before typing. */
 const authorizeVaultLogin = Effect.gen(function* () {
-  const origin = callerLinkOrigin(yield* loadCaller());
-  if (origin === undefined) return undefined;
+  const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
   const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
-  if (Option.isNone(authority))
-    return yield* new OrchestratorMcpFailure({
-      code: "capability_denied",
-      message:
-        "Linked callers cannot use this environment's credential vault without a current link grant.",
-    });
-  yield* authority.value.authorizeVault(
-    yield* McpInvocationContext.requireThreadMcpCapability("preview"),
-  );
-  return origin.label;
+  if (Option.isSome(authority)) return yield* authority.value.authorizeVault(scope);
+  if (callerLinkOrigin(yield* loadCaller()) === undefined) return [];
+  return yield* new OrchestratorMcpFailure({
+    code: "capability_denied",
+    message:
+      "Linked callers cannot use this environment's credential vault without a current link grant.",
+  });
 });
 
 const invokeTargeted = <A extends object>(
@@ -508,14 +505,14 @@ const handlers = {
     "preview",
     (input) =>
       Effect.gen(function* () {
-        const link = yield* authorizeVaultLogin;
+        const links = yield* authorizeVaultLogin;
         const scope = yield* McpInvocationContext.requireThreadMcpCapability("preview");
         // The audit line takes nothing from the page: only the matched vault host.
         const audit = (site: string | null, result: string) =>
           recordCredentialFill({
             environmentId: scope.environmentId,
             threadId: scope.thread.threadId,
-            ...(link === undefined ? {} : { link }),
+            ...(links.length === 0 ? {} : { links }),
             item: input.item,
             field: input.field,
             site,

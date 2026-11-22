@@ -25,11 +25,14 @@ const peerGrantSummaryFields = {
   label: Schema.String,
 };
 
-/** Explicit human consent, separate from runtime mode. Missing legacy fields grant nothing. */
-export const PeerGrant = Schema.Struct({
+/** A grant change. A client that predates `vault` omits it, and the stored choice stays. */
+export const PeerGrantUpdate = Schema.Struct({
   ...peerGrantFields,
   vault: Schema.optionalKey(Schema.Boolean),
-}).pipe(
+});
+export type PeerGrantUpdate = typeof PeerGrantUpdate.Type;
+/** Explicit human consent, separate from runtime mode. Missing legacy fields grant nothing. */
+export const PeerGrant = PeerGrantUpdate.pipe(
   Schema.decodeTo(Schema.toType(Schema.Struct(peerGrantFields)), {
     decode: SchemaGetter.transform(vaultFollowsPreview),
     encode: SchemaGetter.passthroughSubtype(),

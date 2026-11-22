@@ -2,7 +2,7 @@ import { RemotePendingRequestInput, RemotePendingRequestResult } from "./peerTas
 import { PeerTaskView, PeerTaskResource } from "./peerTask.ts";
 import { ThreadId, NodeId } from "./baseSchemas.ts";
 import { OrchestratorMcpTaskCancelResult } from "./orchestratorMcp.ts";
-import { PeerGrant, PeerGrantSummary } from "./peerAuthority.ts";
+import { PeerGrant, PeerGrantSummary, PeerGrantUpdate } from "./peerAuthority.ts";
 import { OrchestratorMcpFailure } from "./orchestratorMcp.ts";
 import { PromachosHomeRpcGroup } from "./promachosHome.ts";
 import {
@@ -985,7 +985,7 @@ const WsPeerGrantsListRpc = Rpc.make(WS_METHODS.peerGrantsList, {
   error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
 });
 const WsPeerGrantsUpdateRpc = Rpc.make(WS_METHODS.peerGrantsUpdate, {
-  payload: PeerGrant,
+  payload: PeerGrantUpdate,
   success: PeerGrant,
   error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
 });

@@ -49,7 +49,9 @@ const PERMISSIONS = [
   [
     "vault",
     msg("Use credential vault"),
-    msg("Let its agents sign in here with this environment's vault logins, without seeing them."),
+    msg(
+      "Let its agents sign in here with this environment's vault logins. A fill never returns the value.",
+    ),
   ],
 ] as const;
 

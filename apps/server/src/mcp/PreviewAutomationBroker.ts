@@ -426,11 +426,15 @@ const classifyResponseError = (
 export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   const random = yield* SecureRandom.SecureRandom;
   const authority = yield* Effect.serviceOption(PeerAuthority.PeerAuthority);
-  const recheckScope = (scope: McpInvocationContext.McpThreadInvocationScope) => {
+  const recheckScope = (
+    scope: McpInvocationContext.McpThreadInvocationScope,
+    operation: PreviewAutomationOperation,
+  ) => {
+    // A fill also needs the vault grant of every link it acts for, up to the moment it types.
     if (Option.isSome(authority))
-      return authority.value
-        .recheckInvocation(scope, "preview", scope.thread.threadId)
-        .pipe(Effect.asVoid);
+      return operation === "fillCredential"
+        ? Effect.asVoid(authority.value.authorizeVault(scope))
+        : Effect.asVoid(authority.value.recheckInvocation(scope, "preview", scope.thread.threadId));
     return scope.authority !== undefined || scope.client?.linked === true
       ? Effect.fail(
           new OrchestratorMcpFailure({
@@ -605,12 +609,12 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         message:
           "This peer does not support a verified browser session identity; no browser operation was dispatched.",
       });
-    yield* recheckScope(input.scope);
+    yield* recheckScope(input.scope, input.operation);
     const readOnly = ["status", "snapshot", "waitFor"].includes(input.operation);
     if (!readOnly) {
       const previous = yield* externalReplay<A>();
       if (Option.isSome(previous)) {
-        yield* recheckScope(input.scope);
+        yield* recheckScope(input.scope, input.operation);
         return previous.value;
       }
     }
@@ -730,7 +734,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         ) {
           return Effect.succeed([false, current] as const);
         }
-        return recheckScope(input.scope).pipe(
+        return recheckScope(input.scope, input.operation).pipe(
           Effect.andThen(
             Queue.offer(connection.queue, {
               type: "request",
@@ -832,7 +836,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         code: "capability_denied",
         message: "The original preview request or execution host is no longer current.",
       });
-    yield* recheckScope(pending.scope);
+    yield* recheckScope(pending.scope, pending.context.operation);
     const watch =
       pending.context.operation === "watchStart"
         ? Option.isSome(authority)
@@ -846,7 +850,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         : undefined;
     return {
       ...(watch === undefined ? {} : { watch }),
-      resource: recheckScope(pending.scope),
+      resource: recheckScope(pending.scope, pending.context.operation),
       dispatch: Effect.gen(function* () {
         const latest = yield* SynchronizedRef.get(state);
         const host = latest.clients.get(input.clientId);
@@ -859,7 +863,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
             code: "capability_denied",
             message: "The original preview request or execution host was retired.",
           });
-        yield* recheckScope(pending.scope);
+        yield* recheckScope(pending.scope, pending.context.operation);
       }),
     };
   });

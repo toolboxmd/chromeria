@@ -39,6 +39,7 @@ import {
   PeerAuthorityEnvelope,
   PeerCeiling,
   PeerGrant,
+  type PeerGrantUpdate,
   uniformPeerGrant,
   PeerGrantSummary,
   PeerReturnPair,
@@ -205,6 +206,8 @@ const decodeExpiry = Schema.decodeUnknownEffect(Schema.DateTimeUtcFromString);
 const encodeGrant = Schema.encodeEffect(Schema.fromJsonString(PeerGrant));
 const denied = (message: string) =>
   new OrchestratorMcpFailure({ code: "capability_denied", message });
+const vaultGrantOff =
+  "grant_off: This environment does not let this link use its credential vault. The user can turn on Browser access and Use credential vault for it in Connections settings.";
 /** Link sessions whose grants an authority walk read; only `authorizeVault` collects them. */
 class GrantReads extends Context.Reference<Set<string> | undefined>(
   "t3/peer/PeerAuthority/GrantReads",
@@ -354,13 +357,13 @@ export class PeerAuthority extends Context.Service<
       credentialIdentity?: string,
     ) => Effect.Effect<void, OrchestratorMcpFailure>;
     readonly grants: Effect.Effect<ReadonlyArray<PeerGrantSummary>, OrchestratorMcpFailure>;
-    readonly setGrant: (grant: PeerGrant) => Effect.Effect<PeerGrant, OrchestratorMcpFailure>;
+    readonly setGrant: (grant: PeerGrantUpdate) => Effect.Effect<PeerGrant, OrchestratorMcpFailure>;
     /** Whether the calling link's grant shares browser logins. A hint for routing, never a gate. */
     readonly browserExportGranted: (scope: Invocation.McpInvocationScope) => Effect.Effect<boolean>;
-    /** The gate before a vault fill by linked work: every link it acts for grants Browser access and the vault. */
+    /** The gate before a vault fill: every link the caller acts for grants Browser access and the vault. Returns their labels. */
     readonly authorizeVault: (
       scope: Invocation.McpThreadInvocationScope,
-    ) => Effect.Effect<void, OrchestratorMcpFailure>;
+    ) => Effect.Effect<ReadonlyArray<string>, OrchestratorMcpFailure>;
     /** The gate before any cookie read: an accepted direct peer action under a current export grant. */
     readonly authorizeBrowserExport: (
       scope: Invocation.McpInvocationScope,
@@ -1909,7 +1912,8 @@ const make = Effect.gen(function* () {
           Effect.orElseSucceed(() => false),
         )
       : Effect.succeed(false);
-  // The walk that decides Browser access also names every link the caller acts for.
+  // The walk that decides Browser access also names every link the caller acts for,
+  // including links whose authority a locally created thread or schedule picked up later.
   const authorizeVault: PeerAuthority["Service"]["authorizeVault"] = Effect.fn(
     "PeerAuthority.authorizeVault",
   )(function* (scope) {
@@ -1917,17 +1921,29 @@ const make = Effect.gen(function* () {
     yield* checkInvocation(scope, "preview", scope.thread.threadId, { type: "run" }).pipe(
       Effect.provideService(GrantReads, links),
     );
-    if (links.size === 0)
-      return yield* denied(
-        "Linked work needs a current link grant to use this environment's vault.",
-      );
+    if (links.size === 0) {
+      const thread = yield* threads
+        .getThreadShell(scope.thread.threadId)
+        .pipe(Effect.mapError(unavailable));
+      if (scope.client?.linked === true || thread?.linkOrigin !== undefined)
+        return yield* denied(vaultGrantOff);
+      return [];
+    }
+    const labels: Array<string> = [];
     for (const sessionId of links) {
       const current = yield* grant(sessionId);
-      if (!current.preview || !current.vault)
-        return yield* denied(
-          "grant_off: This environment does not let this link use its credential vault. The user can turn on Use credential vault for it in Connections settings.",
-        );
+      if (!current.preview || !current.vault) return yield* denied(vaultGrantOff);
+      const session = yield* authSessions
+        .getById({ sessionId: AuthSessionId.make(sessionId) })
+        .pipe(Effect.mapError(unavailable));
+      labels.push(
+        Option.match(session, {
+          onNone: () => sessionId,
+          onSome: (s) => s.client.label ?? sessionId,
+        }),
+      );
     }
+    return labels;
   });
   const authorizeBrowserExport: PeerAuthority["Service"]["authorizeBrowserExport"] = Effect.fn(
     "PeerAuthority.authorizeBrowserExport",
@@ -3615,7 +3631,11 @@ const make = Effect.gen(function* () {
       )).filter((name) => ceiling === undefined || ceiling.capabilities.includes(name)),
     );
     if (intent !== "thread-resource" && !capabilities.has(intent))
-      return yield* denied("The original invocation no longer has the required capability.");
+      return yield* denied(
+        intent === "preview"
+          ? "The original invocation no longer has browser access. The user can turn on Agent browser access in Settings, or Browser access for this link in Connections settings."
+          : "The original invocation no longer has the required capability.",
+      );
     return {
       ...scope,
       capabilities,
@@ -4053,8 +4073,9 @@ const make = Effect.gen(function* () {
         .withTransaction(
           Effect.gen(function* () {
             yield* activeSession(input.sessionId);
-            const encoded = yield* encodeGrant(input).pipe(Effect.mapError(unavailable));
             const previous = yield* grant(input.sessionId);
+            const next: PeerGrant = { ...input, vault: input.vault ?? previous.vault };
+            const encoded = yield* encodeGrant(next).pipe(Effect.mapError(unavailable));
             const priorEncoded = yield* encodeGrant(previous).pipe(Effect.mapError(unavailable));
             if (priorEncoded !== encoded)
               yield* Automation.invalidateAutomationSessions([input.sessionId], "retired").pipe(
@@ -4067,7 +4088,7 @@ const make = Effect.gen(function* () {
               );
             if (rows.length !== 1)
               return yield* denied("This session has no authenticated peer link.");
-            return input;
+            return next;
           }),
         )
         .pipe(

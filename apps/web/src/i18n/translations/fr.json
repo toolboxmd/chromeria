@@ -9613,7 +9613,7 @@
   "d8b56edfb94b3d20": "Partager les connexions du navigateur",
   "9e3f5a43f08692f5": "Permettre à ses agents de copier les sessions de navigateur de cet environnement pour les sites qu’ils nomment.",
   "ab033fae0a5b79c8": "Utiliser le coffre d’identifiants",
-  "3117d827fed68f31": "Permettre à ses agents de se connecter ici avec les identifiants du coffre de cet environnement, sans les voir.",
+  "c021490d7808bef3": "Permettre à ses agents de se connecter ici avec les identifiants du coffre de cet environnement. Un remplissage ne renvoie jamais la valeur.",
   "8501b15306e745b1": "Impossible d’enregistrer les permissions du lien",
   "cc4e20ae31beabb0": "L’accès complet permet aux agents de cette machine d’utiliser toutes les permissions ci-dessous. Retirer une permission limite aussi le travail existant.",
   "41593c48eb8fe534": "Accès complet pour {label}",

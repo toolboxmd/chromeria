@@ -114,9 +114,10 @@ password, such as a passkey error, a "Try another way" link or a one-time code s
 the sign-in in the same tab. Password fields stay masked in its snapshots and screenshots, and the
 fill's result never contains the value.
 
-Each attempt appends a line to `credential-fills.jsonl` in the `userdata` directory. The line
-records the time, environment, thread, the link a linked agent acted for, item, field, the vault
-site that matched and the outcome, but never the value or anything from the page.
+Each fill that passes the permission checks appends a line to `credential-fills.jsonl` in the
+`userdata` directory. The line records the time, environment, thread, the links a linked agent
+acted for, item, field, the vault site that matched and the outcome, but never the value or
+anything from the page.
 
 This keeps values out of the fill's results and audit line, and stops fills on the wrong site. It
 does not hide a value the page itself shows, such as a username or one-time code in a visible

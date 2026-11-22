@@ -17,8 +17,8 @@ const CredentialAuditLine = Schema.Struct({
   time: Schema.String,
   environmentId: Schema.String,
   threadId: Schema.String,
-  /** The link a linked caller acts for, as it is labelled here. */
-  link: Schema.optionalKey(Schema.String),
+  /** The links a linked caller acts for, as they are labelled here. */
+  links: Schema.optionalKey(Schema.Array(Schema.String)),
   item: Schema.String,
   field: PreviewCredentialField,
   site: Schema.NullOr(Schema.String),
