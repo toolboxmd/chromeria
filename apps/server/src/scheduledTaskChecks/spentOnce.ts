@@ -75,8 +75,8 @@ interface Candidate {
 }
 
 /**
- * The message ids the fire that started at `lastRunAt` can have, most specific first: a keyed Run
- * Now and a local Run Now are unique to that start, while a scheduled fire keeps its slot's id.
+ * The message ids the fire that started at `lastRunAt` can have: a keyed Run Now and a local Run
+ * Now are unique to that start, while a scheduled fire keeps its slot's id.
  */
 const fireMessageIds = (
   row: Candidate,
@@ -154,22 +154,24 @@ export const pruneSpentForkOnceTasks = Effect.fn("ScheduledTaskChecks.pruneSpent
       WHERE message_id IN (SELECT value FROM json_each(${messageIds}))
     `;
     const runsByMessage = Map.groupBy(runs, (run) => run.message_id);
-    // The last fire is the most specific id with a run; its newest run decides. Run Now ids are
-    // unique to a start, so two of them with runs (or two keyed requests) leave it unknown. A
-    // requeued scheduled message also runs again under its id, so only a run after the start counts.
+    // Exactly one of the fire's ids may hold a current run, and its newest run decides. Run Now
+    // ids are unique to the start. The scheduled slot id also carries older fires and requeues, so
+    // only its runs from the start on count. Anything else leaves the last fire unknown.
     const spent = candidates.filter(({ row, messageIds }) => {
-      const unique = messageIds.filter((fire) => fire.unique);
-      if (unique.length > 2 || unique.filter(({ id }) => runsByMessage.has(id)).length > 1)
-        return false;
-      const fire = messageIds.find(({ id }) => runsByMessage.has(id));
-      const newest = (fire === undefined ? [] : (runsByMessage.get(fire.id) ?? [])).toSorted(
+      const startedMs = Date.parse(row.last_run_at);
+      if (messageIds.filter((fire) => fire.unique).length > 2) return false;
+      const current = messageIds.flatMap((fire) => {
+        const fireRuns = (runsByMessage.get(fire.id) ?? []).filter(
+          (run) => fire.unique || Date.parse(run.requested_at) >= startedMs,
+        );
+        return fireRuns.length === 0 ? [] : [fireRuns];
+      });
+      const [only] = current;
+      if (only === undefined || current.length > 1) return false;
+      const newest = only.toSorted(
         (a, b) => Date.parse(b.requested_at) - Date.parse(a.requested_at),
       )[0];
-      return (
-        fire !== undefined &&
-        newest?.status === "completed" &&
-        (fire.unique || Date.parse(newest.requested_at) >= Date.parse(row.last_run_at))
-      );
+      return newest?.status === "completed";
     });
     const removed = yield* sql.withTransaction(
       Effect.forEach(spent, ({ row }) =>

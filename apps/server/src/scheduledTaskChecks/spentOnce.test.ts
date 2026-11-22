@@ -211,6 +211,24 @@ const rows: ReadonlyArray<Row> = [
     pruned: false,
   },
   {
+    id: "same-ms-keyed-and-scheduled",
+    schedule: at(spentAt),
+    keyedRequestId: "request:same-ms-scheduled",
+    otherRuns: [
+      {
+        messageId: "scheduled-task-message:manual:request:same-ms-scheduled",
+        status: "completed",
+        requestedAt: RAN,
+      },
+    ],
+    run: {
+      messageId: scheduledMessage("same-ms-keyed-and-scheduled", spentAt),
+      status: "queued",
+    },
+    onCompletion: true,
+    pruned: false,
+  },
+  {
     id: "keyed-run-now",
     schedule: at(spentAt),
     keyedRequestId: "request:keyed",
