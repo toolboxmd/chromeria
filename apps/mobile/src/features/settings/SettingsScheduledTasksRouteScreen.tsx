@@ -1653,6 +1653,8 @@ function ScheduledTaskItem({
   const m = useMessages();
   const locale = useLocale();
   const environmentId = environment.environmentId;
+  // One list holds every machine's tasks, so the machine tells same-named tasks apart.
+  const named = `${task.title} · ${environment.label}`;
   const canOperate = useAtomValue(
     serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
   );
@@ -1704,7 +1706,7 @@ function ScheduledTaskItem({
     >
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={gt("Edit {title}", { title: task.title })}
+        accessibilityLabel={gt("Edit {title}", { title: named })}
         onPress={onEdit}
         className="min-w-0 flex-1 gap-1 active:opacity-70"
       >
@@ -1772,7 +1774,7 @@ function ScheduledTaskItem({
               },
             });
           } else if (action === "delete") {
-            Dialog.alert(gt("Delete task?"), task.title, [
+            Dialog.alert(gt("Delete task?"), named, [
               { text: gt("Cancel"), style: "cancel" },
               {
                 text: gt("Delete"),
@@ -1789,7 +1791,7 @@ function ScheduledTaskItem({
       >
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={gt("Actions for {title}", { title: task.title })}
+          accessibilityLabel={gt("Actions for {title}", { title: named })}
           className="h-11 w-11 items-center justify-center"
         >
           <SymbolView

@@ -180,16 +180,20 @@ describe("ScheduledTasksSettings", () => {
         <ConfirmDialogHost />
       </>,
     );
-    await userEvent.click(screen.getByRole("button", { name: "Actions for Review issues" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Actions for Review issues · Laptop" }),
+    );
     await userEvent.click(page.getByRole("menuitem", { name: "Delete", exact: true }));
     await expect.element(page.getByRole("alertdialog")).toBeVisible();
     expect(state.remove).not.toHaveBeenCalled();
     await userEvent.click(page.getByRole("button", { name: "Cancel", exact: true }));
     expect(state.remove).not.toHaveBeenCalled();
     await expect
-      .element(screen.getByRole("button", { name: "Actions for Review issues" }))
+      .element(screen.getByRole("button", { name: "Actions for Review issues · Laptop" }))
       .toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Actions for Review issues" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Actions for Review issues · Laptop" }),
+    );
     await userEvent.click(page.getByRole("menuitem", { name: "Delete", exact: true }));
     await userEvent.click(page.getByRole("button", { name: "Confirm", exact: true }));
     await vi.waitFor(() =>

@@ -50,6 +50,8 @@ import { AbandonReportAction } from "./spectrumReportAction";
 export interface ScheduledTaskListRow extends ScheduledTaskListEntry {
   readonly environmentId: EnvironmentId;
   readonly timeZone: string | undefined;
+  /** The title with its machine, for labels that must tell same-named tasks apart. */
+  readonly name: string;
   /** Kind, machine and project, shown first on the row. */
   readonly origin: ReactNode;
 }
@@ -185,6 +187,7 @@ export function ScheduledTaskList({
         environmentId: entry.environmentId,
         task: entry.task,
         timeZone: entry.timeZone,
+        name: `${entry.task.title} · ${settingsScopeEnvironmentLabel(entry.environment, environments)}`,
         origin: (
           <ScheduledTaskOrigin
             task={entry.task}

@@ -508,6 +508,7 @@ export function ScheduledTasksSettings(target: {
                 environmentId={row.environmentId}
                 task={row.task}
                 timeZone={row.timeZone}
+                name={row.name}
                 origin={row.origin}
                 onEdit={() => openForEdit(row.environmentId, row.task)}
               />
@@ -536,12 +537,14 @@ function ScheduledTaskRow({
   environmentId,
   task,
   timeZone,
+  name,
   origin,
   onEdit,
 }: {
   readonly environmentId: EnvironmentId;
   readonly task: ScheduledTask;
   readonly timeZone: string | undefined;
+  readonly name: string;
   readonly origin: ReactNode;
   readonly onEdit: () => void;
 }) {
@@ -567,7 +570,7 @@ function ScheduledTaskRow({
   const act = async (action: "toggle" | "run" | "delete") => {
     if (busy || !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
     if (action === "delete") {
-      const message = `${gt('Delete "{title}"?', { title: task.title })}\n${gt("This cannot be undone.")}`;
+      const message = `${gt('Delete "{title}"?', { title: name })}\n${gt("This cannot be undone.")}`;
       const confirmed =
         (await requestConfirmDialog(message, { variant: "destructive" })) ??
         window.confirm(message);
@@ -639,7 +642,7 @@ function ScheduledTaskRow({
           <Switch
             checked={task.enabled}
             disabled={busy || !canOperate}
-            aria-label={gt("Enable {title}", { title: task.title })}
+            aria-label={gt("Enable {title}", { title: name })}
             onCheckedChange={() => void act("toggle")}
           />
           <Menu>
@@ -649,7 +652,7 @@ function ScheduledTaskRow({
                   size="icon-sm"
                   variant="ghost"
                   disabled={busy || !canOperate}
-                  aria-label={gt("Actions for {title}", { title: task.title })}
+                  aria-label={gt("Actions for {title}", { title: name })}
                 />
               }
             >

@@ -170,7 +170,8 @@ export function ScheduledTaskList({
       state.error === null ? [] : [`${state.environment.label}: ${state.error}`],
     ),
   };
-  const loaded = states.some((state) => state.error === null && state.tasks);
+  // Empty only once every selected machine answered; a loading or failed one may hold tasks.
+  const loaded = states.length > 0 && states.every((state) => state.tasks !== undefined);
 
   const rows = (list: ReadonlyArray<(typeof entries)[number]>) =>
     list.map((entry, index) => (
