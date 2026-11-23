@@ -3573,6 +3573,8 @@ it.effect("marks the model switch on a promoted message that restarts the turn",
           text: "queued",
           attachments: [],
           modelSelection: otherSelection,
+          // A deliberately unscoped message steers into the legacy unscoped first turn.
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
           dispatchMode: { type: "queue_after_active" },
           createdBy: "user",
           creationSource: "web",

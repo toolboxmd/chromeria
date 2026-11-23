@@ -11,6 +11,7 @@ import {
   PurposeSelection,
   purposeScopeLabel,
   purposeScopesEqual,
+  purposeScopesJoinable,
   purposeSelectionOf,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -110,7 +111,7 @@ export const resolvePurposeIntent = Effect.fnUntraced(function* (input: {
       break;
   }
   if (input.target !== undefined) {
-    if (choice !== undefined && !purposeScopesEqual(input.target.scope, purpose.scope)) {
+    if (choice !== undefined && !purposeScopesJoinable(purpose.scope, input.target.scope)) {
       return yield* new PurposeAdmissionError({ reason: "target_mismatch" });
     }
     purpose = input.target;

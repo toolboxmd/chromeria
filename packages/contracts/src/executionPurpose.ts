@@ -249,6 +249,17 @@ export function purposeScopesEqual(
   );
 }
 
+/** Steer and restart admission: any no-Issue purpose may join any other no-Issue run. */
+export function purposeScopesJoinable(
+  message: ExecutionPurposeScope,
+  target: ExecutionPurposeScope,
+): boolean {
+  return (
+    (message.type === "unscoped" && target.type === "unscoped") ||
+    purposeScopesEqual(message, target)
+  );
+}
+
 export function trackingReferenceUrl(reference: TrackingReference): string {
   return `https://${reference.host}/${reference.repository}/${reference.kind === "issue" ? "issues" : "pull"}/${reference.number}`;
 }
