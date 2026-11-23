@@ -371,8 +371,7 @@ export function startThreadNotifications(
         commandHealth = health;
         presentScheduledCommandFailures(environmentId, failing, {
           ...getClientSettings(),
-          open: () =>
-            void router.navigate({ to: "/settings/scheduled-tasks", search: { environmentId } }),
+          open: () => void router.navigate({ to: "/scheduled-tasks", search: { environmentId } }),
           onNotification: (id, notification) => trackNotification(id, null, notification),
         });
       },

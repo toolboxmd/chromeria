@@ -2,6 +2,7 @@ import { PromachosSidebarHeader } from "../promachos/PromachosModeSwitch";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
+  CalendarClockIcon,
   ChartNoAxesColumnIcon,
   CircleDotIcon,
   SettingsIcon,
@@ -211,17 +212,25 @@ function SidebarUtilityItem({
   icon,
   label,
   onClick,
+  isActive = false,
 }: {
   icon: ReactNode;
   label: string;
   onClick: () => void;
+  isActive?: boolean;
 }) {
   return (
     <SidebarMenuItem className="shrink-0">
       <Tooltip>
         <TooltipTrigger
           render={
-            <SidebarMenuButton aria-label={label} onClick={onClick} size="icon">
+            <SidebarMenuButton
+              aria-label={label}
+              aria-current={isActive ? "page" : undefined}
+              isActive={isActive}
+              onClick={onClick}
+              size="icon"
+            >
               {icon}
             </SidebarMenuButton>
           }
@@ -239,6 +248,9 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   const { isMobile, setOpenMobile } = useSidebar();
   const isOnUtilityPage = useLocation({
     select: (location) => isSidebarUtilityPage(location.pathname),
+  });
+  const isOnScheduledTasks = useLocation({
+    select: (location) => location.pathname === "/scheduled-tasks",
   });
   const pullRequestsSupported = usePullRequestsSupported();
   const issuesSupported = useIssuesSupported();
@@ -264,6 +276,11 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   const handleSettingsClick = () => {
     closeMobileSidebar();
     void navigate({ to: "/settings" });
+  };
+
+  const handleScheduledTasksClick = () => {
+    closeMobileSidebar();
+    void navigate({ to: "/scheduled-tasks" });
   };
 
   const handleUsageClick = () => {
@@ -311,6 +328,13 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
               onClick={handleIssuesClick}
             />
           ) : null}
+          {/* Fork: scheduled tasks open from here, outside Settings (toolboxmd/chromeria#920). */}
+          <SidebarUtilityItem
+            icon={<CalendarClockIcon />}
+            label={gt("Scheduled tasks")}
+            onClick={handleScheduledTasksClick}
+            isActive={isOnScheduledTasks}
+          />
           <SidebarUtilityItem
             icon={<ChartNoAxesColumnIcon />}
             label={gt("Usage")}

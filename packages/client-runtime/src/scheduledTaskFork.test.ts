@@ -7,6 +7,8 @@ import {
   forkScheduleLabel,
   forkTaskSummary,
   outcomeCheckLabel,
+  scheduledTaskFrequency,
+  scheduledTaskFrequencyGroups,
   scheduledTaskSections,
   uniqueMachineLabels,
 } from "./scheduledTaskFork.ts";
@@ -369,6 +371,103 @@ describe("scheduled task sections", () => {
       ["e/spent"],
     ]);
     expect(narrowed.failing).toBe(3);
+  });
+});
+
+describe("scheduled task frequency", () => {
+  const MINUTE = 60_000;
+  const HOUR = 60 * MINUTE;
+  const DAY = 24 * HOUR;
+  const fixed = (fields: object) =>
+    ({ type: "fixed_time", timeOfDay: "09:00", ...fields }) as ScheduledTask["schedule"];
+
+  it.each([
+    ["every 5 minutes", { type: "interval", everyMs: 5 * MINUTE }, "minutes"],
+    ["every 59 minutes", { type: "interval", everyMs: 59 * MINUTE }, "minutes"],
+    ["every hour", { type: "interval", everyMs: HOUR }, "hourly"],
+    ["every 23 hours", { type: "interval", everyMs: 23 * HOUR }, "hourly"],
+    ["every day", { type: "interval", everyMs: DAY }, "daily"],
+    ["every 36 hours", { type: "interval", everyMs: 36 * HOUR }, "weekly"],
+    ["every 3 days", { type: "interval", everyMs: 3 * DAY }, "weekly"],
+    ["every week", { type: "interval", everyMs: 7 * DAY }, "weekly"],
+    ["every 8 days", { type: "interval", everyMs: 8 * DAY }, "monthly"],
+    ["daily at one time", fixed({}), "daily"],
+    ["all seven weekdays", fixed({ weekdays: [0, 1, 2, 3, 4, 5, 6] }), "daily"],
+    ["chosen weekdays", fixed({ weekdays: [1, 3] }), "weekly"],
+    ["several times a day", fixed({ extraTimes: ["13:00", "17:00"] }), "hourly"],
+    ["days of the month", fixed({ monthDays: [1, 15] }), "monthly"],
+    [
+      "several times on days of the month",
+      fixed({ monthDays: [1], extraTimes: ["17:00"] }),
+      "monthly",
+    ],
+    ["several times on chosen weekdays", fixed({ weekdays: [1], extraTimes: ["17:00"] }), "weekly"],
+    ["once", { type: "once", runAt: "2026-12-01T10:00:00Z" }, "once"],
+    ["a webhook", { type: "webhook" }, "webhook"],
+  ] as const)("files %s as %s", (_name, schedule, frequency) => {
+    expect(scheduledTaskFrequency(schedule as ScheduledTask["schedule"])).toBe(frequency);
+  });
+
+  it("groups active tasks most frequent first by next run and keeps paused ones apart", () => {
+    const task = (id: string, fields: Partial<ScheduledTask>) =>
+      ({
+        id,
+        title: id,
+        enabled: true,
+        nextRunAt: null,
+        lastRunAt: null,
+        lastRunStatus: "never",
+        ...fields,
+      }) as ScheduledTask;
+    const entry = (value: ScheduledTask) => ({ environmentId: "e", task: value });
+    const every = (everyMs: number) => ({ type: "interval", everyMs }) as const;
+    const sections = scheduledTaskSections(
+      [
+        entry(task("nightly", { schedule: fixed({}), nextRunAt: "2026-11-23T09:00:00.000Z" })),
+        entry(
+          task("poll-late", {
+            schedule: every(10 * MINUTE),
+            nextRunAt: "2026-11-22T12:10:00.000Z",
+          }),
+        ),
+        entry(
+          task("poll-soon", { schedule: every(5 * MINUTE), nextRunAt: "2026-11-22T12:05:00.000Z" }),
+        ),
+        entry(task("hook", { schedule: { type: "webhook" } as ScheduledTask["schedule"] })),
+        entry(
+          task("trip", {
+            schedule: { type: "once", runAt: "2026-12-01T10:00:00Z" } as ScheduledTask["schedule"],
+          }),
+        ),
+        entry(task("off", { schedule: every(5 * MINUTE), enabled: false })),
+        entry(
+          task("off-once", {
+            schedule: { type: "once", runAt: "2026-12-02T10:00:00Z" } as ScheduledTask["schedule"],
+            enabled: false,
+          }),
+        ),
+      ],
+      { now: NOW },
+    );
+    const { groups, paused } = scheduledTaskFrequencyGroups(sections);
+    expect(groups.map((group) => [group.frequency, group.entries.map((e) => e.task.id)])).toEqual([
+      ["minutes", ["poll-soon", "poll-late"]],
+      ["daily", ["nightly"]],
+      ["once", ["trip"]],
+      ["webhook", ["hook"]],
+    ]);
+    expect(paused.map((e) => e.task.id)).toEqual(["off-once", "off"]);
+    // The groups sort on their own, whatever order the sections hand over.
+    const hourly = (id: string, nextRunAt: string) =>
+      entry(task(id, { schedule: every(2 * HOUR), nextRunAt }));
+    const unsorted = scheduledTaskFrequencyGroups({
+      upcoming: [],
+      recurring: [
+        hourly("late", "2026-11-22T15:00:00.000Z"),
+        hourly("soon", "2026-11-22T13:00:00.000Z"),
+      ],
+    });
+    expect(unsorted.groups[0]?.entries.map((e) => e.task.id)).toEqual(["soon", "late"]);
   });
 });
 

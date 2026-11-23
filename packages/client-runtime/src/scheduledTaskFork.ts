@@ -297,6 +297,90 @@ export function scheduledTaskSections<E extends ScheduledTaskListEntry>(
   return { upcoming, recurring, history, failing, historyFailing };
 }
 
+const HOUR_MS = 3_600_000;
+const DAY_MS = 24 * HOUR_MS;
+
+/** Most frequent first; the list shows active tasks in this order (toolboxmd/chromeria#920). */
+const SCHEDULED_TASK_FREQUENCIES = [
+  "minutes",
+  "hourly",
+  "daily",
+  "weekly",
+  "monthly",
+  "once",
+  "webhook",
+] as const;
+export type ScheduledTaskFrequency = (typeof SCHEDULED_TASK_FREQUENCIES)[number];
+
+/**
+ * How often a schedule runs. Days of the month or chosen weekdays decide first; several set times
+ * on every day count as hourly. An interval over a day and up to a week counts as weekly.
+ */
+export function scheduledTaskFrequency(
+  schedule: ScheduledTask["schedule"],
+): ScheduledTaskFrequency {
+  switch (schedule.type) {
+    case "interval":
+      if (schedule.everyMs < HOUR_MS) return "minutes";
+      if (schedule.everyMs < DAY_MS) return "hourly";
+      if (schedule.everyMs === DAY_MS) return "daily";
+      return schedule.everyMs <= 7 * DAY_MS ? "weekly" : "monthly";
+    case "fixed_time":
+      if ((schedule.monthDays ?? []).length > 0) return "monthly";
+      if (!isEveryWeekday(schedule.weekdays)) return "weekly";
+      return (schedule.extraTimes ?? []).length > 0 ? "hourly" : "daily";
+    case "once":
+      return "once";
+    case "webhook":
+      return "webhook";
+  }
+}
+
+export interface ScheduledTaskFrequencyGroups<E extends ScheduledTaskListEntry> {
+  /** Active tasks by how often they run, each group by next run; empty groups are left out. */
+  readonly groups: ReadonlyArray<{
+    readonly frequency: ScheduledTaskFrequency;
+    readonly entries: ReadonlyArray<E>;
+  }>;
+  /** Paused, blocked or unscheduled tasks, in their section order. */
+  readonly paused: ReadonlyArray<E>;
+}
+
+/** Groups the not-yet-spent tasks of `scheduledTaskSections` by frequency, keeping paused ones apart. */
+export function scheduledTaskFrequencyGroups<E extends ScheduledTaskListEntry>(
+  sections: Pick<ScheduledTaskSections<E>, "upcoming" | "recurring">,
+): ScheduledTaskFrequencyGroups<E> {
+  const byFrequency = new Map<ScheduledTaskFrequency, E[]>();
+  const paused: E[] = [];
+  for (const entry of [...sections.upcoming, ...sections.recurring]) {
+    const { task } = entry;
+    // A due one-time task without a next run still waits for its slot.
+    if (
+      !task.enabled ||
+      task.blockedByPolicy !== undefined ||
+      (task.schedule.type !== "once" && recurringRank(task) === 2)
+    ) {
+      paused.push(entry);
+      continue;
+    }
+    const frequency = scheduledTaskFrequency(task.schedule);
+    const group = byFrequency.get(frequency) ?? [];
+    group.push(entry);
+    byFrequency.set(frequency, group);
+  }
+  const nextRun = (entry: E) =>
+    timeOf(entry.task.nextRunAt, oneTimeSlot(entry.task.schedule) ?? Infinity);
+  return {
+    groups: SCHEDULED_TASK_FREQUENCIES.flatMap((frequency) => {
+      const entries = byFrequency.get(frequency);
+      if (!entries) return [];
+      entries.sort((a, b) => nextRun(a) - nextRun(b) || byTitle(a, b));
+      return [{ frequency, entries }];
+    }),
+    paused,
+  };
+}
+
 /**
  * One label per machine for the merged list, which has no per-machine headings. A label two
  * machines share gets each machine's `detail`, such as its address; if that still collides,

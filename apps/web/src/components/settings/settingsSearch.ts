@@ -170,7 +170,6 @@ const ALL_SETTINGS_NAV_GROUPS: ReadonlyArray<SettingsNavGroup> = [
       "/settings/threads",
       "/settings/browser",
       "/settings/devices",
-      "/settings/scheduled-tasks",
     ],
   },
   {
