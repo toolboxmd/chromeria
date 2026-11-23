@@ -8569,7 +8569,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const purposeDelegatedTaskId =
       command.purposeDelegatedTaskId ?? followup?.task.id ?? continuedTaskId;
 
-    if (projection.thread.settledOverride !== null) {
+    // A keep-warm ping is not the user returning: it keeps an Un-settle override.
+    if (projection.thread.settledOverride !== null && command.idleAdmission?.mode !== "keepWarm") {
       const now = yield* DateTime.now;
       const thread: OrchestrationV2AppThread = {
         ...projection.thread,

@@ -112,6 +112,13 @@ it.effect("a due ping is one silent turn in the thread's own session, even when 
       threadId,
       snoozedUntil,
     });
+    // The user reopened the thread with Un-settle; the ping must keep that override.
+    yield* orchestrator.dispatch({
+      type: "thread.unsettle",
+      commandId: CommandId.make("keep-warm:unsettle"),
+      threadId,
+      reason: "user",
+    });
     yield* settings.updateSettings({ threadIdleModes: { [threadId]: mode } });
     yield* TestClock.adjust(KEEP_WARM_INTERVAL_MS);
     yield* keepWarm.reconcile;
@@ -145,6 +152,7 @@ it.effect("a due ping is one silent turn in the thread's own session, even when 
         : DateTime.formatIso(projection.thread.snoozedUntil),
       snoozedUntil,
     );
+    assert.equal(projection.thread.settledOverride, "active");
     assert.deepEqual(projection.runs[0]?.modelSelection, { instanceId, model: "claude-haiku-4-5" });
     const recorded = (yield* settings.getSettings).threadIdleModes[threadId];
     assert.equal(
