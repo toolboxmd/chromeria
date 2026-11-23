@@ -13,7 +13,7 @@ function ScheduledTasksPage() {
   const gt = useGT();
   const search = Route.useSearch();
   const navigate = Route.useNavigate();
-  const { project, machine, checkout } = search;
+  const { project, machine, checkout, ...target } = search;
   return (
     <SettingsScopeProvider
       search={search}
@@ -47,7 +47,7 @@ function ScheduledTasksPage() {
             key={JSON.stringify({ project, machine, checkout })}
             className="flex min-h-0 flex-1 flex-col"
           >
-            <ScheduledTasksSettings environmentId={search.environmentId} taskId={search.taskId} />
+            <ScheduledTasksSettings {...target} />
           </div>
         </div>
       </AppRouteModal>

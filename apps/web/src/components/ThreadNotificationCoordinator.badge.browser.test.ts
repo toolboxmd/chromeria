@@ -490,7 +490,7 @@ it("observes scheduled commands with thread preferences, navigation and badge cl
   expect(state.badge).toHaveBeenLastCalledWith(1);
   TestNotification.sent[0]!.dispatchEvent(new Event("click"));
   expect(state.navigate).toHaveBeenCalledWith({
-    to: "/settings/scheduled-tasks",
+    to: "/scheduled-tasks",
     search: { environmentId: "one" },
   });
   app.setEnvironmentIds(["two"]);
