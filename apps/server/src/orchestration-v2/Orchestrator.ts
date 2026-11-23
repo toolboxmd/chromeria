@@ -4267,7 +4267,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? yield* loadCohortTasks()
         : subagents;
     });
-    const pendingTasks =
+    const foldableTasks =
       deliveryRun === undefined ||
       deliveryRun.status === "queued" ||
       (deliveryRun.startedAt === null &&
@@ -4285,6 +4285,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               (!hasLiveRun({ runs: [parentRun] }) || candidate.completionWake === "always"),
           )
         : [];
+    // A queued wake's scope is immutable, so a result of another scope waits for its own wake.
+    const pendingTasks =
+      deliveryRun?.status === "queued"
+        ? foldableTasks.filter((candidate) =>
+            purposeScopesEqual(
+              executionPurposeOf(deliveryRun).scope,
+              ExecutionPurpose.purposeFromCauses(
+                [candidate.completionSource?.purpose],
+                [candidate.id],
+                "delegated_completion",
+              ).scope,
+            ),
+          )
+        : foldableTasks;
+    const waitingTasks = foldableTasks.length > pendingTasks.length;
     const remainingTaskIds = [
       ...new Set([
         ...delivery.taskIds.filter((taskId) => taskId !== task.id),
@@ -4306,9 +4321,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           updatedAt: now,
         },
       });
+    // Keeping the emptied delivery lets the cancelled wake's finalization reserve waiting results.
     const clearDelivery =
       remainingTaskIds.length === 0 &&
+      !waitingTasks &&
       (deliveryRun === undefined || deliveryRun.status === "queued");
+    const purposeCauses = [
+      ...(delivery.purposeCauses ?? []).filter(
+        (cause) =>
+          remainingTaskIds.includes(cause.taskId) &&
+          !pendingTasks.some((candidate) => candidate.id === cause.taskId),
+      ),
+      ...completionPurposeCauses(
+        pendingTasks,
+        pendingTasks.map((candidate) => candidate.id),
+      ),
+    ];
     const updatedCohort: OrchestrationV2DelegatedCompletionCohort = {
       ...cohort,
       delivery: clearDelivery
@@ -4316,13 +4344,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         : {
             ...delivery,
             taskIds: remainingTaskIds,
-            ...(delivery.purposeCauses === undefined
+            ...(delivery.purposeCauses === undefined && purposeCauses.length === 0
               ? {}
-              : {
-                  purposeCauses: delivery.purposeCauses.filter((cause) =>
-                    remainingTaskIds.includes(cause.taskId),
-                  ),
-                }),
+              : { purposeCauses }),
           },
     };
     yield* emitEvent({
