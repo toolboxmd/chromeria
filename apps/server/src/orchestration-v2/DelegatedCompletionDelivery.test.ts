@@ -7151,6 +7151,8 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
     { followUp: "other scope" },
     { followUp: "stopped" },
     { followUp: "other scope beside a Run group" },
+    { followUp: "same scope beside a Run group" },
+    { followUp: "other scope in a mixed wake" },
   ] as const)("a $followUp follow-up of a task in a queued wake", ({ followUp }) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -7185,58 +7187,79 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
       const parentRun = seeded.runs.find((run) => run.id === runId)!;
       const firstDelivery = parentRun.delegatedCompletion!.delivery!;
       assert.deepEqual(firstDelivery.taskIds, [child.taskId]);
-      // The wake also holds a Run group member; the other member was read but still renders.
+      // The wake also holds a Run group member (the other member was read but still renders), or
+      // an Issue 2 result that makes the wake's scope mixed.
       const groupId = NodeId.make(`group:${name}`);
       const readMember = NodeId.make(`node:${name}-g0`);
       const heldMember = NodeId.make(`node:${name}-g1`);
-      const withGroup = followUp === "other scope beside a Run group";
-      const delivery = withGroup
-        ? {
-            ...firstDelivery,
-            taskIds: [child.taskId, heldMember],
-            purposeCauses: [
-              ...(firstDelivery.purposeCauses ?? []),
-              {
-                taskId: heldMember,
-                runId: RunId.make(`run:${heldMember}`),
-                purpose: executionPurposeOf(parentRun),
-              },
-            ],
-          }
-        : firstDelivery;
-      if (withGroup) {
+      const issueTwoResult = NodeId.make(`node:${name}-issue-2`);
+      const withGroup = followUp.endsWith("beside a Run group");
+      const mixed = followUp === "other scope in a mixed wake";
+      const siblings = [
+        ...(withGroup
+          ? [
+              { id: readMember, group: true, issue: undefined, read: true },
+              { id: heldMember, group: true, issue: undefined, read: false },
+            ]
+          : []),
+        ...(mixed ? [{ id: issueTwoResult, group: false, issue: 2, read: false }] : []),
+      ];
+      const purposeOf = (issue: number | undefined) =>
+        issue === undefined
+          ? executionPurposeOf(parentRun)
+          : {
+              version: 1 as const,
+              scope: issueScope(issue),
+              provenance: { type: "declared" as const },
+            };
+      const held = siblings.filter((sibling) => !sibling.read);
+      const delivery =
+        siblings.length === 0
+          ? firstDelivery
+          : {
+              ...firstDelivery,
+              taskIds: [child.taskId, ...held.map((sibling) => sibling.id)],
+              purposeCauses: [
+                ...(firstDelivery.purposeCauses ?? []),
+                ...held.map((sibling) => ({
+                  taskId: sibling.id,
+                  runId: RunId.make(`run:${sibling.id}`),
+                  purpose: purposeOf(sibling.issue),
+                })),
+              ],
+            };
+      if (siblings.length > 0) {
         const childTask = seeded.subagents.find((row) => row.id === child.taskId)!;
         yield* eventSink.write({
-          commandId: CommandId.make(`command:${name}:group`),
+          commandId: CommandId.make(`command:${name}:siblings`),
           events: [
-            ...[readMember, heldMember].map((id, index) => ({
-              id: EventId.make(`event:${name}:${id}`),
+            ...siblings.map((sibling, index) => ({
+              id: EventId.make(`event:${name}:${sibling.id}`),
               type: "subagent.updated" as const,
               threadId,
               runId,
-              nodeId: id,
+              nodeId: sibling.id,
               driver,
               providerInstanceId: modelSelection.instanceId,
               occurredAt: now,
               payload: {
                 ...childTask,
-                id,
+                id: sibling.id,
                 childThreadId: null,
-                runGroupId: groupId,
+                ...(sibling.group ? { runGroupId: groupId } : {}),
                 title: `Member ${index}`,
                 result: `member ${index} finished`,
                 completionSource: {
-                  runId: RunId.make(`run:${id}`),
-                  purpose: executionPurposeOf(parentRun),
+                  runId: RunId.make(`run:${sibling.id}`),
+                  purpose: purposeOf(sibling.issue),
                 },
-                completionDelivery:
-                  index === 0
-                    ? { state: "acknowledged" as const, observedByRunId: runId }
-                    : { state: "claimed" as const, observedByRunId: null },
+                completionDelivery: sibling.read
+                  ? { state: "acknowledged" as const, observedByRunId: runId }
+                  : { state: "claimed" as const, observedByRunId: null },
               },
             })),
             {
-              id: EventId.make(`event:${name}:group-cohort`),
+              id: EventId.make(`event:${name}:sibling-cohort`),
               type: "run.updated" as const,
               threadId,
               runId,
@@ -7271,6 +7294,7 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
         (run) => run.userMessageId === delivery.messageId,
       )!;
       assert.equal(wake.status, "queued");
+      if (mixed) assert.equal(executionPurposeOf(wake).scope.type, "unscoped");
 
       const followUpRunId = RunId.make(`run:${name}:2`);
       const terminal = runEvent({
@@ -7313,12 +7337,16 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
                 },
               ]
             : []),
-          followUp === "other scope" || withGroup
+          followUp.startsWith("other scope")
             ? {
                 ...terminal,
                 payload: {
                   ...terminal.payload,
-                  purpose: { version: 1, scope: issueScope(2), provenance: { type: "declared" } },
+                  purpose: {
+                    version: 1,
+                    scope: issueScope(mixed ? 3 : 2),
+                    provenance: { type: "declared" },
+                  },
                 },
               }
             : terminal,
@@ -7350,7 +7378,22 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
       const task = parent.subagents.find((row) => row.id === child.taskId)!;
       const queued = parent.runs.find((run) => run.id === wake.id)!;
       const reserved = parent.runs.find((run) => run.id === runId)?.delegatedCompletion?.delivery;
-      if (followUp === "same scope") {
+      if (mixed) {
+        // An Issue 3 result does not join a mixed wake; the wake keeps the Issue 2 result.
+        assert.equal(queued.status, "queued");
+        assert.equal(task.completionDelivery?.state, "pending");
+        assert.deepEqual(reserved?.taskIds, [issueTwoResult]);
+        const message = parent.messages.find((row) => row.id === delivery.messageId);
+        assert.deepEqual(message?.delegatedCompletion?.taskIds, [issueTwoResult]);
+      } else if (followUp === "same scope beside a Run group") {
+        // The replacement keeps every Run group member in the wake's text.
+        assert.equal(queued.status, "queued");
+        assert.equal(task.completionDelivery?.state, "claimed");
+        const message = parent.messages.find((row) => row.id === delivery.messageId);
+        assert.deepEqual(message?.delegatedCompletion?.taskIds, [child.taskId, heldMember]);
+        assert.include(message?.text ?? "", "member 0 finished");
+        assert.include(message?.text ?? "", "member 1 finished");
+      } else if (followUp === "same scope") {
         // The newer result replaces the older one in the wake, with its cause.
         assert.equal(queued.status, "queued");
         assert.equal(task.completionDelivery?.state, "claimed");

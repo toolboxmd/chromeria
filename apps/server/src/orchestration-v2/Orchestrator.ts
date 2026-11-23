@@ -17419,6 +17419,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     };
   });
 
+  // Fork: a Run group's wake lists every member, read ones included, so a rewrite of a wake
+  // holding one renders from the whole cohort, with the given rows taking precedence.
+  const completionWakeTasks = Effect.fn("orchestrationV2.completionWakeTasks")(function* (
+    parentRun: OrchestrationV2Run,
+    taskIds: ReadonlyArray<NodeId>,
+    tasks: ReadonlyArray<OrchestrationV2Subagent>,
+  ) {
+    if (!tasks.some((task) => taskIds.includes(task.id) && task.runGroupId !== undefined))
+      return tasks;
+    const { subagents } = yield* projectionStore
+      .getThreadRecords(parentRun.threadId, ["subagents"], { subagentRunIds: [parentRun.id] })
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: parentRun.threadId, cause }),
+        ),
+      );
+    return [...subagents.filter((task) => !tasks.some((given) => given.id === task.id)), ...tasks];
+  });
+
   // Fork: a task leaves a queued wake that has not started when its newer result cannot be sent
   // there. The wake is rewritten without it, or cancelled while keeping its delivery, so the
   // wake's finalization reserves the task's result under its own scope.
@@ -17471,21 +17490,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       };
     }
     const message = completionDeliveryMessage(input.parentProjection, input.delivery);
-    // A Run group's wake lists every member, read ones included, so it renders from the cohort.
-    const wakeTasks = input.parentProjection.subagents.some(
-      (candidate) => taskIds.includes(candidate.id) && candidate.runGroupId !== undefined,
-    )
-      ? (yield* projectionStore
-          .getThreadRecords(input.parentRun.threadId, ["subagents"], {
-            subagentRunIds: [input.parentRun.id],
-          })
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new OrchestratorProjectionError({ threadId: input.parentRun.threadId, cause }),
-            ),
-          )).subagents
-      : input.parentProjection.subagents;
+    const wakeTasks = yield* completionWakeTasks(
+      input.parentRun,
+      taskIds,
+      input.parentProjection.subagents,
+    );
     return {
       task: input.task,
       parentRun,
@@ -17594,9 +17603,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // Fork: a standalone task's newer result replaces the one its queued wake holds when it
       // shares the wake's scope, and otherwise takes the task out of the wake.
       const replacing = !sameCompletion && input.updatedTask.runGroupId === undefined;
+      // A replacement must share the wake's own scope; a mixed wake takes no newer result.
       const sameScope =
         deliveryRun !== undefined &&
-        purposeScopesEqual(executionPurposeOf(deliveryRun).scope, deliveryPurpose(combined).scope);
+        purposeScopesEqual(
+          executionPurposeOf(deliveryRun).scope,
+          (replacing
+            ? ExecutionPurpose.purposeFromCauses(
+                [input.updatedTask.completionSource?.purpose],
+                [input.updatedTask.id],
+                "delegated_completion",
+              )
+            : deliveryPurpose(combined)
+          ).scope,
+        );
       if (queuedWake && replacing && !sameScope) {
         return yield* leaveQueuedWake({
           parentProjection: input.parentProjection,
@@ -17641,8 +17661,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   text: yield* completionWakeDetail(
                     input.parentProjection,
                     taskIds,
-                    input.parentProjection.subagents.map((task) =>
-                      task.id === input.updatedTask.id ? input.updatedTask : task,
+                    yield* completionWakeTasks(
+                      input.parentRun,
+                      taskIds,
+                      input.parentProjection.subagents.map((task) =>
+                        task.id === input.updatedTask.id ? input.updatedTask : task,
+                      ),
                     ),
                   ),
                   delegatedCompletion: {
