@@ -4014,6 +4014,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     className="absolute bottom-0 right-0 flex items-center justify-end gap-1"
                   >
                     <ComposerPrimaryActions
+                      plainSend={props.promachos === true}
                       compact
                       canOperateThread={canOperateThread}
                       pendingAction={pendingPrimaryAction}

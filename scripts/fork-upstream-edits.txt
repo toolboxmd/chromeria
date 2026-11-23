@@ -192,6 +192,7 @@ packages/shared/src/serverSettings.ts
 apps/server/src/auth/RpcAuthorization.test.ts
 apps/web/src/components/AppSidebarLayout.tsx
 apps/web/src/components/chat/ChatComposer.tsx
+apps/web/src/components/chat/ComposerPrimaryActions.tsx
 packages/client-runtime/src/operations/commands.test.ts
 packages/client-runtime/src/operations/commands.ts
 apps/mobile/modules/t3-native-controls/android/src/main/java/expo/modules/t3nativecontrols/T3WorkspaceNavigationModule.kt
