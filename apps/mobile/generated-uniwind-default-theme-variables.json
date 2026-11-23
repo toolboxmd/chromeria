@@ -91,6 +91,7 @@
     "--color-chevron": "rgba(113, 113, 123, 0.42)",
     "--color-promachos-inbound": "#f4f4f5",
     "--color-promachos-outbound": "#2d2d2d",
+    "--color-promachos-outbound-fence": "#181818",
     "--color-promachos-outbound-foreground": "#fcfcfc"
   },
   "dark": {
@@ -167,7 +168,7 @@
     "--color-md-code-text": "#f5f5f5",
     "--color-md-user-code-bg": "rgba(245, 245, 245, 0.18)",
     "--color-md-user-code-text": "#f5f5f5",
-    "--color-md-user-fence-bg": "rgba(0, 0, 0, 0.28)",
+    "--color-md-user-fence-bg": "rgba(0, 0, 0, 0.46)",
     "--color-md-user-fence-text": "#f5f5f5",
     "--color-md-hr": "#191919",
     "--color-user-bubble": "#161616",
@@ -185,6 +186,7 @@
     "--color-chevron": "rgba(129, 129, 129, 0.42)",
     "--color-promachos-inbound": "#3b3b3b",
     "--color-promachos-outbound": "#202020",
+    "--color-promachos-outbound-fence": "#111111",
     "--color-promachos-outbound-foreground": "#f5f5f5"
   }
 }

@@ -3937,16 +3937,27 @@ sources and reasons.
 ```json
 {
   "id": "mobile-dark-code-punctuation",
-  "purpose": "Mobile dark-scheme code blocks draw pierre-dark's #636363 punctuation in #d8d8d8, so braces and semicolons reach 4.5:1 on every built-in and Material You dark code fence. The light scheme keeps pierre-light. Drop when @pierre/highlights' dark punctuation reaches 4.5:1 on those fences.",
+  "purpose": "Mobile dark-scheme code blocks draw pierre-dark's #636363 punctuation in its ANSI white #bcbcbc, and every fence under dark-scheme code is black-backed (dark user fences of built-in and Material You themes, and a Promachos user's fence in both appearances), so punctuation, punctuation.special included, reaches 4.5:1. The light scheme keeps pierre-light. Drop when @pierre/highlights' dark punctuation and upstream's dark fences reach 4.5:1 together.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/923"],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/main...mobile-dark-punctuation-contrast"],
   "newFiles": [],
   "upstreamFiles": [
     "apps/mobile/scripts/generate-highlights.mts",
     "apps/mobile/src/lib/highlights.generated.ts",
-    "apps/mobile/src/lib/highlights.test.ts"
+    "apps/mobile/src/lib/highlights.test.ts",
+    "apps/mobile/src/lib/materialYouTheme.android.ts"
   ],
-  "sharedFiles": [],
-  "keywords": ["withReadableDarkPunctuation", "DARK_PUNCTUATION"]
+  "sharedFiles": [
+    "apps/mobile/generated-uniwind-default-theme-variables.json",
+    "apps/mobile/generated-uniwind-themes.css",
+    "apps/mobile/src/features/threads/ThreadFeed.tsx",
+    "apps/mobile/src/lib/mobileTheme.ts"
+  ],
+  "keywords": [
+    "withReadableDarkPunctuation",
+    "DARK_PUNCTUATION",
+    "DARK_USER_FENCE_ALPHA",
+    "--color-promachos-outbound-fence"
+  ]
 }
 ```

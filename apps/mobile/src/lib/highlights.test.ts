@@ -93,34 +93,54 @@ describe("highlightCode", () => {
     };
     const contrast = (a: ReadonlyArray<number>, b: ReadonlyArray<number>) =>
       (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05);
-    const materialYou = ["#6750a4", "#9c4146", "#a3b08b", "#006a6a"].map((seed) => {
-      const scheme = new SchemeTonalSpot(Hct.fromInt(argbFromHex(seed)), true, 0);
-      const palette = Object.fromEntries(
-        MATERIAL_YOU_ROLES.map((role) => [role, `${hexFromArgb(scheme[role])}ff`]),
-      ) as Record<keyof MaterialYouPalette, string>;
-      return materialYouPaletteToMobileThemeVariables(
-        palette,
-        "dark",
-        getMobileThemeRuntimeVariables("material-you", "dark", "android"),
-      );
-    });
+    const materialYou = (appearance: "light" | "dark") =>
+      ["#6750a4", "#9c4146", "#a3b08b", "#006a6a"].map((seed) => {
+        const scheme = new SchemeTonalSpot(
+          Hct.fromInt(argbFromHex(seed)),
+          appearance === "dark",
+          0,
+        );
+        const palette = Object.fromEntries(
+          MATERIAL_YOU_ROLES.map((role) => [role, `${hexFromArgb(scheme[role])}ff`]),
+        ) as Record<keyof MaterialYouPalette, string>;
+        return materialYouPaletteToMobileThemeVariables(
+          palette,
+          appearance,
+          getMobileThemeRuntimeVariables("material-you", appearance, "android"),
+        );
+      });
+    const themes = (appearance: "light" | "dark") => [
+      ...MOBILE_THEME_IDS.map((themeId) => getMobileThemeVariables(themeId, appearance)),
+      ...materialYou(appearance),
+    ];
+    // A Promachos user's bubble draws its code in the dark scheme in both appearances.
     const fences = [
-      ...MOBILE_THEME_IDS.map((themeId) => getMobileThemeVariables(themeId, "dark")),
-      ...materialYou,
-    ].flatMap((variables) => [
-      over(variables["--color-md-code-bg"], variables["--color-thread-canvas"]),
-      over(variables["--color-md-user-fence-bg"], variables["--color-user-bubble"]),
-    ]);
-    const punctuation = highlightCode("int main() { return 0; }", "cpp", "dark")
-      .flat()
-      .flatMap(({ content, color }) =>
-        [...content].filter((char) => "(){};".includes(char)).map((char) => ({ char, color })),
-      );
+      ...themes("dark").flatMap((variables) => [
+        over(variables["--color-md-code-bg"], variables["--color-thread-canvas"]),
+        over(variables["--color-md-user-fence-bg"], variables["--color-user-bubble"]),
+      ]),
+      ...[...themes("dark"), ...themes("light")].map((variables) =>
+        rgba(variables["--color-promachos-outbound-fence"]),
+      ),
+    ];
+    const punctuation = (code: string, language: string, marks: string) =>
+      highlightCode(code, language, "dark")
+        .flat()
+        .flatMap(({ content, color }) =>
+          [...content].filter((char) => marks.includes(char)).map((char) => ({ char, color })),
+        );
+    const cpp = punctuation("int main() { return 0; }", "cpp", "(){};");
+    const fString = punctuation('f"{name}"', "python", "{}");
 
-    expect(punctuation.map(({ char }) => char).join("")).toBe("(){;}");
-    for (const { color } of punctuation) {
+    expect(cpp.map(({ char }) => char).join("")).toBe("(){;}");
+    expect(fString.map(({ char }) => char).join("")).toBe("{}");
+    expect(new Set([...cpp, ...fString].map(({ color }) => color)).size).toBe(2);
+    for (const { color } of [...cpp, ...fString]) {
       for (const fence of fences) {
-        expect(contrast(rgba(color!), fence)).toBeGreaterThanOrEqual(4.5);
+        expect(
+          contrast(rgba(color!), fence),
+          `${color} on ${fence.map(Math.round)}`,
+        ).toBeGreaterThanOrEqual(4.5);
       }
     }
   });

@@ -1622,7 +1622,7 @@ function useMarkdownStyles(promachos = false): MarkdownStyleSets {
         codeBackgroundColor: markdownUserCodeBg,
         // Opaque on a Promachos bubble, so a saved diagram keeps its dark backing.
         codeBlockBackgroundColor: promachos
-          ? flattenThemeColor(markdownUserFenceBg, userBubble)
+          ? theme["--color-promachos-outbound-fence"]
           : markdownUserFenceBg,
         fileTextColor: markdownUserBodyColor,
         quoteMarkerColor: markdownUserBodyColor,

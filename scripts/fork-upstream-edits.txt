@@ -868,3 +868,4 @@ apps/web/src/components/chat/AssistantCitationChip.tsx
 apps/mobile/scripts/generate-highlights.mts
 apps/mobile/src/lib/highlights.generated.ts
 apps/mobile/src/lib/highlights.test.ts
+apps/mobile/src/lib/materialYouTheme.android.ts
