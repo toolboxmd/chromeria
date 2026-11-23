@@ -109,7 +109,7 @@ describe("scheduled command notifications", () => {
     toast?.actionProps.onClick();
     expect(state.close).toHaveBeenCalledWith("toast-1");
     expect(state.navigate).toHaveBeenCalledWith({
-      to: "/settings/scheduled-tasks",
+      to: "/scheduled-tasks",
       search: { environmentId },
     });
   });
@@ -171,7 +171,7 @@ describe("scheduled command notifications", () => {
     notification.dispatchEvent(new Event("click"));
     expect(notification.close).toHaveBeenCalled();
     expect(state.navigate).toHaveBeenCalledWith({
-      to: "/settings/scheduled-tasks",
+      to: "/scheduled-tasks",
       search: { environmentId },
     });
   });

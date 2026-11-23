@@ -193,9 +193,10 @@ report message.
 
 ## Webhook automations
 
-In **Settings → Scheduled tasks**, choose **On webhook**
-as a task's schedule to run it whenever another service calls its URL, such as
-GitHub on a new pull request or a CI job that failed. A public URL needs a
+Open **Scheduled tasks** from the icon at the bottom of the sidebar (on mobile,
+**Settings → Scheduled tasks**) and choose **On webhook** as a task's schedule
+to run it whenever another service calls its URL, such as GitHub on a new pull
+request or a CI job that failed. A public URL needs a
 [T3 Connect](remote-access.md) managed tunnel; after you save the task, copy
 its URL from the editor. Without one, the editor shows only the URL's path.
 **Rotate** replaces the URL and the old one stops working.

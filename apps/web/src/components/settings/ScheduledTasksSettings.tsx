@@ -440,12 +440,12 @@ export function ScheduledTasksSettings(target: {
     setOpenedLinkTaskId(target.taskId);
     if (editor === null) setEditor({ environmentId: linkedEnvironmentId, task: linkedTask });
   }
-  const navigate = useNavigate({ from: "/settings/scheduled-tasks" });
+  const navigate = useNavigate({ from: "/scheduled-tasks" });
   const closeEditor = () => {
     setEditor(null);
     if (target.taskId === undefined) return;
     void navigate({
-      to: "/settings/scheduled-tasks",
+      to: "/scheduled-tasks",
       search: ({ taskId: _closed, ...rest }) => rest,
       replace: true,
     });

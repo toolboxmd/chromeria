@@ -1692,11 +1692,12 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "scheduled-tasks",
-  "purpose": "Extend upstream's single scheduler with outcome checks that keep one thread working until a pinned check passes, a one-shot trigger, fixed_time time zones, extra times, month days and minute spreading with catch-up after downtime (stored weekly and monthly triggers migrate to fixed_time before recovery), Prism roles, shell command tasks with failure alerts, the Spectrum report completion fence, and the Chromeria v1 task import. Upstream PR pingdotgg/t3code#35192 shares monthDays and its last-day rule but forbids any weekdays with it and clears omitted month days; absorbing it needs reconciliation and equivalence proof, and its ten-minute missed-run skip cannot replace the fork's catch-up.",
+  "purpose": "Extend upstream's single scheduler with outcome checks that keep one thread working until a pinned check passes, a one-shot trigger, fixed_time time zones, extra times, month days and minute spreading with catch-up after downtime (stored weekly and monthly triggers migrate to fixed_time before recovery), Prism roles, shell command tasks with failure alerts, the Spectrum report completion fence, and the Chromeria v1 task import. Upstream PR pingdotgg/t3code#35192 shares monthDays and its last-day rule but forbids any weekdays with it and clears omitted month days; absorbing it needs reconciliation and equivalence proof, and its ten-minute missed-run skip cannot replace the fork's catch-up. On web and desktop the list is its own page, opened from a sidebar icon; old Settings links redirect there.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/174",
     "https://github.com/toolboxmd/chromeria/issues/707",
-    "https://github.com/toolboxmd/chromeria/issues/719"
+    "https://github.com/toolboxmd/chromeria/issues/719",
+    "https://github.com/toolboxmd/chromeria/issues/920"
   ],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/174-scheduled-tasks-v2"],
   "newFiles": [
@@ -1729,6 +1730,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/web/src/components/settings/scheduledTaskFork.logic.test.ts",
     "apps/web/src/components/settings/scheduledTaskFork.logic.ts",
     "apps/web/src/components/settings/scheduledTaskFork.tsx",
+    "apps/web/src/components/settings/scheduledTasksPage.ts",
+    "apps/web/src/routes/_chat.scheduled-tasks.tsx",
     "evals/mcp-tool-use/cases/scheduled-checks.ndjson",
     "packages/client-runtime/src/scheduledTaskFork.test.ts",
     "packages/client-runtime/src/scheduledTaskFork.ts",
@@ -1747,6 +1750,9 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/web/src/components/settings/ScheduledTasksSettings.browser.test.tsx",
     "apps/web/src/components/settings/ScheduledTasksSettings.tsx",
     "apps/web/src/components/settings/scheduledTasksSettings.logic.ts",
+    "apps/web/src/components/settings/settingsScopeNavigation.test.ts",
+    "apps/web/src/components/sidebar/mainAppLocation.ts",
+    "apps/web/src/routes/_chat.settings.scheduled-tasks.tsx",
     "docs/user/project-settings.md",
     "packages/client-runtime/package.json",
     "packages/client-runtime/src/state/server.ts",
@@ -1756,6 +1762,9 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/mcp/OrchestratorMcpService.ts",
     "apps/server/src/orchestration-v2/runtimeLayer.ts",
     "apps/server/src/persistence/forkV1Backfills.ts",
+    "apps/web/src/components/settings/settingsSearch.ts",
+    "apps/web/src/components/sidebar/SidebarChrome.tsx",
+    "apps/web/src/routeTree.gen.ts",
     "packages/contracts/src/index.ts",
     "packages/contracts/src/orchestratorMcp.ts"
   ],

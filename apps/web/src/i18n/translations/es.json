@@ -3091,6 +3091,8 @@
   "a1c2e064ead9e88d": "No se pudo iniciar un hilo nuevo",
   "c9f0735ef91f895b": "El proyecto sigue disponible. Vuelve a intentar abrir el borrador.",
   "b3036052b23a9f21": "No se pudo abrir el enlace",
+  "8a7705186c3d58d8": "Ruta de navegación de tareas programadas",
+  "df1fb90eb9a77fbf": "Tareas programadas",
   "d504f8f37caf6483": "Vuelve a conectar {label} para configurar sus proveedores.",
   "c8380bf9638c2156": "Conecta un entorno para configurar sus proveedores.",
   "8c1bb7953bdeb59b": "{title} requiere un entorno compatible. Elige uno para continuar.",

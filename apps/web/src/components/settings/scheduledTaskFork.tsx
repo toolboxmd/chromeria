@@ -163,7 +163,7 @@ export function ScheduledTaskList({
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Leaving the page drops a carried link, so a later visit starts with History closed.
   useEffect(
     () => () => {
-      if (window.location.pathname !== "/settings/scheduled-tasks") setPendingHistoryLink(null);
+      if (window.location.pathname !== "/scheduled-tasks") setPendingHistoryLink(null);
     },
     [setPendingHistoryLink],
   );

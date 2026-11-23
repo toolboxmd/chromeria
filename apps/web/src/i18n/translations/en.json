@@ -3091,6 +3091,8 @@
   "a1c2e064ead9e88d": "Couldn’t start a new thread",
   "c9f0735ef91f895b": "The project is still available. Try opening the draft again.",
   "b3036052b23a9f21": "Could not open the link",
+  "8a7705186c3d58d8": "Scheduled tasks breadcrumb",
+  "df1fb90eb9a77fbf": "Scheduled tasks",
   "d504f8f37caf6483": "Reconnect {label} to set up its providers.",
   "c8380bf9638c2156": "Connect an environment to set up its providers.",
   "8c1bb7953bdeb59b": "{title} requires a supporting environment. Choose one to continue.",

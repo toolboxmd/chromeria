@@ -51,7 +51,7 @@ export function ScheduledCommandNotifications({
     presentScheduledCommandFailures(environmentId, failing, {
       notificationMode: mode,
       inAppNotificationsEnabled,
-      open: () => void navigate({ to: "/settings/scheduled-tasks", search: { environmentId } }),
+      open: () => void navigate({ to: "/scheduled-tasks", search: { environmentId } }),
       onNotification,
     });
   }, [data, environmentId, inAppNotificationsEnabled, mode, navigate, onNotification]);

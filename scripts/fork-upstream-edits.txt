@@ -254,6 +254,9 @@ apps/web/src/components/settings/EnvironmentRow.tsx
 apps/web/src/components/settings/ScheduledTasksSettings.browser.test.tsx
 apps/web/src/components/settings/ScheduledTasksSettings.tsx
 apps/web/src/components/settings/scheduledTasksSettings.logic.ts
+apps/web/src/components/settings/settingsScopeNavigation.test.ts
+apps/web/src/components/sidebar/mainAppLocation.ts
+apps/web/src/routes/_chat.settings.scheduled-tasks.tsx
 docs/user/project-settings.md
 packages/client-runtime/package.json
 packages/client-runtime/src/state/server.ts

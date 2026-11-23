@@ -3091,6 +3091,8 @@
   "a1c2e064ead9e88d": "Kunde inte starta en ny tråd",
   "c9f0735ef91f895b": "Projektet är fortfarande tillgängligt. Försök öppna utkastet igen.",
   "b3036052b23a9f21": "Kunde inte öppna länken",
+  "8a7705186c3d58d8": "Sökväg i schemalagda uppgifter",
+  "df1fb90eb9a77fbf": "Schemalagda uppgifter",
   "d504f8f37caf6483": "Återanslut {label} för att konfigurera dess leverantörer.",
   "c8380bf9638c2156": "Anslut en miljö för att konfigurera dess leverantörer.",
   "8c1bb7953bdeb59b": "{title} kräver en miljö som stöder det. Välj en för att fortsätta.",
