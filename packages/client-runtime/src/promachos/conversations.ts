@@ -1,15 +1,14 @@
-import { isThreadVisibleInNavigation } from "@t3tools/client-runtime/state/models";
-import type {
-  EnvironmentProject,
-  EnvironmentThreadShell,
-} from "@t3tools/client-runtime/state/models";
 import type { ScopedProjectRef } from "@t3tools/contracts";
 
 import {
+  isThreadVisibleInNavigation,
+  type EnvironmentProject,
+  type EnvironmentThreadShell,
+} from "../state/models.ts";
+import {
   deriveLogicalProjectKeyFromSettings,
   type ProjectGroupingSettings,
-} from "@t3tools/client-runtime/state/project-grouping";
-import { firstValidTimestampMs } from "../Sidebar.logic";
+} from "../state/projectGrouping.ts";
 
 /**
  * The projects that make up the Promachos home: the chosen home and every
@@ -63,9 +62,16 @@ export function promachosConversations<
 >(threads: ReadonlyArray<T>, homeRefs: ReadonlyArray<ScopedProjectRef>): T[] {
   return threads
     .filter((thread) => isInPromachosHome(thread, homeRefs) && isThreadVisibleInNavigation(thread))
-    .toSorted(
-      (left, right) =>
-        firstValidTimestampMs(right.latestUserMessageAt, right.updatedAt) -
-        firstValidTimestampMs(left.latestUserMessageAt, left.updatedAt),
-    );
+    .sort((left, right) => lastActivityMs(right) - lastActivityMs(left));
+}
+
+function lastActivityMs(thread: {
+  readonly latestUserMessageAt: string | null;
+  readonly updatedAt: string;
+}): number {
+  for (const candidate of [thread.latestUserMessageAt, thread.updatedAt]) {
+    const parsed = candidate === null ? Number.NaN : Date.parse(candidate);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return 0;
 }

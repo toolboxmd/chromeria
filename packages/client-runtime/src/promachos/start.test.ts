@@ -5,10 +5,10 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
-import type { StartThreadTurnInput } from "@t3tools/client-runtime/operations";
+import type { StartThreadTurnInput } from "../operations/commands.ts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { promachosMultipleModelSelections, withPromachosStart } from "./promachosStart";
+import { promachosMultipleModelSelections, withPromachosStart } from "./start.ts";
 
 const createdAt = "2026-10-01T20:00:00.000Z";
 // The composer's own selection: a valid placeholder Prism replaces.

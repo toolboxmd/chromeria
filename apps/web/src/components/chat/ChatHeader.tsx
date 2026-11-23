@@ -1,4 +1,5 @@
 import { WightModeControl } from "./WightModeControl";
+import { PromachosRoundButton, PromachosTitlePill } from "../promachos/PromachosChrome";
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
@@ -12,7 +13,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { T, useGT, Var } from "gt-react";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, EllipsisIcon } from "lucide-react";
 import {
   memo,
   useEffect,
@@ -63,6 +64,8 @@ interface ChatHeaderProps {
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
   onFindInThread?: ((threadRef: ScopedThreadRef) => void) | undefined;
+  /** Fork: a Promachos chat shows his name pill and one "…" menu (toolboxmd/chromeria#898). */
+  promachos?: boolean | undefined;
 }
 
 function resolveRenameCommit(input: {
@@ -89,6 +92,7 @@ export const ChatHeader = memo(function ChatHeader({
   onNewThreadInProject,
   onOpenProjectSettings,
   onFindInThread,
+  promachos,
 }: ChatHeaderProps) {
   const gt = useGT();
   const activeProjectName = activeProject?.isScratch ? gt("No project") : activeProject?.title;
@@ -254,6 +258,32 @@ export const ChatHeader = memo(function ChatHeader({
       setRenaming(null);
     }
   };
+  if (promachos && renamingTitle === null) {
+    return (
+      <div
+        ref={breadcrumbContainerRef}
+        className={cn(
+          "flex min-w-0 flex-1 items-center justify-center gap-2",
+          rightPanelOpen ? "pr-10" : "pr-24",
+        )}
+        onContextMenu={handleHeaderContextMenu}
+      >
+        {isServerThread ? (
+          <WightModeControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
+        ) : null}
+        <PromachosTitlePill
+          title={activeThreadTitle}
+          label={gt("Thread actions for {title}", { title: activeThreadTitle })}
+          onClick={isServerThread ? openMenuFromTitle : undefined}
+        />
+        {isServerThread ? (
+          <PromachosRoundButton label={gt("More")} onClick={openMenuFromTitle}>
+            <EllipsisIcon />
+          </PromachosRoundButton>
+        ) : null}
+      </div>
+    );
+  }
   return (
     <div
       ref={breadcrumbContainerRef}

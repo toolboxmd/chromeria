@@ -869,6 +869,7 @@ function ThreadRouteContent(
           environmentId: String(creation.environmentId),
           projectId: String(creation.creation.projectId),
           ...(selectedThreadProject ? { title: selectedThreadProject.title } : {}),
+          ...(creation.creation.promachos === true ? { promachos: "1" } : {}),
         },
       }),
     );
@@ -1048,6 +1049,7 @@ function ThreadRouteContent(
           header={
             props.inspectorPresentation ? null : (
               <ThreadHeader
+                projectId={selectedThread.projectId}
                 title={selectedThread.title}
                 subtitle={threadStatusLabel ?? headerSubtitle}
                 gitControls={threadGitControlProps}

@@ -91,6 +91,9 @@
       --color-dot-separator: rgba(113, 113, 123, 0.35);
       --color-wordmark: #27272a;
       --color-chevron: rgba(113, 113, 123, 0.42);
+      --color-promachos-inbound: #f4f4f5;
+      --color-promachos-outbound: #2d2d2d;
+      --color-promachos-outbound-foreground: #fcfcfc;
       --color-adaptive-amber-50-950-a40: oklch(98.7% 0.022 95.277);
       --color-adaptive-amber-200-900-a60: oklch(92.4% 0.12 95.746);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 12%);
@@ -254,6 +257,9 @@
       --color-dot-separator: rgba(129, 129, 129, 0.35);
       --color-wordmark: #f5f5f5;
       --color-chevron: rgba(129, 129, 129, 0.42);
+      --color-promachos-inbound: #3b3b3b;
+      --color-promachos-outbound: #202020;
+      --color-promachos-outbound-foreground: #f5f5f5;
       --color-adaptive-amber-50-950-a40: oklch(27.9% 0.077 45.635 / 40%);
       --color-adaptive-amber-200-900-a60: oklch(41.4% 0.112 45.904 / 60%);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 16%);
@@ -417,6 +423,9 @@
       --color-dot-separator: rgba(172, 22, 104, 0.35);
       --color-wordmark: #501854;
       --color-chevron: rgba(172, 22, 104, 0.42);
+      --color-promachos-inbound: #f3e6f5;
+      --color-promachos-outbound: #2e2c2e;
+      --color-promachos-outbound-foreground: #fdf7fd;
       --color-adaptive-amber-50-950-a40: oklch(98.7% 0.022 95.277);
       --color-adaptive-amber-200-900-a60: oklch(92.4% 0.12 95.746);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 12%);
@@ -580,6 +589,9 @@
       --color-dot-separator: rgba(231, 208, 221, 0.35);
       --color-wordmark: #f9f8fb;
       --color-chevron: rgba(231, 208, 221, 0.42);
+      --color-promachos-inbound: #4c4850;
+      --color-promachos-outbound: #332f38;
+      --color-promachos-outbound-foreground: #f9f8fb;
       --color-adaptive-amber-50-950-a40: oklch(27.9% 0.077 45.635 / 40%);
       --color-adaptive-amber-200-900-a60: oklch(41.4% 0.112 45.904 / 60%);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 16%);
@@ -743,6 +755,9 @@
       --color-dot-separator: rgba(116, 108, 115, 0.35);
       --color-wordmark: #241523;
       --color-chevron: rgba(116, 108, 115, 0.42);
+      --color-promachos-inbound: #e6f0ea;
+      --color-promachos-outbound: #2c2c2c;
+      --color-promachos-outbound-foreground: #f3f7f4;
       --color-adaptive-amber-50-950-a40: oklch(98.7% 0.022 95.277);
       --color-adaptive-amber-200-900-a60: oklch(92.4% 0.12 95.746);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 12%);
@@ -906,6 +921,9 @@
       --color-dot-separator: rgba(145, 149, 149, 0.35);
       --color-wordmark: #fffaff;
       --color-chevron: rgba(145, 149, 149, 0.42);
+      --color-promachos-inbound: #49534d;
+      --color-promachos-outbound: #303b35;
+      --color-promachos-outbound-foreground: #fffaff;
       --color-adaptive-amber-50-950-a40: oklch(27.9% 0.077 45.635 / 40%);
       --color-adaptive-amber-200-900-a60: oklch(41.4% 0.112 45.904 / 60%);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 16%);
@@ -1069,6 +1087,9 @@
       --color-dot-separator: rgba(116, 108, 117, 0.35);
       --color-wordmark: #241523;
       --color-chevron: rgba(116, 108, 117, 0.42);
+      --color-promachos-inbound: #e8eff4;
+      --color-promachos-outbound: #2c2c2d;
+      --color-promachos-outbound-foreground: #f5f7f8;
       --color-adaptive-amber-50-950-a40: oklch(98.7% 0.022 95.277);
       --color-adaptive-amber-200-900-a60: oklch(92.4% 0.12 95.746);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 12%);
@@ -1232,6 +1253,9 @@
       --color-dot-separator: rgba(141, 143, 151, 0.35);
       --color-wordmark: #fffaff;
       --color-chevron: rgba(141, 143, 151, 0.42);
+      --color-promachos-inbound: #454d55;
+      --color-promachos-outbound: #2c353e;
+      --color-promachos-outbound-foreground: #fffaff;
       --color-adaptive-amber-50-950-a40: oklch(27.9% 0.077 45.635 / 40%);
       --color-adaptive-amber-200-900-a60: oklch(41.4% 0.112 45.904 / 60%);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 16%);
@@ -1395,6 +1419,9 @@
       --color-dot-separator: rgba(118, 108, 116, 0.35);
       --color-wordmark: #241523;
       --color-chevron: rgba(118, 108, 116, 0.42);
+      --color-promachos-inbound: #f4ede9;
+      --color-promachos-outbound: #2d2c2c;
+      --color-promachos-outbound-foreground: #f9f7f5;
       --color-adaptive-amber-50-950-a40: oklch(98.7% 0.022 95.277);
       --color-adaptive-amber-200-900-a60: oklch(92.4% 0.12 95.746);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 12%);
@@ -1558,6 +1585,9 @@
       --color-dot-separator: rgba(150, 142, 143, 0.35);
       --color-wordmark: #fffaff;
       --color-chevron: rgba(150, 142, 143, 0.42);
+      --color-promachos-inbound: #544b48;
+      --color-promachos-outbound: #3c322f;
+      --color-promachos-outbound-foreground: #fffaff;
       --color-adaptive-amber-50-950-a40: oklch(27.9% 0.077 45.635 / 40%);
       --color-adaptive-amber-200-900-a60: oklch(41.4% 0.112 45.904 / 60%);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 16%);
@@ -1721,6 +1751,9 @@
       --color-dot-separator: rgba(118, 108, 118, 0.35);
       --color-wordmark: #241523;
       --color-chevron: rgba(118, 108, 118, 0.42);
+      --color-promachos-inbound: #f0edf6;
+      --color-promachos-outbound: #2d2c2d;
+      --color-promachos-outbound-foreground: #f8f7f9;
       --color-adaptive-amber-50-950-a40: oklch(98.7% 0.022 95.277);
       --color-adaptive-amber-200-900-a60: oklch(92.4% 0.12 95.746);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 12%);
@@ -1884,6 +1917,9 @@
       --color-dot-separator: rgba(142, 138, 149, 0.35);
       --color-wordmark: #fffaff;
       --color-chevron: rgba(142, 138, 149, 0.42);
+      --color-promachos-inbound: #4a4754;
+      --color-promachos-outbound: #312e3c;
+      --color-promachos-outbound-foreground: #fffaff;
       --color-adaptive-amber-50-950-a40: oklch(27.9% 0.077 45.635 / 40%);
       --color-adaptive-amber-200-900-a60: oklch(41.4% 0.112 45.904 / 60%);
       --color-adaptive-amber-500-a12-a16: oklch(76.9% 0.188 70.08 / 16%);

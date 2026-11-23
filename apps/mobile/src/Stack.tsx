@@ -110,6 +110,7 @@ import {
 } from "./features/settings/SettingsSourceControlDetailRouteScreens";
 import { SettingsEnvironmentsRouteScreen } from "./features/settings/SettingsEnvironmentsRouteScreen";
 import { SettingsFollowUpRouteScreen } from "./features/settings/SettingsFollowUpRouteScreen";
+import { SettingsPromachosRouteScreen } from "./features/promachos/SettingsPromachosRouteScreen";
 import { SettingsLanguageRouteScreen } from "./features/settings/SettingsLanguageRouteScreen";
 import {
   SettingsEnvironmentMaintenanceRouteScreen,
@@ -193,6 +194,7 @@ const ROUTE_TITLES: Readonly<Record<string, string>> = {
   SettingsVoice: msg("Voice"),
   SettingsFollowUp: msg("Chat", { $context: "noun, settings page title" }),
   SettingsScheduledTasks: msg("Scheduled tasks"),
+  SettingsPromachos: msg("Promachos"),
   SettingsScheduledTaskNew: msg("New scheduled task"),
   SettingsScheduledTaskEdit: msg("Edit scheduled task"),
   SettingsScheduledTaskBranch: msg("Base branch"),
@@ -366,6 +368,11 @@ const SETTINGS_SCREENS = {
     linking: "settings/follow-ups",
     options: settingsPage(),
   }),
+  SettingsPromachos: createNativeStackScreen({
+    screen: SettingsPromachosRouteScreen,
+    linking: "settings/promachos",
+    options: settingsPage(),
+  }),
   SettingsScheduledTasks: createNativeStackScreen({
     screen: SettingsScheduledTasksRouteScreen,
     linking: "settings/scheduled-tasks",
@@ -479,7 +486,9 @@ function RootStackLayout(props: {
     draftRoute !== undefined &&
     props.state.routes.findLast((route) => route.name === "Thread") === draftRoute;
   const draftParams = (
-    draftRoute?.params as { draft?: { draftId?: string | string[] } } | undefined
+    draftRoute?.params as
+      | { draft?: { draftId?: string | string[]; promachos?: string | string[] } }
+      | undefined
   )?.draft;
   const routeDraftId = Array.isArray(draftParams?.draftId)
     ? draftParams.draftId[0]
@@ -490,6 +499,7 @@ function RootStackLayout(props: {
       active={draftRouteOnTop}
       flowKey={draftRoute === undefined ? undefined : newTaskFlowKey(draftRoute)}
       routeDraftId={routeDraftId}
+      promachos={[draftParams?.promachos].flat()[0] === "1"}
     >
       <HardwareKeyboardCommandProvider pathname={pathname}>
         <ShowcaseReadyMarker />

@@ -41,7 +41,7 @@ import { useComposerResume } from "./chat/useComposerResume";
 import { useStartTurnWithPurpose } from "./chat/useStartTurnWithPurpose";
 import { usePromachosInlineCardHost } from "./promachos/PromachosChat";
 import { usePromachosPresentation } from "./promachos/promachosMode";
-import { promachosPicksModel } from "./promachos/promachosStart";
+import { promachosPicksModel } from "@t3tools/client-runtime/promachos/start";
 import { ThreadFind, ThreadFindCanvas } from "./chat/ThreadFindProvider";
 import { closeThreadFind, openThreadFind, useThreadFindOpen } from "./chat/threadFindStore";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
@@ -1885,8 +1885,10 @@ export default function ChatView(props: ChatViewProps) {
           providerSubagentModels,
           reportedModelSelection,
         );
+  // Fork: a Promachos chat shows no branch, worktree or permission controls.
   const showComposerContextStrip =
     !embedded &&
+    !promachosChat &&
     shouldShowComposerContextStrip({
       isDraftHeroState,
       persistInActiveThreads: settings.persistComposerContextStrip,
@@ -3615,6 +3617,7 @@ export default function ChatView(props: ChatViewProps) {
                 ? { onOpenProjectSettings: handleOpenDraftProjectSettingsStable }
                 : {})}
               {...(threadFindEnabled ? { onFindInThread: openThreadFindStable } : {})}
+              promachos={promachosChat}
             />
           </header>
         )}
@@ -3639,7 +3642,16 @@ export default function ChatView(props: ChatViewProps) {
             onDrop={workspaceFileDropHandlers.onDrop}
           >
             <ThreadFind onClose={focusComposerStable} />
-            {isWorkspaceFileDragActive ? <WorkspaceFileDropOverlay /> : null}
+            {isWorkspaceFileDragActive ? (
+              promachosChat ? (
+                // Fork: a Promachos chat keeps the accent for links only.
+                <div className="contents [--primary:var(--muted-foreground)]">
+                  <WorkspaceFileDropOverlay />
+                </div>
+              ) : (
+                <WorkspaceFileDropOverlay />
+              )
+            ) : null}
             <ChatBannerLane
               environmentId={activeThread.environmentId}
               providerStatus={visibleProviderStatus}
@@ -3838,6 +3850,7 @@ export default function ChatView(props: ChatViewProps) {
                     <div className="relative">
                       <ComposerSurface.Shell contextRow={showComposerContextStrip}>
                         <ComposerSurface.Host
+                          className={promachosChat ? "rounded-4xl" : undefined}
                           inert={queuedRunEdit.isSaving}
                           aria-busy={queuedRunEdit.isSaving}
                         >
@@ -3869,6 +3882,7 @@ export default function ChatView(props: ChatViewProps) {
                             {!composerMounted ? null : (
                               <ChatComposer
                                 inlineCardHost={promachosCardHost.composerHost}
+                                promachos={promachosChat}
                                 canOperateThread={canOperateThread}
                                 reportedModelSelection={reportedModelSelection}
                                 multipleModelSelections={viewMultipleModelSelections}

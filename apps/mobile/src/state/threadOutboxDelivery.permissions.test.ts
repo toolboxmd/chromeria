@@ -531,6 +531,31 @@ describe("queued task operation access", () => {
   );
 });
 
+describe("queued Promachos first send", () => {
+  it("launches with Prism picking the model even when the placeholder is unavailable", async () => {
+    setOperateGrant("secondary", true);
+    state.modelUnavailable.mockReturnValue(true);
+    await state.manager.enqueue(
+      message({
+        threadId: ThreadId.make("promachos-thread"),
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "retired-model" },
+        creation: {
+          projectId: ProjectId.make("project"),
+          projectCwd: "/repo",
+          workspaceMode: "local",
+          branch: null,
+          worktreePath: null,
+          prismRole: "promachos",
+        },
+      }),
+    );
+    await runDrain();
+    expect(state.start).toHaveBeenCalledOnce();
+    expect(state.start.mock.calls[0]?.[0].input).toMatchObject({ prismRole: "promachos" });
+    expect(remaining()).toEqual([]);
+  });
+});
+
 describe("queued task whose launch reply is lost", () => {
   const queuedTask = (creation: Partial<NonNullable<QueuedThreadMessage["creation"]>> = {}) =>
     message({

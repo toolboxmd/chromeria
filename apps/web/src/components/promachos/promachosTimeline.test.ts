@@ -14,7 +14,13 @@ import {
   deriveMessagesTimelineRows,
   type MessagesTimelineRow,
 } from "../chat/MessagesTimeline.logic";
-import { promachosTimelineDisclosures, promachosTimelineRows } from "./promachosTimeline";
+import {
+  PROMACHOS_STATUS_ROW_ID,
+  PROMACHOS_TIME_ROW_PREFIX,
+  PROMACHOS_TYPING_ROW_ID,
+  promachosTimelineDisclosures,
+  promachosTimelineRows,
+} from "./promachosTimeline";
 
 const at = (n: number) => `2026-01-01T00:00:${String(n).padStart(2, "0")}Z`;
 function message(
@@ -160,7 +166,9 @@ describe("Promachos V2 timeline", () => {
         ],
         optimisticMessages: [],
       });
-      const rows = chat({ ...base, timelineEntries });
+      const rows = chat({ ...base, timelineEntries }).filter(
+        (row) => !row.id.startsWith(PROMACHOS_TIME_ROW_PREFIX),
+      );
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
         kind: "work",
@@ -175,10 +183,100 @@ describe("Promachos V2 timeline", () => {
     ] as MessagesTimelineRow[];
     const rows = promachosTimelineRows([
       ...outputRows,
-      { kind: "thinking", id: "thought", createdAt: null },
+      { kind: "thinking", id: "thought", createdAt: null, label: "Reading the manifest" },
       { kind: "working", id: "work", createdAt: null },
     ]);
-    expect(rows.map((row) => row.id)).toEqual(["html", "app", "promachos-working"]);
-    expect(promachosTimelineRows(outputRows).map((row) => row.id)).toEqual(["html", "app"]);
+    expect(rows.map((row) => row.id)).toEqual([
+      `${PROMACHOS_TIME_ROW_PREFIX}html`,
+      "html",
+      "app",
+      PROMACHOS_STATUS_ROW_ID,
+    ]);
+    expect(rows.at(-1)).toMatchObject({ kind: "thinking", label: "Reading the manifest" });
+    expect(promachosTimelineRows(outputRows).map((row) => row.id)).toEqual([
+      `${PROMACHOS_TIME_ROW_PREFIX}html`,
+      "html",
+      "app",
+    ]);
+  });
+  it("holds his reply back while it is written, showing the typing status instead", () => {
+    const rows = promachosTimelineRows([
+      {
+        kind: "message",
+        id: "reply",
+        createdAt: at(1),
+        message: {
+          id: MessageId.make("reply"),
+          role: "assistant",
+          text: "Half a rep",
+          runId: null,
+          createdAt: at(1),
+          updatedAt: at(1),
+          streaming: true,
+        },
+        showAssistantMeta: false,
+        showAssistantCopyButton: false,
+        assistantCopyStreaming: true,
+      } as MessagesTimelineRow,
+    ]);
+    expect(rows.map((row) => row.id)).toEqual([PROMACHOS_TYPING_ROW_ID]);
+  });
+  it("starts a new group under a time line after an hour's pause", () => {
+    const row = (id: string, createdAt: string) =>
+      ({ kind: "html-render", id, createdAt }) as MessagesTimelineRow;
+    const rows = promachosTimelineRows([
+      row("a", "2026-01-01T08:00:00.000Z"),
+      row("b", "2026-01-01T08:30:00.000Z"),
+      row("c", "2026-01-01T10:00:00.000Z"),
+    ]);
+    expect(rows.map((entry) => entry.id)).toEqual([
+      `${PROMACHOS_TIME_ROW_PREFIX}a`,
+      "a",
+      "b",
+      `${PROMACHOS_TIME_ROW_PREFIX}c`,
+      "c",
+    ]);
+  });
+  it("shows a real projected system notice as one notice line", () => {
+    const now = DateTime.makeUnsafe(at(3));
+    const notice = {
+      id: TurnItemId.make("notice"),
+      threadId: ThreadId.make("chat"),
+      runId: null,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 1,
+      status: "completed",
+      title: null,
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+      type: "system_notice",
+      message: "Updated 3 routines",
+    } satisfies OrchestrationV2TurnItem;
+    const timelineEntries = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: [
+        {
+          item: notice,
+          position: 0,
+          visibility: "local",
+          sourceThreadId: notice.threadId,
+          sourceItemId: notice.id,
+        },
+      ],
+      optimisticMessages: [],
+    });
+    const rows = chat({ ...base, timelineEntries }).filter(
+      (row) => !row.id.startsWith(PROMACHOS_TIME_ROW_PREFIX),
+    );
+    expect(rows).toEqual([
+      expect.objectContaining({
+        kind: "thinking",
+        label: expect.stringContaining("Updated 3 routines"),
+      }),
+    ]);
   });
 });

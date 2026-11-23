@@ -4,7 +4,7 @@ import { m } from "~/i18n/messages";
 import { isClearComposerCommand, parseSideChatCommand } from "@t3tools/shared/composerTrigger";
 import { readWorktreeBaseBranch } from "../../worktreeRepositoryChoiceStore";
 import { armFreshSession, disarmFreshSession, readFreshSessionArm } from "./freshSessionArms";
-import { withPromachosStart } from "../promachos/promachosStart";
+import { withPromachosStart } from "@t3tools/client-runtime/promachos/start";
 import { draftBareLaunchRequest } from "@t3tools/client-runtime/bare-launch";
 import {
   mergeDirectPreviewAnnotation,

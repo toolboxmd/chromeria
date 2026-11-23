@@ -127,6 +127,7 @@ import { useDeviceType } from "../../native/native-layout-metrics";
 import { isDuoDevice } from "../../lib/device-type";
 import {
   memo,
+  use,
   useCallback,
   useEffect,
   useEffectEvent,
@@ -156,7 +157,7 @@ import {
   View,
 } from "react-native";
 import { Image as ExpoImage } from "expo-image";
-import { useResolveClassNames } from "uniwind";
+import { ScopedVariables, useResolveClassNames } from "uniwind";
 import { useReduceMotionEnabled } from "../../lib/appState";
 import { useFilePreviewGallery, FilePreviewGallery } from "../../components/ui/FilePreviewGallery";
 import { assetImageSource } from "../../lib/assetImageSource";
@@ -180,7 +181,11 @@ import { MARKDOWN_IMAGE_MAX_WIDTH, resolveMarkdownImageDisplaySize } from "./mar
 import { FilePreviewModal, type FilePreviewSource } from "../../components/ui/FilePreviewModal";
 import { inlineFilePreviewKind, isPdfFile } from "../../lib/filePreview";
 import { ThreadInlineFilePreview } from "./ThreadInlineFilePreview";
-import { flattenThemeColor, themeColorWithContrast } from "../../lib/mobileTheme";
+import {
+  flattenThemeColor,
+  themeColorWithAlpha,
+  themeColorWithContrast,
+} from "../../lib/mobileTheme";
 import { PresentationSource } from "../../components/ui/NativePresentation";
 import { NativeScrollViewMarker } from "../../native/NativeScrollViewMarker";
 import Animated, { FadeIn, FadeInDown, type SharedValue } from "react-native-reanimated";
@@ -345,6 +350,16 @@ import {
   THREAD_FEED_MAINTAIN_SCROLL_AT_END_THRESHOLD,
 } from "./threadFeedEndFollow";
 import { useMessageTimeFormatter } from "./useMessageTimeFormatter";
+import { PromachosBubbles, PromachosChatContext } from "../promachos/PromachosBubbles";
+import {
+  PROMACHOS_NOTICE_ROW_PREFIX,
+  PROMACHOS_STATUS_ROW_ID,
+  PROMACHOS_TIME_ROW_PREFIX,
+  PROMACHOS_TYPING_ROW_ID,
+  promachosFeedRows,
+  promachosRunIds,
+} from "../promachos/promachosFeed";
+import { PromachosLine, PromachosStatusLine } from "../promachos/PromachosStatusLine";
 
 const WIDE_MARKDOWN_BLOCK_OPTIONS = {
   // iOS blockquotes and selectable text measure separately; definite bubble width matches UIKit's drawing width.
@@ -1170,11 +1185,20 @@ function MessageAttachmentList(props: {
   );
 }
 
-function MessageAttachmentUnknown(props: { readonly name: string }) {
+function MessageAttachmentUnknown(props: { readonly name: string; readonly inBubble?: boolean }) {
+  // Only a Promachos user's bubble is dark gray in light appearance; others keep the screen ink.
+  const onDarkBubble = use(PromachosChatContext) && props.inBubble === true;
   return (
     <View className="flex-row items-center gap-2 py-1">
       <PierreEntryIcon path={props.name} kind="file" size={16} />
-      <Text className="min-w-0 flex-1 text-sm text-foreground" numberOfLines={1}>
+      <Text
+        className={
+          onDarkBubble
+            ? "min-w-0 flex-1 text-sm text-user-bubble-foreground"
+            : "min-w-0 flex-1 text-sm text-foreground"
+        }
+        numberOfLines={1}
+      >
         {props.name}
       </Text>
     </View>
@@ -1313,8 +1337,11 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
   readonly onUseArtifactTemplate?: ((template: CodexArtifactTemplate) => void) | undefined;
   readonly renderImage: MarkdownImageRenderer;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill> | undefined;
+  /** Fork: an assistant reply, which a Promachos chat shows as bubbles (toolboxmd/chromeria#898). */
+  readonly promachosReply?: boolean;
 }) {
   const gt = useGT();
+  const promachosBubbles = use(PromachosChatContext) && props.promachosReply === true;
   const liveMarkdown = useLiveThreadLinkLabels(
     props.markdown,
     props.environmentId,
@@ -1386,6 +1413,7 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
         renderImage={props.renderImage}
         skills={props.skills}
         models={models}
+        promachosBubbles={promachosBubbles}
       />
       {quoteChoices.length > 0 && props.onCiteAssistantText ? (
         <Sheet title={gt("Choose quote source")} onClose={() => setQuoteSelection(null)}>
@@ -1428,6 +1456,7 @@ function AssistantMarkdownBlocks(props: {
   readonly renderImage: MarkdownImageRenderer;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill> | undefined;
   readonly models: ReturnType<typeof useModelMentions>;
+  readonly promachosBubbles?: boolean;
 }) {
   const m = useMessages();
   const { blocks, definitions } = useMemo(() => {
@@ -1438,12 +1467,16 @@ function AssistantMarkdownBlocks(props: {
     );
     const [first] = blocks;
     // A reply rendered as one document resolves its own references; skip the extra parse.
-    const whole = blocks.length === 1 && first?.kind === "markdown" && first.segments.length === 1;
+    const whole =
+      blocks.length === 1 &&
+      first?.kind === "markdown" &&
+      first.segments.length === 1 &&
+      !props.promachosBubbles;
     return {
       blocks,
       definitions: props.definitions ?? (whole ? [] : markdownReferenceDefinitions(props.markdown)),
     };
-  }, [m, props.markdown, props.definitions]);
+  }, [m, props.markdown, props.definitions, props.promachosBubbles]);
   return blocks.map((block, blockIndex) => {
     if (block.kind === "details") {
       return (
@@ -1473,11 +1506,11 @@ function AssistantMarkdownBlocks(props: {
         );
       }
       if (segment.markdown.trim().length === 0) return null;
-      return (
+      const renderText = (markdown: string, key?: string) => (
         <SelectableMarkdownText
-          key={`markdown:${offset}`}
+          key={key}
           markdown={renderCodexInlineDirectivesAsMarkdown(
-            withReferenceDefinitions(segment.markdown, definitions),
+            withReferenceDefinitions(markdown, definitions),
           )}
           skills={props.skills}
           models={props.models}
@@ -1494,6 +1527,15 @@ function AssistantMarkdownBlocks(props: {
           {...props.linkHandlers}
           renderImage={props.renderImage}
         />
+      );
+      return props.promachosBubbles ? (
+        <PromachosBubbles
+          key={`markdown:${offset}`}
+          markdown={segment.markdown}
+          renderText={renderText}
+        />
+      ) : (
+        renderText(segment.markdown, `markdown:${offset}`)
       );
     });
   });
@@ -1534,7 +1576,7 @@ function MarkdownDetailsFold(props: {
   );
 }
 
-function useMarkdownStyles(): MarkdownStyleSets {
+function useMarkdownStyles(promachos = false): MarkdownStyleSets {
   const { appearance } = useAppearancePreferences();
   const nativeMarkdownTypography = resolveNativeMarkdownTypography(appearance.baseFontSize);
   const theme = useUniwindTheme();
@@ -1551,10 +1593,17 @@ function useMarkdownStyles(): MarkdownStyleSets {
     theme["--color-border"],
     theme["--color-user-bubble"],
   );
-  const markdownUserBodyColor = theme["--color-user-bubble-foreground"];
+  const userBubble = promachos ? theme["--color-promachos-outbound"] : theme["--color-user-bubble"];
+  const markdownUserBodyColor = promachos
+    ? theme["--color-promachos-outbound-foreground"]
+    : theme["--color-user-bubble-foreground"];
   const markdownUserCodeBg = theme["--color-md-user-code-bg"];
-  const markdownUserCodeText = theme["--color-md-user-code-text"];
-  const markdownUserInlineCodeText = theme["--color-user-bubble-foreground-muted"];
+  const markdownUserCodeText = promachos
+    ? theme["--color-promachos-outbound-foreground"]
+    : theme["--color-md-user-code-text"];
+  const markdownUserInlineCodeText = promachos
+    ? theme["--color-promachos-outbound-foreground"]
+    : theme["--color-user-bubble-foreground-muted"];
   const markdownUserFenceBg = theme["--color-md-user-fence-bg"];
   const regularFontFamily = FONT_FAMILIES.regular;
   const boldFontFamily = FONT_FAMILIES.bold;
@@ -1565,11 +1614,16 @@ function useMarkdownStyles(): MarkdownStyleSets {
         color: markdownUserBodyColor,
         strongColor: markdownUserBodyColor,
         mutedColor: markdownUserBodyColor,
-        linkColor: themeColorWithContrast(markdownLinkColor, theme["--color-user-bubble"]),
+        linkColor: promachos
+          ? markdownUserBodyColor
+          : themeColorWithContrast(markdownLinkColor, userBubble),
         inlineCodeColor: markdownUserInlineCodeText,
         codeColor: markdownUserCodeText,
         codeBackgroundColor: markdownUserCodeBg,
-        codeBlockBackgroundColor: markdownUserFenceBg,
+        // Opaque on a Promachos bubble, so a saved diagram keeps its dark backing.
+        codeBlockBackgroundColor: promachos
+          ? flattenThemeColor(markdownUserFenceBg, userBubble)
+          : markdownUserFenceBg,
         fileTextColor: markdownUserBodyColor,
         quoteMarkerColor: markdownUserBodyColor,
         dividerColor: markdownUserBodyColor,
@@ -1580,6 +1634,16 @@ function useMarkdownStyles(): MarkdownStyleSets {
         fontFamily: regularFontFamily,
         headingFontFamily: boldFontFamily,
         boldFontFamily,
+        // Fork: a Promachos user's bubble is dark gray in both appearances.
+        ...(promachos
+          ? {
+              bubble: {
+                background: userBubble,
+                foreground: markdownUserBodyColor,
+                codeScheme: "dark" as const,
+              },
+            }
+          : {}),
       },
     },
     assistant: {
@@ -2022,6 +2086,8 @@ function renderFeedEntry(
     | "workspaceRoot"
     | "worktreeSetup"
   > & {
+    /** Fork: a Promachos chat, whose replies carry no action row (toolboxmd/chromeria#898). */
+    readonly promachos: boolean;
     /** The fold row of the turn the worktree setup handed off to. */
     readonly setupFoldRowId: string | null;
     readonly setupDetailsOpen: boolean;
@@ -2143,6 +2209,27 @@ function renderFeedEntry(
           />
         ) : null}
       </View>
+    );
+  }
+
+  if (entry.type === "thinking" && entry.id.startsWith(PROMACHOS_TIME_ROW_PREFIX)) {
+    return <PromachosLine kind="time" at={entry.createdAt} />;
+  }
+
+  if (entry.type === "thinking" && entry.id.startsWith(PROMACHOS_NOTICE_ROW_PREFIX)) {
+    return <PromachosLine kind="notice" label={entry.label ?? ""} />;
+  }
+
+  if (
+    entry.type === "thinking" &&
+    (entry.id === PROMACHOS_STATUS_ROW_ID || entry.id === PROMACHOS_TYPING_ROW_ID)
+  ) {
+    return (
+      <PromachosStatusLine
+        label={entry.label}
+        iconSubtleColor={iconSubtleColor}
+        typing={entry.id === PROMACHOS_TYPING_ROW_ID}
+      />
     );
   }
 
@@ -2331,6 +2418,7 @@ function renderFeedEntry(
       props.unsettledTurnId !== null &&
       message.runId === props.unsettledTurnId;
     const showAssistantMeta =
+      !props.promachos &&
       message.role === "assistant" &&
       props.terminalAssistantMessageIds.has(message.id) &&
       !assistantTurnStillInProgress &&
@@ -2578,7 +2666,11 @@ function renderFeedEntry(
                         />
                       </Pressable>
                     ) : (
-                      <MessageAttachmentUnknown key={attachment.id} name={attachment.name} />
+                      <MessageAttachmentUnknown
+                        key={attachment.id}
+                        name={attachment.name}
+                        inBubble
+                      />
                     ),
                   )}
                   {/* An empty container still takes a gap, which pads every attachment-free bubble. */}
@@ -2610,7 +2702,11 @@ function renderFeedEntry(
                             onPlaybackStart={props.onPlaybackStart}
                           />
                         ) : (
-                          <MessageAttachmentUnknown key={attachment.id} name={attachment.name} />
+                          <MessageAttachmentUnknown
+                            key={attachment.id}
+                            name={attachment.name}
+                            inBubble
+                          />
                         );
                       })}
                     </View>
@@ -2644,7 +2740,9 @@ function renderFeedEntry(
               ) : null}
             </View>
           ) : null}
-          {bubbleBodyVisible ? (
+          {bubbleBodyVisible &&
+          // A Promachos chat shows no row under a sent message, only while it waits to send.
+          (!props.promachos || (entry.pendingMessage && !entry.acknowledged)) ? (
             <View className="mt-1 flex-row items-center justify-end gap-1 pr-0.5">
               {foldRowId !== null && senderRef ? (
                 <OpenSenderThreadButton
@@ -2748,6 +2846,7 @@ function renderFeedEntry(
               markdownStyles={styles}
               linkHandlers={props.markdownLinkHandlers}
               reply={message.projectedItem}
+              promachosReply
               onUseArtifactTemplate={props.onUseArtifactTemplate}
               renderImage={props.renderMarkdownImage}
               skills={props.skills}
@@ -3102,11 +3201,13 @@ function useThreadFeedPresentation(
   const [feedCache] = useState(createThreadFeedCache);
   const messages = useMessages();
   const locale = useLocale();
-  return appendPendingThreadMessages(
+  // Fork: a Promachos chat opens every turn, so his interim replies show as bubbles too.
+  const promachos = use(PromachosChatContext);
+  const rows = appendPendingThreadMessages(
     deriveThreadFeedPresentation(
       props.feed,
       props.latestRun,
-      expandedTurnIds,
+      promachos ? promachosRunIds(props.feed) : expandedTurnIds,
       new Set(
         Object.entries(expandedWorkGroups)
           .filter(([, expanded]) => expanded)
@@ -3122,6 +3223,7 @@ function useThreadFeedPresentation(
     props.feed,
     props.queuedMessages,
   );
+  return promachos ? promachosFeedRows(rows) : rows;
 }
 
 type DisclosureLayout = {
@@ -3366,7 +3468,21 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     [androidButtonSize, androidIconSize],
   );
   const screenColor = theme["--color-screen"];
-  const userBubbleColor = theme["--color-user-bubble"];
+  // Fork: the user's bubble in a Promachos chat is a dark neutral, as its send button is, and
+  // everything drawn on it takes that bubble's ink.
+  const promachosChat = use(PromachosChatContext);
+  const userBubbleColor = promachosChat
+    ? theme["--color-promachos-outbound"]
+    : theme["--color-user-bubble"];
+  const promachosInk = theme["--color-promachos-outbound-foreground"];
+  const promachosBubbleVariables = promachosChat
+    ? {
+        "--color-user-bubble": theme["--color-promachos-outbound"],
+        "--color-user-bubble-foreground": promachosInk,
+        "--color-user-bubble-foreground-muted": themeColorWithAlpha(promachosInk, 0.78),
+        "--color-user-bubble-skill-foreground": promachosInk,
+      }
+    : null;
   const openSkillInstructions = (path: string) => {
     void Haptics.selectionAsync();
     navigation.navigate("ThreadFile", {
@@ -3844,7 +3960,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       />
     ) : null;
   };
-  const markdownStyles = useMarkdownStyles();
+  const markdownStyles = useMarkdownStyles(use(PromachosChatContext));
   const renderReasoning = (text: string) => (
     <AssistantMarkdownContent
       markdown={text}
@@ -3963,6 +4079,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   if (jumpReady && revealedMessageId !== jumpToMessageId) {
     setInteractionState((current) => ({ ...current, revealedMessageId: jumpToMessageId }));
   }
+  const promachos = use(PromachosChatContext);
   const [appendPendingTurn] = useState(createPendingTurnAppender);
   const presentedFeed = appendGuestPendingMessages(
     appendPendingTurn(
@@ -4348,6 +4465,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           ) : null}
           {renderFeedEntry(info, {
             m,
+            promachos,
             userMessageGrouping: info.item.userMessageGrouping,
             formatMessageTime,
             environmentId: props.environmentId,
@@ -4427,7 +4545,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     );
   }
 
-  return (
+  const feed = (
     <PresentationSource identifier={fileShareSourceIdentifier} style={{ flex: 1 }}>
       <View className="flex-1" onLayout={handleViewportLayout}>
         {/* In a split, rows only re-wrap in the render that hands the list its new width. A native
@@ -4580,6 +4698,8 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       </View>
     </PresentationSource>
   );
+  // Always wrapped, so the feed keeps its state when the chat turns out to be his.
+  return <ScopedVariables variables={promachosBubbleVariables ?? {}}>{feed}</ScopedVariables>;
 });
 
 function ThreadFeedLoadEarlierControl(props: ThreadFeedHistoryControls) {

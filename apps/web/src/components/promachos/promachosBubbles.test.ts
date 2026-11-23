@@ -55,6 +55,12 @@ describe("groupPromachosBubbles", () => {
     );
   });
 
+  it("marks a table alone as a card", () => {
+    expect(bubbles("Prices:\n\n| a | b |\n| - | - |\n| 1 | 2 |")).toMatch(
+      /^<div><p>Prices:<\/p><\/div><div data-promachos-card=""><table>/,
+    );
+  });
+
   it("leaves a thematic break between bubbles", () => {
     expect(bubbles("Before.\n\n---\n\nAfter.")).toBe(
       "<div><p>Before.</p></div><hr><div><p>After.</p></div>",

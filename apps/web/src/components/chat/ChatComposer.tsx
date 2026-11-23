@@ -1,6 +1,9 @@
 import { copySnapshot } from "./copySnapshot";
 import { VoiceInputSetup } from "./VoiceInputSetup";
-import { PromachosInlineCard } from "../promachos/PromachosChat";
+import {
+  PROMACHOS_COMPOSER_SURFACE_CLASS_NAME,
+  PromachosInlineCard,
+} from "../promachos/PromachosChat";
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
 import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferences";
 import type { ComposerAttachmentInsertion } from "../composerAttachmentInsertion";
@@ -371,6 +374,7 @@ export interface ChatComposerHandle {
 
 export interface ChatComposerProps {
   inlineCardHost?: HTMLElement | null;
+  promachos?: boolean;
   composerDraftTarget: ScopedThreadRef | DraftId;
   environmentId: EnvironmentId;
   canOperateThread: boolean;
@@ -2684,7 +2688,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     : composerControlsCollapsed
       ? 0
       : expandedControlsIconOnlyBlockCount;
-  const composerControls = (
+  // Fork: a Promachos chat keeps model, mode and branch controls out of the composer.
+  const composerControls = props.promachos ? null : (
     <ComposerControlsBar
       environmentId={environmentId}
       workspaceCwd={gitCwd}
@@ -3734,7 +3739,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         <ComposerSurface.Main
           ref={composerMainSurfaceRef}
           data-inline-resting-controls="true"
-          className={composerProviderState.composerFrameClassName}
+          className={cn(
+            composerProviderState.composerFrameClassName,
+            props.promachos && "rounded-4xl",
+          )}
         >
           <div
             ref={composerSurfaceRef}
@@ -3746,6 +3754,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               isDragOverComposer ? "bg-accent/45 ring-1 ring-inset ring-primary/70" : null,
               projectSelectionRequired ? "opacity-75" : null,
               composerProviderState.composerSurfaceClassName,
+              props.promachos && PROMACHOS_COMPOSER_SURFACE_CLASS_NAME,
             )}
           >
             {showCollapsedMobilePromptRow ? (
@@ -4005,6 +4014,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     className="absolute bottom-0 right-0 flex items-center justify-end gap-1"
                   >
                     <ComposerPrimaryActions
+                      plainSend={props.promachos === true}
                       compact
                       canOperateThread={canOperateThread}
                       pendingAction={pendingPrimaryAction}
@@ -4053,7 +4063,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 )}
               >
                 {composerAttachButton && !dictationTakesFooter ? (
-                  <div className="me-2">{composerAttachButton}</div>
+                  <div className="me-2" data-chat-composer-attach="true">
+                    {composerAttachButton}
+                  </div>
                 ) : null}
                 <div
                   data-chat-composer-actions="right"
@@ -4075,6 +4087,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     {composerControls}
                   </div>
                   <ComposerFooterPrimaryActions
+                    plainSend={props.promachos === true}
                     // Stop state belongs to one thread; the composer stays mounted across threads.
                     key={`${environmentId}:${activeThreadId ?? "new"}`}
                     compact={isComposerPrimaryActionsCompact}

@@ -62,7 +62,13 @@ import {
   workEntryIconName,
 } from "./TimelineWorkEntryRow.logic";
 import { formatWorkingTimerNow } from "./TimelineWorkGroupRows.logic";
-import { PromachosWorkingBubble } from "../promachos/PromachosChat";
+import { PromachosLine, PromachosStatusLine } from "../promachos/PromachosChrome";
+import {
+  PROMACHOS_NOTICE_ROW_PREFIX,
+  PROMACHOS_STATUS_ROW_ID,
+  PROMACHOS_TIME_ROW_PREFIX,
+  PROMACHOS_TYPING_ROW_ID,
+} from "../promachos/promachosTimeline";
 
 export const WorkGroupSection = memo(function WorkGroupSection({
   anchorKey,
@@ -350,10 +356,8 @@ function ExpandedWorkGroupEntries({
 const workEntryKey = (entry: TimelineWorkEntry) => entry.id;
 
 export function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
-  const promachos = use(TimelineRowCtx).promachos;
   const { isCompacting, isPreparingWorktree, backgroundWorktreeSetup } =
     use(TimelineRowActivityCtx);
-  if (promachos) return <PromachosWorkingBubble />;
   const compacting = row.compacting === true || isCompacting;
   const shimmer = isPreparingWorktree || compacting;
   const label = isPreparingWorktree ? (
@@ -448,6 +452,15 @@ export function ThinkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind:
   const m = useMessages();
   const { isCompacting, isPreparingWorktree, liveAnswerPreview, providerStartingLabel } =
     use(TimelineRowActivityCtx);
+  if (ctx.promachos && row.id.startsWith(PROMACHOS_TIME_ROW_PREFIX) && row.createdAt !== null) {
+    return <PromachosLine kind="time" at={row.createdAt} />;
+  }
+  if (ctx.promachos && row.id.startsWith(PROMACHOS_NOTICE_ROW_PREFIX)) {
+    return <PromachosLine kind="notice" label={row.label ?? ""} />;
+  }
+  if (ctx.promachos && (row.id === PROMACHOS_STATUS_ROW_ID || row.id === PROMACHOS_TYPING_ROW_ID)) {
+    return <PromachosStatusLine label={row.label} typing={row.id === PROMACHOS_TYPING_ROW_ID} />;
+  }
   if (isPreparingWorktree || isCompacting) return <WorkLogRow label="" />;
   // A failed group keeps this disclosure while an approval waits, but nothing is thinking then.
   const live = ctx.pendingApprovals.size === 0;

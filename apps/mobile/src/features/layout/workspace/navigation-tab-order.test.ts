@@ -5,6 +5,7 @@ import {
   moveNavigationTab,
   overflowNavigationTabs,
   enabledNavigationTabs,
+  effectiveHiddenNavigationTabs,
   sharedSlotAbsentee,
   toggleNavigationTabVisibility,
   resolveSelectedNavigationTab,
@@ -15,7 +16,7 @@ import {
 
 describe("navigation tab order", () => {
   it("enables customization only above four registered sections, excluding Settings", () => {
-    expect(navigationCustomizationAvailable()).toBe(false);
+    expect(navigationCustomizationAvailable()).toBe(true);
     expect(navigationCustomizationAvailable(3)).toBe(false);
     expect(navigationCustomizationAvailable(4)).toBe(false);
     expect(navigationCustomizationAvailable(5)).toBe(true);
@@ -25,7 +26,21 @@ describe("navigation tab order", () => {
   it("fills missing sections and drops removed placeholders, duplicates, and Settings", () => {
     expect(
       resolveNavigationTabOrder(["usage", "home", "inbox", "settings", "usage", null]),
-    ).toEqual(["usage", "threads", "pullRequests", "issues"]);
+    ).toEqual(["promachos", "usage", "threads", "pullRequests", "issues"]);
+    expect(resolveNavigationTabOrder(["issues", "threads", "pullRequests", "usage"])).toEqual([
+      "promachos",
+      "issues",
+      "threads",
+      "pullRequests",
+      "usage",
+    ]);
+    expect(resolveNavigationTabOrder(["threads", "promachos"])).toEqual([
+      "threads",
+      "promachos",
+      "pullRequests",
+      "issues",
+      "usage",
+    ]);
     expect(resolveNavigationTabOrder()).toEqual(NAVIGATION_TAB_ORDER);
   });
 
@@ -34,6 +49,15 @@ describe("navigation tab order", () => {
     expect(sharedSlotAbsentee("pullRequests", "issues")).toBe("issues");
     expect(sharedSlotAbsentee("threads", "issues")).toBe("pullRequests");
     expect(sharedSlotAbsentee("usage", undefined)).toBe("issues");
+  });
+
+  it("leaves the other shared-slot list in the bar when the user hides one", () => {
+    const hidden = (savedHidden: string[]) =>
+      effectiveHiddenNavigationTabs({ savedHidden, selected: "threads", sharedSlotTab: undefined });
+    expect(hidden([])).toEqual(["issues"]);
+    expect(hidden(["usage"])).toEqual(["usage", "issues"]);
+    expect(hidden(["pullRequests"])).toEqual(["pullRequests"]);
+    expect(hidden(["issues"])).toEqual(["issues"]);
   });
 
   it("moves a section without changing the relative order of the others", () => {
@@ -49,17 +73,25 @@ describe("navigation tab order", () => {
   });
 
   it("shows every real section without overflow and keeps Settings selected during editing", () => {
-    expect(visibleNavigationTabs()).toEqual(NAVIGATION_TAB_ORDER);
-    expect(overflowNavigationTabs()).toEqual([]);
+    // Pull requests and issues share one slot, so the bar leaves one of them out.
+    expect(visibleNavigationTabs(undefined, ["issues"])).toEqual(
+      NAVIGATION_TAB_ORDER.filter((tab) => tab !== "issues"),
+    );
+    expect(overflowNavigationTabs(undefined, ["issues"])).toEqual([]);
     expect(selectedNavigationTab(undefined, "threads", true)).toBe("settings");
-    expect(selectedNavigationTab(undefined, "usage", false)).toBe("usage");
+    expect(selectedNavigationTab(undefined, "usage", false, ["issues"])).toBe("usage");
     expect(selectedNavigationTab(undefined, "usage", false, [], 2)).toBe("settings");
   });
 
   it("removes hidden sections from navigation and restores their saved positions", () => {
     const order = moveNavigationTab(undefined, "usage", 0);
     const hidden = toggleNavigationTabVisibility([], "usage");
-    expect(enabledNavigationTabs(order, hidden)).toEqual(["threads", "pullRequests", "issues"]);
+    expect(enabledNavigationTabs(order, hidden)).toEqual([
+      "promachos",
+      "threads",
+      "pullRequests",
+      "issues",
+    ]);
     expect(toggleNavigationTabVisibility(hidden, "usage")).toEqual([]);
     expect(visibleNavigationTabs(order, [], 5)).toEqual(order);
     expect(enabledNavigationTabs(undefined, ["home", "inbox", "settings"])).toEqual(
@@ -68,7 +100,7 @@ describe("navigation tab order", () => {
   });
 
   it("falls back when the selected section is hidden, including when all are hidden", () => {
-    expect(resolveSelectedNavigationTab(undefined, ["threads"], "threads")).toBe("pullRequests");
+    expect(resolveSelectedNavigationTab(undefined, ["threads"], "threads")).toBe("promachos");
     expect(resolveSelectedNavigationTab(undefined, ["threads"], "usage")).toBe("usage");
     expect(
       resolveSelectedNavigationTab(undefined, NAVIGATION_TAB_ORDER, "threads"),

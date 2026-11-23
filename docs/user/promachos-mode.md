@@ -1,8 +1,11 @@
 # Promachos mode
 
-Promachos mode is a chat-first view of your conversations with the Promachos. His
-replies show as bubbles, one per paragraph, and his tool activity collapses into a
-working indicator. Questions and approvals appear as cards in the chat.
+Promachos mode shows your conversations with the Promachos as a messenger. His
+replies show as bubbles, one per paragraph, and yours on the right. While he works,
+one status line under your message names what he is doing, then turns into
+"Typing…" just before his reply. Tables sit on their own card, and things that
+happened without a message, such as a Drafter he started, show as one gray line.
+Questions and approvals appear as cards in the chat.
 
 ## Start
 
@@ -10,10 +13,22 @@ working indicator. Questions and approvals appear as cards in the chat.
 2. Choose the project that is the Promachos home, or choose **New home** to create
    one. The choice belongs to that project on that environment, and each browser or
    desktop app remembers its own.
-3. Use the new conversation button next to the home's name to start a conversation.
+3. Use the round **+** button to start a conversation.
 
 Choose **Code** in the same switch to return to the standard view. To pick another
-home, open the menu on the home's name.
+home, open the round home button. The conversation's actions, such as rename,
+files and git, are in the menu on its title and the round **…** button next to it.
+
+## On the phone
+
+The mobile app has a **Promachos** tab first in the bottom bar. It lists the home's
+conversations, and the button at the bottom starts one. Chats look and behave as on
+desktop; files, git and terminal are in the round **…** menu. The phone remembers its
+own home: choose it in **Settings → Promachos → Home**.
+
+Opening the app without a link or notification returns to the tab you used last. On
+the Promachos tab that is the conversation you had open, or the list if you had left
+it. The first time, the app opens on the Promachos tab.
 
 ## Create a home
 
