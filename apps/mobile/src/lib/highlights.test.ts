@@ -1,9 +1,12 @@
 import { codeToTokens } from "@pierre/highlights";
 import { pierreDark, pierreLight } from "@pierre/highlights/themes";
+import { MOBILE_THEME_IDS } from "@t3tools/shared/themePalettes";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import { withReadableDarkPunctuation } from "../../scripts/generate-highlights.mts";
 import { resolveHighlightLanguage } from "./highlightLanguage";
 import { highlightCode, highlightCommand, tokenizeCode, type HighlightedLines } from "./highlights";
+import { getMobileThemeVariables } from "./mobileTheme";
 
 vi.mock("react-native-nitro-modules", async () => {
   const { createWasmHighlightsModule } = await import("./highlights.testing");
@@ -24,7 +27,7 @@ describe("highlightCode", () => {
 
     for (const [scheme, theme] of [
       ["light", pierreLight],
-      ["dark", pierreDark],
+      ["dark", withReadableDarkPunctuation(pierreDark)],
     ] as const) {
       const expected = codeToTokens(code, { lang: "tsx", theme }).tokens.map((line) =>
         line.map((token) => ({
@@ -34,6 +37,45 @@ describe("highlightCode", () => {
         })),
       );
       expect(highlightCode(code, "tsx", scheme)).toEqual(expected);
+    }
+  });
+
+  it("draws dark punctuation at 4.5:1 on every dark code fence", () => {
+    const channels = (hex: string) =>
+      hex
+        .slice(1)
+        .match(/.{2}/g)!
+        .map((channel) => Number.parseInt(channel, 16));
+    const luminance = (rgb: ReadonlyArray<number>) => {
+      const [r, g, b] = rgb.map((channel) => {
+        const c = channel / 255;
+        return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+    };
+    const contrast = (a: ReadonlyArray<number>, b: ReadonlyArray<number>) =>
+      (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05);
+    const fences = MOBILE_THEME_IDS.flatMap((themeId) => {
+      const variables = getMobileThemeVariables(themeId, "dark");
+      const [, ...overlay] = /^rgba\((\d+), (\d+), (\d+), ([\d.]+)\)$/
+        .exec(variables["--color-md-user-fence-bg"])!
+        .map(Number);
+      const userFence = channels(variables["--color-user-bubble"]).map(
+        (channel, index) => overlay[index]! * overlay[3]! + channel * (1 - overlay[3]!),
+      );
+      return [channels(variables["--color-md-code-bg"]), userFence];
+    });
+    const punctuation = highlightCode("int main() { return 0; }", "cpp", "dark")
+      .flat()
+      .flatMap(({ content, color }) =>
+        [...content].filter((char) => "(){};".includes(char)).map((char) => ({ char, color })),
+      );
+
+    expect(punctuation.map(({ char }) => char).join("")).toBe("(){;}");
+    for (const { color } of punctuation) {
+      for (const fence of fences) {
+        expect(contrast(channels(color!), fence)).toBeGreaterThanOrEqual(4.5);
+      }
     }
   });
 

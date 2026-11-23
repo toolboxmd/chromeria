@@ -3931,3 +3931,22 @@ sources and reasons.
   "keywords": ["remote_checkout", "--remote <ssh-host>"]
 }
 ```
+
+## mobile-dark-code-punctuation
+
+```json
+{
+  "id": "mobile-dark-code-punctuation",
+  "purpose": "Mobile dark-scheme code blocks draw pierre-dark's #636363 punctuation in its ANSI white #bcbcbc, so braces and semicolons reach 4.5:1 on every built-in dark code fence. The light scheme keeps pierre-light. Drop when @pierre/highlights' dark punctuation reaches 4.5:1 on those fences.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/923"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...mobile-dark-punctuation-contrast"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/mobile/scripts/generate-highlights.mts",
+    "apps/mobile/src/lib/highlights.generated.ts",
+    "apps/mobile/src/lib/highlights.test.ts"
+  ],
+  "sharedFiles": [],
+  "keywords": ["withReadableDarkPunctuation", "DARK_PUNCTUATION"]
+}
+```
