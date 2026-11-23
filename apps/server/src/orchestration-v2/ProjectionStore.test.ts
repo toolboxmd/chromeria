@@ -8940,7 +8940,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         streaming: false,
         at: 1,
       });
-      const question = { role: "user", text: "Can you check the release notes?" };
+      const question = { role: "user" as const, text: "Can you check the release notes?" };
       assert.deepStrictEqual(yield* previews, [question, question]);
 
       // A streaming reply leaves the shell alone, so tokens do not resend every row.
@@ -8961,7 +8961,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         at: 2,
       });
       const answer = {
-        role: "assistant",
+        role: "assistant" as const,
         text: "Done I checked the notes. The build is green. The build is gree…",
       };
       assert.deepStrictEqual(yield* previews, [answer, answer]);
