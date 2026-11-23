@@ -1,4 +1,4 @@
-import { WightModeControl } from "./WightModeControl";
+import { IdleModeControl } from "./IdleModeControl";
 import { PromachosRoundButton, PromachosTitlePill } from "../promachos/PromachosChrome";
 import {
   AuthOrchestrationOperateScope,
@@ -268,9 +268,6 @@ export const ChatHeader = memo(function ChatHeader({
         )}
         onContextMenu={handleHeaderContextMenu}
       >
-        {isServerThread ? (
-          <WightModeControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
-        ) : null}
         <PromachosTitlePill
           title={activeThreadTitle}
           label={gt("Thread actions for {title}", { title: activeThreadTitle })}
@@ -280,6 +277,9 @@ export const ChatHeader = memo(function ChatHeader({
           <PromachosRoundButton label={gt("More")} onClick={openMenuFromTitle}>
             <EllipsisIcon />
           </PromachosRoundButton>
+        ) : null}
+        {isServerThread ? (
+          <IdleModeControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
         ) : null}
       </div>
     );
@@ -293,9 +293,6 @@ export const ChatHeader = memo(function ChatHeader({
       )}
       onContextMenu={handleHeaderContextMenu}
     >
-      {isServerThread ? (
-        <WightModeControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
-      ) : null}
       <WorkspaceBreadcrumb
         ariaLabel={gt("Thread breadcrumb")}
         className="flex-1 overflow-clip [overflow-clip-margin:2px]"
@@ -454,6 +451,9 @@ export const ChatHeader = memo(function ChatHeader({
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
+      {isServerThread ? (
+        <IdleModeControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
+      ) : null}
       {isServerThread ? (
         <ThreadSharingControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
       ) : null}

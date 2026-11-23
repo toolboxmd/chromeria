@@ -2,6 +2,7 @@ import * as DateTime from "effect/DateTime";
 import { msg } from "gt-react";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import { resolveUserMessagePresentation } from "@t3tools/client-runtime/user-message";
+import { keepWarmPingRunIds, keepWarmPingsLabel } from "@t3tools/client-runtime/thread-idle-mode";
 import {
   isLiveSubagentTurnItem,
   waitingOnSubagentsLabel,
@@ -682,6 +683,13 @@ type MessagesTimelineRowContent =
       id: string;
       createdAt: string;
       text: string;
+    }
+  | {
+      /** Consecutive keep-warm pings, folded with their replies into one gray line. */
+      kind: "keep-warm";
+      id: string;
+      createdAt: string;
+      label: string;
     }
   | {
       kind: "mcp-app";
@@ -1608,7 +1616,48 @@ function deriveTimelineTurnFolds(
   });
 }
 
+/** Keep-warm pings fold into one line per run of consecutive pings, placed where the first was. */
 export function deriveMessagesTimelineRows(
+  input: Parameters<typeof deriveConversationRows>[0],
+  resolve: MessageResolver = m,
+): MessagesTimelineRow[] {
+  const pingRunIds = keepWarmPingRunIds(
+    input.timelineEntries.flatMap((entry) => (entry.kind === "message" ? [entry.message] : [])),
+  );
+  if (pingRunIds.size === 0) return deriveConversationRows(input, resolve);
+  const groups: Array<{ id: string; createdAt: string; count: number }> = [];
+  const kept: TimelineEntry[] = [];
+  let open: (typeof groups)[number] | null = null;
+  for (const entry of input.timelineEntries) {
+    const runId = entry.kind === "message" ? entry.message.runId : timelineEntryRunId(entry);
+    if (runId == null || !pingRunIds.has(runId)) {
+      open = null;
+      kept.push(entry);
+      continue;
+    }
+    if (entry.kind !== "message" || entry.message.role !== "user") continue;
+    if (open === null) {
+      open = { id: `keep-warm:${entry.id}`, createdAt: entry.createdAt, count: 0 };
+      groups.push(open);
+    }
+    open.count += 1;
+  }
+  const rows = deriveConversationRows({ ...input, timelineEntries: kept }, resolve);
+  for (const group of groups.toReversed()) {
+    const index = rows.findIndex(
+      (row) => row.createdAt !== null && row.createdAt > group.createdAt,
+    );
+    rows.splice(index === -1 ? rows.length : index, 0, {
+      kind: "keep-warm",
+      id: group.id,
+      createdAt: group.createdAt,
+      label: keepWarmPingsLabel(group.count, resolve),
+    });
+  }
+  return rows;
+}
+
+function deriveConversationRows(
   input: {
     timelineEntries: ReadonlyArray<TimelineEntry>;
     pendingApprovalRequestIds?: ReadonlySet<RuntimeRequestId>;
@@ -2851,6 +2900,9 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       const bh = b as typeof a;
       return a.createdAt === bh.createdAt && htmlRenderReferencesEqual(a.htmlRender, bh.htmlRender);
     }
+
+    case "keep-warm":
+      return a.label === (b as typeof a).label;
 
     case "sent-message": {
       const bs = b as typeof a;

@@ -2,7 +2,7 @@ import { DEFAULT_WIGHT_LIMIT_PERCENT, type ServerProvider } from "@t3tools/contr
 import { useGT, useMessages } from "gt-react";
 import { type CSSProperties, useState } from "react";
 
-import { wightUsageStatus } from "~/wightMode";
+import { wightUsageStatus } from "@t3tools/client-runtime/thread-idle-mode";
 import { SettingsRow } from "./settingsLayout";
 
 /**
