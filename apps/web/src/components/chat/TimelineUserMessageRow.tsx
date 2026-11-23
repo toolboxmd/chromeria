@@ -542,7 +542,8 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const [expanded, setExpanded] = useState(false);
   const revealFoldRef = findRevealRef(() => setExpanded(true));
   const senderShell = useQuietThreadShell(folded ? senderRef : null);
-  const senderTitle = senderShell?.title.trim() || row.message.linkedSender?.title.trim();
+  const senderTitle =
+    senderShell?.title.trim() || row.message.linkedSender?.title.trim() || childNotice?.title;
   const senderLabel =
     senderTitle ||
     (childNotice === null

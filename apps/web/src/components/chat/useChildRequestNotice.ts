@@ -48,28 +48,30 @@ export function useChildRequestNotice(
     childRequest !== undefined &&
     shell?.source.pendingRuntimeRequest?.id === childRequest.requestId;
   // Only a settled request needs the child's detail, for its outcome.
-  const state = useAtomValue(
+  const detailAtom =
     childRef === null || waiting
       ? NO_THREAD_ATOM
-      : environmentThreadDetails.quietThreadAtom(childRef),
-    (thread) =>
-      childRequest === undefined
-        ? null
-        : resolveChildRequestNoticeState({
-            requestId: childRequest.requestId,
-            pendingRuntimeRequest: shell?.source.pendingRuntimeRequest,
-            request:
-              thread === null
-                ? undefined
-                : (thread.projection.runtimeRequests.find(
-                    (request) => request.id === childRequest.requestId,
-                  ) ?? null),
-          }),
+      : environmentThreadDetails.quietThreadAtom(childRef);
+  // The shell drops an idle child whose family is not loaded; its detail still names it.
+  const detailTitle = useAtomValue(detailAtom, (thread) => thread?.projection.thread.title ?? null);
+  const state = useAtomValue(detailAtom, (thread) =>
+    childRequest === undefined
+      ? null
+      : resolveChildRequestNoticeState({
+          requestId: childRequest.requestId,
+          pendingRuntimeRequest: shell?.source.pendingRuntimeRequest,
+          request:
+            thread === null
+              ? undefined
+              : (thread.projection.runtimeRequests.find(
+                  (request) => request.id === childRequest.requestId,
+                ) ?? null),
+        }),
   );
   if (childRequest === undefined || state === null) return null;
   return {
     childRef: childRef!,
-    title: shell?.title.trim() || null,
+    title: shell?.title.trim() || detailTitle?.trim() || null,
     state,
     summary: m(CHILD_REQUEST_NOTICE_LABELS[childRequest.kind][state]),
     icon: STATE_ICONS[state],

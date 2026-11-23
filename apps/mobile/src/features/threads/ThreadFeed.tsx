@@ -1629,6 +1629,7 @@ function AgentMessageFoldHeader(props: {
   const label =
     senderShell?.title.trim() ||
     props.senderTitle?.trim() ||
+    childNotice?.title ||
     (childNotice === null ? gt("Agent") : gt("Child thread"));
   const summary = childNotice?.summary ?? props.summary;
   const toggle = () => {
