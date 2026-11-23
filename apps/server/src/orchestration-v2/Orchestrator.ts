@@ -17757,7 +17757,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         deliveryRun?.status === "queued" && deliveryRun.userMessageId === delivery.messageId;
       // Fork: a new result would wake the parent at once, so it releases a wake a restart holds
       // (nothing ran since the cut but its continuation). The wake stays held where a new wake
-      // would be too: behind another held run, or while workspace setup is unresolved.
+      // would be too: behind another held run of a busy thread, or while setup is unresolved.
       const threadId = input.parentRun.threadId;
       const releasable =
         queuedWake &&
@@ -17768,9 +17768,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             (records) =>
               isRestartHold(records.runs, deliveryRun) &&
               !worktreeSetupPending(records) &&
-              !records.runs.some(
-                (run) =>
-                  run.id !== deliveryRun.id && run.status === "queued" && run.queueHeld === true,
+              // An idle thread starts a new wake past held messages; a busy one queues it held.
+              !(
+                hasLiveRun(records) &&
+                records.runs.some(
+                  (run) =>
+                    run.id !== deliveryRun.id && run.status === "queued" && run.queueHeld === true,
+                )
               ),
           ),
           Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })),

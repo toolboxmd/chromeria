@@ -7278,6 +7278,7 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
     { followUp: "same scope into a wake a restart held" },
     { followUp: "same scope into a wake a provider failure held" },
     { followUp: "same scope into a failure-held wake after a later restart" },
+    { followUp: "same scope into a restart-held wake beside a held message" },
   ] as const)("a $followUp follow-up of a task in a queued wake", ({ followUp }) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -7431,7 +7432,9 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
       if (mixed) assert.equal(executionPurposeOf(wake).scope.type, "unscoped");
       // A restart cut the parent's turn, or the provider failed it, and the wake waits held for a
       // person to send it.
-      const restartHeld = followUp === "same scope into a wake a restart held";
+      const besideHeldMessage =
+        followUp === "same scope into a restart-held wake beside a held message";
+      const restartHeld = followUp === "same scope into a wake a restart held" || besideHeldMessage;
       const laterRestart = followUp === "same scope into a failure-held wake after a later restart";
       const failureHeld =
         followUp === "same scope into a wake a provider failure held" || laterRestart;
@@ -7467,6 +7470,30 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
               occurredAt: now,
               payload: { ...wake, queueHeld: true },
             },
+            // A user message the restart also left held for a person.
+            ...(besideHeldMessage
+              ? [
+                  (() => {
+                    const message = runEvent({
+                      threadId,
+                      runId: RunId.make(`run:${name}-held-message`),
+                      ordinal: wake.ordinal + 1,
+                      status: "queued",
+                      now,
+                    });
+                    return {
+                      ...message,
+                      payload: {
+                        ...message.payload,
+                        startedAt: null,
+                        completedAt: null,
+                        queueHeld: true,
+                        queuePosition: (wake.queuePosition ?? wake.ordinal) + 1,
+                      },
+                    };
+                  })(),
+                ]
+              : []),
             // A later, unrelated run that a restart cut: its restart did not hold this wake.
             ...(laterRestart
               ? [
@@ -7593,6 +7620,10 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
         // A restart's hold is released, and the wake carries the newer result in place of the older
         // one; a provider failure's hold stays for a person, as on main.
         assert.equal(queued.status === "queued" && queued.queueHeld === true, failureHeld);
+        if (besideHeldMessage)
+          assert.isTrue(
+            parent.runs.find((run) => run.id === RunId.make(`run:${name}-held-message`))?.queueHeld,
+          );
         assert.equal(task.completionDelivery?.state, "claimed");
         assert.deepEqual(
           reserved?.purposeCauses?.map((cause) => cause.runId),
