@@ -29,6 +29,12 @@ describe("conversationPreviewText", () => {
       "Run tests in src/**/*.test.ts and 2 * 3 * 4",
     ],
     ["nested emphasis", "***Done*** and **bold *both***", "Done and bold both"],
+    [
+      "two globs in one sentence",
+      "Run src/**/*.test.ts and tests/**/*.spec.ts.",
+      "Run src/**/*.test.ts and tests/**/*.spec.ts.",
+    ],
+    ["a glob before bold text", "Run src/**/*.ts, then **build**.", "Run src/**/*.ts, then build."],
     ["links and images", "See [the docs](https://x.dev) ![logo](a.png)", "See the docs logo"],
     [
       "a link target with parentheses",
