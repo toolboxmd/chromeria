@@ -3903,7 +3903,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     threadId: ThreadId,
     messageId: MessageId,
     parentRunId: RunId,
-    settled: ReturnType<typeof settledWakeItemEvent>,
   ) {
     const records = yield* projectionStore.getThreadRecords(
       threadId,
@@ -3936,10 +3935,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       parentRun?.delegatedCompletion?.disposition !== "open" ||
       records.thread.archivedAt !== null ||
       records.thread.deletedAt !== null
-    ) {
-      yield* writeSystemEvents([settled]);
+    )
       return;
-    }
     const plan = yield* planDelegatedCompletionDelivery({
       parentProjection: {
         ...records,
@@ -3955,7 +3952,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
     const completionDelivery = plan.task.completionDelivery ?? first.completionDelivery;
     yield* writeSystemEvents([
-      settled,
       ...[plan.task, ...rest.map((task) => ({ ...task, completionDelivery }))].map((task) => ({
         type: "subagent.updated" as const,
         threadId,
@@ -3970,6 +3966,51 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ]);
     if (plan.offer && plan.parentRun !== undefined)
       yield* offerDelegatedCompletionDelivery(threadId, plan.parentRun.id);
+  });
+
+  // Fork: a fresh wake must not start ahead of a restart continuation, so a cut run's unread
+  // accepted wakes return their results only once it has taken its place or will not come.
+  const returnCutRunWakeResults = Effect.fn("Orchestrator.returnCutRunWakeResults")(function* (
+    threadId: ThreadId,
+    runId: RunId,
+  ) {
+    const { runs, turnItems } = yield* projectionStore.getThreadRecords(
+      threadId,
+      ["runs", "turnItems"],
+      { turnItemTypes: ["notification"], turnItemStatuses: ["cancelled"], turnItemRunIds: [runId] },
+    );
+    const run = runs.find((candidate) => candidate.id === runId);
+    const cutAt = run?.restartCut?.cutAt;
+    // A notice settled before the cut ended with a live turn, which keeps main's outcome.
+    const unread = turnItems.filter(
+      (item) =>
+        cutAt !== undefined &&
+        item.completedAt !== null &&
+        DateTime.toEpochMillis(item.completedAt) >= DateTime.toEpochMillis(cutAt),
+    );
+    if (
+      run?.restartCut === undefined ||
+      unread.length === 0 ||
+      (run.restartCut.continuation === "scheduled" &&
+        !runs.some((candidate) => candidate.restartContinuationOfRunId === runId) &&
+        (yield* awaitsRestartContinuation(run))) ||
+      (yield* projectionStore.hasRunInterruptRequest(threadId, runId))
+    )
+      return;
+    const { messages } = yield* projectionStore.getThreadRecords(threadId, ["messages"], {
+      messageRoles: ["user"],
+      messageRunIds: [runId],
+    });
+    for (const message of messages) {
+      const mailbox = message.delegatedCompletion;
+      if (
+        mailbox !== undefined &&
+        unread.some(
+          (item) => item.id === idAllocator.derive.userTurnItem({ messageId: message.id }),
+        )
+      )
+        yield* returnUnreadWakeResults(threadId, message.id, mailbox.parentRunId);
+    }
   });
 
   // A steer still pending after its run ended was never read: the provider marks one it read
@@ -4000,6 +4041,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             messageRunIds: wakeRunIds,
           })).messages;
     const placed = [];
+    const returned = new Set<RunId>();
     for (const item of unread) {
       const run = projection.runs.find((candidate) => candidate.id === item.runId);
       const message =
@@ -4023,23 +4065,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // Once accepted, only the mailbox knows which results are still owed, so it is not replayed.
       const delivered = mailbox !== undefined && (!reserved || reservation.taskIds.length === 0);
       if (item.type === "notification" && delivered) {
-        const settled = settledWakeItemEvent(item, yield* DateTime.now);
-        if (
-          run.restartCut === undefined ||
-          (yield* projectionStore.hasRunInterruptRequest(threadId, run.id))
-        ) {
-          yield* writeSystemEvents([settled]);
-          continue;
-        }
-        // Fork: a fresh wake must not start ahead of the restart continuation, so the wake's
-        // results wait, with its notice, until that continuation has taken its place.
-        if (
-          run.restartCut.continuation === "scheduled" &&
-          !projection.runs.some((candidate) => candidate.restartContinuationOfRunId === run.id) &&
-          (yield* awaitsRestartContinuation(run))
-        )
-          continue;
-        yield* returnUnreadWakeResults(threadId, message.id, mailbox.parentRunId, settled);
+        yield* writeSystemEvents([settledWakeItemEvent(item, yield* DateTime.now)]);
+        returned.add(run.id);
         continue;
       }
       // Stop drops a steer it reached; say so, as the adapter does for steers it still held.
@@ -4107,6 +4134,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       placed.push({ item, run, message, steer, afterRunOrdinal, reserved });
     }
+    for (const runId of returned) yield* returnCutRunWakeResults(threadId, runId);
     // Each requeue starts the queue once it commits, so earlier places go first.
     placed.sort(
       (left, right) =>
@@ -20101,11 +20129,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
     }
     // Fork: the restart continuation took its place or was declined, so the wakes its run
-    // accepted and never read can return their results behind it.
+    // accepted and never read return their results behind it.
     if (command.type === "message.dispatch" && command.restartContinuationOfRunId !== undefined) {
-      yield* requeueUnreadSteers(command.threadId, [command.restartContinuationOfRunId]).pipe(
+      yield* returnCutRunWakeResults(command.threadId, command.restartContinuationOfRunId).pipe(
         Effect.catchCause((cause) =>
-          Effect.logWarning("Failed to read unread steers", { threadId: command.threadId, cause }),
+          Effect.logWarning("Failed to return unread wake results", {
+            threadId: command.threadId,
+            cause,
+          }),
         ),
       );
     }
@@ -20912,9 +20943,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
       // Fork: no continuation will take the run's place, so the wakes it accepted and never
       // read return their results now. Forked, because a caller may hold the thread lock.
-      yield* threadDispatch.withLock(threadId, requeueUnreadSteers(threadId, [sourceRunId])).pipe(
+      yield* threadDispatch.withLock(threadId, returnCutRunWakeResults(threadId, sourceRunId)).pipe(
         Effect.catchCause((cause) =>
-          Effect.logWarning("Failed to read unread steers", { threadId, cause }),
+          Effect.logWarning("Failed to return unread wake results", { threadId, cause }),
         ),
         Effect.forkIn(requestWakeScope),
       );

@@ -4996,16 +4996,16 @@ it.effect.each([
           for (let pass = 0; pass < 2; pass += 1) {
             if (ending !== "turn end") yield* orchestrator.recoverDelegatedTasks;
             if (scheduled && pass === 0) {
-              // Nothing is reserved until the restart continuation has taken its place.
+              // The notice settles at once; nothing is reserved until the restart continuation
+              // has taken its place.
               const waiting = yield* read;
               assert.isNull(
                 waiting.runs.find((run) => run.id === parent.id)?.delegatedCompletion?.delivery,
               );
-              assert.lengthOf(
-                waiting.turnItems.filter(
+              assert.isFalse(
+                waiting.turnItems.some(
                   (item) => item.type === "notification" && item.status === "pending",
                 ),
-                wakes.length,
               );
               if (!continues) {
                 // No continuation will come, so the decline returns the results.
