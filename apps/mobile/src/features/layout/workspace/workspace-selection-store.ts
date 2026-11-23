@@ -26,7 +26,11 @@ import {
 } from "../../../state/threads";
 import { agentNotificationLaunchRouted } from "../../agent-awareness/notificationNavigation";
 import { rootNavigationPending } from "../../../lib/rootNavigation";
-import type { NavigationTab } from "./navigation-tab-order";
+import {
+  navigationCustomizationAvailable,
+  resolveHiddenNavigationTabs,
+  type NavigationTab,
+} from "./navigation-tab-order";
 import { resolveWorkspaceLaunch } from "./workspace-launch";
 import {
   rememberedSettingsPage,
@@ -174,6 +178,9 @@ export async function launchWorkspaceURL(): Promise<string | null> {
   const launch = resolveWorkspaceLaunch({
     launchIntent: rootNavigationPending(),
     lastTab: preferences?.lastWorkspaceTab,
+    hiddenTabs: navigationCustomizationAvailable()
+      ? resolveHiddenNavigationTabs(preferences?.hiddenNavigationTabs)
+      : [],
     promachosConversation: preferences?.promachosConversation,
   });
   launchTab = launch.tab;

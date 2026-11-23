@@ -18,12 +18,14 @@ export interface WorkspaceLaunch {
 export function resolveWorkspaceLaunch(input: {
   readonly launchIntent: boolean;
   readonly lastTab: unknown;
+  /** Tabs the user hid; a hidden tab is not reopened. */
+  readonly hiddenTabs: ReadonlyArray<unknown>;
   readonly promachosConversation:
     | { readonly environmentId: string; readonly threadId: string }
     | undefined;
 }): WorkspaceLaunch {
   const tab = NAVIGATION_TAB_ORDER.find((candidate) => candidate === input.lastTab);
-  if (input.launchIntent || tab === undefined)
+  if (input.launchIntent || tab === undefined || input.hiddenTabs.includes(tab))
     return { tab: undefined, promachosConversation: null };
   return {
     tab,

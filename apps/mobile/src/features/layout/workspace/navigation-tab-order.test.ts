@@ -15,7 +15,7 @@ import {
 
 describe("navigation tab order", () => {
   it("enables customization only above four registered sections, excluding Settings", () => {
-    expect(navigationCustomizationAvailable()).toBe(false);
+    expect(navigationCustomizationAvailable()).toBe(true);
     expect(navigationCustomizationAvailable(3)).toBe(false);
     expect(navigationCustomizationAvailable(4)).toBe(false);
     expect(navigationCustomizationAvailable(5)).toBe(true);

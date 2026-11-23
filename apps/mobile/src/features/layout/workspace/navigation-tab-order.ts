@@ -25,8 +25,10 @@ export function sharedSlotAbsentee(selected: NavigationTab, last: unknown): Shar
   return holder === "issues" ? "pullRequests" : "issues";
 }
 
+// Fork: every section counts, so the Promachos tab (toolboxmd/chromeria#898) opens customization at
+// six sections including Settings, as the Navigation tabs page says.
 export function navigationCustomizationAvailable(
-  registeredSections: number = NAVIGATION_TAB_ORDER.length - 1,
+  registeredSections: number = NAVIGATION_TAB_ORDER.length,
 ) {
   return registeredSections > 4;
 }

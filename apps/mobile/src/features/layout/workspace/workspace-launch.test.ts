@@ -9,6 +9,7 @@ describe("resolveWorkspaceLaunch", () => {
     expect(
       resolveWorkspaceLaunch({
         launchIntent: false,
+        hiddenTabs: [],
         lastTab: "issues",
         promachosConversation: conversation,
       }),
@@ -16,6 +17,7 @@ describe("resolveWorkspaceLaunch", () => {
     expect(
       resolveWorkspaceLaunch({
         launchIntent: false,
+        hiddenTabs: [],
         lastTab: "promachos",
         promachosConversation: conversation,
       }),
@@ -23,10 +25,22 @@ describe("resolveWorkspaceLaunch", () => {
     expect(
       resolveWorkspaceLaunch({
         launchIntent: false,
+        hiddenTabs: [],
         lastTab: "promachos",
         promachosConversation: undefined,
       }),
     ).toEqual({ tab: "promachos", promachosConversation: null });
+  });
+
+  it("does not reopen a tab the user hid", () => {
+    expect(
+      resolveWorkspaceLaunch({
+        launchIntent: false,
+        hiddenTabs: ["promachos"],
+        lastTab: "promachos",
+        promachosConversation: conversation,
+      }),
+    ).toEqual({ tab: undefined, promachosConversation: null });
   });
 
   it("leaves a link, notification or quick action launch and an unknown tab on the default", () => {
@@ -34,6 +48,7 @@ describe("resolveWorkspaceLaunch", () => {
     expect(
       resolveWorkspaceLaunch({
         launchIntent: true,
+        hiddenTabs: [],
         lastTab: "promachos",
         promachosConversation: conversation,
       }),
@@ -41,6 +56,7 @@ describe("resolveWorkspaceLaunch", () => {
     expect(
       resolveWorkspaceLaunch({
         launchIntent: false,
+        hiddenTabs: [],
         lastTab: "settings",
         promachosConversation: undefined,
       }),
@@ -48,6 +64,7 @@ describe("resolveWorkspaceLaunch", () => {
     expect(
       resolveWorkspaceLaunch({
         launchIntent: false,
+        hiddenTabs: [],
         lastTab: undefined,
         promachosConversation: undefined,
       }),
