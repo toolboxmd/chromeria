@@ -4134,7 +4134,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
       placed.push({ item, run, message, steer, afterRunOrdinal, reserved });
     }
-    for (const runId of returned) yield* returnCutRunWakeResults(threadId, runId);
     // Each requeue starts the queue once it commits, so earlier places go first.
     placed.sort(
       (left, right) =>
@@ -4194,6 +4193,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
     }
+    // Fork: the steers above keep main's replay whatever happens to a mailbox return.
+    for (const runId of returned)
+      yield* returnCutRunWakeResults(threadId, runId).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Failed to return unread wake results", { threadId, cause }),
+        ),
+      );
   });
 
   const resumeQueuedRuns = Effect.gen(function* () {
