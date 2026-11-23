@@ -1,0 +1,137 @@
+import {
+  MessageId,
+  type OrchestrationV2ConversationMessage,
+  type OrchestrationV2LatestVisibleMessageSummary,
+  type OrchestrationV2Run,
+} from "@t3tools/contracts";
+import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
+import { isAttachmentOnlyBootstrapPrompt } from "@t3tools/shared/composerContextReferences";
+import * as DateTime from "effect/DateTime";
+import type * as SqlClient from "effect/sql/SqlClient";
+
+import { indexedMessageCondition } from "../orchestration-v2/messageSearchIndex.ts";
+
+/** One list row shows one line; this covers a wide sidebar and keeps each shell small. */
+export const CONVERSATION_PREVIEW_MAX_CHARS = 80;
+// Markdown is stripped from at most this much of the stored text.
+const PREVIEW_SOURCE_CHARS = 2_000;
+
+/**
+ * The newest message a conversation list may quote: a finished assistant message or one the user
+ * wrote. The same messages search indexes, so wakes, compaction prompts and attachment
+ * placeholders never show. Exclude system notices, such as keep-warm pings and their replies,
+ * both here and in `latestPreviewMessageSql`.
+ */
+function isConversationPreviewMessage(
+  message: Pick<OrchestrationV2ConversationMessage, "role" | "createdBy" | "streaming" | "text">,
+): boolean {
+  if (message.streaming) return false;
+  if (message.role !== "assistant" && !(message.role === "user" && message.createdBy === "user"))
+    return false;
+  return !isAttachmentOnlyBootstrapPrompt(message.text);
+}
+
+// A rolled-back run left the conversation; a queued or unstarted cancelled one never reached it.
+function leftConversation(run: Pick<OrchestrationV2Run, "status" | "startedAt">): boolean {
+  return (
+    run.status === "rolled_back" ||
+    run.status === "queued" ||
+    (run.status === "cancelled" && run.startedAt === null)
+  );
+}
+
+export function conversationPreviewFromMessages(
+  messages: ReadonlyArray<OrchestrationV2ConversationMessage>,
+  runs: ReadonlyArray<Pick<OrchestrationV2Run, "id" | "status" | "startedAt">>,
+): OrchestrationV2LatestVisibleMessageSummary | null {
+  const leftRunIds = new Set(runs.filter(leftConversation).map((run) => run.id));
+  let latest: OrchestrationV2ConversationMessage | null = null;
+  for (const message of messages) {
+    if (!isConversationPreviewMessage(message)) continue;
+    if (message.runId !== null && leftRunIds.has(message.runId)) continue;
+    if (
+      latest === null ||
+      DateTime.toEpochMillis(message.createdAt) > DateTime.toEpochMillis(latest.createdAt) ||
+      (DateTime.toEpochMillis(message.createdAt) === DateTime.toEpochMillis(latest.createdAt) &&
+        message.id > latest.id)
+    )
+      latest = message;
+  }
+  if (latest === null) return null;
+  const text = conversationPreviewText(latest.text.slice(0, PREVIEW_SOURCE_CHARS));
+  return text === null
+    ? null
+    : { id: latest.id, role: latest.role, text, updatedAt: latest.updatedAt };
+}
+
+/**
+ * A shell query column: the newest preview message of `t.thread_id` as JSON, read through the
+ * messages' (thread_id, created_at) index. Decode it with `conversationPreviewFromRow`.
+ */
+export const latestPreviewMessageSql = (sql: SqlClient.SqlClient) => sql`(
+  SELECT json_object(
+    'id', message.message_id,
+    'role', message.role,
+    'text', substr(json_extract(message.payload_json, '$.text'), 1, ${PREVIEW_SOURCE_CHARS}),
+    'updatedAt', message.updated_at
+  )
+  FROM orchestration_v2_projection_messages message
+  WHERE message.thread_id = t.thread_id
+    AND ${indexedMessageCondition(sql, "message")}
+    AND NOT EXISTS (
+      SELECT 1 FROM orchestration_v2_projection_runs run
+      WHERE run.run_id = message.run_id
+        AND (
+          run.status IN ('rolled_back', 'queued')
+          OR (run.status = 'cancelled' AND json_extract(run.payload_json, '$.startedAt') IS NULL)
+        )
+    )
+  ORDER BY message.created_at DESC, message.message_id DESC
+  LIMIT 1
+)`;
+
+export function conversationPreviewFromRow(
+  json: string | null,
+): OrchestrationV2LatestVisibleMessageSummary | null {
+  if (json === null) return null;
+  const row = JSON.parse(json) as {
+    readonly id: string;
+    readonly role: OrchestrationV2ConversationMessage["role"];
+    readonly text: string | null;
+    readonly updatedAt: string;
+  };
+  const text = conversationPreviewText(row.text ?? "");
+  return text === null
+    ? null
+    : {
+        id: MessageId.make(row.id),
+        role: row.role,
+        text,
+        updatedAt: DateTime.makeUnsafe(row.updatedAt),
+      };
+}
+
+/** One line of plain text from a message's Markdown, capped; null when nothing readable is left. */
+export function conversationPreviewText(markdown: string): string | null {
+  const plain = assistantCitationsToPlainText(markdown)
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/^\s*(?:```|~~~).*$/gm, " ")
+    .replace(/^\s*(?:[-*_]\s*){3,}$/gm, " ")
+    .replace(/^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-*:?\s*$/gm, " ")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^\s*(?:>\s?)+/gm, "")
+    .replace(/^\s*(?:#{1,6}\s+|[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)/gm, "")
+    .replace(/\*\*|__|~~|`+/g, "")
+    .replace(/(?<![\w*])[*_]((?:(?![*_]).)+?)[*_](?![\w*])/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (plain.length === 0) return null;
+  const chars = Array.from(plain);
+  return chars.length <= CONVERSATION_PREVIEW_MAX_CHARS
+    ? plain
+    : `${chars
+        .slice(0, CONVERSATION_PREVIEW_MAX_CHARS - 1)
+        .join("")
+        .trimEnd()}…`;
+}

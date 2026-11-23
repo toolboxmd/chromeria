@@ -12,6 +12,7 @@ import {
   ContextHandoffId,
   MessageId,
   type ModelSelection,
+  type OrchestrationV2ConversationMessage,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2ThreadProjection,
@@ -47,6 +48,7 @@ import * as Tracer from "effect/Tracer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Statement from "effect/sql/Statement";
 import { projectThreadAwarenessV2 } from "@t3tools/shared/agentAwareness";
+import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerContextReferences";
 import { MCP_APP_OUTPUT_KEY } from "@t3tools/shared/mcpApp";
 
 import { pendingDelegatedChildTasks } from "../childThreads/delegatedFollowups.ts";
@@ -8849,6 +8851,171 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           ),
         );
       }),
+  );
+
+  it.effect("quotes the newest finished user or assistant message in the shell", () =>
+    Effect.gen(function* () {
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const start = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:projection-shell-preview");
+      yield* projectionStore.apply({
+        id: EventId.make("event:projection-shell-preview:thread"),
+        type: "thread.created",
+        threadId,
+        occurredAt: start,
+        payload: {
+          createdBy: "user",
+          creationSource: "web",
+          id: threadId,
+          projectId: ProjectId.make("project:projection-shell-preview"),
+          title: "Preview",
+          providerInstanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: start,
+          updatedAt: start,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      });
+      let step = 0;
+      const message = (
+        key: string,
+        fields: Pick<
+          OrchestrationV2ConversationMessage,
+          "role" | "createdBy" | "text" | "streaming"
+        > & { readonly at: number; readonly runId?: RunId },
+      ) => {
+        const at = DateTime.add(start, { seconds: fields.at });
+        step += 1;
+        return projectionStore.apply({
+          id: EventId.make(`event:projection-shell-preview:${step}`),
+          type: "message.updated",
+          threadId,
+          occurredAt: at,
+          payload: {
+            createdBy: fields.createdBy,
+            creationSource: fields.createdBy === "user" ? "web" : "server",
+            id: MessageId.make(`message:projection-shell-preview:${key}`),
+            threadId,
+            runId: fields.runId ?? null,
+            nodeId: null,
+            role: fields.role,
+            text: fields.text,
+            attachments: [],
+            streaming: fields.streaming,
+            createdAt: at,
+            updatedAt: at,
+          },
+        });
+      };
+      const previews = Effect.gen(function* () {
+        const sqlShell = (yield* projectionStore.getShellSnapshot()).threads.find(
+          (thread) => thread.id === threadId,
+        );
+        const memoryShell = ProjectionStore.threadShellFromProjection(
+          yield* projectionStore.getThreadProjection(threadId),
+        );
+        return [sqlShell?.latestVisibleMessage, memoryShell.latestVisibleMessage].map((preview) =>
+          preview == null ? null : { role: preview.role, text: preview.text },
+        );
+      });
+
+      assert.deepStrictEqual(yield* previews, [null, null]);
+      yield* message("question", {
+        role: "user",
+        createdBy: "user",
+        text: "Can you **check** the [release notes](https://example.com/notes)?",
+        streaming: false,
+        at: 1,
+      });
+      const question = { role: "user", text: "Can you check the release notes?" };
+      assert.deepStrictEqual(yield* previews, [question, question]);
+
+      // A streaming reply leaves the shell alone, so tokens do not resend every row.
+      const answerText = `## Done\n\nI checked the notes. ${"The build is green. ".repeat(5)}`;
+      yield* message("answer", {
+        role: "assistant",
+        createdBy: "agent",
+        text: answerText.slice(0, 20),
+        streaming: true,
+        at: 2,
+      });
+      assert.deepStrictEqual(yield* previews, [question, question]);
+      yield* message("answer", {
+        role: "assistant",
+        createdBy: "agent",
+        text: answerText,
+        streaming: false,
+        at: 2,
+      });
+      const answer = {
+        role: "assistant",
+        text: "Done I checked the notes. The build is green. The build is green. The build is…",
+      };
+      assert.deepStrictEqual(yield* previews, [answer, answer]);
+
+      // Wakes, attachment placeholders and a follow-up removed before it started are not conversation.
+      const removedRunId = RunId.make("run:projection-shell-preview:removed");
+      yield* projectionStore.apply({
+        id: EventId.make("event:projection-shell-preview:removed-run"),
+        type: "run.created",
+        threadId,
+        runId: removedRunId,
+        nodeId: NodeId.make("node:projection-shell-preview:removed"),
+        driver,
+        occurredAt: start,
+        payload: {
+          id: removedRunId,
+          threadId,
+          ordinal: 1,
+          providerInstanceId,
+          modelSelection,
+          providerThreadId: null,
+          userMessageId: MessageId.make("message:projection-shell-preview:removed"),
+          rootNodeId: null,
+          activeAttemptId: null,
+          status: "cancelled",
+          requestedAt: start,
+          startedAt: null,
+          completedAt: start,
+          checkpointId: null,
+          contextHandoffId: null,
+        },
+      });
+      yield* message("removed", {
+        role: "user",
+        createdBy: "user",
+        text: "Never mind",
+        streaming: false,
+        at: 5,
+        runId: removedRunId,
+      });
+      yield* message("wake", {
+        role: "user",
+        createdBy: "agent",
+        text: "A child thread finished.",
+        streaming: false,
+        at: 3,
+      });
+      yield* message("attachment", {
+        role: "user",
+        createdBy: "user",
+        text: ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
+        streaming: false,
+        at: 4,
+      });
+      assert.deepStrictEqual(yield* previews, [answer, answer]);
+    }),
   );
 
   it.effect("only exposes interruptible runs through the shell activeRunId", () =>

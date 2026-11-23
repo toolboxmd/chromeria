@@ -128,6 +128,11 @@ import {
 } from "./deferredCommandMessage.ts";
 import { readableSearchText } from "./messageSearchIndex.ts";
 import {
+  conversationPreviewFromMessages,
+  conversationPreviewFromRow,
+  latestPreviewMessageSql,
+} from "../promachos/conversationPreview.ts";
+import {
   isFoldableWorkItem,
   isThreadHistoryUserTurn,
   isConversationHistoryItem,
@@ -1409,6 +1414,7 @@ type ShellThreadRow = {
   readonly pending_link_request_payload_json: string | null;
   readonly latest_user_message_at: string | null;
   readonly latest_user_authored_message_at: string | null;
+  readonly latest_preview_message_json: string | null;
   readonly has_actionable_proposed_plan: number;
 };
 
@@ -2142,7 +2148,10 @@ export function threadShellFromProjection(
     // Thread detail owns message bodies. Keeping them out of shell rows makes
     // initial hydration and streaming updates independent of transcript size.
     remotePendingRequest: remotePendingRequestKind(projection.subagents),
-    latestVisibleMessage: null,
+    latestVisibleMessage:
+      projection.thread.lineage.relationshipToParent === "subagent"
+        ? null
+        : conversationPreviewFromMessages(projection.messages, projection.runs),
     latestUserMessageAt: latestUserMessage?.updatedAt ?? null,
     latestUserAuthoredMessageAt,
     hasActionableProposedPlan: projection.plans.some(
@@ -2296,6 +2305,7 @@ type ShellThreadState = {
   readonly remotePendingRequest?: "approval" | "user_input" | null;
   readonly latestUserMessageAt: DateTime.Utc | null;
   readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
+  readonly latestVisibleMessage: OrchestrationV2ThreadShell["latestVisibleMessage"];
   readonly hasActionableProposedPlan: boolean;
   readonly pendingBackgroundTasks: OrchestrationV2ThreadShell["pendingBackgroundTasks"];
   readonly providerInstanceHistory: OrchestrationV2ThreadShell["providerInstanceHistory"];
@@ -2471,7 +2481,7 @@ function shellFromState(input: {
     pendingRuntimeRequest: input.state.pendingRuntimeRequest,
     remotePendingRequest: input.state.remotePendingRequest ?? null,
     pendingGuestMessageCount: pendingGuestMessageCount(input.state.thread.guestShare),
-    latestVisibleMessage: null,
+    latestVisibleMessage: input.state.latestVisibleMessage,
     latestUserMessageAt: input.state.latestUserMessageAt,
     latestUserAuthoredMessageAt: input.state.latestUserAuthoredMessageAt,
     hasActionableProposedPlan: input.state.hasActionableProposedPlan,
@@ -8799,6 +8809,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 ORDER BY message.updated_at DESC, message.message_id DESC
                 LIMIT 1
               ) AS latest_user_authored_message_at,
+              ${latestPreviewMessageSql(sql)} AS latest_preview_message_json,
               EXISTS (
                 SELECT 1
                 FROM orchestration_v2_projection_plans plan
@@ -9487,6 +9498,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ? null
               : DateTime.makeUnsafe(row.latest_user_message_at),
           latestUserAuthoredMessageAt,
+          latestVisibleMessage: conversationPreviewFromRow(row.latest_preview_message_json),
           hasActionableProposedPlan: row.has_actionable_proposed_plan === 1,
           pendingBackgroundTasks,
           providerInstanceHistory: providerInstanceHistoryForShell({

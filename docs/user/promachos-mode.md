@@ -5,7 +5,9 @@ replies show as bubbles, one per paragraph, and yours on the right. While he wor
 one status line under your message names what he is doing, then turns into
 "Typing…" just before his reply. Tables sit on their own card, and things that
 happened without a message, such as a Drafter he started, show as one gray line.
-Questions and approvals appear as cards in the chat.
+Questions and approvals appear as cards in the chat. The conversation list shows
+the start of each conversation's newest message, or what he is doing while he works
+or needs you.
 
 ## Start
 

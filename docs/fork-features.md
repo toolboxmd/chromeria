@@ -1609,6 +1609,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/175",
     "https://github.com/toolboxmd/chromeria/issues/898",
+    "https://github.com/toolboxmd/chromeria/issues/902",
     "https://github.com/toolboxmd/chromeria/issues/911"
   ],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/175-promachos-v2"],
@@ -1619,6 +1620,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/mobile/src/features/promachos/*",
     "apps/server/src/promachos/PromachosClientCommands.test.ts",
     "apps/server/src/promachos/PromachosClientCommands.ts",
+    "apps/server/src/promachos/conversationPreview.test.ts",
+    "apps/server/src/promachos/conversationPreview.ts",
     "apps/server/src/promachos/PromachosHome.test.ts",
     "apps/server/src/promachos/PromachosHome.ts",
     "apps/server/src/promachos/PromachosLaunch.ts",
@@ -1721,12 +1724,20 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "packages/contracts/src/rpc.ts",
     "packages/contracts/src/settings.ts",
     "apps/server/src/serverSettings.test.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
     "apps/web/src/components/settings/PromachosSettings.tsx",
     "apps/web/src/components/settings/settingsSearch.ts",
     "apps/web/src/components/settings/settingsSearchFork.test.ts",
     "packages/client-runtime/src/state/server.ts"
   ],
-  "keywords": ["Promachos", "promachos", "PROMACHOS_BUBBLE_MARKDOWN", "prismRole"]
+  "keywords": [
+    "Promachos",
+    "promachos",
+    "PROMACHOS_BUBBLE_MARKDOWN",
+    "prismRole",
+    "latestVisibleMessage"
+  ]
 }
 ```
 

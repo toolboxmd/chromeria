@@ -1,5 +1,5 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import { msg, useLocale, useMessages } from "gt-react-native";
+import { msg, useGT, useLocale, useMessages } from "gt-react-native";
 import { Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -9,7 +9,7 @@ import {
   type ThreadListV2Status,
 } from "../threads/threadListV2";
 
-// Thread shells carry no message text, so the preview line says where the conversation stands.
+// Where the conversation stands, for rows that quote no message.
 const PREVIEW: Record<ThreadListV2Status, string> = {
   approval: msg("Needs your approval", { $context: "Promachos conversation preview" }),
   input: msg("Waiting for your answer", { $context: "Promachos conversation preview" }),
@@ -37,10 +37,13 @@ export function PromachosConversationRow(props: {
   readonly onPress: () => void;
 }) {
   const m = useMessages();
+  const gt = useGT();
   const locale = useLocale();
   const status = resolveThreadListV2RowStatus(props.thread);
   const unread =
     status !== "ready" ? status !== "working" : threadHasUnseenCompletion(props.thread);
+  // While he works or something needs the user, the row says so instead of quoting.
+  const latest = status === "ready" ? props.thread.source.latestVisibleMessage : null;
   return (
     <Pressable
       accessibilityRole="button"
@@ -63,7 +66,14 @@ export function PromachosConversationRow(props: {
         </View>
         <View className="flex-row items-center gap-2">
           <Text numberOfLines={1} className="min-w-0 flex-1 text-base text-foreground-secondary">
-            {m(PREVIEW[status])}
+            {latest === null
+              ? m(PREVIEW[status])
+              : latest.role === "user"
+                ? gt("You: {text}", {
+                    text: latest.text,
+                    $context: "Promachos conversation preview of the user's own message",
+                  })
+                : latest.text}
           </Text>
           {unread ? <View className="size-2.5 rounded-full bg-primary" /> : null}
         </View>
