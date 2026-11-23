@@ -60,7 +60,7 @@ export function AndroidWorkspaceSidebar() {
               <View className="flex-1 bg-header">
                 <AppBar embedded title={gt("Promachos")} />
                 <ScreenContent insetHorizontal>
-                  <AndroidPromachosTab sidebar />
+                  <AndroidPromachosTab />
                 </ScreenContent>
               </View>
             </WorkspaceTabsContext>

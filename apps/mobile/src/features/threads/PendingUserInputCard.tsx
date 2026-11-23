@@ -9,7 +9,7 @@ import {
 } from "@t3tools/shared/textDirection";
 import { useNavigation } from "@react-navigation/native";
 import { Plural, T, useGT, Var } from "gt-react-native";
-import { useRef } from "react";
+import { use, useRef } from "react";
 import { Platform, Pressable, ScrollView, View, type LayoutChangeEvent } from "react-native";
 import Animated, {
   useAnimatedStyle,
@@ -22,6 +22,7 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { ControlPill } from "../../components/ui/ControlPill";
 import { cn } from "../../lib/cn";
+import { PromachosChatContext } from "../promachos/PromachosBubbles";
 import { resolveMarkdownLinkPresentation } from "../../lib/markdownLinks";
 import { SelectableMarkdownText } from "../../native/SelectableMarkdownText";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
@@ -123,6 +124,10 @@ function QuestionText(props: {
 
 export function PendingUserInputCard(props: PendingUserInputCardProps) {
   const gt = useGT();
+  // Fork: a Promachos chat keeps the accent for links only.
+  const selectedOption = use(PromachosChatContext)
+    ? "border-foreground bg-foreground/5"
+    : "border-primary bg-primary/10";
   const questionCount = props.pendingUserInput.questions.length;
   const canRespond = props.pendingUserInput.responseCapability !== "not_resumable";
   const isResponding = props.respondingUserInputId === props.pendingUserInput.requestId;
@@ -315,7 +320,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                         disabled={responseDisabled}
                         className={cn(
                           "min-h-12 w-full rounded-2xl border px-3.5 py-3",
-                          selected ? "border-primary bg-primary/10" : "border-border bg-input",
+                          selected ? selectedOption : "border-border bg-input",
                         )}
                         onPress={() =>
                           props.onSelectOption(

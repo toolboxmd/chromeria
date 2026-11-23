@@ -226,13 +226,16 @@ function PromachosNewHomeRow(props: {
   );
 }
 
-/** Android: the Promachos tab with the Chats tab's floating new-conversation button. */
-export function AndroidPromachosTab(props: { readonly sidebar?: boolean }) {
+/**
+ * Android: the Promachos tab with the Chats tab's floating new-conversation button. It floats
+ * in the sidebar too, since the split-view rail's compose starts an ordinary chat.
+ */
+export function AndroidPromachosTab() {
   const compose = usePromachosCompose();
   return compose === null ? (
     <PromachosTabScreen />
   ) : (
-    <AndroidHomeFabLayout sidebar={props.sidebar === true} onStartNewTask={compose.onPress}>
+    <AndroidHomeFabLayout onStartNewTask={compose.onPress}>
       <PromachosTabScreen />
     </AndroidHomeFabLayout>
   );

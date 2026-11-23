@@ -236,6 +236,8 @@ import { useGlobalVoiceInput } from "../voice-input/VoiceInputProvider";
 import type { OrchestrationV2ProviderSession } from "@t3tools/contracts";
 import { voiceInputBlocksSubmission } from "@t3tools/client-runtime/voice-input";
 import { PromachosChatScope } from "../promachos/PromachosChatScope";
+import { PromachosChatContext } from "../promachos/PromachosBubbles";
+import { usePromachosChatModels } from "../promachos/promachosHome";
 
 export interface ThreadDetailScreenProps {
   readonly header?: React.ReactNode;
@@ -519,6 +521,11 @@ function ThreadDetailBody(
   const navigation = useNavigation();
   const openLinkedThread = useOpenLinkedThread();
   const openInspector = useOpenThreadInspector();
+  const promachosChat =
+    usePromachosChatModels({
+      environmentId: props.environmentId,
+      projectId: props.selectedThread.projectId,
+    }) !== null;
   const toolResources = useMemo(() => {
     const resources = new Map<string, ToolResource>();
     for (const entry of props.selectedThreadFeed) {
@@ -2039,32 +2046,34 @@ function ThreadDetailBody(
                           </Animated.ScrollView>
                         ) : null}
                         {props.activePendingUserInput ? (
-                          <PendingUserInputCard
-                            environmentId={props.environmentId}
-                            threadId={props.selectedThread.id}
-                            workspaceRoot={props.threadCwd}
-                            canOperateThread={props.canOperateThread}
-                            pendingUserInput={props.activePendingUserInput}
-                            maxHeight={pendingUserInputMaxHeight}
-                            collapsed={userInputCollapsed}
-                            onToggleCollapsed={handleToggleUserInputCollapsed}
-                            onStopThread={props.onStopThread}
-                            cardProgress={userInputCardProgress}
-                            cardCoverage={userInputCardCoverage}
-                            onLayout={
-                              Platform.OS === "ios"
-                                ? (event) => userInputCardTop.set(event.nativeEvent.layout.y)
-                                : undefined
-                            }
-                            onInputFocusChange={handleOwnedInputFocusChange}
-                            drafts={props.activePendingUserInputDrafts}
-                            answers={props.activePendingUserInputAnswers}
-                            respondingUserInputId={props.respondingUserInputId}
-                            onSelectOption={props.onSelectUserInputOption}
-                            onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
-                            onSubmit={props.onSubmitUserInput}
-                            onDismiss={props.onDismissUserInput}
-                          />
+                          <PromachosChatContext value={promachosChat}>
+                            <PendingUserInputCard
+                              environmentId={props.environmentId}
+                              threadId={props.selectedThread.id}
+                              workspaceRoot={props.threadCwd}
+                              canOperateThread={props.canOperateThread}
+                              pendingUserInput={props.activePendingUserInput}
+                              maxHeight={pendingUserInputMaxHeight}
+                              collapsed={userInputCollapsed}
+                              onToggleCollapsed={handleToggleUserInputCollapsed}
+                              onStopThread={props.onStopThread}
+                              cardProgress={userInputCardProgress}
+                              cardCoverage={userInputCardCoverage}
+                              onLayout={
+                                Platform.OS === "ios"
+                                  ? (event) => userInputCardTop.set(event.nativeEvent.layout.y)
+                                  : undefined
+                              }
+                              onInputFocusChange={handleOwnedInputFocusChange}
+                              drafts={props.activePendingUserInputDrafts}
+                              answers={props.activePendingUserInputAnswers}
+                              respondingUserInputId={props.respondingUserInputId}
+                              onSelectOption={props.onSelectUserInputOption}
+                              onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
+                              onSubmit={props.onSubmitUserInput}
+                              onDismiss={props.onDismissUserInput}
+                            />
+                          </PromachosChatContext>
                         ) : null}
                       </Animated.View>
                     ) : null}

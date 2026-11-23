@@ -11,7 +11,11 @@ import {
 } from "./navigation-tabs";
 import { useWorkspaceTabs } from "./WorkspaceTabsContext";
 import { useSelectWorkspaceTab } from "./useSelectWorkspaceTab";
-import { useCompactWorkspaceTabs, useSidebarWorkspaceTabs } from "./useSystemWorkspaceTabBar";
+import {
+  useCompactWorkspaceTabs,
+  useFloatingWorkspaceTabs,
+  useSidebarWorkspaceTabs,
+} from "./useSystemWorkspaceTabBar";
 
 const PULL_REQUEST_ICON = require("../../../../assets/icons/pull-request.png");
 const ISSUE_ICON = require("../../../../assets/icons/issue.png");
@@ -68,7 +72,9 @@ export function WorkspaceSectionToolbar({
 }) {
   const gt = useGT();
   const sidebarTabs = useSidebarWorkspaceTabs();
-  const compactTabs = useCompactWorkspaceTabs();
+  // Fork: compact tabs carry compose only while they float; before iOS 26 the toolbar does.
+  const floatingTabs = useFloatingWorkspaceTabs();
+  const compactTabs = useCompactWorkspaceTabs() && floatingTabs;
   const deviceType = useDeviceType();
   return (
     <>

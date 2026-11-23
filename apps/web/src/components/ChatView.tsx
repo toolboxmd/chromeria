@@ -3642,7 +3642,16 @@ export default function ChatView(props: ChatViewProps) {
             onDrop={workspaceFileDropHandlers.onDrop}
           >
             <ThreadFind onClose={focusComposerStable} />
-            {isWorkspaceFileDragActive ? <WorkspaceFileDropOverlay /> : null}
+            {isWorkspaceFileDragActive ? (
+              promachosChat ? (
+                // Fork: a Promachos chat keeps the accent for links only.
+                <div className="contents [--primary:var(--muted-foreground)]">
+                  <WorkspaceFileDropOverlay />
+                </div>
+              ) : (
+                <WorkspaceFileDropOverlay />
+              )
+            ) : null}
             <ChatBannerLane
               environmentId={activeThread.environmentId}
               providerStatus={visibleProviderStatus}

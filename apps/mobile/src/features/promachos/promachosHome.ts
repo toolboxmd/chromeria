@@ -26,7 +26,11 @@ import {
   navigationCustomizationAvailable,
   resolveHiddenNavigationTabs,
 } from "../layout/workspace/navigation-tab-order";
-import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
+import {
+  selectedWorkspaceTabAtom,
+  useWorkspaceTabs,
+} from "../layout/workspace/WorkspaceTabsContext";
+import { launchWorkspaceTab } from "../layout/workspace/workspace-selection-store";
 
 /** The saved home and how to change it. */
 export function usePromachosHome(): {
@@ -95,11 +99,13 @@ export function usePromachosHomeLabel(): string | null {
 /**
  * The Promachos role's models for a new conversation started on the Promachos tab in his home,
  * else null: a draft started from Chats stays an ordinary thread even in the home project.
+ * The new-task flow is mounted outside the tabs, so there the session's selected tab answers.
  */
 export function usePromachosDraftModels(
   projectRef: ScopedProjectRef | null,
 ): ReadonlyArray<unknown> | null {
   const models = usePromachosChatModels(projectRef);
-  const onPromachosTab = useWorkspaceTabs()?.state.selectedTab === "promachos";
-  return onPromachosTab ? models : null;
+  const selected = useAtomValue(selectedWorkspaceTabAtom);
+  const tab = useWorkspaceTabs()?.state.selectedTab ?? selected ?? launchWorkspaceTab();
+  return tab === "promachos" ? models : null;
 }

@@ -20,6 +20,15 @@ import {
   type WorkspaceTabsState,
 } from "./workspace-tabs-state";
 
+/**
+ * Fork: the tab the user last selected this session, for code mounted outside the tabs such as the
+ * new-task flow. Unset until the first selection; the launch tab stands in before it.
+ */
+export const selectedWorkspaceTabAtom = Atom.make<WorkspaceTab | undefined>(undefined).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("mobile:workspace:selected-tab"),
+);
+
 export const WorkspaceTabsContext = createContext<{
   readonly state: WorkspaceTabsState;
   readonly dispatch: Dispatch<WorkspaceTabsAction>;
@@ -99,6 +108,7 @@ export function WorkspaceTabsProvider(props: {
     // Fork: a cold start reopens the tab used last (toolboxmd/chromeria#898).
     if (action.type === "select" && action.tab !== previous)
       void savePreferences({ lastWorkspaceTab: action.tab });
+    if (action.type === "select") registry.set(selectedWorkspaceTabAtom, action.tab);
   };
   const context = {
     state,
