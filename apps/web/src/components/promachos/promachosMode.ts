@@ -1,9 +1,9 @@
 /**
- * Promachos mode: a chat-first view of the Promachos home's conversations, switched per client. The
- * mode and home live in this client's local storage, the home naming one project on one environment;
- * it spans every project the sidebar merges with it, so the Promachos runs on any machine.
+ * Promachos mode: a chat-first view of the Promachos home's conversations, switched per client. Each
+ * environment names its own home in its server settings (Settings → Promachos); the home spans every
+ * project the sidebar merges with one, so the Promachos runs on any machine.
  */
-import { ScopedProjectRef } from "@t3tools/contracts";
+import type { ScopedProjectRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import { promachosMultipleModelSelections } from "@t3tools/client-runtime/promachos/start";
@@ -12,44 +12,46 @@ import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
 import { useClientSettings } from "../../hooks/useSettings";
 import { selectProjectGroupingSettings } from "@t3tools/client-runtime/state/project-grouping";
-import { useProjects } from "../../state/entities";
+import { usePrimaryEnvironmentId } from "../../state/environments";
+import { useProjects, useServerConfigs } from "../../state/entities";
 import {
   isInPromachosHome,
   promachosHomeRefs,
+  promachosHomes,
 } from "@t3tools/client-runtime/promachos/conversations";
 
 const PROMACHOS_MODE_STORAGE_KEY = "chromeria:promachos-mode";
-const PROMACHOS_HOME_STORAGE_KEY = "chromeria:promachos-home";
-const PromachosHome = Schema.NullOr(ScopedProjectRef);
 
 export function usePromachosMode(): [boolean, (enabled: boolean) => void] {
   const [enabled, setEnabled] = useLocalStorage(PROMACHOS_MODE_STORAGE_KEY, false, Schema.Boolean);
   return [enabled, setEnabled];
 }
 
-export function usePromachosHome(): [
-  ScopedProjectRef | null,
-  (home: ScopedProjectRef | null) => void,
-] {
-  const [home, setHome] = useLocalStorage(PROMACHOS_HOME_STORAGE_KEY, null, PromachosHome);
-  return [home, setHome];
-}
-
-/** Every project of the Promachos home, across the machines it is merged over. */
-export function usePromachosHomeRefs(
-  home: ScopedProjectRef | null,
-): ReadonlyArray<ScopedProjectRef> {
+/**
+ * The Promachos home as the connected environments name it: `start` is where a new conversation
+ * opens, null when no environment names a home this client knows, and `refs` every project of it.
+ * `active: false` skips the work for callers outside Promachos mode.
+ */
+export function usePromachosHome(active = true): {
+  readonly start: ScopedProjectRef | null;
+  readonly refs: ReadonlyArray<ScopedProjectRef>;
+} {
   const projects = useProjects();
+  const configs = useServerConfigs();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const groupingSettings = useClientSettings(selectProjectGroupingSettings);
-  return home === null ? [] : promachosHomeRefs(projects, home, groupingSettings);
+  const homes = active ? promachosHomes(configs, projects, primaryEnvironmentId) : [];
+  return {
+    start: homes[0] ?? null,
+    refs: promachosHomeRefs(projects, homes, groupingSettings),
+  };
 }
 
 /** Whether a thread in `projectRef` renders as a Promachos chat right now. */
 function usePromachosChat(projectRef: ScopedProjectRef | null): boolean {
   const [enabled] = usePromachosMode();
-  const [home] = usePromachosHome();
-  const homeRefs = usePromachosHomeRefs(enabled ? home : null);
-  return enabled && projectRef !== null && isInPromachosHome(projectRef, homeRefs);
+  const { refs } = usePromachosHome(enabled);
+  return enabled && projectRef !== null && isInPromachosHome(projectRef, refs);
 }
 
 /**

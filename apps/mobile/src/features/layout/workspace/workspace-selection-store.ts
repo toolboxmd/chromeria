@@ -25,6 +25,7 @@ import {
   threadEnvironment,
 } from "../../../state/threads";
 import { agentNotificationLaunchRouted } from "../../agent-awareness/notificationNavigation";
+import { promachosConversationMembershipAtom } from "../../promachos/promachosLaunch";
 import { rootNavigationPending } from "../../../lib/rootNavigation";
 import {
   navigationCustomizationAvailable,
@@ -195,7 +196,14 @@ export async function launchWorkspaceURL(): Promise<string | null> {
   }
   await metrics;
   if (!thread || !workspaceSelectionCheck.thread(thread)) return null;
-  if (launch.promachosConversation) return threadURL(thread);
+  if (launch.promachosConversation) {
+    // Unknown reopens it; the chat forgets it if the home turns out to have moved.
+    if (appAtomRegistry.get(promachosConversationMembershipAtom(thread)) !== "out") {
+      return threadURL(thread);
+    }
+    void savePreferencesPatch({ promachosConversation: undefined }).catch(() => undefined);
+    return null;
+  }
   // Other tabs open on their list; Chats reopens its chat only beside the list.
   if (launch.tab !== undefined && launch.tab !== "threads") return null;
   if (!workspaceHasColumns()) return null;

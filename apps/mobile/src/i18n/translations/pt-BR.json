@@ -2645,8 +2645,6 @@
   "2d7086dff1eaaf70": "Nova conversa",
   "d5c44c9513871a83": "Nenhuma conversa ainda.",
   "aa4bc8bdbd15b4c8": "A base do Promachos não está disponível aqui. Escolha-a novamente.",
-  "294fbf62a392a82a": "Escolha o projeto que é a base do Promachos ou crie um novo. As conversas dele ficam lá.",
-  "de998655fb47d8f8": "Nova base · {environment}",
   "9602be4c090d7e07": "Nova base",
   "23ab008e8dddc625": "Não foi possível criar a base.",
   "407d6f88248d7e60": "Pasta para a nova base",
@@ -5800,5 +5798,7 @@
   "6d5cbb6a55929e77": "Não definido",
   "2ecf88ef9e8e4259": "Base",
   "d2bc8065dc9b2225": "base",
-  "dc74034af7069dee": "persona"
+  "dc74034af7069dee": "persona",
+  "821cf6cd1be4c0e4": "Conecte um ambiente para escolher a base do Promachos.",
+  "e5e955443524580d": "Escolha o projeto que é a base do Promachos nesta máquina ou crie um novo. As conversas dele ficam lá."
 }

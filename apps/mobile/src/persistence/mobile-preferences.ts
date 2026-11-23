@@ -176,8 +176,6 @@ export interface Preferences {
   readonly workingShelfEnabled?: boolean;
   readonly useLastProjectForNewThreads?: boolean;
   readonly lastThreadProject?: typeof ThreadProject.Type;
-  /** Fork: the project that is the Promachos home on this phone (toolboxmd/chromeria#898). */
-  readonly promachosHome?: typeof ThreadProject.Type;
   /** Fork: the conversation the Promachos tab showed last; unset when it showed its list. */
   readonly promachosConversation?: typeof PromachosConversation.Type;
   /** Fork: the tab a cold start without a link reopens (toolboxmd/chromeria#898). */
@@ -273,7 +271,6 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     workingShelfEnabled?: boolean;
     useLastProjectForNewThreads?: boolean;
     lastThreadProject?: typeof ThreadProject.Type;
-    promachosHome?: typeof ThreadProject.Type;
     promachosConversation?: typeof PromachosConversation.Type;
     lastWorkspaceTab?: string;
     modelFavorites?: Preferences["modelFavorites"];
@@ -415,9 +412,6 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (isThreadProject(parsed.lastThreadProject)) {
     preferences.lastThreadProject = parsed.lastThreadProject;
-  }
-  if (isThreadProject(parsed.promachosHome)) {
-    preferences.promachosHome = parsed.promachosHome;
   }
   if (isPromachosConversation(parsed.promachosConversation)) {
     preferences.promachosConversation = parsed.promachosConversation;

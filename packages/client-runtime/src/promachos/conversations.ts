@@ -1,4 +1,4 @@
-import type { ScopedProjectRef } from "@t3tools/contracts";
+import type { EnvironmentId, ScopedProjectRef, ServerSettings } from "@t3tools/contracts";
 
 import {
   isThreadVisibleInNavigation,
@@ -10,26 +10,91 @@ import {
   type ProjectGroupingSettings,
 } from "../state/projectGrouping.ts";
 
+type HomeProject = Pick<
+  EnvironmentProject,
+  "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity"
+>;
+
 /**
- * The projects that make up the Promachos home: the chosen home and every
- * project the sidebar merges with it, such as the same repository on another
- * machine. The Promachos runs on any of them.
+ * The homes the connected environments name in their own settings, limited to projects this client
+ * knows. `preferredEnvironmentId`'s home comes first, so a new conversation starts there.
+ */
+export function promachosHomes(
+  configs: ReadonlyMap<EnvironmentId, { readonly settings: Pick<ServerSettings, "promachosHome"> }>,
+  projects: ReadonlyArray<Pick<EnvironmentProject, "environmentId" | "id">>,
+  preferredEnvironmentId: EnvironmentId | null,
+): ScopedProjectRef[] {
+  const homes: ScopedProjectRef[] = [];
+  for (const [environmentId, config] of configs) {
+    const projectId = config.settings.promachosHome;
+    if (projectId === null) continue;
+    if (
+      !projects.some(
+        (project) => project.environmentId === environmentId && project.id === projectId,
+      )
+    )
+      continue;
+    const home = { environmentId, projectId };
+    if (environmentId === preferredEnvironmentId) homes.unshift(home);
+    else homes.push(home);
+  }
+  return homes;
+}
+
+/**
+ * The projects that make up the Promachos home: each named home and every project the sidebar
+ * merges with one, such as the same repository on a machine that names no home. The Promachos runs
+ * on any of them.
  */
 export function promachosHomeRefs(
-  projects: ReadonlyArray<
-    Pick<EnvironmentProject, "environmentId" | "id" | "workspaceRoot" | "repositoryIdentity">
-  >,
-  home: ScopedProjectRef,
+  projects: ReadonlyArray<HomeProject>,
+  homes: ReadonlyArray<ScopedProjectRef>,
   settings: ProjectGroupingSettings,
 ): ScopedProjectRef[] {
-  const homeProject = projects.find(
-    (project) => project.environmentId === home.environmentId && project.id === home.projectId,
+  if (homes.length === 0) return [];
+  const homeKeys = new Set(
+    projects
+      .filter((project) =>
+        isInPromachosHome({ environmentId: project.environmentId, projectId: project.id }, homes),
+      )
+      .map((project) => deriveLogicalProjectKeyFromSettings(project, settings)),
   );
-  if (homeProject === undefined) return [];
-  const homeKey = deriveLogicalProjectKeyFromSettings(homeProject, settings);
   return projects
-    .filter((project) => deriveLogicalProjectKeyFromSettings(project, settings) === homeKey)
+    .filter((project) => homeKeys.has(deriveLogicalProjectKeyFromSettings(project, settings)))
     .map((project) => ({ environmentId: project.environmentId, projectId: project.id }));
+}
+
+/**
+ * Whether a thread's project is in the Promachos home. "unknown" until the client knows the thread
+ * and every named home's project, and every connected environment has answered this session with
+ * its settings and projects: a cached copy may predate a home another device chose, and a "no"
+ * from it would wrongly drop the thread.
+ */
+export function promachosMembership(input: {
+  readonly projectRef: ScopedProjectRef | null;
+  readonly environments: ReadonlyArray<{
+    readonly settingsLive: boolean;
+    readonly projectsLive: boolean;
+  }>;
+  readonly configs: ReadonlyMap<
+    EnvironmentId,
+    { readonly settings: Pick<ServerSettings, "promachosHome"> }
+  >;
+  readonly projects: ReadonlyArray<HomeProject>;
+  readonly grouping: ProjectGroupingSettings;
+}): "in" | "out" | "unknown" {
+  const live = input.environments.every(
+    (environment) => environment.settingsLive && environment.projectsLive,
+  );
+  if (!live || input.projectRef === null) return "unknown";
+  const homes = promachosHomes(input.configs, input.projects, null);
+  // A home whose project has not reached this client yet may take the thread in.
+  const named = [...input.configs.values()].filter(
+    (config) => config.settings.promachosHome !== null,
+  );
+  if (homes.length < named.length) return "unknown";
+  const refs = promachosHomeRefs(input.projects, homes, input.grouping);
+  return isInPromachosHome(input.projectRef, refs) ? "in" : "out";
 }
 
 export function isInPromachosHome(

@@ -13,6 +13,7 @@ describe("fork-added search entries", () => {
       "auto-update-providers",
       "prism-roles",
       "promachos-colors",
+      "promachos-home",
       "spectrum-defaults",
     ]);
   });

@@ -10,6 +10,7 @@ import { Button } from "../ui/button";
 import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
 import { ColorList } from "./ColorList";
 import { colorProviderChoices } from "./ColorPicker.logic";
+import { PromachosHomeSettings } from "./PromachosHomeSettings";
 import { planPromachosReset } from "./PromachosSettings.logic";
 import { SettingsGroup } from "./SettingsGroup";
 import { useSettingsScope } from "./SettingsScopeContext";
@@ -38,6 +39,7 @@ export function PromachosSettings() {
   const projectScope = scope.kind === "project" || scope.kind === "checkout";
   return (
     <SettingsPageContainer width="wide">
+      <PromachosHomeSettings />
       <SettingsSection
         id="promachos-colors"
         // oxlint-disable-next-line t3code/no-untranslated-copy -- Promachos is a product name

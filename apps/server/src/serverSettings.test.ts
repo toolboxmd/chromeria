@@ -251,6 +251,28 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       }),
     ).pipe(Effect.provide(layerServerSettings())),
   );
+  it.effect("saves the Promachos home under its settings file key and tells clients", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const home = ProjectId.make("promachos-home");
+        assert.equal((yield* service.getSettings).promachosHome, null);
+
+        const changes = yield* service.subscribeChanges;
+        yield* service.updateSettings({ promachosHome: home });
+        assert.equal(Option.getOrThrow(yield* Stream.runHead(changes)).promachosHome, home);
+        const saved = JSON.parse(yield* fs.readFileString(config.settingsPath));
+        assert.equal(saved.promachosHome, home);
+
+        const kept = yield* service.updateSettings({ responseStreamingMode: "turn" });
+        assert.equal(kept.promachosHome, home);
+        const cleared = yield* service.updateSettings({ promachosHome: null });
+        assert.equal(cleared.promachosHome, null);
+      }),
+    ).pipe(Effect.provide(layerServerSettings())),
+  );
   it.effect(
     "preserves saved V1 Prism kits and opaque Wight settings through unrelated writes",
     () =>

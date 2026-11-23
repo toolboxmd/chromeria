@@ -9,10 +9,12 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
 import { PromachosChatContext } from "./PromachosBubbles";
 import { usePromachosChatModels } from "./promachosHome";
+import { promachosConversationMembershipAtom } from "./promachosLaunch";
 
 /**
  * Marks a thread of the Promachos home as his chat, so its replies render as bubbles, and
- * remembers it as the conversation the Promachos tab shows while that tab opened it.
+ * remembers it as the conversation the Promachos tab shows while that tab opened it. Once loaded
+ * settings show the thread left the home, as after another device moved it, it is forgotten.
  */
 export function PromachosChatScope(props: {
   readonly environmentId: EnvironmentId;
@@ -32,12 +34,23 @@ export function PromachosChatScope(props: {
     : undefined;
   const save = useAtomCommand(saveMobilePreferences);
   const current = saved?.environmentId === props.environmentId && saved.threadId === props.threadId;
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- persists the shown conversation so a cold start reopens it
+  const outside =
+    useAtomValue(
+      promachosConversationMembershipAtom({
+        environmentId: props.environmentId,
+        threadId: props.threadId,
+      }),
+    ) === "out";
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- persists the shown conversation so a cold start reopens it, and forgets it once it left the home
   useEffect(() => {
+    if (current && outside) {
+      void save({ promachosConversation: undefined });
+      return;
+    }
     if (!remember || current) return;
     void save({
       promachosConversation: { environmentId: props.environmentId, threadId: props.threadId },
     });
-  }, [remember, current, save, props.environmentId, props.threadId]);
+  }, [remember, current, outside, save, props.environmentId, props.threadId]);
   return <PromachosChatContext value={chat}>{props.children}</PromachosChatContext>;
 }

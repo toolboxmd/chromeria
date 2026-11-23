@@ -2649,8 +2649,6 @@
   "2d7086dff1eaaf70": "New conversation",
   "d5c44c9513871a83": "No conversations yet.",
   "aa4bc8bdbd15b4c8": "The Promachos home is not available here. Choose it again.",
-  "294fbf62a392a82a": "Choose the project that is the Promachos home, or create a new one. His conversations live there.",
-  "de998655fb47d8f8": "New home · {environment}",
   "9602be4c090d7e07": "New home",
   "23ab008e8dddc625": "The home could not be created.",
   "407d6f88248d7e60": "Folder for the new home",
@@ -5810,5 +5808,7 @@
   "6d5cbb6a55929e77": "Not set",
   "2ecf88ef9e8e4259": "Home",
   "d2bc8065dc9b2225": "home",
-  "dc74034af7069dee": "persona"
+  "dc74034af7069dee": "persona",
+  "821cf6cd1be4c0e4": "Connect an environment to choose the Promachos home.",
+  "e5e955443524580d": "Choose the project that is the Promachos home on this machine, or create a new one. His conversations live there."
 }

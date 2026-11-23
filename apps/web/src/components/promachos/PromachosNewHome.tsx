@@ -18,7 +18,6 @@ import { connectionAtomRuntime } from "../../connection/runtime";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
 
 const createHome = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "promachos:create-home",
@@ -26,21 +25,24 @@ const createHome = createEnvironmentRpcCommand(connectionAtomRuntime, {
 });
 
 /**
- * The picker's **New home** entry for one environment: creates a starter home folder on that
- * environment's machine (toolboxmd/chromeria#139) and selects it.
+ * **New home** for one environment in Settings → Promachos: creates a starter home folder on that
+ * environment's machine (toolboxmd/chromeria#139), then `onCreated` makes it that machine's home.
  */
 export function PromachosNewHome({
   environmentId,
   label,
+  disabled,
   onCreated,
 }: {
   environmentId: EnvironmentId;
   label: string;
+  /** Set when the home could be created but not saved as this machine's home. */
+  disabled: boolean;
   onCreated: (home: ScopedProjectRef) => void;
 }) {
   const gt = useGT();
   const create = useAtomCommand(createHome, { reportFailure: false });
-  const canCreate = useAtomValue(createHome.permissionAtom(environmentId));
+  const canCreate = useAtomValue(createHome.permissionAtom(environmentId)) && !disabled;
   // Null while the form is closed.
   const [path, setPath] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -48,15 +50,15 @@ export function PromachosNewHome({
 
   if (path === null) {
     return (
-      <SidebarMenuItem>
-        <SidebarMenuButton
-          disabled={!canCreate}
-          onClick={() => setPath(DEFAULT_PROMACHOS_HOME_PATH)}
-        >
-          <PlusIcon />
-          <span>{label}</span>
-        </SidebarMenuButton>
-      </SidebarMenuItem>
+      <Button
+        size="xs"
+        variant="outline"
+        disabled={!canCreate}
+        onClick={() => setPath(DEFAULT_PROMACHOS_HOME_PATH)}
+      >
+        <PlusIcon />
+        {label}
+      </Button>
     );
   }
 
@@ -77,51 +79,49 @@ export function PromachosNewHome({
   };
 
   return (
-    <SidebarMenuItem>
-      <form
-        className="flex flex-col gap-1.5 px-2 py-1"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit();
-        }}
-      >
-        <span className="text-muted-foreground text-xs">
-          <T>
-            <Var>{label}</Var>: folder for the new home
-          </T>
-        </span>
-        <Input
-          aria-label={gt("Folder for the new home")}
-          autoFocus
-          font="mono"
+    <form
+      className="flex w-full flex-col gap-1.5"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      <span className="text-muted-foreground text-xs">
+        <T>
+          <Var>{label}</Var>: folder for the new home
+        </T>
+      </span>
+      <Input
+        aria-label={gt("Folder for the new home")}
+        autoFocus
+        font="mono"
+        size="sm"
+        value={path}
+        disabled={pending}
+        onChange={(event) => setPath(event.target.value)}
+      />
+      {error === null ? null : <p className="text-destructive text-xs">{error}</p>}
+      <div className="flex gap-1">
+        <Button
           size="sm"
-          value={path}
+          type="submit"
+          disabled={!canCreate || pending || path.trim().length === 0}
+        >
+          {pending ? gt("Creating…") : gt("Create", { $context: "button, creates a new home" })}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          type="button"
           disabled={pending}
-          onChange={(event) => setPath(event.target.value)}
-        />
-        {error === null ? null : <p className="text-destructive text-xs">{error}</p>}
-        <div className="flex gap-1">
-          <Button
-            size="sm"
-            type="submit"
-            disabled={!canCreate || pending || path.trim().length === 0}
-          >
-            {pending ? gt("Creating…") : gt("Create", { $context: "button, creates a new home" })}
-          </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            type="button"
-            disabled={pending}
-            onClick={() => {
-              setPath(null);
-              setError(null);
-            }}
-          >
-            <T>Cancel</T>
-          </Button>
-        </div>
-      </form>
-    </SidebarMenuItem>
+          onClick={() => {
+            setPath(null);
+            setError(null);
+          }}
+        >
+          <T>Cancel</T>
+        </Button>
+      </div>
+    </form>
   );
 }

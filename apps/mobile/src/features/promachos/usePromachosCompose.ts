@@ -7,9 +7,9 @@ import { usePromachosHome } from "./promachosHome";
 /** The compose button's action on the Promachos tab: a new conversation in his home. */
 export function usePromachosCompose() {
   const gt = useGT();
-  const { home } = usePromachosHome();
+  const { start } = usePromachosHome();
   const selectDetail = useSelectWorkspaceDetail();
-  if (home === null) return null;
+  if (start === null) return null;
   return {
     label: gt("New conversation"),
     onPress: () =>
@@ -18,8 +18,8 @@ export function usePromachosCompose() {
         params: {
           draft: {
             requestId: uuidv4(),
-            environmentId: String(home.environmentId),
-            projectId: String(home.projectId),
+            environmentId: String(start.environmentId),
+            projectId: String(start.projectId),
             promachos: "1",
           },
         },

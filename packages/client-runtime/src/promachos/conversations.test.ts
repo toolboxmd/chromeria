@@ -1,7 +1,12 @@
 import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { promachosConversations, promachosHomeRefs } from "./conversations.ts";
+import {
+  promachosConversations,
+  promachosHomeRefs,
+  promachosHomes,
+  promachosMembership,
+} from "./conversations.ts";
 
 const home = { environmentId: EnvironmentId.make("env-a"), projectId: ProjectId.make("home") };
 const homeOnB = { environmentId: EnvironmentId.make("env-b"), projectId: ProjectId.make("home-b") };
@@ -134,7 +139,7 @@ describe("promachosHomeRefs", () => {
       project("env-b", "home-b", "/home/me/dev/promachos", "github.com/me/promachos"),
       project("env-b", "satrapy", "/home/me/dev/satrapy", "github.com/me/satrapy"),
     ];
-    expect(promachosHomeRefs(projects, home, grouped)).toEqual([home, homeOnB]);
+    expect(promachosHomeRefs(projects, [home], grouped)).toEqual([home, homeOnB]);
   });
 
   it("stays on one machine when the sidebar keeps projects separate", () => {
@@ -143,7 +148,127 @@ describe("promachosHomeRefs", () => {
       project("env-b", "home-b", "/home/me/dev/promachos", "github.com/me/promachos"),
     ];
     expect(
-      promachosHomeRefs(projects, home, { ...grouped, sidebarProjectGroupingMode: "separate" }),
+      promachosHomeRefs(projects, [home], { ...grouped, sidebarProjectGroupingMode: "separate" }),
     ).toEqual([home]);
+  });
+
+  it("joins the homes several machines name, each with what the sidebar merges into it", () => {
+    const projects = [
+      project("env-a", "home", "/Users/me/dev/promachos", "github.com/me/promachos"),
+      project("env-b", "home-b", "/home/me/dev/promachos", "github.com/me/promachos"),
+      project("env-c", "persona", "/srv/persona", "github.com/me/persona"),
+      project("env-c", "satrapy", "/srv/satrapy", "github.com/me/satrapy"),
+    ];
+    const onC = {
+      environmentId: EnvironmentId.make("env-c"),
+      projectId: ProjectId.make("persona"),
+    };
+    expect(promachosHomeRefs(projects, [homeOnB, onC], grouped)).toEqual([home, homeOnB, onC]);
+    expect(promachosHomeRefs(projects, [], grouped)).toEqual([]);
+  });
+});
+
+describe("promachosHomes", () => {
+  const config = (promachosHome: string | null) => ({
+    settings: { promachosHome: promachosHome === null ? null : ProjectId.make(promachosHome) },
+  });
+  const projects = [
+    { environmentId: home.environmentId, id: home.projectId },
+    { environmentId: homeOnB.environmentId, id: homeOnB.projectId },
+  ];
+
+  it("reads each environment's own home, the preferred environment's first", () => {
+    const configs = new Map([
+      [home.environmentId, config("home")],
+      [homeOnB.environmentId, config("home-b")],
+      [EnvironmentId.make("env-c"), config(null)],
+    ]);
+    expect(promachosHomes(configs, projects, null)).toEqual([home, homeOnB]);
+    expect(promachosHomes(configs, projects, homeOnB.environmentId)).toEqual([homeOnB, home]);
+  });
+
+  it("leaves out a home whose project this client does not know", () => {
+    const configs = new Map([
+      [home.environmentId, config("deleted")],
+      [homeOnB.environmentId, config("home-b")],
+    ]);
+    expect(promachosHomes(configs, projects, home.environmentId)).toEqual([homeOnB]);
+  });
+});
+
+describe("promachosMembership", () => {
+  const grouped = {
+    sidebarProjectGroupingMode: "repository" as const,
+    sidebarProjectGroupingOverrides: {},
+  };
+  const project = (environmentId: string, id: string) => ({
+    environmentId: EnvironmentId.make(environmentId),
+    id: ProjectId.make(id),
+    workspaceRoot: `/${environmentId}/promachos`,
+    repositoryIdentity: {
+      canonicalKey: "github.com/me/promachos",
+      locator: {
+        source: "git-remote" as const,
+        remoteName: "origin",
+        remoteUrl: "github.com/me/promachos",
+      },
+    },
+  });
+  const projects = [project("env-a", "home"), project("env-b", "home-b")];
+  const named = (projectId: string | null) => ({
+    settings: { promachosHome: projectId === null ? null : ProjectId.make(projectId) },
+  });
+  const live = { settingsLive: true, projectsLive: true };
+
+  it("says out only once every machine answered live and none names the home", () => {
+    const cleared = new Map([
+      [home.environmentId, named(null)],
+      [homeOnB.environmentId, named(null)],
+    ]);
+    const input = { projectRef: home, configs: cleared, projects, grouping: grouped };
+    expect(promachosMembership({ ...input, environments: [live, live] })).toBe("out");
+    expect(promachosMembership({ ...input, projectRef: null, environments: [live, live] })).toBe(
+      "unknown",
+    );
+  });
+
+  it("stays unknown while a machine shows cached settings or projects", () => {
+    // A is live and names no home; B's cached copy predates the home B now names.
+    const configs = new Map([
+      [home.environmentId, named(null)],
+      [homeOnB.environmentId, named(null)],
+    ]);
+    const input = { projectRef: home, configs, projects, grouping: grouped };
+    const cachedSettings = { settingsLive: false, projectsLive: true };
+    const syncingProjects = { settingsLive: true, projectsLive: false };
+    expect(promachosMembership({ ...input, environments: [live, cachedSettings] })).toBe("unknown");
+    expect(promachosMembership({ ...input, environments: [live, syncingProjects] })).toBe(
+      "unknown",
+    );
+    // Once B answers live, its home takes in A's project of the same repository.
+    const answered = new Map([
+      [home.environmentId, named(null)],
+      [homeOnB.environmentId, named("home-b")],
+    ]);
+    expect(promachosMembership({ ...input, configs: answered, environments: [live, live] })).toBe(
+      "in",
+    );
+  });
+
+  it("stays unknown while a named home's project has not arrived", () => {
+    // B's settings name a project its live project list has not delivered yet.
+    const configs = new Map([
+      [home.environmentId, named(null)],
+      [homeOnB.environmentId, named("home-b-new")],
+    ]);
+    expect(
+      promachosMembership({
+        projectRef: home,
+        configs,
+        projects,
+        grouping: grouped,
+        environments: [live, live],
+      }),
+    ).toBe("unknown");
   });
 });
