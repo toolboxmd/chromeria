@@ -240,6 +240,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
   ],
   "upstreamFiles": [
     "apps/mobile/app.config.ts",
+    "apps/mobile/src/components/CompactBrandTitle.tsx",
     "apps/desktop/package.json",
     "apps/desktop/src/app/DesktopAppIdentity.test.ts",
     "apps/desktop/src/app/DesktopAppIdentity.ts",
@@ -1639,7 +1640,13 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/mobile/src/components/ui/AppBar.types.ts",
     "apps/mobile/src/features/threads/DraftThreadHeader.tsx",
     "apps/mobile/src/features/threads/ThreadComposer.tsx",
-    "apps/mobile/src/features/threads/ThreadHeader.tsx"
+    "apps/mobile/src/features/threads/ThreadHeader.tsx",
+    "apps/mobile/src/Stack.tsx",
+    "apps/mobile/src/features/layout/workspace/useWorkspaceCompose.ts",
+    "apps/mobile/src/features/settings/SettingsRouteScreen.tsx",
+    "apps/mobile/src/features/settings/components/settings-page-targets.ts",
+    "apps/mobile/src/features/settings/settings-search.ts",
+    "apps/mobile/src/state/threadOutboxDelivery.permissions.test.ts"
   ],
   "sharedFiles": [
     "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",

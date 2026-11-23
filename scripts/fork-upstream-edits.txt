@@ -18,6 +18,7 @@ apps/desktop/src/app/DesktopPreReadyPlatform.test.ts
 apps/desktop/src/app/DesktopUserData.test.ts
 apps/desktop/src/app/DesktopUserData.ts
 apps/mobile/app.config.ts
+apps/mobile/src/components/CompactBrandTitle.tsx
 apps/server/src/auth/PairingGrantStore.test.ts
 apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts
 apps/server/src/testUtils/shardWeights.json
@@ -219,6 +220,12 @@ apps/mobile/src/components/ui/AppBar.types.ts
 apps/mobile/src/features/threads/DraftThreadHeader.tsx
 apps/mobile/src/features/threads/ThreadComposer.tsx
 apps/mobile/src/features/threads/ThreadHeader.tsx
+apps/mobile/src/Stack.tsx
+apps/mobile/src/features/layout/workspace/useWorkspaceCompose.ts
+apps/mobile/src/features/settings/SettingsRouteScreen.tsx
+apps/mobile/src/features/settings/components/settings-page-targets.ts
+apps/mobile/src/features/settings/settings-search.ts
+apps/mobile/src/state/threadOutboxDelivery.permissions.test.ts
 
 # Scheduled tasks (#174)
 apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.tsx
