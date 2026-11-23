@@ -29,9 +29,9 @@ export function threadIdleChoice(mode: ThreadIdleMode | undefined, now: number):
 export function threadIdleModeFor(
   choice: ThreadIdleChoice,
   wightHours: number | null,
-  now = Date.now(),
+  now = DateTime.toEpochMillis(DateTime.nowUnsafe()),
 ): ThreadIdleMode | null {
-  const enabledAt = new Date(now).toISOString();
+  const enabledAt = DateTime.formatIso(DateTime.makeUnsafe(now));
   switch (choice) {
     case "off":
       return null;

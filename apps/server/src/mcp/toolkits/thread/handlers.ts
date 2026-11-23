@@ -271,18 +271,16 @@ export const layer = McpToolAccess.toLayer(
           } = yield* readThread(input.threadId);
           if (input.keepCacheWarm !== undefined) {
             const keepWarm = yield* KeepWarm.KeepWarm;
-            yield* keepWarm
-              .set(thread.id, input.keepCacheWarm)
-              .pipe(
-                Effect.mapError((error) =>
-                  error._tag === "KeepWarmUnsupportedError"
-                    ? new OrchestratorMcpFailure({
-                        code: "invalid_request",
-                        message: error.message,
-                      })
-                    : unavailable(),
-                ),
-              );
+            yield* keepWarm.set(thread.id, input.keepCacheWarm).pipe(
+              Effect.mapError((error) =>
+                error._tag === "KeepWarmUnsupportedError"
+                  ? new OrchestratorMcpFailure({
+                      code: "invalid_request",
+                      message: error.message,
+                    })
+                  : unavailable(),
+              ),
+            );
           }
           if (input.modelSelection === undefined)
             return {
