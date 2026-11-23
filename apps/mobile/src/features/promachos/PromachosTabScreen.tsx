@@ -63,10 +63,13 @@ export function PromachosTabScreen() {
           <Text className="text-center text-foreground-secondary">
             {gt("Choose the project that is the Promachos home to see his conversations.")}
           </Text>
-          <Button
-            label={gt("Choose home")}
-            onPress={() => openSettings(navigation, "SettingsPromachos")}
-          />
+          {/* The button starts its own row; this box centres it. */}
+          <View>
+            <Button
+              label={gt("Choose home")}
+              onPress={() => openSettings(navigation, "SettingsPromachos")}
+            />
+          </View>
         </View>
       )}
     </ScrollView>
