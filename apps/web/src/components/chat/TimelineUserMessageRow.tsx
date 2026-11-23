@@ -899,7 +899,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         floatActions ? "flex-wrap" : "shrink-0",
       )}
     >
-      {folded && senderRef && canOpenSender && (childNotice === null || canOpenThreads) ? (
+      {folded && senderRef && canOpenSender && canOpenThreads ? (
         <InlineButton
           onClick={() => ctx.onOpenThread(senderRef.threadId, senderRef.environmentId)}
           tone="muted"
