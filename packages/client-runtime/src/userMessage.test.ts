@@ -285,8 +285,9 @@ describe("resolveChildRequestNoticeState", () => {
 
   it.each([
     ["the child's shell still names it", { id: requestId }, undefined, "waiting"],
-    ["the shell names another request", { id: RuntimeRequestId.make("other") }, null, "unknown"],
     ["the child's detail is not loaded", null, undefined, "unknown"],
+    ["aged out of the child's loaded history", null, null, "settled"],
+    ["the shell names another request", { id: RuntimeRequestId.make("other") }, null, "settled"],
     ["detail still pending", null, { kind: "command", status: "pending" }, "waiting"],
     ["accepted", null, { ...resolved, decision: "accept" }, "approved"],
     ["accepted for the session", null, { ...resolved, decision: "acceptForSession" }, "approved"],

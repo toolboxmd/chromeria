@@ -31,6 +31,7 @@ const STATE_ICONS = {
   answered: CheckIcon,
   declined: XIcon,
   closed: CircleSlashIcon,
+  settled: CheckIcon,
   unknown: ShieldQuestionMarkIcon,
 } satisfies Record<ChildRequestNoticeState, LucideIcon>;
 
@@ -57,9 +58,12 @@ export function useChildRequestNotice(
         : resolveChildRequestNoticeState({
             requestId: childRequest.requestId,
             pendingRuntimeRequest: shell?.source.pendingRuntimeRequest,
-            request: thread?.projection.runtimeRequests.find(
-              (request) => request.id === childRequest.requestId,
-            ),
+            request:
+              thread === null
+                ? undefined
+                : (thread.projection.runtimeRequests.find(
+                    (request) => request.id === childRequest.requestId,
+                  ) ?? null),
           }),
   );
   if (childRequest === undefined || state === null) return null;

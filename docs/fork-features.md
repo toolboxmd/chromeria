@@ -1017,6 +1017,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/childThreads/PendingRequestService.ts",
     "apps/server/src/childThreads/pendingResponseAdmission.ts",
     "apps/server/src/childThreads/requestWake.noRequests.test.ts",
+    "apps/server/src/childThreads/childRequestContext.ts",
     "apps/web/src/components/chat/useChildRequestNotice.ts",
     "apps/mobile/src/features/threads/useChildRequestNotice.ts"
   ],

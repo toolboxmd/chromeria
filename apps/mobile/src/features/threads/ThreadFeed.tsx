@@ -1631,38 +1631,40 @@ function AgentMessageFoldHeader(props: {
     props.senderTitle?.trim() ||
     (childNotice === null ? gt("Agent") : gt("Child thread"));
   const summary = childNotice?.summary ?? props.summary;
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={gt("{label}: {summary}", { label, summary })}
-      accessibilityHint={
-        props.expanded
-          ? gt("Double tap to hide the message.")
-          : gt("Double tap to show the message.")
-      }
-      accessibilityState={{ expanded: props.expanded }}
-      hitSlop={4}
-      className="min-h-10 flex-row items-center gap-1.5 px-3.5 py-2"
-      onPress={() => {
-        void Haptics.selectionAsync();
-        props.onToggle();
-      }}
-    >
-      <SymbolView
-        name={childNotice?.symbol ?? "bubble.left.and.bubble.right"}
-        size={14}
-        weight="medium"
-        tintColorClassName="accent-user-bubble-foreground-muted"
-        type="monochrome"
+  const toggle = () => {
+    void Haptics.selectionAsync();
+    props.onToggle();
+  };
+  const hint = props.expanded
+    ? gt("Double tap to hide the message.")
+    : gt("Double tap to show the message.");
+  const symbol = (
+    <SymbolView
+      name={childNotice?.symbol ?? "bubble.left.and.bubble.right"}
+      size={14}
+      weight="medium"
+      tintColorClassName="accent-user-bubble-foreground-muted"
+      type="monochrome"
+    />
+  );
+  const summaryAndChevron = (
+    <>
+      <Text numberOfLines={1} className="min-w-0 shrink text-sm text-user-bubble-foreground">
+        {summary}
+      </Text>
+      <ThreadDisclosureChevron
+        expanded={props.expanded}
+        collapsedDirection="down"
+        size={11}
+        tintColor={props.iconSubtleColor}
       />
-      {childNotice === null ? (
-        <Text
-          numberOfLines={1}
-          className="max-w-[50%] shrink-0 font-t3-medium text-sm text-user-bubble-foreground-muted"
-        >
-          {label}
-        </Text>
-      ) : (
+    </>
+  );
+  if (childNotice !== null) {
+    // Sibling controls, so assistive technology reaches the link and the disclosure separately.
+    return (
+      <View className="min-h-10 flex-row items-center gap-1.5 px-3.5 py-2">
+        {symbol}
         <Pressable
           accessibilityRole="link"
           accessibilityLabel={gt("Open {title}", { title: label })}
@@ -1682,16 +1684,38 @@ function AgentMessageFoldHeader(props: {
             {label}
           </Text>
         </Pressable>
-      )}
-      <Text numberOfLines={1} className="min-w-0 shrink text-sm text-user-bubble-foreground">
-        {summary}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={summary}
+          accessibilityHint={hint}
+          accessibilityState={{ expanded: props.expanded }}
+          hitSlop={4}
+          className="min-w-0 flex-1 flex-row items-center gap-1.5"
+          onPress={toggle}
+        >
+          {summaryAndChevron}
+        </Pressable>
+      </View>
+    );
+  }
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={gt("{label}: {summary}", { label, summary })}
+      accessibilityHint={hint}
+      accessibilityState={{ expanded: props.expanded }}
+      hitSlop={4}
+      className="min-h-10 flex-row items-center gap-1.5 px-3.5 py-2"
+      onPress={toggle}
+    >
+      {symbol}
+      <Text
+        numberOfLines={1}
+        className="max-w-[50%] shrink-0 font-t3-medium text-sm text-user-bubble-foreground-muted"
+      >
+        {label}
       </Text>
-      <ThreadDisclosureChevron
-        expanded={props.expanded}
-        collapsedDirection="down"
-        size={11}
-        tintColor={props.iconSubtleColor}
-      />
+      {summaryAndChevron}
     </Pressable>
   );
 }

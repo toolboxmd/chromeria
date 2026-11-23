@@ -223,6 +223,7 @@ import {
   decideGuestShareCommand,
   type GuestShareCommand,
 } from "./GuestShareDecider.ts";
+import { keepChildRequestAttribution } from "../childThreads/childRequestContext.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import { withCommandMetrics } from "../observability/Metrics.ts";
 import type { OrchestrationEffectRequestV2, PendingOrchestrationEffectV2 } from "./EffectOutbox.ts";
@@ -14771,13 +14772,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ...(queuedRun.rootNodeId === null ? {} : { nodeId: queuedRun.rootNodeId }),
       providerInstanceId: queuedRun.providerInstanceId,
       occurredAt: now,
-      payload: withoutGuestAttribution({
-        ...queuedMessage,
-        text: command.text,
-        ...editedAttachments,
-        ...(command.context ? { context: command.context } : {}),
-        updatedAt: now,
-      }),
+      payload: withoutGuestAttribution(
+        keepChildRequestAttribution(
+          {
+            ...queuedMessage,
+            text: command.text,
+            ...editedAttachments,
+            ...(command.context ? { context: command.context } : {}),
+            updatedAt: now,
+          },
+          queuedMessage.context,
+        ),
+      ),
     });
     if (queuedTurnItem !== undefined && queuedTurnItem.type === "user_message") {
       yield* emitEvent({
@@ -14787,13 +14793,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(queuedRun.rootNodeId === null ? {} : { nodeId: queuedRun.rootNodeId }),
         providerInstanceId: queuedRun.providerInstanceId,
         occurredAt: now,
-        payload: withoutGuestAttribution({
-          ...queuedTurnItem,
-          text: command.text,
-          ...editedAttachments,
-          ...(command.context ? { context: command.context } : {}),
-          updatedAt: now,
-        }),
+        payload: withoutGuestAttribution(
+          keepChildRequestAttribution(
+            {
+              ...queuedTurnItem,
+              text: command.text,
+              ...editedAttachments,
+              ...(command.context ? { context: command.context } : {}),
+              updatedAt: now,
+            },
+            queuedTurnItem.context,
+          ),
+        ),
       });
     }
     // A command cannot steer, so an edit into one keeps it queued where it is.

@@ -177,6 +177,7 @@ export type ChildRequestNoticeState =
   | "declined"
   | "answered"
   | "closed"
+  | "settled"
   | "unknown";
 
 export const CHILD_REQUEST_NOTICE_LABELS = {
@@ -186,6 +187,7 @@ export const CHILD_REQUEST_NOTICE_LABELS = {
     declined: msg("approval was declined"),
     answered: msg("approval was answered"),
     closed: msg("approval request closed"),
+    settled: msg("approval was handled"),
     unknown: msg("asked for approval"),
   },
   question: {
@@ -194,13 +196,15 @@ export const CHILD_REQUEST_NOTICE_LABELS = {
     declined: msg("question was dismissed"),
     answered: msg("question was answered"),
     closed: msg("question closed"),
+    settled: msg("question was handled"),
     unknown: msg("asked a question"),
   },
 } satisfies Record<ChildRequestNoticeAttribution["kind"], Record<ChildRequestNoticeState, string>>;
 
 /**
  * The child's shell names its pending request, so a waiting notice needs no detail subscription;
- * `request` is read from the child's detail only once the shell no longer names it.
+ * `request` is read from the child's detail only once the shell no longer names it. It is
+ * `undefined` until that detail loads and `null` when the loaded history no longer holds it.
  */
 export function resolveChildRequestNoticeState(input: {
   readonly requestId: ChildRequestNoticeAttribution["requestId"];
@@ -215,7 +219,9 @@ export function resolveChildRequestNoticeState(input: {
 }): ChildRequestNoticeState {
   if (input.pendingRuntimeRequest?.id === input.requestId) return "waiting";
   const request = input.request;
-  if (request === null || request === undefined) return "unknown";
+  if (request === undefined) return "unknown";
+  // The child's snapshot keeps pending requests, so one missing from it was settled earlier.
+  if (request === null) return "settled";
   switch (request.status) {
     case "pending":
       return "waiting";

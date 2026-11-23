@@ -24,6 +24,7 @@ const STATE_SYMBOLS = {
   answered: "checkmark.circle",
   declined: "xmark.circle.fill",
   closed: "slash.circle",
+  settled: "checkmark.circle",
   unknown: "questionmark.bubble",
 } satisfies Record<ChildRequestNoticeState, AppSymbolName>;
 
@@ -50,9 +51,12 @@ export function useChildRequestNotice(
         : resolveChildRequestNoticeState({
             requestId: childRequest.requestId,
             pendingRuntimeRequest: shell?.source.pendingRuntimeRequest,
-            request: thread?.projection.runtimeRequests.find(
-              (request) => request.id === childRequest.requestId,
-            ),
+            request:
+              thread === null
+                ? undefined
+                : (thread.projection.runtimeRequests.find(
+                    (request) => request.id === childRequest.requestId,
+                  ) ?? null),
           }),
   );
   if (childRequest === undefined || state === null) return null;

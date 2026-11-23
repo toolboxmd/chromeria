@@ -13237,5 +13237,7 @@
   "02faa9361f0444db": "question was answered",
   "12510540ccd8b916": "question was dismissed",
   "e418f5ef2a0c35ba": "question closed",
-  "8787bb0bedaf30af": "asked a question"
+  "8787bb0bedaf30af": "asked a question",
+  "cd0f1fd4214233b5": "approval was handled",
+  "3b987645baba6aec": "question was handled"
 }
