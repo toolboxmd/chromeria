@@ -3,6 +3,15 @@ import { AtomRegistry } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 
 // The phone's state modules, replaced by writable atoms the test moves from cache to live.
+const project = vi.hoisted(() => (environmentId: string, id: string) => ({
+  environmentId,
+  id,
+  workspaceRoot: `/${environmentId}/${id}`,
+  repositoryIdentity: {
+    canonicalKey: "github.com/me/promachos",
+    locator: { source: "git-remote", remoteName: "origin", remoteUrl: "github.com/me/promachos" },
+  },
+}));
 const fake = vi.hoisted(async () => {
   const { Atom } = await import("effect/reactivity");
   const perMachine = <A>(value: A) => ({ "env-a": Atom.make(value), "env-b": Atom.make(value) });
@@ -17,6 +26,7 @@ const fake = vi.hoisted(async () => {
     configs: Atom.make(new Map<string, { settings: { promachosHome: string | null } }>()),
     configLive: perMachine(false),
     shellStatus: perMachine("cached"),
+    projects: Atom.make([project("env-a", "home"), project("env-b", "home-b")]),
   };
 });
 vi.mock("../../connection/catalog", async () => ({
@@ -35,23 +45,9 @@ vi.mock("../../state/shell", async () => {
   const state = await fake;
   return { environmentShell: { statusAtom: (id: "env-a" | "env-b") => state.shellStatus[id] } };
 });
-vi.mock("../../state/projects", async () => {
-  const { Atom } = await import("effect/reactivity");
-  const project = (environmentId: string, id: string) => ({
-    environmentId,
-    id,
-    workspaceRoot: `/${environmentId}/promachos`,
-    repositoryIdentity: {
-      canonicalKey: "github.com/me/promachos",
-      locator: { source: "git-remote", remoteName: "origin", remoteUrl: "github.com/me/promachos" },
-    },
-  });
-  return {
-    environmentProjects: {
-      projectsAtom: Atom.make([project("env-a", "home"), project("env-b", "home-b")]),
-    },
-  };
-});
+vi.mock("../../state/projects", async () => ({
+  environmentProjects: { projectsAtom: (await fake).projects },
+}));
 vi.mock("../../state/threads", async () => {
   const { Atom } = await import("effect/reactivity");
   const shell = Atom.make({ projectId: "home" });
@@ -92,6 +88,12 @@ it("keeps a conversation until every machine answers live, then follows the home
   // B answers live naming the same repository: A's conversation is still in the home.
   names(null, "home-b");
   goLive("env-b");
+  expect(registry.get(membership)).toBe("in");
+
+  // B names a new project of the same repository before that project reaches the phone.
+  names(null, "home-b-new");
+  expect(registry.get(membership)).toBe("unknown");
+  registry.set(state.projects, [...registry.get(state.projects), project("env-b", "home-b-new")]);
   expect(registry.get(membership)).toBe("in");
 
   // Both machines now say there is no home: the conversation left it.

@@ -254,4 +254,21 @@ describe("promachosMembership", () => {
       "in",
     );
   });
+
+  it("stays unknown while a named home's project has not arrived", () => {
+    // B's settings name a project its live project list has not delivered yet.
+    const configs = new Map([
+      [home.environmentId, named(null)],
+      [homeOnB.environmentId, named("home-b-new")],
+    ]);
+    expect(
+      promachosMembership({
+        projectRef: home,
+        configs,
+        projects,
+        grouping: grouped,
+        environments: [live, live],
+      }),
+    ).toBe("unknown");
+  });
 });

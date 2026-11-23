@@ -66,9 +66,9 @@ export function promachosHomeRefs(
 
 /**
  * Whether a thread's project is in the Promachos home. "unknown" until the client knows the thread
- * and every connected environment has answered this session with its settings and projects: a
- * cached copy may predate a home another device chose, and a "no" from it would wrongly drop the
- * thread.
+ * and every named home's project, and every connected environment has answered this session with
+ * its settings and projects: a cached copy may predate a home another device chose, and a "no"
+ * from it would wrongly drop the thread.
  */
 export function promachosMembership(input: {
   readonly projectRef: ScopedProjectRef | null;
@@ -88,6 +88,11 @@ export function promachosMembership(input: {
   );
   if (!live || input.projectRef === null) return "unknown";
   const homes = promachosHomes(input.configs, input.projects, null);
+  // A home whose project has not reached this client yet may take the thread in.
+  const named = [...input.configs.values()].filter(
+    (config) => config.settings.promachosHome !== null,
+  );
+  if (homes.length < named.length) return "unknown";
   const refs = promachosHomeRefs(input.projects, homes, input.grouping);
   return isInPromachosHome(input.projectRef, refs) ? "in" : "out";
 }
