@@ -17,6 +17,7 @@ import {
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { AsyncResult } from "effect/reactivity";
+import { use } from "react";
 
 import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
 import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
@@ -26,11 +27,7 @@ import {
   navigationCustomizationAvailable,
   resolveHiddenNavigationTabs,
 } from "../layout/workspace/navigation-tab-order";
-import {
-  selectedWorkspaceTabAtom,
-  useWorkspaceTabs,
-} from "../layout/workspace/WorkspaceTabsContext";
-import { launchWorkspaceTab } from "../layout/workspace/workspace-selection-store";
+import { PromachosDraftContext } from "./promachosDraft";
 
 /** The saved home and how to change it. */
 export function usePromachosHome(): {
@@ -97,15 +94,12 @@ export function usePromachosHomeLabel(): string | null {
 }
 
 /**
- * The Promachos role's models for a new conversation started on the Promachos tab in his home,
- * else null: a draft started from Chats stays an ordinary thread even in the home project.
- * The new-task flow is mounted outside the tabs, so there the session's selected tab answers.
+ * The Promachos role's models for a new conversation the Promachos tab's compose button started in
+ * his home, else null: any other draft stays an ordinary thread, even in the home project.
  */
 export function usePromachosDraftModels(
   projectRef: ScopedProjectRef | null,
 ): ReadonlyArray<unknown> | null {
   const models = usePromachosChatModels(projectRef);
-  const selected = useAtomValue(selectedWorkspaceTabAtom);
-  const tab = useWorkspaceTabs()?.state.selectedTab ?? selected ?? launchWorkspaceTab();
-  return tab === "promachos" ? models : null;
+  return use(PromachosDraftContext) ? models : null;
 }

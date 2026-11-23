@@ -25,7 +25,7 @@ export function PromachosBubbles(props: {
                 ? "self-stretch"
                 : fragment.card
                   ? "min-w-0 max-w-[82%]"
-                  : "min-w-0 max-w-[82%] rounded-[18px] bg-grouped-card px-3.5 py-2.5"
+                  : "min-w-0 max-w-[82%] rounded-[18px] bg-promachos-inbound px-3.5 py-2.5"
             }
           >
             {props.renderText(fragment.markdown)}

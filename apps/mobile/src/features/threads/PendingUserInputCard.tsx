@@ -125,7 +125,8 @@ function QuestionText(props: {
 export function PendingUserInputCard(props: PendingUserInputCardProps) {
   const gt = useGT();
   // Fork: a Promachos chat keeps the accent for links only.
-  const selectedOption = use(PromachosChatContext)
+  const promachos = use(PromachosChatContext);
+  const selectedOption = promachos
     ? "border-foreground bg-foreground/5"
     : "border-primary bg-primary/10";
   const questionCount = props.pendingUserInput.questions.length;
@@ -387,7 +388,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       <Button
         label={gt("Submit answers")}
         fullWidth
-        tone={props.answers ? "primary" : "secondary"}
+        tone={props.answers ? (promachos ? "contrast" : "primary") : "secondary"}
         disabled={!props.canOperateThread || responseDisabled || props.answers === null}
         onPress={() => void props.onSubmit()}
       />

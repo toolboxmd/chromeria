@@ -117,7 +117,8 @@ import {
 } from "@t3tools/client-runtime/state/thread-repositories";
 import { useConnectionsReady, useWorkspaceEnvironments } from "../../state/workspace";
 import { promachosPicksModel } from "@t3tools/client-runtime/promachos/start";
-import { usePromachosDraftModels } from "../promachos/promachosHome";
+import { PromachosDraftContext } from "../promachos/promachosDraft";
+import { usePromachosChatModels } from "../promachos/promachosHome";
 
 type WorkspaceMode = "local" | "worktree";
 
@@ -244,6 +245,8 @@ export function NewTaskFlowProvider(
     /** Identifies the draft route this flow serves; a new key starts a fresh flow. */
     flowKey?: string;
     routeDraftId?: string;
+    /** The draft route was started by the Promachos tab's compose button. */
+    promachos?: boolean;
   }>,
 ) {
   const projects = useProjects();
@@ -364,11 +367,12 @@ export function NewTaskFlowProvider(
         null);
 
   const linkedEnvironments = useLinkedEnvironments(selectedProject?.environmentId ?? null);
-  const promachosModels = usePromachosDraftModels(
+  const promachosChatModels = usePromachosChatModels(
     selectedProject === null
       ? null
       : { environmentId: selectedProject.environmentId, projectId: selectedProject.id },
   );
+  const promachosModels = props.promachos === true ? promachosChatModels : null;
   const storedStickyModelSelection = useStickyComposerModelSelection();
   const modelSelectionNow = useNowMinuteMs();
   const projectDefaults = useNewTaskProjectDefaults(selectedProject);
@@ -1008,7 +1012,9 @@ export function NewTaskFlowProvider(
 
   return (
     <ActiveNewTaskContext value={activeNewTask}>
-      <NewTaskFlowContext.Provider value={value}>{props.children}</NewTaskFlowContext.Provider>
+      <PromachosDraftContext value={props.promachos === true}>
+        <NewTaskFlowContext.Provider value={value}>{props.children}</NewTaskFlowContext.Provider>
+      </PromachosDraftContext>
     </ActiveNewTaskContext>
   );
 }

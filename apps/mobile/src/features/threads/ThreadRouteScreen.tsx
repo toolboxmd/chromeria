@@ -869,6 +869,7 @@ function ThreadRouteContent(
           environmentId: String(creation.environmentId),
           projectId: String(creation.creation.projectId),
           ...(selectedThreadProject ? { title: selectedThreadProject.title } : {}),
+          ...(creation.creation.prismRole === "promachos" ? { promachos: "1" } : {}),
         },
       }),
     );

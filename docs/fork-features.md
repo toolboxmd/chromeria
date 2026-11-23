@@ -1648,6 +1648,10 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/mobile/src/components/ComposerToolbar.tsx",
     "apps/mobile/src/features/layout/workspace/WorkspaceSectionToolbar.tsx",
     "apps/mobile/src/features/threads/PendingUserInputCard.tsx",
+    "apps/mobile/generated-uniwind-default-theme-variables.json",
+    "apps/mobile/generated-uniwind-themes.css",
+    "apps/mobile/src/features/threads/thread-route-state.ts",
+    "apps/mobile/src/lib/mobileTheme.ts",
     "apps/mobile/src/features/settings/components/settings-page-targets.ts",
     "apps/mobile/src/features/settings/settings-search.ts",
     "apps/mobile/src/state/threadOutboxDelivery.permissions.test.ts"

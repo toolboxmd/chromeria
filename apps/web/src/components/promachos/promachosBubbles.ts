@@ -46,5 +46,5 @@ const PROMACHOS_BUBBLE_EXTENSIONS: MarkdownExtensions = { promachosBubbles: true
 export const PROMACHOS_BUBBLE_MARKDOWN = {
   extensions: PROMACHOS_BUBBLE_EXTENSIONS,
   className:
-    "flex flex-col items-start gap-2 [&>div]:min-w-0 [&>div]:max-w-[82%] [&>div]:rounded-[18px] [&>div]:bg-message [&>div]:px-3.5 [&>div]:py-2.5 [&>div]:text-message-foreground [&>div[data-promachos-card]]:border [&>div[data-promachos-card]]:bg-card [&>div[data-promachos-card]]:px-3 [&>div[data-promachos-card]]:py-1 [&>div>:first-child]:mt-0 [&>div>:last-child]:mb-0 [&>div:empty]:hidden [&>hr]:self-stretch [&>section]:self-stretch",
+    "flex flex-col items-start gap-2 [&>div]:min-w-0 [&>div]:max-w-[82%] [&>div]:rounded-[18px] [&>div]:bg-message dark:[&>div]:bg-[color-mix(in_srgb,var(--foreground)_20%,var(--background))] [&>div]:px-3.5 [&>div]:py-2.5 [&>div]:text-message-foreground [&>div[data-promachos-card]]:border [&>div[data-promachos-card]]:bg-card dark:[&>div[data-promachos-card]]:bg-card [&>div[data-promachos-card]]:px-3 [&>div[data-promachos-card]]:py-1 [&>div>:first-child]:mt-0 [&>div>:last-child]:mb-0 [&>div:empty]:hidden [&>hr]:self-stretch [&>section]:self-stretch",
 };

@@ -318,7 +318,7 @@ export function ComposerActionButton(props: {
             : props.disabled
               ? "bg-foreground/12"
               : props.variant === "neutral"
-                ? "bg-foreground"
+                ? "bg-promachos-outbound"
                 : "bg-primary",
         )}
       >
@@ -338,7 +338,7 @@ export function ComposerActionButton(props: {
                 : props.disabled
                   ? "accent-foreground"
                   : props.variant === "neutral"
-                    ? "accent-screen"
+                    ? "accent-promachos-outbound-foreground"
                     : "accent-primary-foreground"
             }
             type="monochrome"

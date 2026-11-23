@@ -8,6 +8,8 @@ export type NewTaskDraftRouteParams = {
   readonly cloning?: string | string[];
   readonly draftId?: string | string[];
   readonly incomingShareId?: string | string[];
+  /** Fork: "1" when the Promachos tab's compose button started this draft as his conversation. */
+  readonly promachos?: string | string[];
 };
 
 export function isDraftThreadRoute(

@@ -7,6 +7,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   ProjectId,
+  ProviderInstanceId,
   type VcsListRefsResult,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -36,6 +37,7 @@ const mocks = vi.hoisted(() => ({
   serverConfig: vi.fn(),
   openScratch: vi.fn(),
   prepareTriage: vi.fn(),
+  promachosModels: vi.fn(),
 }));
 vi.mock("../../state/atom-registry", () => ({
   appAtomRegistry: {
@@ -110,7 +112,7 @@ vi.mock("../../state/workspace", () => ({
   useWorkspaceEnvironments: () => [],
 }));
 vi.mock("../../state/shell", () => ({ useEnvironmentShellReadiness: () => ({}) }));
-vi.mock("../promachos/promachosHome", () => ({ usePromachosDraftModels: () => null }));
+vi.mock("../promachos/promachosHome", () => ({ usePromachosChatModels: mocks.promachosModels }));
 vi.mock("../../lib/clock", () => ({ useNowMinuteMs: () => 0 }));
 
 import { NewTaskFlowProvider, useNewTaskFlow } from "./new-task-flow-provider";
@@ -136,6 +138,7 @@ function setup() {
   vi.clearAllMocks();
   const registry = AtomRegistry.make();
   mocks.registry.mockReturnValue(registry);
+  mocks.promachosModels.mockReturnValue(null);
   const projects = [project("one", "a"), project("one", "b"), project("two", "b")];
   mocks.projects.mockReturnValue(projects);
   mocks.presentation.mockReturnValue({
@@ -252,11 +255,11 @@ function setup() {
     get current() {
       return current;
     },
-    async render(active: boolean, pickOnMount?: EnvironmentProject) {
+    async render(active: boolean, pickOnMount?: EnvironmentProject, promachos = false) {
       await act(async () =>
         root.render(
           <RegistryContext.Provider value={registry}>
-            <NewTaskFlowProvider active={active} flowKey="test-flow">
+            <NewTaskFlowProvider active={active} flowKey="test-flow" promachos={promachos}>
               <Probe pickOnMount={pickOnMount} />
             </NewTaskFlowProvider>
           </RegistryContext.Provider>,
@@ -388,6 +391,32 @@ it("uses cached repository capability and branch defaults while offline", async 
   expect(screen.current.draftKey).toBe(draftKey);
   expect(screen.current.selectedBranchName).toBe("main");
 });
+
+it.each([
+  ["the Promachos compose button", true, "promachos", "local"],
+  ["any other entry, such as a share, in the home project", false, undefined, "worktree"],
+] as const)(
+  "starts a draft from %s with the Prism role its route carries",
+  async (_origin, promachos, prismRole, workspaceMode) => {
+    using screen = setup();
+    mocks.promachosModels.mockReturnValue([{ model: "any" }]);
+    await screen.render(true, undefined, promachos);
+    act(() => {
+      mocks.writeSettings(screen.current.draftKey, {
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "placeholder" },
+      });
+      screen.current.setPrompt("Hello");
+    });
+    const message = screen.current.buildPendingTaskMessage({
+      commandId: "command-1",
+      messageId: "message-1",
+      threadId: "thread-1",
+      createdAt: "2026-11-23T00:00:00Z",
+    });
+    expect(message?.creation?.prismRole).toBe(prismRole);
+    expect(message?.creation?.workspaceMode).toBe(workspaceMode);
+  },
+);
 
 const playbookPrompt = (machine: string) =>
   `Read [triage-playbook.md](/${machine}/triage-playbook.md) and follow it. `;

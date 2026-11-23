@@ -1580,14 +1580,14 @@ function useMarkdownStyles(promachos = false): MarkdownStyleSets {
     theme["--color-border"],
     theme["--color-user-bubble"],
   );
-  const userBubble = promachos ? theme["--color-foreground"] : theme["--color-user-bubble"];
+  const userBubble = promachos ? theme["--color-promachos-outbound"] : theme["--color-user-bubble"];
   const markdownUserBodyColor = promachos
-    ? theme["--color-screen"]
+    ? theme["--color-promachos-outbound-foreground"]
     : theme["--color-user-bubble-foreground"];
   const markdownUserCodeBg = theme["--color-md-user-code-bg"];
   const markdownUserCodeText = theme["--color-md-user-code-text"];
   const markdownUserInlineCodeText = promachos
-    ? theme["--color-screen"]
+    ? theme["--color-promachos-outbound-foreground"]
     : theme["--color-user-bubble-foreground-muted"];
   const markdownUserFenceBg = theme["--color-md-user-fence-bg"];
   const regularFontFamily = FONT_FAMILIES.regular;
@@ -3432,9 +3432,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     [androidButtonSize, androidIconSize],
   );
   const screenColor = theme["--color-screen"];
-  // Fork: the user's bubble in a Promachos chat is the theme's ink, as its send button is.
+  // Fork: the user's bubble in a Promachos chat is a dark neutral, as its send button is.
   const userBubbleColor = use(PromachosChatContext)
-    ? theme["--color-foreground"]
+    ? theme["--color-promachos-outbound"]
     : theme["--color-user-bubble"];
   const openSkillInstructions = (path: string) => {
     void Haptics.selectionAsync();

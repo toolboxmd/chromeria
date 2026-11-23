@@ -486,7 +486,9 @@ function RootStackLayout(props: {
     draftRoute !== undefined &&
     props.state.routes.findLast((route) => route.name === "Thread") === draftRoute;
   const draftParams = (
-    draftRoute?.params as { draft?: { draftId?: string | string[] } } | undefined
+    draftRoute?.params as
+      | { draft?: { draftId?: string | string[]; promachos?: string | string[] } }
+      | undefined
   )?.draft;
   const routeDraftId = Array.isArray(draftParams?.draftId)
     ? draftParams.draftId[0]
@@ -497,6 +499,7 @@ function RootStackLayout(props: {
       active={draftRouteOnTop}
       flowKey={draftRoute === undefined ? undefined : newTaskFlowKey(draftRoute)}
       routeDraftId={routeDraftId}
+      promachos={[draftParams?.promachos].flat()[0] === "1"}
     >
       <HardwareKeyboardCommandProvider pathname={pathname}>
         <ShowcaseReadyMarker />

@@ -20,6 +20,7 @@ export function usePromachosCompose() {
             requestId: uuidv4(),
             environmentId: String(home.environmentId),
             projectId: String(home.projectId),
+            promachos: "1",
           },
         },
       }),
