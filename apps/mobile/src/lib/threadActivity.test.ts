@@ -2370,6 +2370,10 @@ describe("foldKeepWarmPings", () => {
           attachments: [],
           runId: RunId.make(runId),
           streaming: false,
+          visibility: "local",
+          sourceThreadId: ThreadId.make("thread"),
+          createdAt: "2026-11-23T10:00:00Z",
+          updatedAt: "2026-11-23T10:00:00Z",
         },
       }) satisfies ThreadFeedEntry;
     const ping = (n: number) => [
