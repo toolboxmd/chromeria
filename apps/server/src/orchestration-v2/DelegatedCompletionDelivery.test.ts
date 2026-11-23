@@ -7150,6 +7150,7 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
     { followUp: "same scope" },
     { followUp: "other scope" },
     { followUp: "stopped" },
+    { followUp: "other scope beside a Run group" },
   ] as const)("a $followUp follow-up of a task in a queued wake", ({ followUp }) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -7180,10 +7181,75 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
         now,
       });
       yield* orchestrator.recoverDelegatedTasks;
-      const delivery = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
-        (run) => run.id === runId,
-      )!.delegatedCompletion!.delivery!;
-      assert.deepEqual(delivery.taskIds, [child.taskId]);
+      const seeded = yield* orchestrator.getThreadProjection(threadId);
+      const parentRun = seeded.runs.find((run) => run.id === runId)!;
+      const firstDelivery = parentRun.delegatedCompletion!.delivery!;
+      assert.deepEqual(firstDelivery.taskIds, [child.taskId]);
+      // The wake also holds a Run group member; the other member was read but still renders.
+      const groupId = NodeId.make(`group:${name}`);
+      const readMember = NodeId.make(`node:${name}-g0`);
+      const heldMember = NodeId.make(`node:${name}-g1`);
+      const withGroup = followUp === "other scope beside a Run group";
+      const delivery = withGroup
+        ? {
+            ...firstDelivery,
+            taskIds: [child.taskId, heldMember],
+            purposeCauses: [
+              ...(firstDelivery.purposeCauses ?? []),
+              {
+                taskId: heldMember,
+                runId: RunId.make(`run:${heldMember}`),
+                purpose: executionPurposeOf(parentRun),
+              },
+            ],
+          }
+        : firstDelivery;
+      if (withGroup) {
+        const childTask = seeded.subagents.find((row) => row.id === child.taskId)!;
+        yield* eventSink.write({
+          commandId: CommandId.make(`command:${name}:group`),
+          events: [
+            ...[readMember, heldMember].map((id, index) => ({
+              id: EventId.make(`event:${name}:${id}`),
+              type: "subagent.updated" as const,
+              threadId,
+              runId,
+              nodeId: id,
+              driver,
+              providerInstanceId: modelSelection.instanceId,
+              occurredAt: now,
+              payload: {
+                ...childTask,
+                id,
+                childThreadId: null,
+                runGroupId: groupId,
+                title: `Member ${index}`,
+                result: `member ${index} finished`,
+                completionSource: {
+                  runId: RunId.make(`run:${id}`),
+                  purpose: executionPurposeOf(parentRun),
+                },
+                completionDelivery:
+                  index === 0
+                    ? { state: "acknowledged" as const, observedByRunId: runId }
+                    : { state: "claimed" as const, observedByRunId: null },
+              },
+            })),
+            {
+              id: EventId.make(`event:${name}:group-cohort`),
+              type: "run.updated" as const,
+              threadId,
+              runId,
+              providerInstanceId: modelSelection.instanceId,
+              occurredAt: now,
+              payload: {
+                ...parentRun,
+                delegatedCompletion: { ...parentRun.delegatedCompletion!, delivery },
+              },
+            },
+          ],
+        });
+      }
       yield* orchestrator.dispatch({
         type: "message.dispatch",
         createdBy: "agent",
@@ -7247,7 +7313,7 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
                 },
               ]
             : []),
-          followUp === "other scope"
+          followUp === "other scope" || withGroup
             ? {
                 ...terminal,
                 payload: {
@@ -7264,7 +7330,7 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
       const cancelled =
         (yield* orchestrator.getThreadProjection(threadId)).runs.find((run) => run.id === wake.id)
           ?.status === "cancelled";
-      assert.equal(cancelled, followUp !== "same scope");
+      assert.equal(cancelled, followUp === "other scope" || followUp === "stopped");
       // Leaving the wake cancels it, and its finalization reserves what still waits.
       if (followUp === "other scope") {
         yield* eventSink
@@ -7306,6 +7372,15 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
           reserved?.purposeCauses?.map((cause) => cause.purpose.scope),
           [issueScope(2)],
         );
+      } else if (withGroup) {
+        // The wake keeps the Run group, and its text still lists every member.
+        assert.equal(queued.status, "queued");
+        assert.equal(task.completionDelivery?.state, "pending");
+        assert.deepEqual(reserved?.taskIds, [heldMember]);
+        const message = parent.messages.find((row) => row.id === delivery.messageId);
+        assert.deepEqual(message?.delegatedCompletion?.taskIds, [heldMember]);
+        assert.include(message?.text ?? "", "member 0 finished");
+        assert.include(message?.text ?? "", "member 1 finished");
       } else {
         // A stopped follow-up is never sent, so the wake that held the task is cancelled.
         assert.equal(queued.status, "cancelled");

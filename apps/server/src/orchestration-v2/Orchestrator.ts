@@ -17471,6 +17471,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       };
     }
     const message = completionDeliveryMessage(input.parentProjection, input.delivery);
+    // A Run group's wake lists every member, read ones included, so it renders from the cohort.
+    const wakeTasks = input.parentProjection.subagents.some(
+      (candidate) => taskIds.includes(candidate.id) && candidate.runGroupId !== undefined,
+    )
+      ? (yield* projectionStore
+          .getThreadRecords(input.parentRun.threadId, ["subagents"], {
+            subagentRunIds: [input.parentRun.id],
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestratorProjectionError({ threadId: input.parentRun.threadId, cause }),
+            ),
+          )).subagents
+      : input.parentProjection.subagents;
     return {
       task: input.task,
       parentRun,
@@ -17479,7 +17494,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? undefined
           : {
               ...message,
-              text: yield* completionWakeDetail(input.parentProjection, taskIds),
+              text: yield* completionWakeDetail({ subagents: wakeTasks }, taskIds),
               delegatedCompletion: {
                 parentRunId: input.parentRun.id,
                 generation: input.delivery.generation,
