@@ -157,7 +157,7 @@ import {
   View,
 } from "react-native";
 import { Image as ExpoImage } from "expo-image";
-import { useResolveClassNames } from "uniwind";
+import { ScopedVariables, useResolveClassNames } from "uniwind";
 import { useReduceMotionEnabled } from "../../lib/appState";
 import { useFilePreviewGallery, FilePreviewGallery } from "../../components/ui/FilePreviewGallery";
 import { assetImageSource } from "../../lib/assetImageSource";
@@ -181,7 +181,11 @@ import { MARKDOWN_IMAGE_MAX_WIDTH, resolveMarkdownImageDisplaySize } from "./mar
 import { FilePreviewModal, type FilePreviewSource } from "../../components/ui/FilePreviewModal";
 import { inlineFilePreviewKind, isPdfFile } from "../../lib/filePreview";
 import { ThreadInlineFilePreview } from "./ThreadInlineFilePreview";
-import { flattenThemeColor, themeColorWithContrast } from "../../lib/mobileTheme";
+import {
+  flattenThemeColor,
+  themeColorWithAlpha,
+  themeColorWithContrast,
+} from "../../lib/mobileTheme";
 import { PresentationSource } from "../../components/ui/NativePresentation";
 import { NativeScrollViewMarker } from "../../native/NativeScrollViewMarker";
 import Animated, { FadeIn, FadeInDown, type SharedValue } from "react-native-reanimated";
@@ -1585,7 +1589,9 @@ function useMarkdownStyles(promachos = false): MarkdownStyleSets {
     ? theme["--color-promachos-outbound-foreground"]
     : theme["--color-user-bubble-foreground"];
   const markdownUserCodeBg = theme["--color-md-user-code-bg"];
-  const markdownUserCodeText = theme["--color-md-user-code-text"];
+  const markdownUserCodeText = promachos
+    ? theme["--color-promachos-outbound-foreground"]
+    : theme["--color-md-user-code-text"];
   const markdownUserInlineCodeText = promachos
     ? theme["--color-promachos-outbound-foreground"]
     : theme["--color-user-bubble-foreground-muted"];
@@ -3432,10 +3438,22 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     [androidButtonSize, androidIconSize],
   );
   const screenColor = theme["--color-screen"];
-  // Fork: the user's bubble in a Promachos chat is a dark neutral, as its send button is.
-  const userBubbleColor = use(PromachosChatContext)
+  // Fork: the user's bubble in a Promachos chat is a dark neutral, as its send button is, and
+  // everything drawn on it takes that bubble's ink.
+  const promachosChat = use(PromachosChatContext);
+  const userBubbleColor = promachosChat
     ? theme["--color-promachos-outbound"]
     : theme["--color-user-bubble"];
+  const promachosInk = theme["--color-promachos-outbound-foreground"];
+  const promachosBubbleVariables = promachosChat
+    ? {
+        "--color-user-bubble": theme["--color-promachos-outbound"],
+        "--color-user-bubble-foreground": promachosInk,
+        "--color-user-bubble-foreground-muted": themeColorWithAlpha(promachosInk, 0.78),
+        "--color-user-bubble-skill-foreground": promachosInk,
+        "--color-md-user-code-text": promachosInk,
+      }
+    : null;
   const openSkillInstructions = (path: string) => {
     void Haptics.selectionAsync();
     navigation.navigate("ThreadFile", {
@@ -4498,7 +4516,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     );
   }
 
-  return (
+  const feed = (
     <PresentationSource identifier={fileShareSourceIdentifier} style={{ flex: 1 }}>
       <View className="flex-1" onLayout={handleViewportLayout}>
         {/* In a split, rows only re-wrap in the render that hands the list its new width. A native
@@ -4651,6 +4669,8 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       </View>
     </PresentationSource>
   );
+  // Always wrapped, so the feed keeps its state when the chat turns out to be his.
+  return <ScopedVariables variables={promachosBubbleVariables ?? {}}>{feed}</ScopedVariables>;
 });
 
 function ThreadFeedLoadEarlierControl(props: ThreadFeedHistoryControls) {

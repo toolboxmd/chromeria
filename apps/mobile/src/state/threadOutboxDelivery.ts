@@ -541,6 +541,7 @@ export const restoreRejectedQueuedMessage = Effect.fn("ThreadOutbox.restoreRejec
           : {}),
         ...(queuedMessage.freshContext ? { freshContext: true } : {}),
         ...(queuedMessage.creation?.bare ? { bare: true } : {}),
+        ...(queuedMessage.creation?.promachos ? { promachos: true } : {}),
         ...(queuedMessage.creation
           ? {
               workspaceSelection: {
