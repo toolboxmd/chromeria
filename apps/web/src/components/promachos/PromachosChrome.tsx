@@ -1,6 +1,6 @@
 import { promachosStatusText } from "@t3tools/client-runtime/promachos/status";
-import { useGT } from "gt-react";
-import { SmileIcon } from "lucide-react";
+import { useGT, useLocale } from "gt-react";
+import { ClockIcon, SmileIcon } from "lucide-react";
 import type { MouseEvent, ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
@@ -97,6 +97,41 @@ export function PromachosStatusLine({
       >
         {text}
         <ActivityShimmerOverlay>{text}</ActivityShimmerOverlay>
+      </span>
+    </div>
+  );
+}
+
+function lineTime(input: string, locale: string, today: string, yesterday: string) {
+  const at = new Date(input);
+  if (Number.isNaN(at.getTime())) return "";
+  const time = at.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
+  const now = new Date();
+  const dayBefore = new Date(now);
+  dayBefore.setDate(now.getDate() - 1);
+  if (at.toDateString() === now.toDateString()) return `${today} ${time}`;
+  if (at.toDateString() === dayBefore.toDateString()) return `${yesterday} ${time}`;
+  return `${at.toLocaleDateString(locale, { month: "short", day: "numeric" })} ${time}`;
+}
+
+/** A centered gray line between groups: the time they start, or an event with its icon. */
+export function PromachosLine(
+  props: { kind: "time"; at: string } | { kind: "notice"; label: string },
+) {
+  const gt = useGT();
+  const locale = useLocale();
+  return (
+    <div className="flex items-center justify-center gap-1.5 py-2 text-muted-foreground/80 text-xs">
+      {props.kind === "notice" ? <ClockIcon aria-hidden className="size-3.5 shrink-0" /> : null}
+      <span className="min-w-0 truncate">
+        {props.kind === "time"
+          ? lineTime(
+              props.at,
+              locale,
+              gt("Today", { $context: "time line in a chat, before a time of day" }),
+              gt("Yesterday", { $context: "time line in a chat, before a time of day" }),
+            )
+          : props.label}
       </span>
     </div>
   );

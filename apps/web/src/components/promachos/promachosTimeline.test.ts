@@ -16,6 +16,7 @@ import {
 } from "../chat/MessagesTimeline.logic";
 import {
   PROMACHOS_STATUS_ROW_ID,
+  PROMACHOS_TIME_ROW_PREFIX,
   PROMACHOS_TYPING_ROW_ID,
   promachosTimelineDisclosures,
   promachosTimelineRows,
@@ -165,7 +166,9 @@ describe("Promachos V2 timeline", () => {
         ],
         optimisticMessages: [],
       });
-      const rows = chat({ ...base, timelineEntries });
+      const rows = chat({ ...base, timelineEntries }).filter(
+        (row) => !row.id.startsWith(PROMACHOS_TIME_ROW_PREFIX),
+      );
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
         kind: "work",
@@ -183,9 +186,18 @@ describe("Promachos V2 timeline", () => {
       { kind: "thinking", id: "thought", createdAt: null, label: "Reading the manifest" },
       { kind: "working", id: "work", createdAt: null },
     ]);
-    expect(rows.map((row) => row.id)).toEqual(["html", "app", PROMACHOS_STATUS_ROW_ID]);
+    expect(rows.map((row) => row.id)).toEqual([
+      `${PROMACHOS_TIME_ROW_PREFIX}html`,
+      "html",
+      "app",
+      PROMACHOS_STATUS_ROW_ID,
+    ]);
     expect(rows.at(-1)).toMatchObject({ kind: "thinking", label: "Reading the manifest" });
-    expect(promachosTimelineRows(outputRows).map((row) => row.id)).toEqual(["html", "app"]);
+    expect(promachosTimelineRows(outputRows).map((row) => row.id)).toEqual([
+      `${PROMACHOS_TIME_ROW_PREFIX}html`,
+      "html",
+      "app",
+    ]);
   });
   it("holds his reply back while it is written, showing the typing status instead", () => {
     const rows = promachosTimelineRows([
@@ -208,5 +220,21 @@ describe("Promachos V2 timeline", () => {
       } as MessagesTimelineRow,
     ]);
     expect(rows.map((row) => row.id)).toEqual([PROMACHOS_TYPING_ROW_ID]);
+  });
+  it("starts a new group under a time line after an hour's pause", () => {
+    const row = (id: string, createdAt: string) =>
+      ({ kind: "html-render", id, createdAt }) as MessagesTimelineRow;
+    const rows = promachosTimelineRows([
+      row("a", "2026-01-01T08:00:00.000Z"),
+      row("b", "2026-01-01T08:30:00.000Z"),
+      row("c", "2026-01-01T10:00:00.000Z"),
+    ]);
+    expect(rows.map((entry) => entry.id)).toEqual([
+      `${PROMACHOS_TIME_ROW_PREFIX}a`,
+      "a",
+      "b",
+      `${PROMACHOS_TIME_ROW_PREFIX}c`,
+      "c",
+    ]);
   });
 });

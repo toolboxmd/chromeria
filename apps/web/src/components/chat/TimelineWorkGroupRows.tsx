@@ -62,8 +62,13 @@ import {
   workEntryIconName,
 } from "./TimelineWorkEntryRow.logic";
 import { formatWorkingTimerNow } from "./TimelineWorkGroupRows.logic";
-import { PromachosStatusLine } from "../promachos/PromachosChrome";
-import { PROMACHOS_STATUS_ROW_ID, PROMACHOS_TYPING_ROW_ID } from "../promachos/promachosTimeline";
+import { PromachosLine, PromachosStatusLine } from "../promachos/PromachosChrome";
+import {
+  PROMACHOS_NOTICE_ROW_PREFIX,
+  PROMACHOS_STATUS_ROW_ID,
+  PROMACHOS_TIME_ROW_PREFIX,
+  PROMACHOS_TYPING_ROW_ID,
+} from "../promachos/promachosTimeline";
 
 export const WorkGroupSection = memo(function WorkGroupSection({
   anchorKey,
@@ -447,6 +452,12 @@ export function ThinkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind:
   const m = useMessages();
   const { isCompacting, isPreparingWorktree, liveAnswerPreview, providerStartingLabel } =
     use(TimelineRowActivityCtx);
+  if (ctx.promachos && row.id.startsWith(PROMACHOS_TIME_ROW_PREFIX) && row.createdAt !== null) {
+    return <PromachosLine kind="time" at={row.createdAt} />;
+  }
+  if (ctx.promachos && row.id.startsWith(PROMACHOS_NOTICE_ROW_PREFIX)) {
+    return <PromachosLine kind="notice" label={row.label ?? ""} />;
+  }
   if (ctx.promachos && (row.id === PROMACHOS_STATUS_ROW_ID || row.id === PROMACHOS_TYPING_ROW_ID)) {
     return <PromachosStatusLine label={row.label} typing={row.id === PROMACHOS_TYPING_ROW_ID} />;
   }

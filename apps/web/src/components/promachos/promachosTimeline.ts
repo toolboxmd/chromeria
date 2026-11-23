@@ -14,10 +14,33 @@ type FoldInput = Pick<
 export const PROMACHOS_STATUS_ROW_ID = "promachos-status";
 /** The status row while his reply is being written; the reply shows once it is done. */
 export const PROMACHOS_TYPING_ROW_ID = "promachos-typing";
+/** Centered gray lines: a time between groups, or something that happened without a message. */
+export const PROMACHOS_TIME_ROW_PREFIX = "promachos-time:";
+export const PROMACHOS_NOTICE_ROW_PREFIX = "promachos-notice:";
+
+// Events recorded in the conversation that read as one line rather than a message.
+const NOTICE_ITEM_TYPES = new Set(["subagent", "handoff", "notification", "system_notice", "fork"]);
+// A pause this long starts a new group under its own time line.
+const TIME_GAP_MS = 60 * 60 * 1000;
 
 /** The conversation and outputs, with technical activity collapsed into one status row. */
 export function promachosTimelineRows(rows: MessagesTimelineRow[]): MessagesTimelineRow[] {
   const conversation: MessagesTimelineRow[] = [];
+  let lastAtMs = Number.NEGATIVE_INFINITY;
+  const push = (row: MessagesTimelineRow) => {
+    const atMs = row.createdAt === null ? Number.NaN : Date.parse(row.createdAt);
+    if (!Number.isNaN(atMs)) {
+      if (atMs - lastAtMs >= TIME_GAP_MS) {
+        conversation.push({
+          kind: "thinking",
+          id: `${PROMACHOS_TIME_ROW_PREFIX}${row.id}`,
+          createdAt: row.createdAt,
+        });
+      }
+      lastAtMs = atMs;
+    }
+    conversation.push(row);
+  };
   let working = false;
   let typing = false;
   let label: string | undefined;
@@ -28,22 +51,36 @@ export function promachosTimelineRows(rows: MessagesTimelineRow[]): MessagesTime
           typing = true;
           break;
         }
-        conversation.push(row);
+        push(row);
         break;
       case "proposed-plan":
       case "worktree-setup":
       case "html-render":
       case "mcp-app":
-        conversation.push(row);
+        push(row);
         break;
-      case "event":
-        if (row.projectedItem.item.type === "error") conversation.push(row);
+      case "event": {
+        const item = row.projectedItem.item;
+        if (item.type === "error") {
+          push(row);
+          break;
+        }
+        const label = item.type === "system_notice" ? item.message : item.title;
+        if (NOTICE_ITEM_TYPES.has(item.type) && label) {
+          push({
+            kind: "thinking",
+            id: `${PROMACHOS_NOTICE_ROW_PREFIX}${row.id}`,
+            createdAt: row.createdAt,
+            label,
+          });
+        }
         break;
+      }
       case "work": {
         const errors = row.groupedEntries.filter(
           (entry) => entry.itemType === "error" || entry.sourceActivityKind === "runtime.error",
         );
-        if (errors.length > 0) conversation.push({ ...row, groupedEntries: errors });
+        if (errors.length > 0) push({ ...row, groupedEntries: errors });
         break;
       }
       case "work-live":
