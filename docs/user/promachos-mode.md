@@ -15,6 +15,18 @@ working indicator. Questions and approvals appear as cards in the chat.
 Choose **Code** in the same switch to return to the standard view. To pick another
 home, open the menu on the home's name.
 
+## On the phone
+
+The mobile app has a **Promachos** tab in the bottom bar. It lists the home's
+conversations, and **New conversation** starts one. His replies show as the same
+bubbles as on desktop; tool activity still shows as in the standard view. The phone
+remembers its own home: choose it in the tab, and tap the home's name to choose
+another.
+
+Opening the app without a link or notification returns to the tab you used last. On
+the Promachos tab that is the conversation you had open, or the list if you had left
+it.
+
 ## Create a home
 
 **New home** asks for a folder, `~/promachos` unless you change it, and creates it on
