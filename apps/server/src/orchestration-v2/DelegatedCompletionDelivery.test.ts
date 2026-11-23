@@ -7154,6 +7154,7 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
     { followUp: "same scope beside a Run group" },
     { followUp: "other scope in a mixed wake" },
     { followUp: "mixed follow-up in a mixed wake" },
+    { followUp: "other scope beside a stopped result" },
   ] as const)("a $followUp follow-up of a task in a queued wake", ({ followUp }) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -7196,14 +7197,22 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
       const issueTwoResult = NodeId.make(`node:${name}-issue-2`);
       const withGroup = followUp.endsWith("beside a Run group");
       const mixed = followUp.endsWith("in a mixed wake");
+      // A stopped follow-up main left behind: the claim still names the earlier result.
+      const staleId = NodeId.make(`node:${name}-stale`);
+      const withStale = followUp === "other scope beside a stopped result";
       const siblings = [
         ...(withGroup
           ? [
-              { id: readMember, group: true, issue: undefined, read: true },
-              { id: heldMember, group: true, issue: undefined, read: false },
+              { id: readMember, group: true, issue: undefined, read: true, stale: false },
+              { id: heldMember, group: true, issue: undefined, read: false, stale: false },
             ]
           : []),
-        ...(mixed ? [{ id: issueTwoResult, group: false, issue: 2, read: false }] : []),
+        ...(mixed
+          ? [{ id: issueTwoResult, group: false, issue: 2, read: false, stale: false }]
+          : []),
+        ...(withStale
+          ? [{ id: staleId, group: false, issue: undefined, read: false, stale: true }]
+          : []),
       ];
       const purposeOf = (issue: number | undefined) =>
         issue === undefined
@@ -7251,9 +7260,10 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
                 title: `Member ${index}`,
                 result: `member ${index} finished`,
                 completionSource: {
-                  runId: RunId.make(`run:${sibling.id}`),
+                  runId: RunId.make(`run:${sibling.id}${sibling.stale ? ":stopped" : ""}`),
                   purpose: purposeOf(sibling.issue),
                 },
+                ...(sibling.stale ? { followUpResult: "STOPPED RESULT" } : {}),
                 completionDelivery: sibling.read
                   ? { state: "acknowledged" as const, observedByRunId: runId }
                   : { state: "claimed" as const, observedByRunId: null },
@@ -7401,12 +7411,16 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
         assert.deepEqual(reserved?.taskIds, [issueTwoResult]);
         const message = parent.messages.find((row) => row.id === delivery.messageId);
         assert.deepEqual(message?.delegatedCompletion?.taskIds, [issueTwoResult]);
-      } else if (withGroup) {
-        // A wake holding a Run group keeps its text; the newer result waits for its own wake.
+      } else if (withGroup || withStale) {
+        // A wake whose text would render a result its reservation does not own (a Run group, or
+        // a stopped follow-up main left) keeps its text; the newer result waits for its own wake.
         assert.equal(queued.status, "queued");
         assert.equal(task.completionDelivery?.state, "pending");
         const message = parent.messages.find((row) => row.id === delivery.messageId);
-        assert.deepEqual(message?.delegatedCompletion?.taskIds, [child.taskId, heldMember]);
+        assert.deepEqual(message?.delegatedCompletion?.taskIds, [
+          child.taskId,
+          withGroup ? heldMember : staleId,
+        ]);
         assert.equal(message?.text, wakeText);
       } else if (followUp === "same scope") {
         // The newer result replaces the older one in the wake, with its cause.

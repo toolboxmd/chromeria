@@ -17419,13 +17419,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     };
   });
 
-  const holdsRunGroup = (
+  // Fork: a queued wake's text renders each task's latest result, and a Run group's every member.
+  // A task's result is replaced in or taken out of it only when its rewrite renders nothing the
+  // reservation does not own: no Run group, and every other task's latest result is its own.
+  const queuedWakeRewritable = (
     tasks: ReadonlyArray<OrchestrationV2Subagent>,
-    taskIds: ReadonlyArray<NodeId>,
+    delivery: OrchestrationV2DelegatedCompletionDelivery,
     task: OrchestrationV2Subagent,
   ) =>
-    task.runGroupId !== undefined ||
-    tasks.some((candidate) => taskIds.includes(candidate.id) && candidate.runGroupId !== undefined);
+    task.runGroupId === undefined &&
+    delivery.taskIds.every((taskId) => {
+      if (taskId === task.id) return true;
+      const reserved = tasks.find((candidate) => candidate.id === taskId);
+      return (
+        reserved !== undefined &&
+        reserved.runGroupId === undefined &&
+        deliveryOwnsLatestCompletion(delivery, reserved)
+      );
+    });
 
   // Fork: a task leaves a queued wake that has not started when its newer result cannot be sent
   // there. The wake is rewritten without it, or cancelled while keeping its delivery, so the
@@ -17585,11 +17596,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const queuedWake =
         deliveryRun?.status === "queued" && deliveryRun.userMessageId === delivery.messageId;
       // Fork: a task's newer result replaces the one its queued wake holds when it shares the
-      // wake's own scope, and otherwise takes the task out of the wake. A wake holding a Run
-      // group keeps its text, and a mixed wake takes no newer result.
+      // wake's own scope, and otherwise takes the task out of the wake. A mixed wake takes none.
       const replacing =
         !sameCompletion &&
-        !holdsRunGroup(input.parentProjection.subagents, delivery.taskIds, input.updatedTask);
+        queuedWakeRewritable(input.parentProjection.subagents, delivery, input.updatedTask);
       const wakeScope =
         deliveryRun === undefined ? undefined : executionPurposeOf(deliveryRun).scope;
       const sameScope =
@@ -18111,7 +18121,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const leavesQueuedWake =
         explicitlyStopped &&
         delivery !== null &&
-        !holdsRunGroup(planRecords.subagents, delivery.taskIds, task) &&
+        queuedWakeRewritable(planRecords.subagents, delivery, task) &&
         observedDelivery?.state === "claimed" &&
         parentRun !== undefined &&
         cohort !== undefined &&
