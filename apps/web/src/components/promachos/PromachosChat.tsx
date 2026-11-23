@@ -11,6 +11,13 @@ import { ComposerBanner } from "../chat/ComposerBanner";
 export const PROMACHOS_OUTBOUND_BUBBLE_CLASS_NAME =
   "rounded-[18px] px-3.5 py-2.5 [--contrast-message-foreground:var(--primary-foreground)] [--message-foreground:var(--primary-foreground)] [--message-surface:var(--primary)] [&_.text-foreground]:text-message-foreground [&_.text-muted-foreground]:text-message-foreground/75";
 
+/**
+ * One pill row for the composer: attach on the left, the prompt in the middle, dictation and send
+ * on the right. Rows the composer adds (validation, live transcription) wrap onto their own line.
+ */
+export const PROMACHOS_COMPOSER_SURFACE_CLASS_NAME =
+  "flex flex-wrap items-end rounded-4xl [&>*]:basis-full [&>[data-chat-composer-body]]:min-w-0 [&>[data-chat-composer-body]]:flex-1 [&>[data-chat-composer-body]]:basis-0 [&>[data-chat-composer-body]]:px-2 [&>[data-chat-composer-body]]:py-2.5 [&>[data-chat-composer-footer]]:contents [&_[data-chat-composer-attach]]:order-first [&_[data-chat-composer-attach]]:m-0 [&_[data-chat-composer-attach]]:basis-auto [&_[data-chat-composer-attach]]:py-1.5 [&_[data-chat-composer-attach]]:ps-1.5 [&_[data-chat-composer-actions=right]]:flex-none [&_[data-chat-composer-actions=right]]:basis-auto [&_[data-chat-composer-actions=right]]:py-1.5 [&_[data-chat-composer-actions=right]]:pe-1.5";
+
 /** Where the composer's question or approval card appears inside the chat. */
 export function PromachosInlineCardHost({
   hostRef,

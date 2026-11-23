@@ -3839,6 +3839,7 @@ export default function ChatView(props: ChatViewProps) {
                     <div className="relative">
                       <ComposerSurface.Shell contextRow={showComposerContextStrip}>
                         <ComposerSurface.Host
+                          className={promachosChat ? "rounded-4xl" : undefined}
                           inert={queuedRunEdit.isSaving}
                           aria-busy={queuedRunEdit.isSaving}
                         >
