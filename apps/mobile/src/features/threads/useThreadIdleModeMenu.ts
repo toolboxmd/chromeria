@@ -133,8 +133,8 @@ export function useThreadIdleModeMenu(thread: EnvironmentThreadShell | null): Ap
       choice === "keepWarm"
         ? { ios: "flame", android: "bolt" }
         : choice === "wight"
-          ? "robot"
+          ? "arrow.clockwise"
           : "moon",
-    items: [{ id: "idle-choices", inline: true, items }],
+    items,
   };
 }
