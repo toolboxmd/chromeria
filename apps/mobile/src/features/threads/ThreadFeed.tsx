@@ -1186,12 +1186,14 @@ function MessageAttachmentList(props: {
 }
 
 function MessageAttachmentUnknown(props: { readonly name: string; readonly inBubble?: boolean }) {
+  // Only a Promachos user's bubble is dark gray in light appearance; others keep the screen ink.
+  const onDarkBubble = use(PromachosChatContext) && props.inBubble === true;
   return (
     <View className="flex-row items-center gap-2 py-1">
       <PierreEntryIcon path={props.name} kind="file" size={16} />
       <Text
         className={
-          props.inBubble
+          onDarkBubble
             ? "min-w-0 flex-1 text-sm text-user-bubble-foreground"
             : "min-w-0 flex-1 text-sm text-foreground"
         }
@@ -1596,9 +1598,9 @@ function useMarkdownStyles(promachos = false): MarkdownStyleSets {
     ? theme["--color-promachos-outbound-foreground"]
     : theme["--color-user-bubble-foreground"];
   const markdownUserCodeBg = theme["--color-md-user-code-bg"];
-  // A Promachos bubble is dark gray in light appearance too, so its code blocks sit on the same
-  // card as his replies' code, where the appearance's syntax palette reads.
-  const markdownUserCodeText = promachos ? markdownCodeText : theme["--color-md-user-code-text"];
+  const markdownUserCodeText = promachos
+    ? theme["--color-promachos-outbound-foreground"]
+    : theme["--color-md-user-code-text"];
   const markdownUserInlineCodeText = promachos
     ? theme["--color-promachos-outbound-foreground"]
     : theme["--color-user-bubble-foreground-muted"];
@@ -1618,7 +1620,7 @@ function useMarkdownStyles(promachos = false): MarkdownStyleSets {
         inlineCodeColor: markdownUserInlineCodeText,
         codeColor: markdownUserCodeText,
         codeBackgroundColor: markdownUserCodeBg,
-        codeBlockBackgroundColor: promachos ? markdownCodeBg : markdownUserFenceBg,
+        codeBlockBackgroundColor: markdownUserFenceBg,
         fileTextColor: markdownUserBodyColor,
         quoteMarkerColor: markdownUserBodyColor,
         dividerColor: markdownUserBodyColor,
@@ -1629,6 +1631,16 @@ function useMarkdownStyles(promachos = false): MarkdownStyleSets {
         fontFamily: regularFontFamily,
         headingFontFamily: boldFontFamily,
         boldFontFamily,
+        // Fork: a Promachos user's bubble is dark gray in both appearances.
+        ...(promachos
+          ? {
+              bubble: {
+                background: userBubble,
+                foreground: markdownUserBodyColor,
+                codeScheme: "dark" as const,
+              },
+            }
+          : {}),
       },
     },
     assistant: {

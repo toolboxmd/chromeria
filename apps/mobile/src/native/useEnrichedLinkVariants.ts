@@ -1,5 +1,5 @@
 import { modelChipIcon } from "../lib/contextChipIconSource";
-import { use, useMemo } from "react";
+import { useMemo } from "react";
 import {
   assistantCitationLabel,
   parseAssistantCitationHref,
@@ -14,7 +14,6 @@ import { contextChipIconSource } from "../lib/contextChipIconSource";
 import { markdownFileIconSource } from "../lib/markdownFileIcons";
 import { markdownLinkIcon } from "../lib/markdownLinkIcons";
 import { useUniwindTheme } from "../lib/useUniwindTheme";
-import { PromachosChatContext } from "../features/promachos/PromachosBubbles";
 import { resolveMarkdownFileIcon, resolveMarkdownLinkPresentation } from "../lib/markdownLinks";
 import type {
   MarkdownLinkCustomization,
@@ -122,18 +121,18 @@ export function useEnrichedLinkVariants(
 ) {
   const { linkCustomization, skills, models, textStyle, fileEmbedLabel } = props;
   const globalTheme = useUniwindTheme();
-  // Fork: a Promachos chat's user bubble is its own dark gray, so chips check contrast against it.
-  const promachos = use(PromachosChatContext);
+  // Fork: text on its own bubble surface checks chip contrast against that surface.
+  const bubble = textStyle.bubble;
   const theme = useMemo(
     () =>
-      promachos
+      bubble
         ? {
             ...globalTheme,
-            "--color-user-bubble": globalTheme["--color-promachos-outbound"],
-            "--color-user-bubble-foreground": globalTheme["--color-promachos-outbound-foreground"],
+            "--color-user-bubble": bubble.background,
+            "--color-user-bubble-foreground": bubble.foreground,
           }
         : globalTheme,
-    [promachos, globalTheme],
+    [bubble, globalTheme],
   );
   const links = useMemo(() => {
     const byUrl = new Map<string, MarkdownLinkCustomization>();
