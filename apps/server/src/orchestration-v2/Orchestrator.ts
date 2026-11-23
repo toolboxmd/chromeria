@@ -9,6 +9,7 @@ import {
   ExecutionPurposeDelivery,
   normalizeTrackingReference,
   purposeScopesEqual,
+  purposeScopesJoinable,
   purposeSelectionOf,
   purposeIntentsEqual,
   type ExecutionPurpose as ResolvedExecutionPurpose,
@@ -14229,7 +14230,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const purposeTarget = projection.runs.find((run) => run.id === command.targetRunId);
     if (
       purposeTarget !== undefined &&
-      !purposeScopesEqual(
+      !purposeScopesJoinable(
         executionPurposeOf(queuedRun).scope,
         executionPurposeOf(purposeTarget).scope,
       )

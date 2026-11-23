@@ -379,6 +379,21 @@ it.effect(
     }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("a no-Issue Steer joins a legacy no-Issue run under the run's purpose", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const threadId = ThreadId.make("thread:purpose-unscoped-steer");
+    yield* createThread(threadId);
+    const initial = yield* orchestrator.dispatch(message(threadId, "unscoped-legacy"));
+    const steered = yield* orchestrator.dispatch({
+      ...message(threadId, "unscoped-steer", { version: 1, intent: { type: "unscoped" } }),
+      deliveryIntent: "steer",
+      dispatchMode: { type: "start_immediately" },
+    });
+    assert.deepEqual(steered.admittedRun?.purpose.scope, initial.admittedRun?.purpose.scope);
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("legacy omission stays warned unscoped; a replay cannot change declared intent", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
