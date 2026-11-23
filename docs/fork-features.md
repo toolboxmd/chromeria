@@ -1688,7 +1688,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/serverSettings.test.ts",
     "apps/web/src/components/settings/PromachosSettings.tsx",
     "apps/web/src/components/settings/settingsSearch.ts",
-    "apps/web/src/components/settings/settingsSearchFork.test.ts"
+    "apps/web/src/components/settings/settingsSearchFork.test.ts",
+    "packages/client-runtime/src/state/server.ts"
   ],
   "keywords": ["Promachos", "promachos", "PROMACHOS_BUBBLE_MARKDOWN", "prismRole"]
 }

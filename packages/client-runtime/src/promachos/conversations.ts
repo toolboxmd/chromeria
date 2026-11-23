@@ -65,13 +65,17 @@ export function promachosHomeRefs(
 }
 
 /**
- * Whether a thread's project is in the Promachos home. "unknown" until every connected
- * environment's settings and projects have loaded and the thread itself is known: a home named by
- * a machine that has not answered yet must not count as no home.
+ * Whether a thread's project is in the Promachos home. "unknown" until the client knows the thread
+ * and every connected environment has answered this session with its settings and projects: a
+ * cached copy may predate a home another device chose, and a "no" from it would wrongly drop the
+ * thread.
  */
 export function promachosMembership(input: {
   readonly projectRef: ScopedProjectRef | null;
-  readonly loaded: boolean;
+  readonly environments: ReadonlyArray<{
+    readonly settingsLive: boolean;
+    readonly projectsLive: boolean;
+  }>;
   readonly configs: ReadonlyMap<
     EnvironmentId,
     { readonly settings: Pick<ServerSettings, "promachosHome"> }
@@ -79,7 +83,10 @@ export function promachosMembership(input: {
   readonly projects: ReadonlyArray<HomeProject>;
   readonly grouping: ProjectGroupingSettings;
 }): "in" | "out" | "unknown" {
-  if (!input.loaded || input.projectRef === null) return "unknown";
+  const live = input.environments.every(
+    (environment) => environment.settingsLive && environment.projectsLive,
+  );
+  if (!live || input.projectRef === null) return "unknown";
   const homes = promachosHomes(input.configs, input.projects, null);
   const refs = promachosHomeRefs(input.projects, homes, input.grouping);
   return isInPromachosHome(input.projectRef, refs) ? "in" : "out";

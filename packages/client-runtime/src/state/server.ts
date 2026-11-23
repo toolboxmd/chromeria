@@ -1481,8 +1481,18 @@ export function createServerEnvironmentAtoms<R, E>(
     concurrency: configConcurrency,
   });
 
+  // Fork: whether the config came from this session's server rather than the launch cache.
+  const configLiveAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make(
+      (get) =>
+        AsyncResult.getOrElse(get(configProjectionFamily(environmentId)), () => null)?.source ===
+        "live",
+    ).pipe(Atom.withLabel(`environment-data:server:config-live:${environmentId}`)),
+  );
+
   return {
     configValueAtom,
+    configLiveAtom,
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",
       tag: WS_METHODS.serverRunStorageCleanup,

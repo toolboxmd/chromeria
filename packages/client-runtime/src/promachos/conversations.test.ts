@@ -218,36 +218,40 @@ describe("promachosMembership", () => {
   const named = (projectId: string | null) => ({
     settings: { promachosHome: projectId === null ? null : ProjectId.make(projectId) },
   });
+  const live = { settingsLive: true, projectsLive: true };
 
-  it("stays unknown until every machine has answered, then says out once the home moved", () => {
+  it("says out only once every machine answered live and none names the home", () => {
     const cleared = new Map([
       [home.environmentId, named(null)],
       [homeOnB.environmentId, named(null)],
     ]);
     const input = { projectRef: home, configs: cleared, projects, grouping: grouped };
-    expect(promachosMembership({ ...input, loaded: false })).toBe("unknown");
-    expect(promachosMembership({ ...input, loaded: true })).toBe("out");
-    expect(promachosMembership({ ...input, projectRef: null, loaded: true })).toBe("unknown");
+    expect(promachosMembership({ ...input, environments: [live, live] })).toBe("out");
+    expect(promachosMembership({ ...input, projectRef: null, environments: [live, live] })).toBe(
+      "unknown",
+    );
   });
 
-  it("counts a home another machine names once that machine has loaded", () => {
-    // Machine A names no home; B names the same repository, so A's project is part of it.
+  it("stays unknown while a machine shows cached settings or projects", () => {
+    // A is live and names no home; B's cached copy predates the home B now names.
     const configs = new Map([
+      [home.environmentId, named(null)],
+      [homeOnB.environmentId, named(null)],
+    ]);
+    const input = { projectRef: home, configs, projects, grouping: grouped };
+    const cachedSettings = { settingsLive: false, projectsLive: true };
+    const syncingProjects = { settingsLive: true, projectsLive: false };
+    expect(promachosMembership({ ...input, environments: [live, cachedSettings] })).toBe("unknown");
+    expect(promachosMembership({ ...input, environments: [live, syncingProjects] })).toBe(
+      "unknown",
+    );
+    // Once B answers live, its home takes in A's project of the same repository.
+    const answered = new Map([
       [home.environmentId, named(null)],
       [homeOnB.environmentId, named("home-b")],
     ]);
-    expect(
-      promachosMembership({ projectRef: home, configs, projects, grouping: grouped, loaded: true }),
-    ).toBe("in");
-    const onlyA = new Map([[home.environmentId, named(null)]]);
-    expect(
-      promachosMembership({
-        projectRef: home,
-        configs: onlyA,
-        projects,
-        grouping: grouped,
-        loaded: false,
-      }),
-    ).toBe("unknown");
+    expect(promachosMembership({ ...input, configs: answered, environments: [live, live] })).toBe(
+      "in",
+    );
   });
 });
