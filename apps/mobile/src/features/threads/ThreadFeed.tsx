@@ -1185,11 +1185,18 @@ function MessageAttachmentList(props: {
   );
 }
 
-function MessageAttachmentUnknown(props: { readonly name: string }) {
+function MessageAttachmentUnknown(props: { readonly name: string; readonly inBubble?: boolean }) {
   return (
     <View className="flex-row items-center gap-2 py-1">
       <PierreEntryIcon path={props.name} kind="file" size={16} />
-      <Text className="min-w-0 flex-1 text-sm text-foreground" numberOfLines={1}>
+      <Text
+        className={
+          props.inBubble
+            ? "min-w-0 flex-1 text-sm text-user-bubble-foreground"
+            : "min-w-0 flex-1 text-sm text-foreground"
+        }
+        numberOfLines={1}
+      >
         {props.name}
       </Text>
     </View>
@@ -1589,9 +1596,9 @@ function useMarkdownStyles(promachos = false): MarkdownStyleSets {
     ? theme["--color-promachos-outbound-foreground"]
     : theme["--color-user-bubble-foreground"];
   const markdownUserCodeBg = theme["--color-md-user-code-bg"];
-  const markdownUserCodeText = promachos
-    ? theme["--color-promachos-outbound-foreground"]
-    : theme["--color-md-user-code-text"];
+  // A Promachos bubble is dark gray in light appearance too, so its code blocks sit on the same
+  // card as his replies' code, where the appearance's syntax palette reads.
+  const markdownUserCodeText = promachos ? markdownCodeText : theme["--color-md-user-code-text"];
   const markdownUserInlineCodeText = promachos
     ? theme["--color-promachos-outbound-foreground"]
     : theme["--color-user-bubble-foreground-muted"];
@@ -1611,7 +1618,7 @@ function useMarkdownStyles(promachos = false): MarkdownStyleSets {
         inlineCodeColor: markdownUserInlineCodeText,
         codeColor: markdownUserCodeText,
         codeBackgroundColor: markdownUserCodeBg,
-        codeBlockBackgroundColor: markdownUserFenceBg,
+        codeBlockBackgroundColor: promachos ? markdownCodeBg : markdownUserFenceBg,
         fileTextColor: markdownUserBodyColor,
         quoteMarkerColor: markdownUserBodyColor,
         dividerColor: markdownUserBodyColor,
@@ -2644,7 +2651,11 @@ function renderFeedEntry(
                         />
                       </Pressable>
                     ) : (
-                      <MessageAttachmentUnknown key={attachment.id} name={attachment.name} />
+                      <MessageAttachmentUnknown
+                        key={attachment.id}
+                        name={attachment.name}
+                        inBubble
+                      />
                     ),
                   )}
                   {/* An empty container still takes a gap, which pads every attachment-free bubble. */}
@@ -2676,7 +2687,11 @@ function renderFeedEntry(
                             onPlaybackStart={props.onPlaybackStart}
                           />
                         ) : (
-                          <MessageAttachmentUnknown key={attachment.id} name={attachment.name} />
+                          <MessageAttachmentUnknown
+                            key={attachment.id}
+                            name={attachment.name}
+                            inBubble
+                          />
                         );
                       })}
                     </View>
@@ -3451,7 +3466,6 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         "--color-user-bubble-foreground": promachosInk,
         "--color-user-bubble-foreground-muted": themeColorWithAlpha(promachosInk, 0.78),
         "--color-user-bubble-skill-foreground": promachosInk,
-        "--color-md-user-code-text": promachosInk,
       }
     : null;
   const openSkillInstructions = (path: string) => {
