@@ -2534,16 +2534,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const parentIsLive = hasLiveRun({ runs: [parentRun] });
     const pendingTaskIds =
       projection.thread.archivedAt === null && projection.thread.deletedAt === null
-        ? projection.subagents
-            .filter(
-              (task) =>
-                task.origin === "app_owned" &&
-                task.runId === parentRun.id &&
-                task.completionDelivery?.state === "pending" &&
-                isTerminalDelegatedTaskStatus(task.status) &&
-                (!parentIsLive || task.completionWake === "always"),
-            )
-            .map((task) => task.id)
+        ? successorTaskIds(
+            projection.subagents,
+            projection.subagents
+              .filter(
+                (task) =>
+                  task.origin === "app_owned" &&
+                  task.runId === parentRun.id &&
+                  task.completionDelivery?.state === "pending" &&
+                  isTerminalDelegatedTaskStatus(task.status) &&
+                  (!parentIsLive || task.completionWake === "always"),
+              )
+              .map((task) => task.id),
+          )
         : [];
     const nextDelivery =
       pendingTaskIds.length === 0
@@ -8049,6 +8052,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const source = tasks.find((task) => task.id === taskId)?.completionSource;
       return source === undefined ? [] : [{ taskId, ...source }];
     });
+
+  // Fork: a successor wake carries results of one scope, so each Issue's results keep their
+  // attribution. The earliest waiting result picks it; a Run group is one unit. The rest wait
+  // for the next successor.
+  const successorTaskIds = (
+    tasks: ReadonlyArray<OrchestrationV2Subagent>,
+    pendingTaskIds: ReadonlyArray<NodeId>,
+  ) => {
+    const unitOf = (taskId: NodeId) =>
+      tasks.find((task) => task.id === taskId)?.runGroupId ?? taskId;
+    const scopeOf = (unit: NodeId) =>
+      ExecutionPurpose.purposeFromCauses(
+        pendingTaskIds
+          .filter((taskId) => unitOf(taskId) === unit)
+          .map((taskId) => tasks.find((task) => task.id === taskId)?.completionSource?.purpose),
+        [unit],
+        "delegated_completion",
+      ).scope;
+    const first = pendingTaskIds[0];
+    if (first === undefined) return [];
+    const scope = scopeOf(unitOf(first));
+    return pendingTaskIds.filter((taskId) => purposeScopesEqual(scopeOf(unitOf(taskId)), scope));
+  };
 
   const deliveryPurpose = (delivery: OrchestrationV2DelegatedCompletionDelivery) =>
     ExecutionPurpose.purposeFromCauses(
@@ -18542,16 +18568,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         observedByRunId: null,
       });
     }
-    const pendingTaskIds = projection.subagents
-      .filter(
-        (task) =>
-          task.origin === "app_owned" &&
-          task.runId === parentRun.id &&
-          isTerminalDelegatedTaskStatus(task.status) &&
-          (task.completionDelivery?.state === "pending" ||
-            nextTaskStates.get(task.id)?.state === "pending"),
-      )
-      .map((task) => task.id);
+    const pendingTaskIds = successorTaskIds(
+      projection.subagents,
+      projection.subagents
+        .filter(
+          (task) =>
+            task.origin === "app_owned" &&
+            task.runId === parentRun.id &&
+            isTerminalDelegatedTaskStatus(task.status) &&
+            (task.completionDelivery?.state === "pending" ||
+              nextTaskStates.get(task.id)?.state === "pending"),
+        )
+        .map((task) => task.id),
+    );
     const pendingTasks = new Set(pendingTaskIds);
     const retrySameIdentity =
       unconsumed &&
