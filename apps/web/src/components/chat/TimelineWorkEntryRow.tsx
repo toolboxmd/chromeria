@@ -413,7 +413,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
       ? workEntry.projectedItem.item
       : undefined;
   const notifiedSubagentThreadId =
-    workEntry.projectedItem?.item.type === "notification"
+    canOpenThreads && workEntry.projectedItem?.item.type === "notification"
       ? notificationChildThreadId(workEntry.projectedItem.item.source)
       : undefined;
   const notifiedSubagentId =
