@@ -124,7 +124,9 @@ const IMAGE = new RegExp(String.raw`!\[([^\]]*)\]` + LINK_TARGET, "g");
 const LINK = new RegExp(String.raw`\[([^\]]*)\]` + LINK_TARGET, "g");
 const REFERENCE_LINK = /!?\[([^\]]*)\]\[[^\]]*\]/g;
 const ESCAPABLE = /[!-/:-@[-`{-~]/;
-const FENCE = /^\s{0,3}(`{3,}|~{3,})/;
+// Any indent: a fence nested in a list item is indented by the item.
+const FENCE = /^\s*(`{3,}|~{3,})/;
+const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s/;
 // Private-use marks around the index of a kept piece, so prose rules never touch it.
 const KEPT = /\uE000(\d+)\uE001/g;
 
@@ -217,6 +219,10 @@ export function conversationPreviewText(markdown: string): string | null {
   const lines: string[] = [];
   let fence: { readonly marker: string; readonly depth: number } | null = null;
   const state = { inComment: false };
+  // An indented code block starts after a blank line, outside a list, whose lines indent alike.
+  let afterBlank = true;
+  let inList = false;
+  let inIndentedCode = false;
   // Private-use characters show nothing and would collide with the kept-piece marks.
   const text = assistantCitationsToPlainText(markdown).replace(/[\uE000\uE001]/g, "");
   for (const raw of text.split("\n")) {
@@ -224,7 +230,7 @@ export function conversationPreviewText(markdown: string): string | null {
       const quoted = unquote(raw, fence.depth);
       // A fence inside a quote ends with the quote.
       if (quoted.depth === fence.depth) {
-        const marker = /^\s{0,3}(`{3,}|~{3,})\s*$/.exec(quoted.rest)?.[1];
+        const marker = /^\s*(`{3,}|~{3,})\s*$/.exec(quoted.rest)?.[1];
         if (
           marker !== undefined &&
           marker[0] === fence.marker[0] &&
@@ -243,6 +249,17 @@ export function conversationPreviewText(markdown: string): string | null {
       continue;
     }
     const line = quoted.rest;
+    const blank = line.trim().length === 0;
+    if (!state.inComment && !blank) {
+      inIndentedCode = /^(?: {4}|\t)/.test(line) && !inList && (afterBlank || inIndentedCode);
+      if (LIST_ITEM.test(line)) inList = true;
+      else if (afterBlank && !/^\s/.test(line)) inList = false;
+    }
+    afterBlank = blank;
+    if (inIndentedCode) {
+      if (!blank) lines.push(line.trim());
+      continue;
+    }
     // Reference definitions, rules and table delimiter rows have no words.
     if (!state.inComment) {
       if (/^\s{0,3}\[[^\]]+\]:\s*\S/.test(line)) continue;

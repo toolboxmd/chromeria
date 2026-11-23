@@ -65,6 +65,21 @@ describe("conversationPreviewText", () => {
       "vp i Setup complete.",
     ],
     ["private-use characters", "Before \uE00042\uE001 after", "Before 42 after"],
+    [
+      "a fence nested in a list item",
+      ["1. Create the module:", "", "   ```sh", "   touch __init__.py", "   ```"].join("\n"),
+      "Create the module: touch __init__.py",
+    ],
+    [
+      "an indented code block",
+      ["Create the module:", "", "    touch __init__.py"].join("\n"),
+      "Create the module: touch __init__.py",
+    ],
+    [
+      "a nested list item, not code",
+      ["- **First**", "    - **Second**"].join("\n"),
+      "First Second",
+    ],
     ["lists and quotes", "> Quoted\n- [ ] todo\n1. first\n* second", "Quoted todo first second"],
     ["code fences keep their code", "```ts\nconst a = 1;\n```", "const a = 1;"],
     ["tables and rules", "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n---", "| a | b | | 1 | 2 |"],
