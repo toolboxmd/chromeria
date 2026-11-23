@@ -18,8 +18,8 @@ import type { Theme } from "@pierre/highlights";
 const WASM2C_VERSION = "1.0.42";
 const THEMES = { light: "pierre-light", dark: "pierre-dark" } as const;
 // pierre-dark punctuation (#636363) is under 3:1 on the app's dark code fences.
-// Its own ANSI white clears 4.5:1 on each; punctuation.special keeps its accent.
-const DARK_PUNCTUATION = { from: "#636363", to: "#bcbcbc" } as const;
+// #d8d8d8 clears 4.5:1 on each, Material You included; punctuation.special keeps its accent.
+const DARK_PUNCTUATION = { from: "#636363", to: "#d8d8d8" } as const;
 
 const mobileRoot = NodePath.resolve(import.meta.dirname, "..");
 const moduleRoot = NodePath.join(mobileRoot, "modules/t3-highlights");

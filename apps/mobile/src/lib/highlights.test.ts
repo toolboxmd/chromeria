@@ -1,3 +1,4 @@
+import { Hct, SchemeTonalSpot, argbFromHex, hexFromArgb } from "@material/material-color-utilities";
 import { codeToTokens } from "@pierre/highlights";
 import { pierreDark, pierreLight } from "@pierre/highlights/themes";
 import { MOBILE_THEME_IDS } from "@t3tools/shared/themePalettes";
@@ -6,7 +7,36 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { withReadableDarkPunctuation } from "../../scripts/generate-highlights.mts";
 import { resolveHighlightLanguage } from "./highlightLanguage";
 import { highlightCode, highlightCommand, tokenizeCode, type HighlightedLines } from "./highlights";
+import type { MaterialYouPalette } from "./materialYouPalette";
+import { materialYouPaletteToMobileThemeVariables } from "./materialYouTheme.android";
 import { getMobileThemeVariables } from "./mobileTheme";
+import { getMobileThemeRuntimeVariables } from "./mobileThemeVariables";
+
+const MATERIAL_YOU_ROLES = [
+  "primary",
+  "onPrimary",
+  "primaryContainer",
+  "onPrimaryContainer",
+  "inversePrimary",
+  "secondaryContainer",
+  "onSecondaryContainer",
+  "tertiary",
+  "tertiaryContainer",
+  "onTertiaryContainer",
+  "surface",
+  "onSurface",
+  "onSurfaceVariant",
+  "surfaceContainer",
+  "surfaceContainerHigh",
+  "surfaceContainerHighest",
+  "surfaceContainerLow",
+  "surfaceContainerLowest",
+  "errorContainer",
+  "onErrorContainer",
+  "outline",
+  "outlineVariant",
+  "scrim",
+] as const satisfies ReadonlyArray<keyof MaterialYouPalette>;
 
 vi.mock("react-native-nitro-modules", async () => {
   const { createWasmHighlightsModule } = await import("./highlights.testing");
@@ -41,11 +71,19 @@ describe("highlightCode", () => {
   });
 
   it("draws dark punctuation at 4.5:1 on every dark code fence", () => {
-    const channels = (hex: string) =>
-      hex
+    const rgba = (color: string) => {
+      const css = /^rgba\((\d+), (\d+), (\d+), ([\d.]+)\)$/.exec(color);
+      if (css) return [...css.slice(1, 4).map(Number), Number(css[4])];
+      const [r, g, b, a = 255] = color
         .slice(1)
         .match(/.{2}/g)!
         .map((channel) => Number.parseInt(channel, 16));
+      return [r!, g!, b!, a / 255];
+    };
+    const over = (overlay: string, base: string) => {
+      const [top, bottom] = [rgba(overlay), rgba(base)];
+      return [0, 1, 2].map((index) => top[index]! * top[3]! + bottom[index]! * (1 - top[3]!));
+    };
     const luminance = (rgb: ReadonlyArray<number>) => {
       const [r, g, b] = rgb.map((channel) => {
         const c = channel / 255;
@@ -55,16 +93,24 @@ describe("highlightCode", () => {
     };
     const contrast = (a: ReadonlyArray<number>, b: ReadonlyArray<number>) =>
       (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05);
-    const fences = MOBILE_THEME_IDS.flatMap((themeId) => {
-      const variables = getMobileThemeVariables(themeId, "dark");
-      const [, ...overlay] = /^rgba\((\d+), (\d+), (\d+), ([\d.]+)\)$/
-        .exec(variables["--color-md-user-fence-bg"])!
-        .map(Number);
-      const userFence = channels(variables["--color-user-bubble"]).map(
-        (channel, index) => overlay[index]! * overlay[3]! + channel * (1 - overlay[3]!),
+    const materialYou = ["#6750a4", "#9c4146", "#a3b08b", "#006a6a"].map((seed) => {
+      const scheme = new SchemeTonalSpot(Hct.fromInt(argbFromHex(seed)), true, 0);
+      const palette = Object.fromEntries(
+        MATERIAL_YOU_ROLES.map((role) => [role, `${hexFromArgb(scheme[role])}ff`]),
+      ) as Record<keyof MaterialYouPalette, string>;
+      return materialYouPaletteToMobileThemeVariables(
+        palette,
+        "dark",
+        getMobileThemeRuntimeVariables("material-you", "dark", "android"),
       );
-      return [channels(variables["--color-md-code-bg"]), userFence];
     });
+    const fences = [
+      ...MOBILE_THEME_IDS.map((themeId) => getMobileThemeVariables(themeId, "dark")),
+      ...materialYou,
+    ].flatMap((variables) => [
+      over(variables["--color-md-code-bg"], variables["--color-thread-canvas"]),
+      over(variables["--color-md-user-fence-bg"], variables["--color-user-bubble"]),
+    ]);
     const punctuation = highlightCode("int main() { return 0; }", "cpp", "dark")
       .flat()
       .flatMap(({ content, color }) =>
@@ -74,7 +120,7 @@ describe("highlightCode", () => {
     expect(punctuation.map(({ char }) => char).join("")).toBe("(){;}");
     for (const { color } of punctuation) {
       for (const fence of fences) {
-        expect(contrast(channels(color!), fence)).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(rgba(color!), fence)).toBeGreaterThanOrEqual(4.5);
       }
     }
   });
