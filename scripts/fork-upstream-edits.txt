@@ -863,3 +863,5 @@ apps/server/src/feedback/FeedbackReport.ts
 apps/server/src/cli/feedback.test.ts
 apps/web/src/components/ThreadContextChip.tsx
 apps/web/src/components/chat/AssistantCitationChip.tsx
+.agents/skills/test-t3-mobile/SKILL.md
+.agents/skills/test-t3-mobile/scripts/pair-client.sh

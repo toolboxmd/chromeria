@@ -78,6 +78,12 @@ through AgentDevice. For a backend on the device host, use
 `http://127.0.0.1:<server-port>` on iOS or `http://10.0.2.2:<server-port>`
 on Android. For a remote backend, use its reachable origin.
 
+When the backend runs on another machine than this shell, such as the device
+host, add `--remote <ssh-host>:<checkout>` before the other arguments. The
+helper then mints the credential over `ssh` in that checkout, so `<base-dir>`
+is the backend's path on that machine, and still opens the route through the
+local AgentDevice command.
+
 Confirm the intended projects appear, exercise the affected flow, and capture
 evidence. Retain the app and environment while iterating. At teardown, remove
 the disposable connection, close the AgentDevice session, call `device_close`,
