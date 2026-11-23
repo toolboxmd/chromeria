@@ -13,7 +13,7 @@ import {
   type EnvironmentId,
   type ScopedProjectRef,
 } from "@t3tools/contracts";
-import { useGT, useMessages } from "gt-react-native";
+import { useGT } from "gt-react-native";
 import { AsyncResult } from "effect/reactivity";
 import { use, useEffect } from "react";
 import { View } from "react-native";
@@ -25,7 +25,6 @@ import { ListSection } from "../../components/ui/ListSection";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { useNowMinuteMs } from "../../lib/clock";
-import { relativeTime } from "../../lib/time";
 import { uuidv4 } from "../../lib/uuid";
 import { useProjects, useVisibleThreadShells } from "../../state/entities";
 import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
@@ -35,6 +34,7 @@ import { useAdaptiveWorkspaceLayout } from "../layout/adaptive-workspace-context
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
 import { NativeWorkspaceTabActivityContext } from "../../native/v5-workspace-context";
+import { PromachosConversationRow, PromachosRoundButton } from "./PromachosConversationRow";
 import { usePromachosHome, usePromachosHomeRefs } from "./promachosHome";
 
 const createHome = createEnvironmentRpcCommand(connectionAtomRuntime, {
@@ -91,59 +91,54 @@ function PromachosConversationList(props: {
   readonly onChangeHome: () => void;
 }) {
   const gt = useGT();
-  const m = useMessages();
   const homeRefs = usePromachosHomeRefs(props.home);
   const conversations = promachosConversations(useVisibleThreadShells(), homeRefs);
   const selectDetail = useSelectWorkspaceDetail();
   const nowMs = useNowMinuteMs();
   useForgetConversationOnList();
+  const newConversation = () =>
+    selectDetail({
+      name: "Thread",
+      params: {
+        draft: {
+          requestId: uuidv4(),
+          environmentId: String(props.home.environmentId),
+          projectId: String(props.home.projectId),
+        },
+      },
+    });
   return (
-    <>
-      <ListSection title={gt("Promachos home")}>
-        <ListActionRow
+    <View className="-mx-4">
+      <View className="flex-row items-center justify-between px-4 pb-3">
+        <PromachosRoundButton
           icon="house"
-          label={props.homeLabel}
-          description={gt("Choose another home")}
+          label={gt("Promachos home: {home}. Choose another home", { home: props.homeLabel })}
           onPress={props.onChangeHome}
         />
-        <ListActionRow
-          icon="square.and.pencil"
+        <PromachosRoundButton
+          icon="plus"
           label={gt("New conversation")}
-          onPress={() =>
-            selectDetail({
-              name: "Thread",
-              params: {
-                draft: {
-                  requestId: uuidv4(),
-                  environmentId: String(props.home.environmentId),
-                  projectId: String(props.home.projectId),
-                },
-              },
-            })
-          }
+          onPress={newConversation}
         />
-      </ListSection>
-      <ListSection title={gt("Conversations")}>
-        {conversations.length === 0 ? (
-          <Text className="px-4 py-3 text-foreground-muted">{gt("No conversations yet.")}</Text>
-        ) : (
-          conversations.map((thread) => (
-            <ListActionRow
-              key={`${thread.environmentId}:${thread.id}`}
-              icon="text.bubble"
-              label={thread.title}
-              detail={relativeTime(thread.latestUserMessageAt ?? thread.updatedAt, nowMs, m)}
-              onPress={() =>
-                selectDetail({
-                  name: "Thread",
-                  params: { environmentId: thread.environmentId, threadId: thread.id },
-                })
-              }
-            />
-          ))
-        )}
-      </ListSection>
-    </>
+      </View>
+      {conversations.length === 0 ? (
+        <Text className="px-4 py-3 text-foreground-secondary">{gt("No conversations yet.")}</Text>
+      ) : (
+        conversations.map((thread) => (
+          <PromachosConversationRow
+            key={`${thread.environmentId}:${thread.id}`}
+            thread={thread}
+            nowMs={nowMs}
+            onPress={() =>
+              selectDetail({
+                name: "Thread",
+                params: { environmentId: thread.environmentId, threadId: thread.id },
+              })
+            }
+          />
+        ))
+      )}
+    </View>
   );
 }
 

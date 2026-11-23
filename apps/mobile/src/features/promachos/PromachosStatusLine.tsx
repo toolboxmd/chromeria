@@ -5,7 +5,7 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { ShimmeringWorkContent } from "../threads/thread-work-log";
 
 /** His avatar: Chromeria's own mark on the accent, the same in the list and the chat. */
-function PromachosAvatar(props: { readonly size: number }) {
+export function PromachosAvatar(props: { readonly size: number }) {
   return (
     <View
       className="items-center justify-center rounded-full bg-primary"
