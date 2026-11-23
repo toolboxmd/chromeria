@@ -151,6 +151,8 @@ export interface EventSinkV2Shape {
      * The batch must not also change that run's lifecycle.
      */
     readonly updateDelegatedCompletionOnly?: boolean;
+    /** Like updateDelegatedCompletionOnly, for this run's run.updated only. */
+    readonly updateDelegatedCompletionOnlyRunId?: RunId;
     readonly unlessNativeThreadOwned?: Pick<
       OrchestrationV2ProviderThread,
       "driver" | "providerInstanceId" | "appThreadId" | "nativeThreadRef"
@@ -572,9 +574,12 @@ const layerBase: Layer.Layer<
           }
           // Checkpoint capture can finish after a cohort writer reads its parent run.
           // Merge in this transaction so the event log and projection keep that completion.
+          const onlyRunId = input.updateDelegatedCompletionOnlyRunId;
           const events = input.updateDelegatedCompletionOnly
             ? yield* updateDelegatedCompletionOnly(input.events, () => true)
-            : input.events;
+            : onlyRunId !== undefined
+              ? yield* updateDelegatedCompletionOnly(input.events, (id) => id === onlyRunId)
+              : input.events;
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
               ? yield* guardUserInputCancellations(events)
