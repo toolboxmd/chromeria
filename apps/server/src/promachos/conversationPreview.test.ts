@@ -39,6 +39,27 @@ describe("conversationPreviewText", () => {
       "Open __init__.py",
     ],
     ["a comment across lines", "Before <!-- one\ntwo --> after", "Before after"],
+    [
+      "a comment opener inside a code span",
+      "Use `<!--` to start a comment.",
+      "Use <!-- to start a comment.",
+    ],
+    [
+      "a fence inside a comment",
+      ["<!--", "```md", "Hidden draft", "```", "-->", "Visible summary"].join("\n"),
+      "Visible summary",
+    ],
+    [
+      "a quoted fence keeps deeper markers",
+      ["> ```sh", "> > out.txt", "> ```"].join("\n"),
+      "> out.txt",
+    ],
+    [
+      "a quoted fence ends with its quote",
+      ["> ```sh", "> vp i", "", "**Setup complete.**"].join("\n"),
+      "vp i Setup complete.",
+    ],
+    ["private-use characters", "Before \uE00042\uE001 after", "Before 42 after"],
     ["lists and quotes", "> Quoted\n- [ ] todo\n1. first\n* second", "Quoted todo first second"],
     ["code fences keep their code", "```ts\nconst a = 1;\n```", "const a = 1;"],
     ["tables and rules", "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n---", "| a | b | | 1 | 2 |"],

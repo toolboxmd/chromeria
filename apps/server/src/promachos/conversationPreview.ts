@@ -125,24 +125,37 @@ const LINK = new RegExp(String.raw`\[([^\]]*)\]` + LINK_TARGET, "g");
 const REFERENCE_LINK = /!?\[([^\]]*)\]\[[^\]]*\]/g;
 const ESCAPABLE = /[!-/:-@[-`{-~]/;
 const FENCE = /^\s{0,3}(`{3,}|~{3,})/;
-const QUOTE = /^\s*(?:>\s?)+/;
 // Private-use marks around the index of a kept piece, so prose rules never touch it.
-const KEPT = /(\d+)/g;
+const KEPT = /\uE000(\d+)\uE001/g;
 
 /**
- * Inline syntax off one line of prose. Code spans and backslash-escaped characters are set aside
- * first and come back as written, so emphasis and link rules only see prose.
+ * Inline syntax off one line of prose. Code spans, backslash-escaped characters and HTML comments
+ * are found first, in one scan: kept pieces come back as written, comments go, and only the rest
+ * meets the emphasis and link rules. `state.inComment` carries a comment across lines.
  */
-function stripInline(line: string): string {
+function stripInline(line: string, state: { inComment: boolean }): string {
   const kept: string[] = [];
-  const keep = (value: string) => `${kept.push(value) - 1}`;
+  const keep = (value: string) => `\uE000${kept.push(value) - 1}\uE001`;
   let prose = "";
   let index = 0;
   while (index < line.length) {
+    if (state.inComment) {
+      const end = line.indexOf("-->", index);
+      if (end === -1) return prose;
+      prose += " ";
+      index = end + 3;
+      state.inComment = false;
+      continue;
+    }
     const char = line[index]!;
     if (char === "\\" && ESCAPABLE.test(line[index + 1] ?? "")) {
       prose += keep(line[index + 1]!);
       index += 2;
+      continue;
+    }
+    if (line.startsWith("<!--", index)) {
+      state.inComment = true;
+      index += 4;
       continue;
     }
     if (char !== "`") {
@@ -169,13 +182,27 @@ function stripInline(line: string): string {
     index = close + length;
   }
   return prose
-    .replace(/<!--.*?-->/g, " ")
     .replace(IMAGE, "$1")
     .replace(LINK, "$1")
     .replace(REFERENCE_LINK, "$1")
     .replace(/\*\*|__|~~/g, "")
     .replace(/(?<![\w*])[*_]((?:(?![*_]).)+?)[*_](?![\w*])/g, "$1")
     .replace(KEPT, (_match, keptIndex: string) => kept[Number(keptIndex)]!);
+}
+
+/** Up to `limit` blockquote markers off a line, and how many there were. */
+function unquote(line: string, limit = Number.POSITIVE_INFINITY) {
+  let depth = 0;
+  let rest = line;
+  for (
+    let marker = /^ {0,3}> ?/.exec(rest);
+    marker && depth < limit;
+    marker = /^ {0,3}> ?/.exec(rest)
+  ) {
+    rest = rest.slice(marker[0].length);
+    depth += 1;
+  }
+  return { depth, rest };
 }
 
 /** A line's text without its heading or list marker; the quote marker is already off. */
@@ -188,44 +215,41 @@ function stripBlock(line: string): string {
 /** One line of plain text from a message's Markdown, capped; null when nothing readable is left. */
 export function conversationPreviewText(markdown: string): string | null {
   const lines: string[] = [];
-  let fence: { readonly marker: string; readonly quoted: boolean } | null = null;
-  let inComment = false;
-  for (const raw of assistantCitationsToPlainText(markdown).split("\n")) {
-    const unquoted = raw.replace(QUOTE, "");
+  let fence: { readonly marker: string; readonly depth: number } | null = null;
+  const state = { inComment: false };
+  // Private-use characters show nothing and would collide with the kept-piece marks.
+  const text = assistantCitationsToPlainText(markdown).replace(/[\uE000\uE001]/g, "");
+  for (const raw of text.split("\n")) {
     if (fence !== null) {
-      const content = fence.quoted ? unquoted : raw;
-      const marker = /^\s{0,3}(`{3,}|~{3,})\s*$/.exec(content)?.[1];
-      if (
-        marker !== undefined &&
-        marker[0] === fence.marker[0] &&
-        marker.length >= fence.marker.length
-      )
-        fence = null;
-      else lines.push(content);
-      continue;
+      const quoted = unquote(raw, fence.depth);
+      // A fence inside a quote ends with the quote.
+      if (quoted.depth === fence.depth) {
+        const marker = /^\s{0,3}(`{3,}|~{3,})\s*$/.exec(quoted.rest)?.[1];
+        if (
+          marker !== undefined &&
+          marker[0] === fence.marker[0] &&
+          marker.length >= fence.marker.length
+        )
+          fence = null;
+        else lines.push(quoted.rest);
+        continue;
+      }
+      fence = null;
     }
-    const opening = FENCE.exec(unquoted)?.[1];
+    const quoted = unquote(raw);
+    const opening = state.inComment ? undefined : FENCE.exec(quoted.rest)?.[1];
     if (opening !== undefined) {
-      fence = { marker: opening, quoted: unquoted !== raw };
+      fence = { marker: opening, depth: quoted.depth };
       continue;
     }
-    let line = unquoted;
-    if (inComment) {
-      const end = line.indexOf("-->");
-      if (end === -1) continue;
-      line = line.slice(end + 3);
-      inComment = false;
-    }
-    const open = line.lastIndexOf("<!--");
-    if (open !== -1 && !line.includes("-->", open)) {
-      line = line.slice(0, open);
-      inComment = true;
-    }
+    const line = quoted.rest;
     // Reference definitions, rules and table delimiter rows have no words.
-    if (/^\s{0,3}\[[^\]]+\]:\s*\S/.test(line)) continue;
-    if (/^\s*(?:[-*_]\s*){3,}$/.test(line)) continue;
-    if (/^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-*:?\s*$/.test(line)) continue;
-    lines.push(stripInline(stripBlock(line)));
+    if (!state.inComment) {
+      if (/^\s{0,3}\[[^\]]+\]:\s*\S/.test(line)) continue;
+      if (/^\s*(?:[-*_]\s*){3,}$/.test(line)) continue;
+      if (/^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-*:?\s*$/.test(line)) continue;
+    }
+    lines.push(stripInline(state.inComment ? line : stripBlock(line), state));
   }
   const plain = lines.join(" ").replace(/\s+/g, " ").trim();
   if (plain.length === 0) return null;
