@@ -101,6 +101,8 @@ function PromachosConversationList({
             status === "ready"
               ? hasUnseenCompletion(thread)
               : status !== "working" && status !== "preparing";
+          // While he works or something needs the user, the row says so instead of quoting.
+          const latest = status === "ready" ? thread.source.latestVisibleMessage : null;
           return (
             <li key={threadKey}>
               <Link
@@ -124,7 +126,14 @@ function PromachosConversationList({
                   </span>
                   <span className="flex items-center gap-2">
                     <span className="min-w-0 flex-1 truncate text-muted-foreground text-sm">
-                      {resolve(PREVIEW[status])}
+                      {latest === null
+                        ? resolve(PREVIEW[status])
+                        : latest.role === "user"
+                          ? gt("You: {text}", {
+                              text: latest.text,
+                              $context: "Promachos conversation preview of the user's own message",
+                            })
+                          : latest.text}
                     </span>
                     {unread ? (
                       <span
@@ -143,7 +152,7 @@ function PromachosConversationList({
   );
 }
 
-// Thread shells carry no message text, so the preview line says where the conversation stands.
+// Where the conversation stands, for rows that quote no message.
 const PREVIEW: Record<SidebarThreadStatus, string> = {
   approval: msg("Needs your approval", { $context: "Promachos conversation preview" }),
   input: msg("Waiting for your answer", { $context: "Promachos conversation preview" }),

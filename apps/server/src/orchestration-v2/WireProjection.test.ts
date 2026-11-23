@@ -171,7 +171,7 @@ describe("orchestration V2 wire projection", () => {
 
     const shell = threadShellFromProjection(projection);
 
-    expect(shell.latestVisibleMessage).toBeNull();
+    expect(shell.latestVisibleMessage?.text).toBe(`${"x".repeat(63)}…`);
     expect(JSON.stringify(shell).length).toBeLessThan(2_000);
   });
 
