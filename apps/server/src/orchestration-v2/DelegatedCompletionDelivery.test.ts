@@ -7153,6 +7153,7 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
     { followUp: "other scope beside a Run group" },
     { followUp: "same scope beside a Run group" },
     { followUp: "other scope in a mixed wake" },
+    { followUp: "mixed follow-up in a mixed wake" },
   ] as const)("a $followUp follow-up of a task in a queued wake", ({ followUp }) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -7194,7 +7195,7 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
       const heldMember = NodeId.make(`node:${name}-g1`);
       const issueTwoResult = NodeId.make(`node:${name}-issue-2`);
       const withGroup = followUp.endsWith("beside a Run group");
-      const mixed = followUp === "other scope in a mixed wake";
+      const mixed = followUp.endsWith("in a mixed wake");
       const siblings = [
         ...(withGroup
           ? [
@@ -7295,6 +7296,9 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
       )!;
       assert.equal(wake.status, "queued");
       if (mixed) assert.equal(executionPurposeOf(wake).scope.type, "unscoped");
+      const wakeText = (yield* orchestrator.getThreadProjection(threadId)).messages.find(
+        (row) => row.id === delivery.messageId,
+      )?.text;
 
       const followUpRunId = RunId.make(`run:${name}:2`);
       const terminal = runEvent({
@@ -7337,19 +7341,31 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
                 },
               ]
             : []),
-          followUp.startsWith("other scope")
+          followUp === "mixed follow-up in a mixed wake"
             ? {
                 ...terminal,
                 payload: {
                   ...terminal.payload,
                   purpose: {
                     version: 1,
-                    scope: issueScope(mixed ? 3 : 2),
-                    provenance: { type: "declared" },
+                    scope: { type: "unscoped", reason: "mixed" },
+                    provenance: { type: "delegated_completion", operationIds: [] },
                   },
                 },
               }
-            : terminal,
+            : followUp.startsWith("other scope")
+              ? {
+                  ...terminal,
+                  payload: {
+                    ...terminal.payload,
+                    purpose: {
+                      version: 1,
+                      scope: issueScope(mixed ? 3 : 2),
+                      provenance: { type: "declared" },
+                    },
+                  },
+                }
+              : terminal,
         ],
       });
       yield* orchestrator.recoverDelegatedTask(child.childThreadId, {
@@ -7379,20 +7395,19 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
       const queued = parent.runs.find((run) => run.id === wake.id)!;
       const reserved = parent.runs.find((run) => run.id === runId)?.delegatedCompletion?.delivery;
       if (mixed) {
-        // An Issue 3 result does not join a mixed wake; the wake keeps the Issue 2 result.
+        // A mixed wake takes no newer result; the wake keeps the Issue 2 result.
         assert.equal(queued.status, "queued");
         assert.equal(task.completionDelivery?.state, "pending");
         assert.deepEqual(reserved?.taskIds, [issueTwoResult]);
         const message = parent.messages.find((row) => row.id === delivery.messageId);
         assert.deepEqual(message?.delegatedCompletion?.taskIds, [issueTwoResult]);
-      } else if (followUp === "same scope beside a Run group") {
-        // The replacement keeps every Run group member in the wake's text.
+      } else if (withGroup) {
+        // A wake holding a Run group keeps its text; the newer result waits for its own wake.
         assert.equal(queued.status, "queued");
-        assert.equal(task.completionDelivery?.state, "claimed");
+        assert.equal(task.completionDelivery?.state, "pending");
         const message = parent.messages.find((row) => row.id === delivery.messageId);
         assert.deepEqual(message?.delegatedCompletion?.taskIds, [child.taskId, heldMember]);
-        assert.include(message?.text ?? "", "member 0 finished");
-        assert.include(message?.text ?? "", "member 1 finished");
+        assert.equal(message?.text, wakeText);
       } else if (followUp === "same scope") {
         // The newer result replaces the older one in the wake, with its cause.
         assert.equal(queued.status, "queued");
@@ -7415,15 +7430,6 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
           reserved?.purposeCauses?.map((cause) => cause.purpose.scope),
           [issueScope(2)],
         );
-      } else if (withGroup) {
-        // The wake keeps the Run group, and its text still lists every member.
-        assert.equal(queued.status, "queued");
-        assert.equal(task.completionDelivery?.state, "pending");
-        assert.deepEqual(reserved?.taskIds, [heldMember]);
-        const message = parent.messages.find((row) => row.id === delivery.messageId);
-        assert.deepEqual(message?.delegatedCompletion?.taskIds, [heldMember]);
-        assert.include(message?.text ?? "", "member 0 finished");
-        assert.include(message?.text ?? "", "member 1 finished");
       } else {
         // A stopped follow-up is never sent, so the wake that held the task is cancelled.
         assert.equal(queued.status, "cancelled");
