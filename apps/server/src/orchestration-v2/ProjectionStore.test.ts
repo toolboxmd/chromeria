@@ -9554,6 +9554,23 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           archivedAt === null,
         );
       }
+      // The same refusal on a keep-warm ping neither arms recovery nor becomes the reply.
+      const [runRow] = yield* sql<{ payload_json: string }>`
+        SELECT payload_json FROM orchestration_v2_projection_runs WHERE run_id = ${original.id}`;
+      yield* sql`UPDATE orchestration_v2_projection_runs
+        SET payload_json = json_set(payload_json, '$.userMessageId', 'keep-warm:limit-shell:0:1')
+        WHERE run_id = ${original.id}`;
+      assert.isUndefined(
+        (yield* store.getLimitRecoveryCandidates({ now, autoResume: true, snooze: false })).find(
+          (row) => row.id === threadId,
+        ),
+      );
+      assert.notEqual(
+        (yield* store.getShellSnapshot()).threads.find((row) => row.id === threadId)!.latestRunId,
+        original.id,
+      );
+      yield* sql`UPDATE orchestration_v2_projection_runs
+        SET payload_json = ${runRow!.payload_json} WHERE run_id = ${original.id}`;
       yield* sql`UPDATE orchestration_v2_projection_threads
         SET payload_json = json_set(payload_json, '$.settledOverride', 'settled')
         WHERE thread_id = ${threadId}`;

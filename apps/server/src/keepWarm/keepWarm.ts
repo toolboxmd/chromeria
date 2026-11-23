@@ -18,12 +18,12 @@ import { wightIdle, type WightThread } from "../wight/wightMode.ts";
 
 export type KeepWarmThread = WightThread &
   Pick<OrchestrationV2ThreadShell, "settledOverride"> & {
-    /** When the latest request started, pings and other runs the shell hides included. */
+    /** When the latest-started request started, pings and other runs the shell hides included. */
     readonly latestRunAt: string | null;
-    /** When the latest request the shell shows started. */
+    /** When the shell's presented run started; clients schedule from it. */
     readonly shownRunAt: string | null;
     readonly latestUserMessageAt: string | null;
-    /** The latest run's prompt, and its failure class when it failed. */
+    /** The latest-started run's prompt, and its failure class when it failed. */
     readonly latestRunPromptId: string | null;
     readonly latestRunFailureClass: string | null;
   };
@@ -118,7 +118,8 @@ export const makeKeepWarm = Effect.fnUntraced(function* <E, R>(deps: {
     for (const [id, activation] of activations) {
       const thread = yield* deps.thread(id);
       let mode = activation;
-      // Clients schedule from the shell, which hides pings and idle compactions: record those.
+      // Clients schedule from the shell's presented run, which hides pings and idle compactions
+      // and can be older than a queued turn that started later: record the later start.
       const hidden = thread?.latestRunAt ?? null;
       if (
         hidden !== null &&

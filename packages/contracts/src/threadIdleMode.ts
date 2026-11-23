@@ -23,7 +23,7 @@ export type KeepWarmStopReason = typeof KeepWarmStopReason.Type;
 export const KeepWarmMode = Schema.Struct({
   type: Schema.Literal("keepWarm"),
   enabledAt: IsoDateTime,
-  /** The latest request the thread shell hides (a ping or idle compaction), so clients see it. */
+  /** A later request than the shell presents (a ping, an idle compaction), so clients see it. */
   hiddenRequestAt: Schema.NullOr(IsoDateTime).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),

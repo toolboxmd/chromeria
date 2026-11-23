@@ -97,7 +97,9 @@ const make = Effect.gen(function* () {
       WHERE r.thread_id = ${id}
         AND r.status <> 'queued'
         AND NOT (r.status = 'cancelled' AND json_extract(r.payload_json, '$.startedAt') IS NULL)
-      ORDER BY r.ordinal DESC
+      -- Queued turns can start out of ordinal order; the cache follows the latest start.
+      ORDER BY coalesce(json_extract(r.payload_json, '$.startedAt'), r.requested_at) DESC,
+        r.ordinal DESC
       LIMIT 1
     `;
     return {

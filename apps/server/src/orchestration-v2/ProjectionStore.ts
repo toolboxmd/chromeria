@@ -5221,6 +5221,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 latest.status = 'cancelled'
                 AND json_extract(latest.payload_json, '$.startedAt') IS NULL
               )
+              -- A refused keep-warm ping stops keep-warm; it never arms the thread's recovery.
+              AND coalesce(json_extract(latest.payload_json, '$.userMessageId'), '')
+                NOT LIKE 'keep-warm:%'
             -- latestExecutedRun: the run that ended last (runRanAfter).
             ORDER BY latest.completed_at IS NULL DESC, latest.completed_at DESC,
               latest.ordinal DESC, latest.run_id DESC
