@@ -2569,14 +2569,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const acceptedIds = new Set(delivery.taskIds);
     const pendingIds = new Set(pendingTaskIds);
     for (const task of projection.subagents) {
-      const state = pendingIds.has(task.id)
-        ? "claimed"
+      const completionDelivery = pendingIds.has(task.id)
+        ? ({ state: "claimed", observedByRunId: null } as const)
         : acceptedIds.has(task.id) &&
             deliveryOwnsLatestCompletion(delivery, task) &&
             task.completionDelivery?.state === "claimed"
-          ? "delivered"
+          ? ({ state: "delivered", observedByRunId: null, messageId: input.messageId } as const)
           : undefined;
-      if (state === undefined) continue;
+      if (completionDelivery === undefined) continue;
       yield* emitEvent({
         type: "subagent.updated",
         threadId,
@@ -2585,7 +2585,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         driver: task.driver,
         providerInstanceId: task.providerInstanceId,
         occurredAt: now,
-        payload: { ...task, completionDelivery: { state, observedByRunId: null }, updatedAt: now },
+        payload: { ...task, completionDelivery, updatedAt: now },
       });
     }
     yield* emitEvent({
@@ -3889,6 +3889,81 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     payload: { ...item, status: "cancelled" as const, completedAt: now, updatedAt: now },
   });
 
+  // A restart lost an accepted wake the provider never read. While no other wake holds the
+  // cohort's reservation, it is reserved again for the standalone results it carried that the
+  // parent has not read and nothing replaced. Run group wakes render every member, read or not,
+  // and another wake's reservation has its own scope, so those are not resent.
+  const reserveUnreadWake = Effect.fn("Orchestrator.reserveUnreadWake")(function* (
+    threadId: ThreadId,
+    messageId: MessageId,
+    parentRunId: RunId,
+  ) {
+    const current = yield* projectionStore.getThreadRecords(threadId, ["runs", "subagents"], {
+      runIds: [parentRunId],
+      subagentRunIds: [parentRunId],
+    });
+    const parentRun = current.runs.find((candidate) => candidate.id === parentRunId);
+    const cohort = parentRun?.delegatedCompletion;
+    const owed = current.subagents.filter(
+      (task) =>
+        task.origin === "app_owned" &&
+        task.runId === parentRunId &&
+        task.runGroupId === undefined &&
+        task.completionDelivery?.state === "delivered" &&
+        task.completionDelivery.messageId === messageId,
+    );
+    if (
+      parentRun === undefined ||
+      cohort?.disposition !== "open" ||
+      // An emptied reservation holds nothing, so the wake can take it over.
+      (cohort.delivery !== null && cohort.delivery.taskIds.length > 0) ||
+      current.thread.archivedAt !== null ||
+      current.thread.deletedAt !== null ||
+      owed.length === 0
+    )
+      return undefined;
+    const now = yield* DateTime.now;
+    const taskIds = owed.map((task) => task.id);
+    const delivery = {
+      generation: cohort.nextGeneration,
+      messageId,
+      taskIds,
+      purposeCauses: completionPurposeCauses(current.subagents, taskIds),
+    };
+    yield* writeSystemEvents([
+      ...owed.map((task) => ({
+        type: "subagent.updated" as const,
+        threadId,
+        runId: parentRunId,
+        nodeId: task.id,
+        driver: task.driver,
+        providerInstanceId: task.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...task,
+          completionDelivery: { state: "claimed" as const, observedByRunId: null },
+          updatedAt: now,
+        },
+      })),
+      {
+        type: "run.updated" as const,
+        threadId,
+        runId: parentRunId,
+        providerInstanceId: parentRun.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...parentRun,
+          delegatedCompletion: {
+            ...cohort,
+            nextGeneration: cohort.nextGeneration + 1,
+            delivery,
+          },
+        },
+      },
+    ]);
+    return { parentRunId, generation: delivery.generation, taskIds };
+  });
+
   // A steer still pending after its run ended was never read: the provider marks one it read
   // completed, and one Stop dropped cancelled. It runs next, in its place among waiting messages.
   const requeueUnreadSteers = Effect.fn("Orchestrator.requeueUnreadSteers")(function* (
@@ -3936,15 +4011,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? undefined
           : projection.runs.find((candidate) => candidate.id === mailbox.parentRunId)
               ?.delegatedCompletion?.delivery;
-      const reserved = reservation?.messageId === message.id;
-      // Once accepted, only the mailbox knows which results are still owed, so it is not replayed.
-      const delivered = mailbox !== undefined && (!reserved || reservation.taskIds.length === 0);
-      if (item.type === "notification" && delivered) {
+      const stopped = yield* projectionStore.hasRunInterruptRequest(threadId, run.id);
+      // The reservation, not the message, says what a held wake still owns.
+      const ownership =
+        mailbox === undefined || item.type !== "notification"
+          ? mailbox
+          : reservation?.messageId === message.id
+            ? reservation.taskIds.length === 0
+              ? undefined
+              : { parentRunId: mailbox.parentRunId, ...reservation }
+            : run.restartCut !== undefined && !stopped
+              ? yield* reserveUnreadWake(threadId, message.id, mailbox.parentRunId)
+              : undefined;
+      const reserved = ownership !== undefined;
+      if (item.type === "notification" && mailbox !== undefined && !reserved) {
         yield* writeSystemEvents([settledWakeItemEvent(item, yield* DateTime.now)]);
         continue;
       }
       // Stop drops a steer it reached; say so, as the adapter does for steers it still held.
-      if (yield* projectionStore.hasRunInterruptRequest(threadId, run.id)) {
+      if (stopped) {
         const now = yield* DateTime.now;
         const dropped: Array<Omit<OrchestrationV2DomainEvent, "id">> = [
           {
@@ -4006,14 +4091,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ),
         ),
       );
-      placed.push({ item, run, message, steer, afterRunOrdinal, reserved });
+      placed.push({ item, run, message, steer, afterRunOrdinal, reserved, ownership });
     }
     // Each requeue starts the queue once it commits, so earlier places go first.
     placed.sort(
       (left, right) =>
         left.afterRunOrdinal - right.afterRunOrdinal || left.item.ordinal - right.item.ordinal,
     );
-    for (const { item, run, message, steer, afterRunOrdinal, reserved } of placed) {
+    for (const { item, run, message, steer, afterRunOrdinal, reserved, ownership } of placed) {
       yield* dispatchWithReceiptEffect({
         type: "message.dispatch",
         commandId: CommandId.make(`command:unread-steer:${run.id}:${message.id}`),
@@ -4044,9 +4129,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               },
             }
           : {
-              ...(message.delegatedCompletion === undefined
+              ...(ownership === undefined
                 ? {}
-                : { delegatedCompletion: message.delegatedCompletion }),
+                : {
+                    delegatedCompletion: {
+                      parentRunId: ownership.parentRunId,
+                      generation: ownership.generation,
+                      taskIds: ownership.taskIds,
+                    },
+                  }),
               ...(message.notification === undefined ? {} : { notification: message.notification }),
             }),
         dispatchMode: { type: "queue_after_active" },
@@ -18133,10 +18224,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             completedAt: now,
             updatedAt: now,
           };
+      const keptDelivery = resultTask.completionDelivery;
       const updatedTask: OrchestrationV2Subagent = {
         ...resultTask,
         completionSource: { runId: childRun.id, purpose: executionPurposeOf(childRun) },
         ...(followUp ? { followUpResult: result.text } : {}),
+        // Fork: the wake carried the earlier result, so restart recovery must not resend this one.
+        ...(keptDelivery?.state === "delivered" && keptDelivery.messageId !== undefined
+          ? {
+              completionDelivery: {
+                state: "delivered" as const,
+                observedByRunId: keptDelivery.observedByRunId,
+              },
+            }
+          : {}),
         updatedAt: now,
         // The cancelling parent gets no wake, and the task records the run it settled from.
         // Fork: a Run group member's result stays owed to the group's one wake.
@@ -18574,10 +18675,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         );
         continue;
       }
-      nextTaskStates.set(task.id, {
-        state: unconsumed ? "pending" : "delivered",
-        observedByRunId: null,
-      });
+      nextTaskStates.set(
+        task.id,
+        unconsumed
+          ? { state: "pending", observedByRunId: null }
+          : { state: "delivered", observedByRunId: null, messageId: delivery.messageId },
+      );
     }
     const pendingTaskIds = successorTaskIds(
       projection.subagents,

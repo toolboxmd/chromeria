@@ -23,6 +23,7 @@ import {
   type ModelSelection,
   type PurposeIntent,
   type OrchestrationV2ProviderTurn,
+  type OrchestrationV2Run,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
   type OrchestrationV2DomainEvent,
@@ -4650,8 +4651,8 @@ it.effect.each([
       const requeued =
         ending === "restart after reading" || ending === "restart after a failed send"
           ? []
-          : // Once accepted, a mailbox wake's results are the mailbox's to redeliver.
-            kind === "accepted delegated completion" || kind === "emptied delegated completion"
+          : // An accepted wake returns with its unread results; an emptied one has none.
+            kind === "emptied delegated completion"
             ? messageIds.filter((messageId) => messageId !== mailboxId)
             : messageIds;
       for (let pass = 0; pass < 2; pass += 1) {
@@ -4673,6 +4674,426 @@ it.effect.each([
       );
     }).pipe(Effect.provide(layer));
   }),
+);
+
+// The provider accepted the mailbox wakes but had not read them when the turn ended. `owed` are
+// the results the first wake is reserved for again; `kept` stay delivered and are not resent.
+// `read`: the parent then reads the recovered wake's result while another Issue's result waits.
+it.effect.each([
+  {
+    case: "all results unread",
+    wakes: [1],
+    change: "none",
+    owed: [0],
+    kept: [],
+    ending: "restart",
+    after: "none",
+  },
+  {
+    case: "read with another scope waiting",
+    wakes: [1],
+    change: "none",
+    owed: [0],
+    kept: [],
+    ending: "restart",
+    after: "read",
+  },
+  {
+    case: "one result read",
+    wakes: [2],
+    change: "acknowledge",
+    owed: [1],
+    kept: [],
+    ending: "restart",
+    after: "none",
+  },
+  {
+    case: "result replaced",
+    wakes: [1],
+    change: "follow-up",
+    owed: [],
+    kept: [],
+    ending: "restart",
+    after: "none",
+  },
+  {
+    case: "two wakes",
+    wakes: [1, 1],
+    change: "none",
+    owed: [0],
+    kept: [1],
+    ending: "restart",
+    after: "none",
+  },
+  {
+    case: "behind an emptied wake",
+    wakes: [1, 1],
+    change: "empty",
+    owed: [0],
+    kept: [],
+    ending: "restart",
+    after: "none",
+  },
+  {
+    case: "Run group",
+    wakes: [2],
+    change: "group",
+    owed: [],
+    kept: [],
+    ending: "restart",
+    after: "none",
+  },
+  {
+    case: "all results unread",
+    wakes: [1],
+    change: "none",
+    owed: [],
+    kept: [],
+    ending: "turn end",
+    after: "none",
+  },
+] as const)(
+  "redelivers an accepted wake's unread results at $ending: $case",
+  ({ case: label, wakes, change, owed, kept, ending, after }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const name = `accepted-wake-${label.replaceAll(" ", "-").replaceAll(",", "")}-${ending.replaceAll(" ", "-")}`;
+        const { events, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(name);
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const sink = yield* EventSink.EventSinkV2;
+          const threadId = yield* startFirstTurn;
+          const parent = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+          const groupId = NodeId.make(`group:${name}`);
+          const wakeIds = wakes.map((_, index) => MessageId.make(`message:${name}:wake:${index}`));
+          const taskIdsOf = wakes.map((count, wake) =>
+            Array.from({ length: count }, (_, index) =>
+              NodeId.make(`task:${name}:${wake}:${index}`),
+            ),
+          );
+          const taskIds = taskIdsOf.flat();
+          const task = (
+            id: NodeId,
+            now: DateTime.Utc,
+            completionDelivery: OrchestrationV2Subagent["completionDelivery"],
+            result = "first",
+          ): OrchestrationV2Subagent => ({
+            id,
+            threadId,
+            runId: parent.id,
+            parentNodeId: parent.rootNodeId!,
+            origin: "app_owned",
+            createdBy: "agent",
+            driver,
+            providerInstanceId: instanceId,
+            providerThreadId: null,
+            childThreadId: null,
+            nativeTaskRef: null,
+            prompt: "Do background work",
+            title: `Background ${id}`,
+            model: null,
+            completionWake: "always",
+            completionDelivery,
+            completionSource: {
+              runId: RunId.make(`run:${id}:${result}`),
+              purpose: executionPurposeOf(parent),
+            },
+            ...(change === "group" ? { runGroupId: groupId } : {}),
+            status: "completed",
+            result: `done ${result}`,
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+          });
+          const write = (
+            label: string,
+            tasks: ReadonlyArray<OrchestrationV2Subagent>,
+            delivery?: NonNullable<OrchestrationV2Run["delegatedCompletion"]>,
+          ) =>
+            Effect.gen(function* () {
+              const now = yield* DateTime.now;
+              const run = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+                (candidate) => candidate.id === parent.id,
+              )!;
+              yield* sink.write({
+                events: [
+                  ...(delivery === undefined
+                    ? []
+                    : [
+                        {
+                          id: EventId.make(`event:${name}:${label}:cohort`),
+                          type: "run.updated" as const,
+                          threadId,
+                          runId: parent.id,
+                          occurredAt: now,
+                          payload: { ...run, delegatedCompletion: delivery },
+                        },
+                      ]),
+                  ...tasks.map((payload) => ({
+                    id: EventId.make(`event:${name}:${label}:${payload.id}`),
+                    type: "subagent.updated" as const,
+                    threadId,
+                    runId: parent.id,
+                    nodeId: payload.id,
+                    occurredAt: now,
+                    payload,
+                  })),
+                ],
+              });
+            });
+          // Each wake reserves its results, steers into the running turn and is accepted.
+          for (const [wake, ids] of taskIdsOf.entries()) {
+            const now = yield* DateTime.now;
+            const reservation = {
+              generation: wake + 1,
+              messageId: wakeIds[wake]!,
+              taskIds: ids,
+              purposeCauses: ids.map((id) => ({
+                taskId: id,
+                runId: RunId.make(`run:${id}:first`),
+                purpose: executionPurposeOf(parent),
+              })),
+            };
+            yield* write(
+              `wake-${wake}`,
+              ids.map((id) => task(id, now, { state: "claimed", observedByRunId: null })),
+              { disposition: "open", nextGeneration: wake + 2, delivery: reservation },
+            );
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make(`${name}:wake:${wake}`),
+              threadId,
+              messageId: wakeIds[wake]!,
+              text: `Wake ${wake}`,
+              attachments: [],
+              dispatchMode: { type: "queue_after_active" },
+              createdBy: "agent",
+              creationSource: "server",
+              delegatedCompletion: { parentRunId: parent.id, generation: wake + 1, taskIds: ids },
+            });
+            yield* worker.drain();
+          }
+          assert.lengthOf(steered, wakes.length);
+          const acknowledge = (taskId: NodeId) =>
+            orchestrator.dispatch({
+              type: "delegated_task.completion-delivery.acknowledge",
+              commandId: CommandId.make(`${name}:acknowledge:${taskId}`),
+              parentThreadId: threadId,
+              taskId,
+              observedByRunId: parent.id,
+            });
+          const now = yield* DateTime.now;
+          if (change === "acknowledge") yield* acknowledge(taskIds[0]!);
+          // The child's follow-up replaced the result, and a later wake carried that one.
+          if (change === "follow-up") {
+            yield* write("follow-up", [
+              task(
+                taskIds[0]!,
+                now,
+                {
+                  state: "delivered",
+                  observedByRunId: null,
+                  messageId: MessageId.make(`message:${name}:later-wake`),
+                },
+                "follow-up",
+              ),
+            ]);
+          }
+          // The parent read the second wake's result before its acceptance committed.
+          if (change === "empty") {
+            yield* write(
+              "empty",
+              [task(taskIds[1]!, now, { state: "acknowledged", observedByRunId: parent.id })],
+              {
+                disposition: "open",
+                nextGeneration: 3,
+                delivery: { generation: 2, messageId: wakeIds[1]!, taskIds: [], purposeCauses: [] },
+              },
+            );
+          }
+          const turn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
+          const ingested = yield* orchestrator.streamDomainEvents.pipe(
+            Stream.filter((event) => event.type === "provider-turn.updated"),
+            Stream.take(1),
+            Stream.runDrain,
+            Effect.forkScoped({ startImmediately: true }),
+          );
+          for (const messageId of wakeIds) {
+            yield* Queue.offer(events, {
+              type: "steer.updated",
+              driver,
+              threadId,
+              runId: parent.id,
+              messageId,
+              status: "pending",
+            });
+          }
+          yield* Queue.offer(events, { type: "provider_turn.updated", driver, providerTurn: turn });
+          yield* Fiber.join(ingested);
+          const read = orchestrator.getThreadProjection(threadId);
+
+          if (ending === "turn end") {
+            const settled = yield* orchestrator.streamDomainEvents.pipe(
+              Stream.filter(
+                (event) =>
+                  event.type === "turn-item.updated" &&
+                  event.payload.type === "notification" &&
+                  event.payload.status === "cancelled",
+              ),
+              Stream.take(wakes.length),
+              Stream.runDrain,
+              Effect.forkScoped({ startImmediately: true }),
+            );
+            const ended = yield* orchestrator.streamDomainEvents.pipe(
+              Stream.filter(
+                (event) =>
+                  event.type === "run.updated" &&
+                  event.payload.id === parent.id &&
+                  event.payload.status === "waiting",
+              ),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkScoped({ startImmediately: true }),
+            );
+            yield* Queue.offer(events, {
+              type: "provider_turn.updated",
+              driver,
+              providerTurn: { ...turn, status: "completed", completedAt: yield* DateTime.now },
+            });
+            yield* Queue.offer(events, {
+              type: "turn.terminal",
+              driver,
+              providerThreadId: turn.providerThreadId,
+              providerTurnId: turn.id,
+              runOrdinal: parent.ordinal,
+              status: "completed",
+              failure: null,
+              threadDisposition: "reusable",
+            });
+            yield* Fiber.join(ended);
+            // The checkpoint ends the run, and the run's end reads its unread steers.
+            yield* worker.drain();
+            yield* Fiber.join(settled);
+          } else {
+            const recovery = yield* ProviderRuntimeRecovery.ProviderRuntimeRecoveryService.pipe(
+              Effect.provide(
+                ProviderRuntimeRecovery.layer.pipe(
+                  Layer.provide(Layer.mergeAll(ServerSettings.layerTest(), IdAllocator.layer)),
+                ),
+              ),
+            );
+            yield* recovery.reconcile("startup");
+          }
+          const owedIds = owed.map((index) => taskIds[index]!);
+          for (let pass = 0; pass < 2; pass += 1) {
+            if (ending === "restart") yield* orchestrator.recoverDelegatedTasks;
+            yield* worker.drain();
+            const projection = yield* read;
+            const delivery = projection.runs.find((run) => run.id === parent.id)
+              ?.delegatedCompletion?.delivery;
+            // The first wake owns its unread results again and waits in its place behind the cut run.
+            assert.deepEqual(
+              delivery == null
+                ? null
+                : { messageId: delivery.messageId, taskIds: delivery.taskIds },
+              owedIds.length === 0 ? null : { messageId: wakeIds[0]!, taskIds: owedIds },
+            );
+            assert.deepEqual(
+              projection.runs
+                .filter((run) => run.status === "queued")
+                .map((run) => run.userMessageId),
+              owedIds.length === 0 ? [] : [wakeIds[0]],
+            );
+            assert.deepEqual(
+              projection.messages.find((message) => message.id === wakeIds[0])?.delegatedCompletion
+                ?.taskIds,
+              owedIds.length === 0 ? taskIdsOf[0] : owedIds,
+            );
+            assert.deepEqual(
+              [...owed, ...kept].map(
+                (index) =>
+                  projection.subagents.find((candidate) => candidate.id === taskIds[index])
+                    ?.completionDelivery?.state,
+              ),
+              [...owed.map(() => "claimed" as const), ...kept.map(() => "delivered" as const)],
+            );
+            assert.isFalse(
+              projection.turnItems.some(
+                (item) => item.type === "notification" && item.status === "pending",
+              ),
+            );
+          }
+          if (after === "read") {
+            // An Issue 2 result can not join the recovered wake, and reading it leaves the wake empty.
+            const otherId = NodeId.make(`task:${name}:other`);
+            const otherScope = {
+              type: "single",
+              reference: {
+                host: "github.com",
+                repository: "toolboxmd/chromeria",
+                kind: "issue",
+                number: 2,
+              },
+            } as const;
+            const pending = task(otherId, yield* DateTime.now, {
+              state: "pending",
+              observedByRunId: null,
+            });
+            yield* write("other-scope", [
+              {
+                ...pending,
+                completionSource: {
+                  runId: RunId.make(`run:${otherId}:first`),
+                  purpose: { version: 1, scope: otherScope, provenance: { type: "declared" } },
+                },
+              },
+            ]);
+            const afterRead = yield* sink.latestSequence();
+            yield* acknowledge(taskIds[0]!);
+            // The cancelled wake's finalization reserves the waiting result for its own wake.
+            yield* sink.stream({ afterSequence: afterRead, eventType: "subagent.updated" }).pipe(
+              Stream.filter(
+                (stored) =>
+                  stored.event.type === "subagent.updated" &&
+                  stored.event.payload.id === otherId &&
+                  stored.event.payload.completionDelivery?.state === "claimed",
+              ),
+              Stream.take(1),
+              Stream.runDrain,
+            );
+            const projection = yield* read;
+            assert.deepEqual(
+              projection.runs
+                .filter((run) => run.userMessageId === wakeIds[0])
+                .map((run) => run.status),
+              ["cancelled"],
+            );
+            assert.notInclude(
+              projection.messages.find((message) => message.id === wakeIds[0])?.delegatedCompletion
+                ?.taskIds ?? [],
+              otherId,
+            );
+            const successor = projection.runs.find((run) => run.id === parent.id)
+              ?.delegatedCompletion?.delivery;
+            assert.deepEqual(successor?.taskIds, [otherId]);
+            assert.notEqual(successor?.messageId, wakeIds[0]);
+            assert.deepEqual(
+              successor?.purposeCauses?.map((cause) => cause.purpose.scope),
+              [otherScope],
+            );
+            assert.deepEqual(
+              [taskIds[0]!, otherId].map(
+                (id) =>
+                  projection.subagents.find((candidate) => candidate.id === id)?.completionDelivery
+                    ?.state,
+              ),
+              ["acknowledged", "claimed"],
+            );
+          }
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
 );
 
 it.effect("queues a goal clear without stopping work when no goal drives it", () =>

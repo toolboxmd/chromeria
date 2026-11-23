@@ -3811,12 +3811,16 @@ sources and reasons.
 ```json
 {
   "id": "steered-wake-recovery",
-  "purpose": "A notification wake (delegated-task question, command notice, mailbox delivery) steered into a running turn keeps the provider's unread status, so a restart before the provider reads it requeues it in its place like a steered user message (a mailbox wake only while it holds its reservation; #883 tracks accepted ones), and Stop drops it without a resend notice. A steer of any kind whose steer effect never ran before the process ended is marked unread at reconciliation and requeued the same way. Drop when upstream tracks unread steers for notification items and unsent steers.",
+  "purpose": "A notification wake (delegated-task question, command notice, mailbox delivery) steered into a running turn keeps the provider's unread status, so a restart before the provider reads it requeues it in its place like a steered user message (a mailbox wake with its reservation; an accepted one cut by the restart, while no other wake holds the reservation, is reserved again in its place for the standalone results it carried that the parent has not read and nothing replaced, which each task's delivered state names; #890 tracks the rest), and Stop drops it without a resend notice. A steer of any kind whose steer effect never ran before the process ended is marked unread at reconciliation and requeued the same way. Drop when upstream tracks unread steers for notification items and unsent steers.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/875",
-    "https://github.com/toolboxmd/chromeria/issues/880"
+    "https://github.com/toolboxmd/chromeria/issues/880",
+    "https://github.com/toolboxmd/chromeria/issues/883"
   ],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/879"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/879",
+    "https://github.com/toolboxmd/chromeria/pull/884"
+  ],
   "newFiles": [],
   "upstreamFiles": ["apps/server/src/orchestration-v2/ProviderEventIngestor.ts"],
   "sharedFiles": [
@@ -3824,8 +3828,15 @@ sources and reasons.
     "apps/server/src/orchestration-v2/Orchestrator.ts",
     "apps/server/src/orchestration-v2/ProjectionStore.ts",
     "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.ts",
-    "apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts"
+    "apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts",
+    "packages/contracts/src/orchestrationV2.ts"
   ],
-  "keywords": ["isSteerTurnItem", "requeueUnreadSteers", "unread-steers", "unsentSteers"]
+  "keywords": [
+    "isSteerTurnItem",
+    "requeueUnreadSteers",
+    "unread-steers",
+    "unsentSteers",
+    "reserveUnreadWake"
+  ]
 }
 ```

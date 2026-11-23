@@ -7070,6 +7070,8 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
     readonly stopDelegatingTurn: boolean;
     readonly followUpOutcome?: "completed" | "interrupted" | "stopped";
     readonly requestedFollowUp?: boolean;
+    // The parent's turn accepted the wake carrying the first result but had not read it.
+    readonly firstResultUnread?: boolean;
   }) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -7099,14 +7101,44 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
         now,
       });
       yield* orchestrator.recoverDelegatedTasks;
-      // The parent read the first result.
-      yield* orchestrator.dispatch({
-        type: "delegated_task.completion-delivery.acknowledge",
-        commandId: CommandId.make(`command:${input.name}:ack`),
-        parentThreadId: threadId,
-        taskId: child.taskId,
-        observedByRunId: runId,
-      });
+      const wakeId = MessageId.make(`message:${input.name}:first-wake`);
+      if (input.firstResultUnread) {
+        const task = (yield* orchestrator.getThreadProjection(threadId)).subagents.find(
+          (row) => row.id === child.taskId,
+        )!;
+        yield* eventSink.write({
+          commandId: CommandId.make(`command:${input.name}:accepted`),
+          events: [
+            {
+              id: EventId.make(`event:${input.name}:accepted`),
+              type: "subagent.updated" as const,
+              threadId,
+              runId,
+              nodeId: task.id,
+              driver,
+              providerInstanceId: modelSelection.instanceId,
+              occurredAt: now,
+              payload: {
+                ...task,
+                completionDelivery: {
+                  state: "delivered",
+                  observedByRunId: null,
+                  messageId: wakeId,
+                },
+              },
+            },
+          ],
+        });
+      } else {
+        // The parent read the first result.
+        yield* orchestrator.dispatch({
+          type: "delegated_task.completion-delivery.acknowledge",
+          commandId: CommandId.make(`command:${input.name}:ack`),
+          parentThreadId: threadId,
+          taskId: child.taskId,
+          observedByRunId: runId,
+        });
+      }
       if (input.stopDelegatingTurn) {
         yield* eventSink.write({
           commandId: CommandId.make(`command:${input.name}:stopped`),
@@ -7215,10 +7247,16 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
           .map((transfer) => transfer.sourcePoint.runId),
         [child.childRunId, followUpRunId],
       );
-      assert.equal(
-        parent.subagents.find((row) => row.id === child.taskId)?.completionDelivery?.state,
-        input.followUpOutcome === "stopped" ? "acknowledged" : "claimed",
-      );
+      const delivery = parent.subagents.find((row) => row.id === child.taskId)?.completionDelivery;
+      if (input.firstResultUnread) {
+        // The wake carried the first result, not the stopped one, so restart must not resend it.
+        assert.deepEqual(delivery, { state: "delivered", observedByRunId: null });
+      } else {
+        assert.equal(
+          delivery?.state,
+          input.followUpOutcome === "stopped" ? "acknowledged" : "claimed",
+        );
+      }
       if (input.followUpOutcome === "stopped") {
         assert.equal(
           parent.runs.find((row) => row.id === runId)?.delegatedCompletion?.delivery,
@@ -7573,6 +7611,16 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
         stopDelegatingTurn: false,
         followUpOutcome: "stopped",
       }),
+  );
+
+  it.effect("a stopped follow-up no longer names the unread wake of the first result", () =>
+    firstResultThenFollowUp({
+      name: "stopped-follow-up-unread-wake",
+      completionWake: "settled_only",
+      stopDelegatingTurn: false,
+      followUpOutcome: "stopped",
+      firstResultUnread: true,
+    }),
   );
 
   it.effect("wakes the parent for an interrupted follow-up without a Stop request", () =>
