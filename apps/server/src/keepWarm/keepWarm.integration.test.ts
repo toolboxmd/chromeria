@@ -140,7 +140,7 @@ it.effect("a due ping is one silent turn in the thread's own session, even when 
     );
     assert.equal(projection.runs.length, 1);
     assert.equal(
-      projection.thread.snoozedUntil === null
+      projection.thread.snoozedUntil == null
         ? null
         : DateTime.formatIso(projection.thread.snoozedUntil),
       snoozedUntil,
