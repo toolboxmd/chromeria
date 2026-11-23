@@ -1655,7 +1655,10 @@ function useMarkdownStyles(promachos = false): MarkdownStyleSets {
         inlineCodeColor: markdownInlineCodeText,
         codeColor: markdownCodeText,
         codeBackgroundColor: markdownCodeBg,
-        codeBlockBackgroundColor: markdownCodeBg,
+        // Fork: opaque in a Promachos reply, so its lighter bubble cannot show through.
+        codeBlockBackgroundColor: promachos
+          ? flattenThemeColor(markdownCodeBg, theme["--color-screen"])
+          : markdownCodeBg,
         fileTextColor: markdownCodeText,
         quoteMarkerColor: markdownBlockquoteBorder,
         dividerColor: markdownHrColor,

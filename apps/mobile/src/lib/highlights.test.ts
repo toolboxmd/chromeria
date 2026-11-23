@@ -9,6 +9,7 @@ import { resolveHighlightLanguage } from "./highlightLanguage";
 import { highlightCode, highlightCommand, tokenizeCode, type HighlightedLines } from "./highlights";
 import type { MaterialYouPalette } from "./materialYouPalette";
 import { materialYouPaletteToMobileThemeVariables } from "./materialYouTheme.android";
+import { codeFenceRenderer } from "../native/codeBlockMarkdown";
 import { getMobileThemeVariables } from "./mobileTheme";
 import { getMobileThemeRuntimeVariables } from "./mobileThemeVariables";
 
@@ -113,29 +114,35 @@ describe("highlightCode", () => {
       ...MOBILE_THEME_IDS.map((themeId) => getMobileThemeVariables(themeId, appearance)),
       ...materialYou(appearance),
     ];
-    // A Promachos user's bubble draws its code in the dark scheme in both appearances.
+    // A Promachos user's bubble draws its code in the dark scheme in both appearances, and a
+    // Promachos reply's fence is flattened over the screen, as ThreadFeed draws them.
     const fences = [
       ...themes("dark").flatMap((variables) => [
         over(variables["--color-md-code-bg"], variables["--color-thread-canvas"]),
+        over(variables["--color-md-code-bg"], variables["--color-screen"]),
         over(variables["--color-md-user-fence-bg"], variables["--color-user-bubble"]),
       ]),
       ...[...themes("dark"), ...themes("light")].map((variables) =>
         rgba(variables["--color-promachos-outbound-fence"]),
       ),
     ];
-    const punctuation = (code: string, language: string, marks: string) =>
-      highlightCode(code, language, "dark")
+    // Only fences the app hands to @pierre/highlights; the rest are coloured natively.
+    const punctuation = (code: string, fence: string, marks: string) => {
+      const renderer = codeFenceRenderer(fence, false);
+      if (renderer.kind !== "highlight") throw new Error(`${fence} is not highlighted here`);
+      return highlightCode(code, renderer.language, "dark")
         .flat()
         .flatMap(({ content, color }) =>
           [...content].filter((char) => marks.includes(char)).map((char) => ({ char, color })),
         );
+    };
     const cpp = punctuation("int main() { return 0; }", "cpp", "(){};");
-    const fString = punctuation('f"{name}"', "python", "{}");
+    const interpolation = punctuation('puts "#{name}"', "ruby", "#{}");
 
     expect(cpp.map(({ char }) => char).join("")).toBe("(){;}");
-    expect(fString.map(({ char }) => char).join("")).toBe("{}");
-    expect(new Set([...cpp, ...fString].map(({ color }) => color)).size).toBe(2);
-    for (const { color } of [...cpp, ...fString]) {
+    expect(interpolation.map(({ char }) => char).join("")).toBe("#{}");
+    expect(new Set([...cpp, ...interpolation].map(({ color }) => color)).size).toBe(2);
+    for (const { color } of [...cpp, ...interpolation]) {
       for (const fence of fences) {
         expect(
           contrast(rgba(color!), fence),
