@@ -64,6 +64,27 @@ export function promachosHomeRefs(
     .map((project) => ({ environmentId: project.environmentId, projectId: project.id }));
 }
 
+/**
+ * Whether a thread's project is in the Promachos home. "unknown" until every connected
+ * environment's settings and projects have loaded and the thread itself is known: a home named by
+ * a machine that has not answered yet must not count as no home.
+ */
+export function promachosMembership(input: {
+  readonly projectRef: ScopedProjectRef | null;
+  readonly loaded: boolean;
+  readonly configs: ReadonlyMap<
+    EnvironmentId,
+    { readonly settings: Pick<ServerSettings, "promachosHome"> }
+  >;
+  readonly projects: ReadonlyArray<HomeProject>;
+  readonly grouping: ProjectGroupingSettings;
+}): "in" | "out" | "unknown" {
+  if (!input.loaded || input.projectRef === null) return "unknown";
+  const homes = promachosHomes(input.configs, input.projects, null);
+  const refs = promachosHomeRefs(input.projects, homes, input.grouping);
+  return isInPromachosHome(input.projectRef, refs) ? "in" : "out";
+}
+
 export function isInPromachosHome(
   projectRef: ScopedProjectRef,
   homeRefs: ReadonlyArray<ScopedProjectRef>,

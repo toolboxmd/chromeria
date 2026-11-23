@@ -33,7 +33,7 @@ import { connectionAtomRuntime } from "../../connection/runtime";
 import { useNowMinuteMs } from "../../lib/clock";
 import { useProjects, useServerConfigs, useVisibleThreadShells } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
-import { useEnvironmentScope } from "../../state/session";
+import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { savedConnectionsByIdAtom } from "../../state/use-remote-environment-registry";
@@ -213,7 +213,12 @@ function PromachosNewHomeRow(props: {
   const create = useAtomCommand(createHome, { reportFailure: false });
   const canCreate = useAtomValue(createHome.permissionAtom(props.environmentId)) && !props.disabled;
   const submit = async (path: string) => {
-    if (path.trim().length === 0) return;
+    // The grant can change while the prompt is open; a home that cannot be saved is not created.
+    if (
+      path.trim().length === 0 ||
+      !readEnvironmentScope(props.environmentId, AuthSettingsWriteScope)
+    )
+      return;
     const result = await create({
       environmentId: props.environmentId,
       input: { path: path.trim() },

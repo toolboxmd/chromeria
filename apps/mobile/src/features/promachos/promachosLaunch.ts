@@ -1,37 +1,47 @@
-import {
-  isInPromachosHome,
-  promachosHomeRefs,
-  promachosHomes,
-} from "@t3tools/client-runtime/promachos/conversations";
+import { promachosMembership } from "@t3tools/client-runtime/promachos/conversations";
+import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { AsyncResult, Atom } from "effect/reactivity";
 
-import type { Preferences } from "../../persistence/mobile-preferences";
-import { appAtomRegistry } from "../../state/atom-registry";
-import { resolveMobileProjectGroupingSettings } from "../../state/project-grouping.logic";
+import { environmentCatalog } from "../../connection/catalog";
+import { mobilePreferencesAtom } from "../../state/preferences";
+import {
+  DEFAULT_MOBILE_PROJECT_GROUPING_SETTINGS,
+  resolveMobileProjectGroupingSettings,
+} from "../../state/project-grouping.logic";
 import { environmentProjects } from "../../state/projects";
 import { environmentServerConfigsAtom } from "../../state/server";
+import { environmentSnapshotAtom } from "../../state/shell";
 import { environmentThreadShells } from "../../state/threads";
 
+const membershipAtom = Atom.family((key: string) => {
+  const [environmentId, threadId] = JSON.parse(key) as [EnvironmentId, ThreadId];
+  return Atom.make((get) => {
+    const configs = get(environmentServerConfigsAtom);
+    const loaded = [...enabledEnvironmentIds(get(environmentCatalog.catalogValueAtom))].every(
+      (id) => configs.has(id) && get(environmentSnapshotAtom(id)) !== null,
+    );
+    const shell = get(environmentThreadShells.threadShellAtom({ environmentId, threadId }));
+    const preferences = get(mobilePreferencesAtom);
+    return promachosMembership({
+      projectRef: shell === null ? null : { environmentId, projectId: shell.projectId },
+      loaded,
+      configs,
+      projects: get(environmentProjects.projectsAtom),
+      grouping: AsyncResult.isSuccess(preferences)
+        ? resolveMobileProjectGroupingSettings(preferences.value)
+        : DEFAULT_MOBILE_PROJECT_GROUPING_SETTINGS,
+    });
+  }).pipe(Atom.withLabel(`promachos-conversation-membership:${key}`));
+});
+
 /**
- * Whether a cold start may reopen the remembered conversation on the Promachos tab: false once its
- * machine's settings and the thread have loaded and the thread is no longer in the home, as after
- * another device changed the home.
+ * Whether the remembered Promachos conversation is still in the home, "unknown" until every
+ * connected machine has loaded. Another device may have moved the home since it was remembered.
  */
-export function promachosConversationInHome(
-  conversation: { readonly environmentId: string; readonly threadId: string },
-  preferences: Preferences | null,
-): boolean {
-  const environmentId = conversation.environmentId as EnvironmentId;
-  const configs = appAtomRegistry.get(environmentServerConfigsAtom);
-  const shell = appAtomRegistry.get(
-    environmentThreadShells.threadShellAtom({
-      environmentId,
-      threadId: conversation.threadId as ThreadId,
-    }),
-  );
-  if (!configs.has(environmentId) || shell === null) return true;
-  const projects = appAtomRegistry.get(environmentProjects.projectsAtom);
-  const grouping = resolveMobileProjectGroupingSettings(preferences ?? {});
-  const refs = promachosHomeRefs(projects, promachosHomes(configs, projects, null), grouping);
-  return isInPromachosHome({ environmentId, projectId: shell.projectId }, refs);
+export function promachosConversationMembershipAtom(conversation: {
+  readonly environmentId: string;
+  readonly threadId: string;
+}) {
+  return membershipAtom(JSON.stringify([conversation.environmentId, conversation.threadId]));
 }

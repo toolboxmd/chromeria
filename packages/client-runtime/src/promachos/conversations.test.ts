@@ -1,7 +1,12 @@
 import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { promachosConversations, promachosHomeRefs, promachosHomes } from "./conversations.ts";
+import {
+  promachosConversations,
+  promachosHomeRefs,
+  promachosHomes,
+  promachosMembership,
+} from "./conversations.ts";
 
 const home = { environmentId: EnvironmentId.make("env-a"), projectId: ProjectId.make("home") };
 const homeOnB = { environmentId: EnvironmentId.make("env-b"), projectId: ProjectId.make("home-b") };
@@ -188,5 +193,61 @@ describe("promachosHomes", () => {
       [homeOnB.environmentId, config("home-b")],
     ]);
     expect(promachosHomes(configs, projects, home.environmentId)).toEqual([homeOnB]);
+  });
+});
+
+describe("promachosMembership", () => {
+  const grouped = {
+    sidebarProjectGroupingMode: "repository" as const,
+    sidebarProjectGroupingOverrides: {},
+  };
+  const project = (environmentId: string, id: string) => ({
+    environmentId: EnvironmentId.make(environmentId),
+    id: ProjectId.make(id),
+    workspaceRoot: `/${environmentId}/promachos`,
+    repositoryIdentity: {
+      canonicalKey: "github.com/me/promachos",
+      locator: {
+        source: "git-remote" as const,
+        remoteName: "origin",
+        remoteUrl: "github.com/me/promachos",
+      },
+    },
+  });
+  const projects = [project("env-a", "home"), project("env-b", "home-b")];
+  const named = (projectId: string | null) => ({
+    settings: { promachosHome: projectId === null ? null : ProjectId.make(projectId) },
+  });
+
+  it("stays unknown until every machine has answered, then says out once the home moved", () => {
+    const cleared = new Map([
+      [home.environmentId, named(null)],
+      [homeOnB.environmentId, named(null)],
+    ]);
+    const input = { projectRef: home, configs: cleared, projects, grouping: grouped };
+    expect(promachosMembership({ ...input, loaded: false })).toBe("unknown");
+    expect(promachosMembership({ ...input, loaded: true })).toBe("out");
+    expect(promachosMembership({ ...input, projectRef: null, loaded: true })).toBe("unknown");
+  });
+
+  it("counts a home another machine names once that machine has loaded", () => {
+    // Machine A names no home; B names the same repository, so A's project is part of it.
+    const configs = new Map([
+      [home.environmentId, named(null)],
+      [homeOnB.environmentId, named("home-b")],
+    ]);
+    expect(
+      promachosMembership({ projectRef: home, configs, projects, grouping: grouped, loaded: true }),
+    ).toBe("in");
+    const onlyA = new Map([[home.environmentId, named(null)]]);
+    expect(
+      promachosMembership({
+        projectRef: home,
+        configs: onlyA,
+        projects,
+        grouping: grouped,
+        loaded: false,
+      }),
+    ).toBe("unknown");
   });
 });
