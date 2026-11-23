@@ -2,7 +2,6 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/model
 import { msg, useLocale, useMessages } from "gt-react-native";
 import { Pressable, View } from "react-native";
 
-import { SymbolView, type AppSymbolName } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import {
   resolveThreadListV2RowStatus,
@@ -71,29 +70,6 @@ export function PromachosConversationRow(props: {
           {unread ? <View className="size-2.5 rounded-full bg-primary" /> : null}
         </View>
       </View>
-    </Pressable>
-  );
-}
-
-/** A 44 pt round floating control, as the list's and the chat's header buttons. */
-export function PromachosRoundButton(props: {
-  readonly icon: AppSymbolName;
-  readonly label: string;
-  readonly onPress: () => void;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={props.label}
-      className="size-11 items-center justify-center rounded-full border border-border-subtle bg-card shadow-sm active:opacity-60"
-      onPress={props.onPress}
-    >
-      <SymbolView
-        name={props.icon}
-        size={20}
-        tintColorClassName="accent-foreground"
-        type="monochrome"
-      />
     </Pressable>
   );
 }

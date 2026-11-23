@@ -1,7 +1,8 @@
 /**
  * Promachos mode on the phone: the Promachos tab shows the home's conversations, and a thread of
  * the home renders as his bubble chat. The home lives in this phone's preferences, naming one
- * project on one environment; it spans every project the thread list merges with it.
+ * project on one environment; it spans every project the thread list merges with it. It is chosen in
+ * Settings → Promachos.
  */
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -26,23 +27,24 @@ import {
   resolveHiddenNavigationTabs,
 } from "../layout/workspace/navigation-tab-order";
 
-export function usePromachosHome(): [
-  ScopedProjectRef | null,
-  (home: ScopedProjectRef | null) => void,
-] {
+/** The saved home and how to change it. */
+export function usePromachosHome(): {
+  readonly home: ScopedProjectRef | null;
+  readonly setHome: (home: ScopedProjectRef) => void;
+} {
   const preferences = useAtomValue(mobilePreferencesAtom);
   const save = useAtomCommand(saveMobilePreferences);
   const saved = AsyncResult.isSuccess(preferences) ? preferences.value.promachosHome : undefined;
-  const home =
-    saved === undefined
-      ? null
-      : {
-          environmentId: EnvironmentId.make(saved.environmentId),
-          projectId: ProjectId.make(saved.projectId),
-        };
-  const setHome = (next: ScopedProjectRef | null) =>
-    void save({ promachosHome: next ?? undefined });
-  return [home, setHome];
+  return {
+    home:
+      saved === undefined
+        ? null
+        : {
+            environmentId: EnvironmentId.make(saved.environmentId),
+            projectId: ProjectId.make(saved.projectId),
+          },
+    setHome: (next) => void save({ promachosHome: next }),
+  };
 }
 
 /** Every project of the Promachos home, across the machines it is merged over. */
@@ -66,7 +68,7 @@ export function usePromachosChatModels(
     navigationCustomizationAvailable() &&
     AsyncResult.isSuccess(preferences) &&
     resolveHiddenNavigationTabs(preferences.value.hiddenNavigationTabs).includes("promachos");
-  const [home] = usePromachosHome();
+  const { home } = usePromachosHome();
   const homeRefs = usePromachosHomeRefs(hidden ? null : home);
   const serverConfig = useEnvironmentServerConfig(projectRef?.environmentId ?? null);
   if (projectRef === null || !isInPromachosHome(projectRef, homeRefs)) return null;
@@ -74,4 +76,16 @@ export function usePromachosChatModels(
     serverConfig?.settings ?? DEFAULT_SERVER_SETTINGS,
     projectRef.projectId,
   ).settings.prismRoles.promachos.models;
+}
+
+/** The home's name for Settings, or null when there is none. */
+export function usePromachosHomeLabel(): string | null {
+  const { home } = usePromachosHome();
+  const projects = useProjects();
+  if (home === null) return null;
+  return (
+    projects.find(
+      (project) => project.environmentId === home.environmentId && project.id === home.projectId,
+    )?.title ?? null
+  );
 }

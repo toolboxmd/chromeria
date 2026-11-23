@@ -110,6 +110,7 @@ import {
 } from "./features/settings/SettingsSourceControlDetailRouteScreens";
 import { SettingsEnvironmentsRouteScreen } from "./features/settings/SettingsEnvironmentsRouteScreen";
 import { SettingsFollowUpRouteScreen } from "./features/settings/SettingsFollowUpRouteScreen";
+import { SettingsPromachosRouteScreen } from "./features/promachos/SettingsPromachosRouteScreen";
 import { SettingsLanguageRouteScreen } from "./features/settings/SettingsLanguageRouteScreen";
 import {
   SettingsEnvironmentMaintenanceRouteScreen,
@@ -193,6 +194,7 @@ const ROUTE_TITLES: Readonly<Record<string, string>> = {
   SettingsVoice: msg("Voice"),
   SettingsFollowUp: msg("Chat", { $context: "noun, settings page title" }),
   SettingsScheduledTasks: msg("Scheduled tasks"),
+  SettingsPromachos: msg("Promachos"),
   SettingsScheduledTaskNew: msg("New scheduled task"),
   SettingsScheduledTaskEdit: msg("Edit scheduled task"),
   SettingsScheduledTaskBranch: msg("Base branch"),
@@ -364,6 +366,11 @@ const SETTINGS_SCREENS = {
   SettingsFollowUp: createNativeStackScreen({
     screen: SettingsFollowUpRouteScreen,
     linking: "settings/follow-ups",
+    options: settingsPage(),
+  }),
+  SettingsPromachos: createNativeStackScreen({
+    screen: SettingsPromachosRouteScreen,
+    linking: "settings/promachos",
     options: settingsPage(),
   }),
   SettingsScheduledTasks: createNativeStackScreen({

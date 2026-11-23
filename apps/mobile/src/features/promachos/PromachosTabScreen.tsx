@@ -1,3 +1,6 @@
+import { useNavigation } from "@react-navigation/native";
+import { Button } from "../../components/ui/Button";
+import { openSettings } from "../settings/settings-navigation";
 import { useAtomValue } from "@effect/atom-react";
 import { useIsFocused } from "@react-navigation/native";
 import { promachosConversations } from "@t3tools/client-runtime/promachos/conversations";
@@ -25,7 +28,6 @@ import { ListSection } from "../../components/ui/ListSection";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { useNowMinuteMs } from "../../lib/clock";
-import { uuidv4 } from "../../lib/uuid";
 import { useProjects, useVisibleThreadShells } from "../../state/entities";
 import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -34,7 +36,7 @@ import { useAdaptiveWorkspaceLayout } from "../layout/adaptive-workspace-context
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
 import { NativeWorkspaceTabActivityContext } from "../../native/v5-workspace-context";
-import { PromachosConversationRow, PromachosRoundButton } from "./PromachosConversationRow";
+import { PromachosConversationRow } from "./PromachosConversationRow";
 import { usePromachosHome, usePromachosHomeRefs } from "./promachosHome";
 
 const createHome = createEnvironmentRpcCommand(connectionAtomRuntime, {
@@ -42,103 +44,67 @@ const createHome = createEnvironmentRpcCommand(connectionAtomRuntime, {
   tag: PROMACHOS_HOME_WS_METHODS.create,
 });
 
-/** The Promachos tab: his home's conversations, or the picker for his home. */
+/** The Promachos tab: his home's conversations; the home itself is set in Settings. */
 export function PromachosTabScreen() {
-  const [home, setHome] = usePromachosHome();
-  const projects = useProjects();
-  const savedConnections = useAtomValue(savedConnectionsByIdAtom);
-  const multipleEnvironments = new Set(projects.map((project) => project.environmentId)).size > 1;
-  const label = (project: EnvironmentProject) => {
-    const environment = savedConnections[project.environmentId]?.environmentLabel;
-    return multipleEnvironments && environment
-      ? `${project.title} · ${environment}`
-      : project.title;
-  };
-  const homeProject =
-    home === null
-      ? null
-      : (projects.find(
-          (project) =>
-            project.environmentId === home.environmentId && project.id === home.projectId,
-        ) ?? null);
+  const gt = useGT();
+  const navigation = useNavigation();
+  const { home } = usePromachosHome();
+  const homeProject = usePromachosHomeProject(home);
   const bottomClearance = useWorkspaceTabs()?.bottomClearance ?? 0;
   return (
     <ScrollView
       contentInsetAdjustmentBehavior="automatic"
-      contentContainerStyle={{ padding: 16, paddingBottom: bottomClearance + 16, gap: 24 }}
+      contentContainerStyle={{ paddingTop: 4, paddingBottom: bottomClearance + 16 }}
     >
       {homeProject !== null && home !== null ? (
-        <PromachosConversationList
-          home={home}
-          homeLabel={label(homeProject)}
-          onChangeHome={() => setHome(null)}
-        />
+        <PromachosConversationList home={home} />
       ) : (
-        <PromachosHomePicker
-          missing={home !== null}
-          projects={projects}
-          label={label}
-          onPick={setHome}
-        />
+        <View className="items-center gap-4 px-8 pt-24">
+          <Text className="text-center text-foreground-secondary">
+            {gt("Choose the project that is the Promachos home to see his conversations.")}
+          </Text>
+          <Button
+            label={gt("Choose home")}
+            onPress={() => openSettings(navigation, "SettingsPromachos")}
+          />
+        </View>
       )}
     </ScrollView>
   );
 }
 
-function PromachosConversationList(props: {
-  readonly home: ScopedProjectRef;
-  readonly homeLabel: string;
-  readonly onChangeHome: () => void;
-}) {
+function usePromachosHomeProject(home: ScopedProjectRef | null) {
+  const projects = useProjects();
+  return home === null
+    ? null
+    : (projects.find(
+        (project) => project.environmentId === home.environmentId && project.id === home.projectId,
+      ) ?? null);
+}
+
+function PromachosConversationList(props: { readonly home: ScopedProjectRef }) {
   const gt = useGT();
   const homeRefs = usePromachosHomeRefs(props.home);
   const conversations = promachosConversations(useVisibleThreadShells(), homeRefs);
   const selectDetail = useSelectWorkspaceDetail();
   const nowMs = useNowMinuteMs();
   useForgetConversationOnList();
-  const newConversation = () =>
-    selectDetail({
-      name: "Thread",
-      params: {
-        draft: {
-          requestId: uuidv4(),
-          environmentId: String(props.home.environmentId),
-          projectId: String(props.home.projectId),
-        },
-      },
-    });
-  return (
-    <View className="-mx-4">
-      <View className="flex-row items-center justify-between px-4 pb-3">
-        <PromachosRoundButton
-          icon="house"
-          label={gt("Promachos home: {home}. Choose another home", { home: props.homeLabel })}
-          onPress={props.onChangeHome}
-        />
-        <PromachosRoundButton
-          icon="plus"
-          label={gt("New conversation")}
-          onPress={newConversation}
-        />
-      </View>
-      {conversations.length === 0 ? (
-        <Text className="px-4 py-3 text-foreground-secondary">{gt("No conversations yet.")}</Text>
-      ) : (
-        conversations.map((thread) => (
-          <PromachosConversationRow
-            key={`${thread.environmentId}:${thread.id}`}
-            thread={thread}
-            nowMs={nowMs}
-            onPress={() =>
-              selectDetail({
-                name: "Thread",
-                params: { environmentId: thread.environmentId, threadId: thread.id },
-              })
-            }
-          />
-        ))
-      )}
-    </View>
+  return conversations.length === 0 ? (
+    <Text className="px-4 py-3 text-foreground-secondary">{gt("No conversations yet.")}</Text>
+  ) : (
+    conversations.map((thread) => (
+      <PromachosConversationRow
+        key={`${thread.environmentId}:${thread.id}`}
+        thread={thread}
+        nowMs={nowMs}
+        onPress={() =>
+          selectDetail({
+            name: "Thread",
+            params: { environmentId: thread.environmentId, threadId: thread.id },
+          })
+        }
+      />
+    ))
   );
 }
 
@@ -157,34 +123,38 @@ function useForgetConversationOnList() {
   }, [forget, save]);
 }
 
-function PromachosHomePicker(props: {
-  readonly missing: boolean;
-  readonly projects: ReadonlyArray<EnvironmentProject>;
-  readonly label: (project: EnvironmentProject) => string;
-  readonly onPick: (home: ScopedProjectRef) => void;
-}) {
+/** Settings → Promachos: the projects to choose the home from, the current one checked. */
+export function PromachosHomePicker() {
   const gt = useGT();
+  const { home, setHome } = usePromachosHome();
+  const homeProject = usePromachosHomeProject(home);
+  const projects = useProjects();
   const savedConnections = useAtomValue(savedConnectionsByIdAtom);
-  const environmentIds = [...new Set(props.projects.map((project) => project.environmentId))];
+  const environmentIds = [...new Set(projects.map((project) => project.environmentId))];
+  const multipleEnvironments = environmentIds.length > 1;
+  const label = (project: EnvironmentProject) => {
+    const environment = savedConnections[project.environmentId]?.environmentLabel;
+    return multipleEnvironments && environment
+      ? `${project.title} · ${environment}`
+      : project.title;
+  };
   return (
     <ListSection
       title={gt("Promachos home")}
       footer={
-        props.missing
+        home !== null && homeProject === null
           ? gt("The Promachos home is not available here. Choose it again.")
           : gt(
               "Choose the project that is the Promachos home, or create a new one. His conversations live there.",
             )
       }
     >
-      {props.projects.map((project) => (
+      {projects.map((project) => (
         <ListActionRow
           key={`${project.environmentId}:${project.id}`}
-          icon="house"
-          label={props.label(project)}
-          onPress={() =>
-            props.onPick({ environmentId: project.environmentId, projectId: project.id })
-          }
+          icon={project === homeProject ? "checkmark" : "house"}
+          label={label(project)}
+          onPress={() => setHome({ environmentId: project.environmentId, projectId: project.id })}
         />
       ))}
       {environmentIds.map((environmentId) => (
@@ -192,13 +162,13 @@ function PromachosHomePicker(props: {
           key={environmentId}
           environmentId={environmentId}
           label={
-            environmentIds.length > 1
+            multipleEnvironments
               ? gt("New home · {environment}", {
                   environment: savedConnections[environmentId]?.environmentLabel ?? environmentId,
                 })
               : gt("New home")
           }
-          onCreated={props.onPick}
+          onCreated={setHome}
         />
       ))}
     </ListSection>
