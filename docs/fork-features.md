@@ -1588,6 +1588,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/promachos/PromachosLaunch.tests.ts",
     "apps/server/src/promachos/PromachosRpc.ts",
     "apps/web/src/components/promachos/PromachosChat.tsx",
+    "apps/web/src/components/promachos/PromachosChrome.tsx",
     "apps/web/src/components/promachos/PromachosModeSwitch.tsx",
     "apps/web/src/components/promachos/PromachosNewHome.tsx",
     "apps/web/src/components/promachos/PromachosSidebar.tsx",
@@ -1633,7 +1634,12 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/mobile/src/features/layout/workspace/workspace-tabs-state.ts",
     "apps/mobile/src/features/threads/ThreadFeed.tsx",
     "apps/mobile/src/features/threads/new-task-flow-provider.test.tsx",
-    "apps/mobile/src/lib/rootNavigation.ts"
+    "apps/mobile/src/lib/rootNavigation.ts",
+    "apps/mobile/src/components/ui/AppBar.tsx",
+    "apps/mobile/src/components/ui/AppBar.types.ts",
+    "apps/mobile/src/features/threads/DraftThreadHeader.tsx",
+    "apps/mobile/src/features/threads/ThreadComposer.tsx",
+    "apps/mobile/src/features/threads/ThreadHeader.tsx"
   ],
   "sharedFiles": [
     "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
