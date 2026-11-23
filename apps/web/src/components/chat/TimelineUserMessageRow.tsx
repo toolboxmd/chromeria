@@ -85,6 +85,7 @@ import { PROMACHOS_OUTBOUND_BUBBLE_CLASS_NAME } from "../promachos/PromachosChat
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
 import { WorkflowOpeningBlock } from "./WorkflowOpeningBlock";
 import { useChildRequestNotice } from "./useChildRequestNotice";
+import { SideThreadsOpenContext } from "~/hooks/useSideThreadTrigger";
 import { useTallEnoughToFold } from "./useTallEnoughToFold";
 import { TimelineRowCtx, TimelineRowActivityCtx, type TimelineRow } from "./timelineRowContext";
 import {
@@ -534,6 +535,8 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     userMessage.childRequest,
   );
   const senderRef = childNotice?.childRef ?? messageSenderRef;
+  // Read-only timelines (guest page, linked pane) cannot open another thread.
+  const canOpenThreads = use(SideThreadsOpenContext);
   // Messages from other agents fold to one line so the user's own messages stay easy to find.
   const folded = userMessage.attribution === "agent" || childNotice !== null;
   const [expanded, setExpanded] = useState(false);
@@ -895,7 +898,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         floatActions ? "flex-wrap" : "shrink-0",
       )}
     >
-      {folded && senderRef && canOpenSender ? (
+      {folded && senderRef && canOpenSender && (childNotice === null || canOpenThreads) ? (
         <InlineButton
           onClick={() => ctx.onOpenThread(senderRef.threadId, senderRef.environmentId)}
           tone="muted"
@@ -1018,7 +1021,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             expanded={expanded}
             onToggle={() => setExpanded((value) => !value)}
             onOpenLabel={
-              childNotice === null
+              childNotice === null || !canOpenThreads
                 ? undefined
                 : () => ctx.onOpenThread(childNotice.childRef.threadId)
             }

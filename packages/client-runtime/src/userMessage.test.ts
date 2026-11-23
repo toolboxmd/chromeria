@@ -296,6 +296,12 @@ describe("resolveChildRequestNoticeState", () => {
     ["cancelled by its answer", null, { ...resolved, decision: "cancel" }, "declined"],
     ["resolved without a decision", null, resolved, "answered"],
     ["a question resolved", null, { kind: "user_input", status: "resolved" }, "answered"],
+    [
+      "a question dismissed",
+      null,
+      { kind: "user_input", status: "resolved", decision: "cancel" },
+      "declined",
+    ],
     ["expired", null, { kind: "command", status: "expired" }, "closed"],
     ["cancelled", null, { kind: "user_input", status: "cancelled" }, "closed"],
   ] as const)("%s", (_name, pendingRuntimeRequest, request, expected) => {

@@ -229,10 +229,10 @@ export function resolveChildRequestNoticeState(input: {
     case "cancelled":
       return "closed";
     case "resolved":
-      if (request.kind === "user_input") return "answered";
-      if (request.decision === undefined) return "answered";
-      return request.decision === "decline" || request.decision === "cancel"
-        ? "declined"
+      // A dismissed question also resolves, with a cancel decision.
+      if (request.decision === "decline" || request.decision === "cancel") return "declined";
+      return request.kind === "user_input" || request.decision === undefined
+        ? "answered"
         : "approved";
   }
 }
