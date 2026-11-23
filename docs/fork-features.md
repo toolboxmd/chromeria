@@ -1528,40 +1528,75 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "wight-mode",
-  "purpose": "Continue idle threads until their timer or instance quota pauses them, preserving retirement and stored effort.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/173"],
+  "purpose": "Thread idle modes: Wight continues idle threads until their timer or instance quota pauses them, preserving retirement and stored effort; keep-warm pings an idle Claude thread every 55 minutes so its prompt cache survives, for up to 24 hours without a user message. One variant per thread.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/173",
+    "https://github.com/toolboxmd/chromeria/issues/928"
+  ],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/173-wight-v2"],
   "newFiles": [
+    "apps/mobile/src/features/threads/useThreadIdleModeMenu.ts",
+    "apps/server/src/keepWarm/KeepWarmService.ts",
+    "apps/server/src/keepWarm/keepWarm.integration.test.ts",
+    "apps/server/src/keepWarm/keepWarm.test.ts",
+    "apps/server/src/keepWarm/keepWarm.ts",
     "apps/server/src/wight/AdmissionHooks.ts",
     "apps/server/src/wight/WightService.ts",
     "apps/server/src/wight/admission.integration.test.ts",
     "apps/server/src/wight/admission.ts",
+    "apps/server/src/wight/legacyWightModes.ts",
     "apps/server/src/wight/wightMode.test.ts",
     "apps/server/src/wight/wightMode.ts",
-    "apps/web/src/components/chat/WightModeControl.tsx",
+    "apps/web/src/components/chat/IdleModeControl.tsx",
     "apps/web/src/components/settings/WightLimitSetting.tsx",
-    "apps/web/src/wightMode.test.ts",
-    "apps/web/src/wightMode.ts",
+    "packages/client-runtime/src/threadIdleMode.test.ts",
+    "packages/client-runtime/src/threadIdleMode.ts",
+    "packages/contracts/src/threadIdleMode.ts",
     "packages/contracts/src/wight.test.ts",
     "packages/contracts/src/wight.ts",
     "packages/shared/src/wightSettings.test.ts"
   ],
   "upstreamFiles": [
+    "apps/mobile/src/lib/threadActivity.test.ts",
+    "apps/web/src/components/chat/MessagesTimeline.logic.test.ts",
+    "apps/web/src/components/chat/MessagesTimeline.logic.ts",
     "apps/web/src/components/settings/ProviderInstanceCard.tsx",
     "docs/user/thread-sidebar.md",
     "packages/contracts/src/providerInstance.ts",
     "packages/shared/src/serverSettings.ts"
   ],
   "sharedFiles": [
+    "apps/mobile/src/features/promachos/promachosFeed.ts",
+    "apps/mobile/src/features/threads/ThreadFeed.tsx",
+    "apps/mobile/src/features/threads/ThreadHeader.tsx",
+    "apps/mobile/src/features/threads/ThreadRouteScreen.tsx",
+    "apps/mobile/src/lib/threadActivity.ts",
+    "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+    "apps/server/src/mcp/toolkits/thread/handlers.ts",
+    "apps/server/src/mcp/toolkits/thread/tools.ts",
     "apps/server/src/orchestration-v2/Orchestrator.ts",
+    "apps/server/src/orchestration-v2/ProjectionStore.ts",
     "apps/server/src/orchestration-v2/runtimeLayer.ts",
     "apps/server/src/serverSettings.test.ts",
+    "apps/server/src/serverSettings.ts",
     "apps/web/src/components/chat/ChatHeader.tsx",
+    "apps/web/src/components/chat/MessagesTimeline.tsx",
+    "apps/web/src/components/promachos/promachosTimeline.ts",
+    "packages/client-runtime/package.json",
     "packages/contracts/src/index.ts",
     "packages/contracts/src/orchestrationV2.ts",
     "packages/contracts/src/settings.ts"
   ],
-  "keywords": ["Wight", "wightModes", "wightLimitPercent", "wightAdmission"]
+  "keywords": [
+    "KEEP_WARM",
+    "Wight",
+    "idleAdmission",
+    "keepWarm",
+    "threadIdleModes",
+    "wightAdmission",
+    "wightLimitPercent",
+    "wightModes"
+  ]
 }
 ```
 
