@@ -14,10 +14,15 @@ describe("conversationPreviewText", () => {
     ],
     [
       "emphasis and inline code",
-      "**Bold**, _soft_, ~~gone~~ and `vp i`",
+      "**Bold**, *soft*, ~~gone~~ and `vp i`",
       "Bold, soft, gone and vp i",
     ],
     ["snake_case words", "Set my_var_name in config_file", "Set my_var_name in config_file"],
+    [
+      "underscores as written",
+      "Edit __init__.py, _not emphasis_",
+      "Edit __init__.py, _not emphasis_",
+    ],
     ["links and images", "See [the docs](https://x.dev) ![logo](a.png)", "See the docs logo"],
     [
       "a link target with parentheses",
@@ -74,6 +79,16 @@ describe("conversationPreviewText", () => {
       "an indented code block",
       ["Create the module:", "", "    touch __init__.py"].join("\n"),
       "Create the module: touch __init__.py",
+    ],
+    [
+      "indented code inside a list step",
+      ["1. Setup:", "", "       touch __init__.py", "2. Test."].join("\n"),
+      "Setup: touch __init__.py Test.",
+    ],
+    [
+      "list-like lines inside indented code",
+      ["Add these paths:", "", "    - pkg/__main__.py", "    - pkg/__init__.py"].join("\n"),
+      "Add these paths: - pkg/__main__.py - pkg/__init__.py",
     ],
     [
       "a nested list item, not code",

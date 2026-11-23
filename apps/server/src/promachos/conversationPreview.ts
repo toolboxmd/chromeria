@@ -126,7 +126,8 @@ const REFERENCE_LINK = /!?\[([^\]]*)\]\[[^\]]*\]/g;
 const ESCAPABLE = /[!-/:-@[-`{-~]/;
 // Any indent: a fence nested in a list item is indented by the item.
 const FENCE = /^\s*(`{3,}|~{3,})/;
-const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s/;
+const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/;
+const indentOf = (line: string) => /^[ \t]*/.exec(line)![0].replaceAll("\t", "    ").length;
 // Private-use marks around the index of a kept piece, so prose rules never touch it.
 const KEPT = /\uE000(\d+)\uE001/g;
 
@@ -183,13 +184,16 @@ function stripInline(line: string, state: { inComment: boolean }): string {
     prose += keep(/^ .*\S.* $/.test(code) ? code.slice(1, -1) : code);
     index = close + length;
   }
-  return prose
-    .replace(IMAGE, "$1")
-    .replace(LINK, "$1")
-    .replace(REFERENCE_LINK, "$1")
-    .replace(/\*\*|__|~~/g, "")
-    .replace(/(?<![\w*])[*_]((?:(?![*_]).)+?)[*_](?![\w*])/g, "$1")
-    .replace(KEPT, (_match, keptIndex: string) => kept[Number(keptIndex)]!);
+  return (
+    prose
+      .replace(IMAGE, "$1")
+      .replace(LINK, "$1")
+      .replace(REFERENCE_LINK, "$1")
+      // Underscores stay: in replies they name files and identifiers far more often than emphasis.
+      .replace(/\*\*|~~/g, "")
+      .replace(/(?<![\w*])\*((?:(?!\*).)+?)\*(?![\w*])/g, "$1")
+      .replace(KEPT, (_match, keptIndex: string) => kept[Number(keptIndex)]!)
+  );
 }
 
 /** Up to `limit` blockquote markers off a line, and how many there were. */
@@ -221,7 +225,8 @@ export function conversationPreviewText(markdown: string): string | null {
   const state = { inComment: false };
   // An indented code block starts after a blank line, outside a list, whose lines indent alike.
   let afterBlank = true;
-  let inList = false;
+  // The column a list item's content starts at; its indented code sits 4 columns further in.
+  let listIndent: number | null = null;
   let inIndentedCode = false;
   // Private-use characters show nothing and would collide with the kept-piece marks.
   const text = assistantCitationsToPlainText(markdown).replace(/[\uE000\uE001]/g, "");
@@ -251,9 +256,12 @@ export function conversationPreviewText(markdown: string): string | null {
     const line = quoted.rest;
     const blank = line.trim().length === 0;
     if (!state.inComment && !blank) {
-      inIndentedCode = /^(?: {4}|\t)/.test(line) && !inList && (afterBlank || inIndentedCode);
-      if (LIST_ITEM.test(line)) inList = true;
-      else if (afterBlank && !/^\s/.test(line)) inList = false;
+      inIndentedCode = indentOf(line) >= (listIndent ?? 0) + 4 && (afterBlank || inIndentedCode);
+      if (!inIndentedCode) {
+        const item = LIST_ITEM.exec(line);
+        if (item) listIndent = item[0].length;
+        else if (afterBlank && indentOf(line) === 0) listIndent = null;
+      }
     }
     afterBlank = blank;
     if (inIndentedCode) {
