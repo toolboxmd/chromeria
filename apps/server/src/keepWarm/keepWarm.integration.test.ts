@@ -78,7 +78,7 @@ const layer = Layer.mergeAll(dependencies, KeepWarm.layer.pipe(Layer.provide(dep
 const mode: KeepWarmMode = {
   type: "keepWarm",
   enabledAt: "1970-01-01T00:00:00.000Z",
-  lastPingAt: "1970-01-01T00:00:00.000Z",
+  hiddenRequestAt: "1970-01-01T00:00:00.000Z",
   stopped: null,
 };
 
@@ -132,7 +132,7 @@ it.effect("a due ping is one silent turn in the thread's own session, even when 
     assert.deepEqual(projection.runs[0]?.modelSelection, { instanceId, model: "claude-haiku-4-5" });
     const recorded = (yield* settings.getSettings).threadIdleModes[threadId];
     assert.equal(
-      recorded?.type === "keepWarm" ? recorded.lastPingAt : null,
+      recorded?.type === "keepWarm" ? recorded.hiddenRequestAt : null,
       "1970-01-01T00:55:00.000Z",
     );
     // Thread lists, unread state and notifications read the shell, which leaves the ping out.

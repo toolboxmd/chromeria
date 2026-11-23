@@ -42,8 +42,10 @@ const thread = (patch: Partial<KeepWarmThread> = {}): KeepWarmThread => ({
   limitRecovery: null,
   hasPendingRuns: false,
   latestRunAt: iso(0),
+  shownRunAt: iso(0),
   latestUserMessageAt: iso(0),
-  latestPingHitUsageLimit: false,
+  latestRunPromptId: null,
+  latestRunFailureClass: null,
   lastErrorClass: null,
   ...patch,
 });
@@ -60,7 +62,7 @@ const provider = (usedPercent: number, driver = "claudeAgent") =>
 const warm = (patch: Partial<KeepWarmMode> = {}): KeepWarmMode => ({
   type: "keepWarm",
   enabledAt: iso(0),
-  lastPingAt: null,
+  hiddenRequestAt: null,
   stopped: null,
   ...patch,
 });
@@ -69,7 +71,7 @@ const withMode = (mode: ServerSettings["threadIdleModes"][ThreadId]): ServerSett
   threadIdleModes: { [ID]: mode },
 });
 
-/** Settings writes mirror the service: a sent ping records itself and the thread stays idle. */
+/** A sent ping becomes the thread's latest hidden request; the shell still shows it idle. */
 const harness = (initial: ServerSettings, initialThread = thread()) =>
   Effect.gen(function* () {
     let settings = initial;
@@ -91,11 +93,16 @@ const harness = (initial: ServerSettings, initialThread = thread()) =>
             write(reason === null ? null : { ...mode, stopped: { at: iso(now), reason } }),
           ),
         ),
+      record: (_id, _mode, next) => Effect.sync(() => write(next)),
       ping: (_thread, mode, dueMs) =>
         Clock.currentTimeMillis.pipe(
           Effect.map((now) => {
-            pings.push({ dueMs, messageId: keepWarmPingMessageId(ID, mode, dueMs) });
-            write({ ...mode, lastPingAt: iso(now) });
+            const messageId = keepWarmPingMessageId(ID, mode, dueMs);
+            pings.push({ dueMs, messageId });
+            current =
+              current === undefined
+                ? undefined
+                : { ...current, latestRunAt: iso(now), latestRunPromptId: messageId };
           }),
         ),
     });
@@ -186,7 +193,7 @@ describe("Keep cache warm", () => {
 
   it.effect("after a restart, a ping due while the server was down goes out once", () =>
     Effect.gen(function* () {
-      const saved = withMode(warm({ lastPingAt: iso(KEEP_WARM_INTERVAL_MS) }));
+      const saved = withMode(warm({ hiddenRequestAt: iso(KEEP_WARM_INTERVAL_MS) }));
       yield* TestClock.adjust(4 * HOUR);
       const first = yield* harness(saved);
       yield* Effect.all([first.reconcile(), first.reconcile()], { concurrency: "unbounded" });
@@ -214,7 +221,10 @@ describe("Keep cache warm", () => {
     ],
     [
       "whose last ping hit the usage limit",
-      { latestPingHitUsageLimit: true },
+      {
+        latestRunPromptId: keepWarmPingMessageId(ID, warm(), KEEP_WARM_INTERVAL_MS),
+        latestRunFailureClass: "usage_limit",
+      },
       { type: "stop", reason: "usageLimit" },
     ],
   ] as const)("a %s thread is not pinged", (_name, patch, decision) => {
@@ -228,6 +238,35 @@ describe("Keep cache warm", () => {
       }),
     ).toEqual(decision);
   });
+
+  it("an earlier activation's refused ping does not stop a new activation", () => {
+    const earlier = keepWarmPingMessageId(ID, warm(), KEEP_WARM_INTERVAL_MS);
+    expect(
+      decideKeepWarm({
+        mode: warm({ enabledAt: iso(2 * HOUR) }),
+        thread: thread({ latestRunPromptId: earlier, latestRunFailureClass: "usage_limit" }),
+        retired: false,
+        provider: provider(0),
+        now: 2 * HOUR,
+      }),
+    ).toEqual({ type: "ping", dueMs: KEEP_WARM_INTERVAL_MS });
+  });
+
+  it.effect("records a request the shell hides, so clients show the server's next ping", () =>
+    Effect.gen(function* () {
+      // A silent idle compaction ran at minute 58 after a shown run at minute 0.
+      const h = yield* harness(
+        withMode(warm()),
+        thread({ latestRunAt: iso(58 * MINUTE), shownRunAt: iso(0) }),
+      );
+      yield* h.reconcile();
+      expect(h.mode()).toMatchObject({ hiddenRequestAt: iso(58 * MINUTE) });
+      yield* TestClock.adjust(KEEP_WARM_INTERVAL_MS);
+      expect(h.pings).toHaveLength(0);
+      yield* TestClock.adjust(58 * MINUTE);
+      expect(h.pings.map((ping) => ping.dueMs)).toEqual([58 * MINUTE + KEEP_WARM_INTERVAL_MS]);
+    }).pipe(Effect.scoped),
+  );
 
   it("stops on a provider without an hour-long cache, but not before providers load", () => {
     const input = { mode: warm(), thread: thread(), retired: false, now: 2 * HOUR };

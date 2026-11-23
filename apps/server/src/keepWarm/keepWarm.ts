@@ -1,4 +1,5 @@
 import {
+  isKeepWarmPingOf,
   keepWarmSchedule,
   supportsKeepWarm,
   ThreadId,
@@ -19,9 +20,12 @@ export type KeepWarmThread = WightThread &
   Pick<OrchestrationV2ThreadShell, "settledOverride"> & {
     /** When the latest request started, pings and other runs the shell hides included. */
     readonly latestRunAt: string | null;
+    /** When the latest request the shell shows started. */
+    readonly shownRunAt: string | null;
     readonly latestUserMessageAt: string | null;
-    /** The latest run is a ping the provider refused at its usage limit. */
-    readonly latestPingHitUsageLimit: boolean;
+    /** The latest run's prompt, and its failure class when it failed. */
+    readonly latestRunPromptId: string | null;
+    readonly latestRunFailureClass: string | null;
   };
 
 /** A ping the provider refused is retried after this, under the same command id. */
@@ -58,7 +62,10 @@ export function decideKeepWarm(input: {
   if (
     thread.limitRecovery != null ||
     thread.lastErrorClass === "usage_limit" ||
-    thread.latestPingHitUsageLimit ||
+    // Only this activation's ping: an earlier one's failure must not stop a fresh activation.
+    (thread.latestRunFailureClass === "usage_limit" &&
+      thread.latestRunPromptId !== null &&
+      isKeepWarmPingOf(thread.latestRunPromptId, thread.id, mode)) ||
     usageLimitReached(provider)
   )
     return { type: "stop", reason: "usageLimit" };
@@ -88,6 +95,12 @@ export const makeKeepWarm = Effect.fnUntraced(function* <E, R>(deps: {
     mode: KeepWarmMode,
     reason: KeepWarmStopReason | null,
   ) => Effect.Effect<void, E, R>;
+  /** Replaces `mode` with `next` if `mode` is still current. */
+  readonly record: (
+    id: ThreadId,
+    mode: KeepWarmMode,
+    next: KeepWarmMode,
+  ) => Effect.Effect<void, E, R>;
   readonly ping: (
     thread: KeepWarmThread,
     mode: KeepWarmMode,
@@ -102,8 +115,19 @@ export const makeKeepWarm = Effect.fnUntraced(function* <E, R>(deps: {
     const activations = keepWarmActivations(yield* deps.settings);
     const providers = activations.length === 0 ? [] : yield* deps.providers;
     let nextDeadline: number | null = null;
-    for (const [id, mode] of activations) {
+    for (const [id, activation] of activations) {
       const thread = yield* deps.thread(id);
+      let mode = activation;
+      // Clients schedule from the shell, which hides pings and idle compactions: record those.
+      const hidden = thread?.latestRunAt ?? null;
+      if (
+        hidden !== null &&
+        hidden > (thread?.shownRunAt ?? "") &&
+        hidden > (mode.hiddenRequestAt ?? "")
+      ) {
+        mode = { ...mode, hiddenRequestAt: hidden };
+        yield* deps.record(id, activation, mode);
+      }
       const now = yield* Clock.currentTimeMillis;
       const decision = decideKeepWarm({
         mode,
@@ -117,7 +141,7 @@ export const makeKeepWarm = Effect.fnUntraced(function* <E, R>(deps: {
       else if (decision.type === "stop") yield* deps.end(id, mode, decision.reason);
       else if (decision.type === "wait") wake = decision.until;
       else if (thread !== undefined) {
-        // A sent ping records itself in settings, which reconciles again.
+        // The ping's run is a new hidden request, recorded when its events reconcile again.
         yield* deps.ping(thread, mode, decision.dueMs);
         wake = now + PING_RETRY_MS;
       }

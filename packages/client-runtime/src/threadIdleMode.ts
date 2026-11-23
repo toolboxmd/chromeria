@@ -36,7 +36,7 @@ export function threadIdleModeFor(
     case "off":
       return null;
     case "keepWarm":
-      return { type: "keepWarm", enabledAt, lastPingAt: null, stopped: null };
+      return { type: "keepWarm", enabledAt, hiddenRequestAt: null, stopped: null };
     case "wight":
       return {
         type: "wight",

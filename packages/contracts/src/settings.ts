@@ -1908,11 +1908,17 @@ export const ServerSettingsPatch = Schema.Struct({
   prismRoles: Schema.optionalKey(PrismRoleKitsPatch),
   spectrum: Schema.optionalKey(SpectrumSettings),
   threadIdleModes: Schema.optionalKey(Schema.Record(ThreadId, Schema.NullOr(ThreadIdleMode))),
-  // Applied under the settings write lock, only to an entry still activated at `enabledAt`.
+  // Applied under the settings write lock, only to an entry that is still the `expected` activation.
   threadIdleModesIfCurrent: Schema.optionalKey(
     Schema.Record(
       ThreadId,
-      Schema.Struct({ enabledAt: IsoDateTime, next: Schema.NullOr(ThreadIdleMode) }),
+      Schema.Struct({
+        expected: Schema.Struct({
+          type: Schema.Literals(["wight", "keepWarm"]),
+          enabledAt: IsoDateTime,
+        }),
+        next: Schema.NullOr(ThreadIdleMode),
+      }),
     ),
   ),
   worktreeCleanup: Schema.optionalKey(

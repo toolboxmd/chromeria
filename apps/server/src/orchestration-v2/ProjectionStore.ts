@@ -8559,7 +8559,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     const isSilentShellRun = (alias: string) => {
       const run = sql.literal(alias);
       return sql`((
-        json_extract(${run}.payload_json, '$.userMessageId') LIKE 'keep-warm:%'
+        coalesce(json_extract(${run}.payload_json, '$.userMessageId'), '') LIKE 'keep-warm:%'
       ) OR (
         ${run}.status <> 'failed'
         AND EXISTS (
@@ -8825,6 +8825,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   candidate.status = 'cancelled'
                   AND json_extract(candidate.payload_json, '$.startedAt') IS NULL
                 )
+                -- A keep-warm ping is never the thread's reply, even when it hit a limit.
+                AND coalesce(json_extract(candidate.payload_json, '$.userMessageId'), '')
+                  NOT LIKE 'keep-warm:%'
               -- latestExecutedRun: the run that ended last (runRanAfter).
               ORDER BY candidate.completed_at IS NULL DESC, candidate.completed_at DESC,
                 candidate.ordinal DESC, candidate.run_id DESC

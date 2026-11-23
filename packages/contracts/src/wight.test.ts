@@ -18,7 +18,7 @@ describe("Wight settings", () => {
         warm: {
           type: "keepWarm",
           enabledAt: activation.enabledAt,
-          lastPingAt: null,
+          hiddenRequestAt: null,
           stopped: null,
         },
       },
@@ -31,7 +31,7 @@ describe("Wight settings", () => {
       threadIdleModes: { wight: null },
     });
     expect(() =>
-      decodePatch({ threadIdleModes: { both: { ...activation, lastPingAt: null } } }),
+      decodePatch({ threadIdleModes: { both: { ...activation, hiddenRequestAt: null } } }),
     ).toThrow();
   });
 

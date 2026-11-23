@@ -81,18 +81,18 @@ const make = Effect.gen(function* () {
     // Runs the shell hides (pings, idle compactions) still refresh the cache, so read them all.
     const [latest] = yield* sql<{
       readonly requestAt: string | null;
-      readonly pingFailureClass: string | null;
+      readonly promptId: string | null;
+      readonly failureClass: string | null;
     }>`
       SELECT
         coalesce(json_extract(r.payload_json, '$.startedAt'), r.requested_at) AS "requestAt",
-        CASE WHEN r.status = 'failed'
-          AND json_extract(r.payload_json, '$.userMessageId') LIKE 'keep-warm:%'
-        THEN (
+        json_extract(r.payload_json, '$.userMessageId') AS "promptId",
+        CASE WHEN r.status = 'failed' THEN (
           SELECT json_extract(i.payload_json, '$.failure.class')
           FROM orchestration_v2_projection_turn_items i
           WHERE i.run_id = r.run_id AND i.type = 'error'
           ORDER BY i.updated_at DESC LIMIT 1
-        ) END AS "pingFailureClass"
+        ) END AS "failureClass"
       FROM orchestration_v2_projection_runs r
       WHERE r.thread_id = ${id}
         AND r.status <> 'queued'
@@ -103,23 +103,11 @@ const make = Effect.gen(function* () {
     return {
       ...thread,
       latestRunAt: latest?.requestAt ?? null,
+      shownRunAt: isoOrNull(thread.latestRunStartedAt ?? thread.latestRunRequestedAt),
       latestUserMessageAt: isoOrNull(thread.latestUserAuthoredMessageAt),
-      latestPingHitUsageLimit: latest?.pingFailureClass === "usage_limit",
+      latestRunPromptId: latest?.promptId ?? null,
+      latestRunFailureClass: latest?.failureClass ?? null,
     } satisfies KeepWarmThread;
-  });
-
-  /** When the ping's run asked the provider, for clients that see no pings in the shell. */
-  const pingRequestAt = Effect.fn("KeepWarm.pingRequestAt")(function* (
-    id: ThreadId,
-    messageId: string,
-  ) {
-    const [run] = yield* sql<{ readonly requestAt: string | null }>`
-      SELECT coalesce(json_extract(payload_json, '$.startedAt'), requested_at) AS "requestAt"
-      FROM orchestration_v2_projection_runs
-      WHERE thread_id = ${id} AND json_extract(payload_json, '$.userMessageId') = ${messageId}
-      LIMIT 1
-    `;
-    return run?.requestAt ?? null;
   });
 
   /**
@@ -132,7 +120,9 @@ const make = Effect.gen(function* () {
     next: KeepWarmMode | null,
   ) {
     yield* settings.updateSettings({
-      threadIdleModesIfCurrent: { [id]: { enabledAt: mode.enabledAt, next } },
+      threadIdleModesIfCurrent: {
+        [id]: { expected: { type: "keepWarm", enabledAt: mode.enabledAt }, next },
+      },
     });
   });
 
@@ -147,6 +137,7 @@ const make = Effect.gen(function* () {
         Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
       ),
     thread: readThread,
+    record: replaceCurrent,
     end: Effect.fn("KeepWarm.end")(function* (id, mode, reason) {
       const at = iso(yield* Clock.currentTimeMillis);
       yield* replaceCurrent(
@@ -157,7 +148,7 @@ const make = Effect.gen(function* () {
     }),
     ping: Effect.fn("KeepWarm.ping")(function* (thread, mode, dueMs) {
       const messageId = keepWarmPingMessageId(thread.id, mode, dueMs);
-      const sent = yield* threads
+      yield* threads
         .dispatch({
           type: "message.dispatch",
           threadId: thread.id,
@@ -177,17 +168,10 @@ const make = Effect.gen(function* () {
           },
         })
         .pipe(
-          Effect.as(true),
           Effect.catchCause((cause) =>
-            Effect.logDebug("Keep-warm ping refused", { threadId: thread.id, cause }).pipe(
-              Effect.as(false),
-            ),
+            Effect.logDebug("Keep-warm ping refused", { threadId: thread.id, cause }),
           ),
         );
-      if (!sent) return;
-      const lastPingAt =
-        (yield* pingRequestAt(thread.id, messageId)) ?? iso(yield* Clock.currentTimeMillis);
-      yield* replaceCurrent(thread.id, mode, { ...mode, lastPingAt });
     }),
   });
   const reconcile = runtime
@@ -216,7 +200,7 @@ const make = Effect.gen(function* () {
     const enabledAt = iso(yield* Clock.currentTimeMillis);
     yield* settings.updateSettings({
       threadIdleModes: {
-        [threadId]: { type: "keepWarm", enabledAt, lastPingAt: null, stopped: null },
+        [threadId]: { type: "keepWarm", enabledAt, hiddenRequestAt: null, stopped: null },
       },
     });
   });

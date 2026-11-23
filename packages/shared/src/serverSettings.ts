@@ -237,6 +237,25 @@ function mergeModelSelectionOptionsById(input: {
   return [...merged.entries()].map(([id, value]) => ({ id, value }));
 }
 
+/** Conditional idle-mode writes compare against the modes after this patch's other writes. */
+function mergeIdleModesIfCurrent(
+  modes: ServerSettings["threadIdleModes"],
+  changes: NonNullable<ServerSettingsPatch["threadIdleModesIfCurrent"]>,
+): ServerSettings["threadIdleModes"] {
+  return mergeSettingsEntries(
+    modes,
+    Object.fromEntries(
+      Object.entries(changes).flatMap(([id, change]) => {
+        const current = modes[ThreadId.make(id)];
+        return current?.type === change.expected.type &&
+          current.enabledAt === change.expected.enabledAt
+          ? [[id, change.next]]
+          : [];
+      }),
+    ),
+  );
+}
+
 function mergeSettingsEntries<Value>(
   current: Readonly<Record<string, Value>>,
   patch: Readonly<Record<string, Value | null>>,
@@ -631,15 +650,9 @@ export function applyServerSettingsPatch(
       : {}),
     ...(threadIdleModesPatch !== undefined || threadIdleModesIfCurrentPatch !== undefined
       ? {
-          threadIdleModes: mergeSettingsEntries(
+          threadIdleModes: mergeIdleModesIfCurrent(
             mergeSettingsEntries(current.threadIdleModes, threadIdleModesPatch ?? {}),
-            Object.fromEntries(
-              Object.entries(threadIdleModesIfCurrentPatch ?? {}).flatMap(([id, change]) =>
-                current.threadIdleModes[ThreadId.make(id)]?.enabledAt === change.enabledAt
-                  ? [[id, change.next]]
-                  : [],
-              ),
-            ),
+            threadIdleModesIfCurrentPatch ?? {},
           ),
         }
       : {}),

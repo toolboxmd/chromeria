@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { IsoDateTime } from "./baseSchemas.ts";
 import { WightMode } from "./wight.ts";
@@ -22,7 +23,10 @@ export type KeepWarmStopReason = typeof KeepWarmStopReason.Type;
 export const KeepWarmMode = Schema.Struct({
   type: Schema.Literal("keepWarm"),
   enabledAt: IsoDateTime,
-  lastPingAt: Schema.NullOr(IsoDateTime),
+  /** The latest request the thread shell hides (a ping or idle compaction), so clients see it. */
+  hiddenRequestAt: Schema.NullOr(IsoDateTime).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   stopped: Schema.NullOr(Schema.Struct({ at: IsoDateTime, reason: KeepWarmStopReason })),
 });
 export type KeepWarmMode = typeof KeepWarmMode.Type;
@@ -42,6 +46,9 @@ export const keepWarmPingMessageId = (threadId: string, mode: KeepWarmMode, dueM
   `${KEEP_WARM_MESSAGE_ID_PREFIX}${threadId}:${Date.parse(mode.enabledAt)}:${dueMs}`;
 export const isKeepWarmPingMessage = (message: { readonly id: string }): boolean =>
   message.id.startsWith(KEEP_WARM_MESSAGE_ID_PREFIX);
+/** Whether a ping message id belongs to this activation, not an earlier one. */
+export const isKeepWarmPingOf = (messageId: string, threadId: string, mode: KeepWarmMode) =>
+  messageId.startsWith(`${KEEP_WARM_MESSAGE_ID_PREFIX}${threadId}:${Date.parse(mode.enabledAt)}:`);
 
 const epoch = (value: string | null | undefined): number | null => {
   if (value == null) return null;
@@ -50,8 +57,9 @@ const epoch = (value: string | null | undefined): number | null => {
 };
 
 /**
- * When a keep-warm thread pings next and when it stops by itself, from the thread's latest
- * request (its latest shown run, or its latest ping) and the user's latest message.
+ * When a keep-warm thread pings next and when it stops by itself: 55 minutes after the latest
+ * request (shown or hidden), and 24 hours after the later of the user's latest message and
+ * turning keep-warm on (the user's choice, toolboxmd/chromeria#928).
  */
 export function keepWarmSchedule(
   mode: KeepWarmMode,
@@ -60,7 +68,9 @@ export function keepWarmSchedule(
     readonly latestUserMessageAt: string | null;
   },
 ): { readonly nextPingAt: number | null; readonly stopsAt: number } {
-  const lastRequest = [epoch(thread.latestRunAt), epoch(mode.lastPingAt)].reduce<number | null>(
+  const lastRequest = [epoch(thread.latestRunAt), epoch(mode.hiddenRequestAt)].reduce<
+    number | null
+  >(
     (latest, time) => (time === null ? latest : latest === null ? time : Math.max(latest, time)),
     null,
   );

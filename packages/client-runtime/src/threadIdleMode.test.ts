@@ -38,7 +38,7 @@ describe("threadIdleChoice", () => {
     expect(threadIdleChoice(undefined, 0)).toBe("off");
     expect(threadIdleChoice({ type: "wight", enabledAt, expiresAt: 5 }, 4)).toBe("wight");
     expect(threadIdleChoice({ type: "wight", enabledAt, expiresAt: 5 }, 5)).toBe("off");
-    const warm = { type: "keepWarm" as const, enabledAt, lastPingAt: null, stopped: null };
+    const warm = { type: "keepWarm" as const, enabledAt, hiddenRequestAt: null, stopped: null };
     expect(threadIdleChoice(warm, 0)).toBe("keepWarm");
     expect(threadIdleChoice({ ...warm, stopped: { at: enabledAt, reason: "userAway" } }, 0)).toBe(
       "off",
