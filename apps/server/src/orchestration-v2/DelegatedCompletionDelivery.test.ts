@@ -2170,7 +2170,6 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
           readId,
           {
             runGroupId: NodeId.make("scoped-wake-fold-read-member-group"),
-            completionDelivery: { state: "pending", observedByRunId: null },
             completionSource: {
               runId: RunId.make(`run:${readId}:follow-up`),
               purpose: { version: 1, scope: issueScope(2), provenance: { type: "declared" } },
@@ -2247,6 +2246,131 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
         );
         assert.notEqual(successor?.messageId, delivery.messageId);
       }),
+  );
+
+  it.effect("acknowledging a queued wake settles a stopped follow-up without a new wake", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const childThreadId = ThreadId.make("scoped-wake-stopped-child");
+      const stoppedRunId = RunId.make("scoped-wake-stopped-follow-up");
+      const projects = yield* ProjectService.ProjectService;
+      const childProjectId = ProjectId.make("scoped-wake-stopped-child-project");
+      yield* projects.create({
+        commandId: CommandId.make("command:scoped-wake-stopped-child-project"),
+        projectId: childProjectId,
+        title: "Stopped follow-up",
+        workspaceRoot: `/workspace/${childProjectId}`,
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("scoped-wake-stopped-child-create"),
+        threadId: childThreadId,
+        projectId: childProjectId,
+        title: "Stopped follow-up",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
+      const stoppedAt = yield* DateTime.now;
+      yield* (yield* EventSink.EventSinkV2).write({
+        events: [
+          {
+            id: EventId.make("event:scoped-wake-stopped:stop"),
+            type: "turn-item.updated",
+            threadId: childThreadId,
+            runId: stoppedRunId,
+            occurredAt: stoppedAt,
+            payload: {
+              id: TurnItemId.make("turn-item:scoped-wake-stopped:stop"),
+              type: "run_interrupt_request",
+              threadId: childThreadId,
+              runId: stoppedRunId,
+              nodeId: null,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 1,
+              status: "completed",
+              title: "Interrupt requested",
+              message: "Stop the follow-up.",
+              startedAt: stoppedAt,
+              completedAt: stoppedAt,
+              updatedAt: stoppedAt,
+            },
+          },
+          runEvent({
+            threadId: childThreadId,
+            runId: stoppedRunId,
+            ordinal: 2,
+            status: "interrupted",
+            now: stoppedAt,
+          }),
+        ],
+      });
+      // The result path keeps a stopped follow-up's earlier claim and plans no wake.
+      const result = yield* queueScopedCompletionWake({
+        key: "scoped-wake-stopped",
+        reserved: [1, 1],
+        pending: [],
+        patches: ({ reservedIds }) => [
+          [
+            reservedIds[0]!,
+            {
+              childThreadId,
+              completionSource: {
+                runId: stoppedRunId,
+                purpose: { version: 1, scope: issueScope(2), provenance: { type: "declared" } },
+              },
+              followUpResult: "stopped follow-up under Issue 2",
+            },
+          ],
+        ],
+      });
+      const { sink, now, threadId, runId, reservedIds, delivery, wake, projection } = result;
+      const [stopped, kept] = reservedIds as [NodeId, NodeId];
+      assert.equal(wake.status, "queued");
+      const message = projection.messages.find((row) => row.id === delivery.messageId);
+      assert.deepEqual(message?.delegatedCompletion?.taskIds, [kept]);
+      assert.equal(message?.text, `Delegated task ${kept} [completed]:\nchild finished`);
+      assert.deepEqual(
+        projection.subagents.find((task) => task.id === stopped)?.completionDelivery,
+        { state: "disposed", observedByRunId: null, disposedBy: "stop" },
+      );
+
+      const afterWake = yield* sink.latestSequence();
+      yield* sink.write({
+        events: [
+          {
+            ...runEvent({
+              threadId,
+              runId: wake.id,
+              ordinal: wake.ordinal,
+              status: "completed",
+              now,
+            }),
+            payload: { ...wake, status: "completed", startedAt: now, completedAt: now },
+          },
+        ],
+      });
+      yield* sink.stream({ afterSequence: afterWake, eventType: "subagent.updated" }).pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "subagent.updated" &&
+            stored.event.payload.id === kept &&
+            stored.event.payload.completionDelivery?.state === "delivered",
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+      );
+      const settled = yield* orchestrator.getThreadProjection(threadId);
+      assert.isNull(settled.runs.find((run) => run.id === runId)?.delegatedCompletion?.delivery);
+      assert.equal(stateOf(settled.subagents, stopped), "disposed");
+    }),
   );
 
   it.effect("acknowledging a queued wake's last result leaves another scope its own wake", () =>

@@ -4329,7 +4329,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const droppedTasks = cohortTasks.filter(
       (candidate) => retainedIds.includes(candidate.id) && blockedUnits.has(unitOf(candidate.id)),
     );
-    const waitingTasks = foldableTasks.length > pendingTasks.length || droppedTasks.length > 0;
+    // A claim left from an earlier result whose newer completion owes no wake (a group cancel
+    // or an explicitly stopped follow-up) settles instead of reopening as pending.
+    const releasedTasks = yield* Effect.forEach(
+      droppedTasks.filter((candidate) => candidate.completionDelivery?.state === "claimed"),
+      (candidate) =>
+        Effect.gen(function* () {
+          if (deliveryOwnsLatestCompletion(delivery, candidate))
+            return [candidate, { state: "pending" as const, observedByRunId: null }] as const;
+          if (candidate.groupCancel !== undefined)
+            return [candidate, { state: "disposed" as const, observedByRunId: null }] as const;
+          return [
+            candidate,
+            (yield* completionWasStopped(candidate))
+              ? { state: "disposed" as const, observedByRunId: null, disposedBy: "stop" as const }
+              : { state: "pending" as const, observedByRunId: null },
+          ] as const;
+        }),
+    );
+    const waitingTasks =
+      foldableTasks.length > pendingTasks.length ||
+      releasedTasks.some(([, next]) => next.state === "pending") ||
+      droppedTasks.some((candidate) => candidate.completionDelivery?.state === "pending");
     const remainingTaskIds = [
       ...new Set([
         ...retainedIds.filter((taskId) => !blockedUnits.has(unitOf(taskId))),
@@ -4337,12 +4358,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ]),
     ];
     const nextStates = [
-      ...pendingTasks.map((candidate) => [candidate, "claimed"] as const),
-      ...droppedTasks
-        .filter((candidate) => candidate.completionDelivery?.state === "claimed")
-        .map((candidate) => [candidate, "pending"] as const),
+      ...pendingTasks.map(
+        (candidate) => [candidate, { state: "claimed" as const, observedByRunId: null }] as const,
+      ),
+      ...releasedTasks,
     ];
-    for (const [candidate, state] of nextStates)
+    for (const [candidate, completionDelivery] of nextStates)
       yield* emitEvent({
         type: "subagent.updated",
         threadId: command.parentThreadId,
@@ -4351,11 +4372,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         driver: candidate.driver,
         providerInstanceId: candidate.providerInstanceId,
         occurredAt: now,
-        payload: {
-          ...candidate,
-          completionDelivery: { state, observedByRunId: null },
-          updatedAt: now,
-        },
+        payload: { ...candidate, completionDelivery, updatedAt: now },
       });
     // Keeping the emptied delivery lets the cancelled wake's finalization reserve waiting results.
     const clearDelivery =
@@ -8038,6 +8055,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }),
       "delegated_completion",
     );
+
+  /** Whether the task's latest completion is a run the user stopped with a request. */
+  const completionWasStopped = Effect.fn("Orchestrator.completionWasStopped")(function* (
+    task: OrchestrationV2Subagent,
+  ) {
+    const childThreadId = task.childThreadId;
+    const runId = task.completionSource?.runId;
+    if (childThreadId == null || runId === undefined) return false;
+    const child = yield* projectionStore
+      .getThreadRecords(childThreadId, ["runs", "turnItems"], {
+        runIds: [runId],
+        turnItemTypes: ["run_interrupt_request"],
+        turnItemRunIds: [runId],
+      })
+      .pipe(
+        Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: childThreadId, cause }),
+        ),
+      );
+    return (
+      child !== null &&
+      child.runs.some((run) => run.id === runId && run.status === "interrupted") &&
+      child.turnItems.some((item) => item.type === "run_interrupt_request" && item.runId === runId)
+    );
+  });
 
   const deliveryOwnsLatestCompletion = (
     delivery: OrchestrationV2DelegatedCompletionDelivery,
