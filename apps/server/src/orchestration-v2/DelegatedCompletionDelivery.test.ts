@@ -2009,6 +2009,8 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
     /** Issues of results reserved in the Issue 1 wake beside the one the parent reads. */
     readonly reserved?: ReadonlyArray<number>;
     readonly pending: ReadonlyArray<number>;
+    /** Whether the parent reads the first result; otherwise the wake keeps it. */
+    readonly acknowledge?: boolean;
     readonly patches?: (ids: {
       readonly readId: NodeId;
       readonly reservedIds: ReadonlyArray<NodeId>;
@@ -2068,13 +2070,14 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
       for (const [id, patch] of input.patches?.({ readId: taskId, reservedIds, pendingIds }) ?? [])
         yield* updateTask(threadId, id, patch);
       const afterAcknowledge = yield* sink.latestSequence();
-      yield* orchestrator.dispatch({
-        type: "delegated_task.completion-delivery.acknowledge",
-        commandId: CommandId.make(`${key}-acknowledge`),
-        parentThreadId: threadId,
-        taskId,
-        observedByRunId: runId,
-      });
+      if (input.acknowledge !== false)
+        yield* orchestrator.dispatch({
+          type: "delegated_task.completion-delivery.acknowledge",
+          commandId: CommandId.make(`${key}-acknowledge`),
+          parentThreadId: threadId,
+          taskId,
+          observedByRunId: runId,
+        });
       const projection = yield* orchestrator.getThreadProjection(threadId);
       const wake = projection.runs.find((run) => run.userMessageId === delivery.messageId)!;
       return {
@@ -2248,15 +2251,16 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
       }),
   );
 
-  it.effect("acknowledging a queued wake settles a stopped follow-up without a new wake", () =>
+  // A child whose follow-up run the user stopped, which a result can name as its source.
+  const seedStoppedFollowUp = (key: string) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const childThreadId = ThreadId.make("scoped-wake-stopped-child");
-      const stoppedRunId = RunId.make("scoped-wake-stopped-follow-up");
+      const childThreadId = ThreadId.make(`${key}-child`);
+      const stoppedRunId = RunId.make(`${key}-follow-up`);
       const projects = yield* ProjectService.ProjectService;
-      const childProjectId = ProjectId.make("scoped-wake-stopped-child-project");
+      const childProjectId = ProjectId.make(`${key}-child-project`);
       yield* projects.create({
-        commandId: CommandId.make("command:scoped-wake-stopped-child-project"),
+        commandId: CommandId.make(`command:${key}-child-project`),
         projectId: childProjectId,
         title: "Stopped follow-up",
         workspaceRoot: `/workspace/${childProjectId}`,
@@ -2265,7 +2269,7 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
         type: "thread.create",
         createdBy: "user",
         creationSource: "web",
-        commandId: CommandId.make("scoped-wake-stopped-child-create"),
+        commandId: CommandId.make(`${key}-child-create`),
         threadId: childThreadId,
         projectId: childProjectId,
         title: "Stopped follow-up",
@@ -2279,13 +2283,13 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
       yield* (yield* EventSink.EventSinkV2).write({
         events: [
           {
-            id: EventId.make("event:scoped-wake-stopped:stop"),
+            id: EventId.make(`event:${key}:stop`),
             type: "turn-item.updated",
             threadId: childThreadId,
             runId: stoppedRunId,
             occurredAt: stoppedAt,
             payload: {
-              id: TurnItemId.make("turn-item:scoped-wake-stopped:stop"),
+              id: TurnItemId.make(`turn-item:${key}:stop`),
               type: "run_interrupt_request",
               threadId: childThreadId,
               runId: stoppedRunId,
@@ -2312,6 +2316,13 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
           }),
         ],
       });
+      return { childThreadId, stoppedRunId };
+    });
+
+  it.effect("acknowledging a queued wake settles a stopped follow-up without a new wake", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const { childThreadId, stoppedRunId } = yield* seedStoppedFollowUp("scoped-wake-stopped");
       // The result path keeps a stopped follow-up's earlier claim and plans no wake.
       const result = yield* queueScopedCompletionWake({
         key: "scoped-wake-stopped",
@@ -2371,6 +2382,86 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
       assert.isNull(settled.runs.find((run) => run.id === runId)?.delegatedCompletion?.delivery);
       assert.equal(stateOf(settled.subagents, stopped), "disposed");
     }),
+  );
+
+  // The wake carries the earlier result of a task whose later follow-up the user stopped.
+  it.effect.each([
+    { outcome: "completed", settled: { state: "delivered", observedByRunId: null } },
+    {
+      outcome: "cancelled",
+      settled: { state: "disposed", observedByRunId: null, disposedBy: "stop" },
+    },
+  ] as const)(
+    "a $outcome queued wake settles a claim a stopped follow-up replaced",
+    ({ outcome, settled }) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const key = `stale-claim-${outcome}`;
+        const { childThreadId, stoppedRunId } = yield* seedStoppedFollowUp(key);
+        const { sink, now, threadId, runId, readId, reservedIds, wake } =
+          yield* queueScopedCompletionWake({
+            key,
+            reserved: [1],
+            pending: [],
+            acknowledge: false,
+            patches: ({ reservedIds }) => [
+              [
+                reservedIds[0]!,
+                {
+                  childThreadId,
+                  completionSource: {
+                    runId: stoppedRunId,
+                    purpose: { version: 1, scope: issueScope(1), provenance: { type: "declared" } },
+                  },
+                  followUpResult: "stopped follow-up",
+                },
+              ],
+            ],
+          });
+        const [stopped] = reservedIds as [NodeId];
+        assert.equal(wake.status, "queued");
+        const afterWake = yield* sink.latestSequence();
+        yield* sink.write({
+          events: [
+            {
+              ...runEvent({
+                threadId,
+                runId: wake.id,
+                ordinal: wake.ordinal,
+                status: outcome,
+                now,
+              }),
+              payload: {
+                ...wake,
+                status: outcome,
+                ...(outcome === "completed" ? { startedAt: now } : {}),
+                completedAt: now,
+              },
+            },
+          ],
+        });
+        yield* sink.stream({ afterSequence: afterWake, eventType: "subagent.updated" }).pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "subagent.updated" &&
+              stored.event.payload.id === readId &&
+              stored.event.payload.completionDelivery?.state ===
+                (outcome === "completed" ? "delivered" : "claimed"),
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+        );
+        const settledProjection = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(
+          settledProjection.subagents.find((task) => task.id === stopped)?.completionDelivery,
+          settled,
+        );
+        assert.deepEqual(
+          settledProjection.runs.find((run) => run.id === runId)?.delegatedCompletion?.delivery
+            ?.taskIds ?? null,
+          outcome === "completed" ? null : [readId],
+        );
+      }),
   );
 
   it.effect("acknowledging a queued wake's last result leaves another scope its own wake", () =>

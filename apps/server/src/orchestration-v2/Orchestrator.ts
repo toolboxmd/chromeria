@@ -18391,9 +18391,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         task.origin !== "app_owned" ||
         task.runId !== parentRun.id ||
         !delivery.taskIds.includes(task.id) ||
-        !deliveryOwnsLatestCompletion(delivery, task) ||
         task.completionDelivery?.state !== "claimed"
       ) {
+        continue;
+      }
+      // Fork: a Stop or group cancel replaced the claimed result without a wake of its own, so
+      // the claim settles with this wake instead of staying claimed after the slot clears.
+      if (!deliveryOwnsLatestCompletion(delivery, task)) {
+        const stopped = yield* completionWasStopped(task);
+        if (task.groupCancel === undefined && !stopped) continue;
+        nextTaskStates.set(
+          task.id,
+          !unconsumed
+            ? { state: "delivered", observedByRunId: null }
+            : stopped
+              ? { state: "disposed", observedByRunId: null, disposedBy: "stop" }
+              : { state: "disposed", observedByRunId: null },
+        );
         continue;
       }
       nextTaskStates.set(task.id, {
