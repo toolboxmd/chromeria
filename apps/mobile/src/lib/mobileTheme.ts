@@ -323,6 +323,9 @@ export function themeColorWithAlpha(color: string, alpha: number): string {
   return rgb ? `rgba(${rgb[1]}, ${rgb[2]}, ${rgb[3]}, ${alpha})` : color;
 }
 
+/** Black over a dark user bubble, enough for the dark syntax palette's punctuation to read. */
+export const DARK_USER_FENCE_ALPHA = 0.46;
+
 export function createMobileThemeVariables(
   colors: ThemeColors,
   appearance: MobileThemeAppearance,
@@ -340,6 +343,11 @@ export function createMobileThemeVariables(
     c.secondary,
     groupedCard,
   ];
+  const promachosOutbound = flattenThemeColor(
+    appearance === "dark" ? withAlpha("#ffffff", 0.09) : withAlpha("#000000", 0.82),
+    c.canvas,
+  );
+
   return {
     "--color-screen": c.canvas,
     "--color-sheet": withAlpha(c.chrome, 0.98),
@@ -423,7 +431,10 @@ export function createMobileThemeVariables(
     "--color-md-code-text": c.codeForeground,
     "--color-md-user-code-bg": withAlpha(c.messageForeground, 0.18),
     "--color-md-user-code-text": c.messageForeground,
-    "--color-md-user-fence-bg": withAlpha("#000000", appearance === "dark" ? 0.28 : 0.16),
+    "--color-md-user-fence-bg": withAlpha(
+      "#000000",
+      appearance === "dark" ? DARK_USER_FENCE_ALPHA : 0.16,
+    ),
     "--color-md-user-fence-text": c.messageForeground,
     "--color-md-hr": c.border,
     "--color-user-bubble": c.messageSurface,
@@ -449,9 +460,11 @@ export function createMobileThemeVariables(
     // in both appearances (toolboxmd/chromeria#898); neutral mixes keep themed ink out of it.
     "--color-promachos-inbound":
       appearance === "dark" ? flattenThemeColor(withAlpha("#ffffff", 0.2), c.canvas) : groupedCard,
-    "--color-promachos-outbound": flattenThemeColor(
-      appearance === "dark" ? withAlpha("#ffffff", 0.09) : withAlpha("#000000", 0.82),
-      c.canvas,
+    "--color-promachos-outbound": promachosOutbound,
+    // Its code is drawn in the dark scheme, so its fence is black-backed in both appearances.
+    "--color-promachos-outbound-fence": flattenThemeColor(
+      withAlpha("#000000", DARK_USER_FENCE_ALPHA),
+      promachosOutbound,
     ),
     "--color-promachos-outbound-foreground": appearance === "dark" ? c.text : c.canvas,
   };

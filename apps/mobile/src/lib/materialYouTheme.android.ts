@@ -1,6 +1,10 @@
 import { Hct, argbFromHex, hexFromArgb } from "@material/material-color-utilities";
 
-import type { MobileThemeAppearance, MobileThemeVariables } from "./mobileTheme";
+import {
+  DARK_USER_FENCE_ALPHA,
+  type MobileThemeAppearance,
+  type MobileThemeVariables,
+} from "./mobileTheme";
 import type { MaterialYouPalette } from "./materialYouPalette";
 
 function withAlpha(color: string, alpha: number): string {
@@ -100,7 +104,9 @@ export function materialYouPaletteToMobileThemeVariables(
     "--color-md-code-text": palette.onSurface,
     "--color-md-user-code-bg": withAlpha(userBubbleForeground, dark ? 0.18 : 0.22),
     "--color-md-user-code-text": userBubbleForeground,
-    "--color-md-user-fence-bg": withAlpha(userBubbleForeground, dark ? 0.14 : 0.18),
+    "--color-md-user-fence-bg": dark
+      ? withAlpha("#000000", DARK_USER_FENCE_ALPHA)
+      : withAlpha(userBubbleForeground, 0.18),
     "--color-md-user-fence-text": userBubbleForeground,
     "--color-md-hr": withAlpha(palette.outlineVariant, dark ? 0.48 : 0.6),
     "--color-user-bubble": userBubble,

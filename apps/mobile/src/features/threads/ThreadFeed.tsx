@@ -236,6 +236,7 @@ import {
 } from "../../lib/layout";
 import { uuidv4 } from "../../lib/uuid";
 import { resolveNativeMarkdownTypography } from "../../lib/appearancePreferences";
+import { promachosReplyCodeFence } from "../../lib/promachosCodeFence";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { PierreEntryIcon } from "../../components/PierreEntryIcon";
 import {
@@ -1577,7 +1578,7 @@ function MarkdownDetailsFold(props: {
 }
 
 function useMarkdownStyles(promachos = false): MarkdownStyleSets {
-  const { appearance } = useAppearancePreferences();
+  const { appearance, themeAppearance } = useAppearancePreferences();
   const nativeMarkdownTypography = resolveNativeMarkdownTypography(appearance.baseFontSize);
   const theme = useUniwindTheme();
   const markdownBodyColor = theme["--color-md-body"];
@@ -1622,7 +1623,7 @@ function useMarkdownStyles(promachos = false): MarkdownStyleSets {
         codeBackgroundColor: markdownUserCodeBg,
         // Opaque on a Promachos bubble, so a saved diagram keeps its dark backing.
         codeBlockBackgroundColor: promachos
-          ? flattenThemeColor(markdownUserFenceBg, userBubble)
+          ? theme["--color-promachos-outbound-fence"]
           : markdownUserFenceBg,
         fileTextColor: markdownUserBodyColor,
         quoteMarkerColor: markdownUserBodyColor,
@@ -1655,7 +1656,9 @@ function useMarkdownStyles(promachos = false): MarkdownStyleSets {
         inlineCodeColor: markdownInlineCodeText,
         codeColor: markdownCodeText,
         codeBackgroundColor: markdownCodeBg,
-        codeBlockBackgroundColor: markdownCodeBg,
+        codeBlockBackgroundColor: promachos
+          ? promachosReplyCodeFence(theme, themeAppearance)
+          : markdownCodeBg,
         fileTextColor: markdownCodeText,
         quoteMarkerColor: markdownBlockquoteBorder,
         dividerColor: markdownHrColor,
