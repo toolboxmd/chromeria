@@ -117,7 +117,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-repositories";
 import { useConnectionsReady, useWorkspaceEnvironments } from "../../state/workspace";
 import { promachosPicksModel } from "@t3tools/client-runtime/promachos/start";
-import { usePromachosChatModels } from "../promachos/promachosHome";
+import { usePromachosDraftModels } from "../promachos/promachosHome";
 
 type WorkspaceMode = "local" | "worktree";
 
@@ -364,7 +364,7 @@ export function NewTaskFlowProvider(
         null);
 
   const linkedEnvironments = useLinkedEnvironments(selectedProject?.environmentId ?? null);
-  const promachosModels = usePromachosChatModels(
+  const promachosModels = usePromachosDraftModels(
     selectedProject === null
       ? null
       : { environmentId: selectedProject.environmentId, projectId: selectedProject.id },
@@ -423,8 +423,9 @@ export function NewTaskFlowProvider(
   const resolveWorkspaceSelection = (selection: ComposerDraftWorkspaceSelection | undefined) =>
     resolveNewTaskDraftWorkspace({
       selection,
-      canChooseWorkspace,
-      defaultMode: defaultWorkspaceMode,
+      // A Promachos conversation shows no workspace choice, so it runs in the home's folder.
+      canChooseWorkspace: canChooseWorkspace && promachosModels === null,
+      defaultMode: promachosModels === null ? defaultWorkspaceMode : "local",
       defaultModeSettled: projectDefaults.defaultWorkspaceModeSettled,
       isGitRepo,
       tracksGitRepositories,

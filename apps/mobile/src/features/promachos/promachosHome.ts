@@ -26,6 +26,7 @@ import {
   navigationCustomizationAvailable,
   resolveHiddenNavigationTabs,
 } from "../layout/workspace/navigation-tab-order";
+import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
 
 /** The saved home and how to change it. */
 export function usePromachosHome(): {
@@ -88,4 +89,16 @@ export function usePromachosHomeLabel(): string | null {
       (project) => project.environmentId === home.environmentId && project.id === home.projectId,
     )?.title ?? null
   );
+}
+
+/**
+ * The Promachos role's models for a new conversation started on the Promachos tab in his home,
+ * else null: a draft started from Chats stays an ordinary thread even in the home project.
+ */
+export function usePromachosDraftModels(
+  projectRef: ScopedProjectRef | null,
+): ReadonlyArray<unknown> | null {
+  const models = usePromachosChatModels(projectRef);
+  const onPromachosTab = useWorkspaceTabs()?.state.selectedTab === "promachos";
+  return onPromachosTab ? models : null;
 }

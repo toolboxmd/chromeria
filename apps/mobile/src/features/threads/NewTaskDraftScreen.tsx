@@ -1,7 +1,7 @@
 import { T, useGT, useMessages, Var } from "gt-react-native";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { DraftEnvironmentControl } from "./DraftEnvironmentControl";
-import { usePromachosChatModels } from "../promachos/promachosHome";
+import { usePromachosDraftModels } from "../promachos/promachosHome";
 import { NativeScrollEdgeEffectsContext } from "../../native/NativeScrollViewMarker";
 import { DraftThreadHeader } from "./DraftThreadHeader";
 import { useComposerAttachmentActions } from "../../state/use-composer-attachment-actions";
@@ -179,7 +179,7 @@ export function NewTaskDraftScreen(props: {
   const { projectScopes, selectedProject, selectedProjectKey, setProject } = flow;
   // Fork: a new Promachos conversation shows no project, machine or branch choices.
   const promachos =
-    usePromachosChatModels(
+    usePromachosDraftModels(
       selectedProject
         ? { environmentId: selectedProject.environmentId, projectId: selectedProject.id }
         : null,

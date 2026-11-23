@@ -15,7 +15,7 @@ import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { vcsActionManager, vcsEnvironment } from "../../state/vcs";
 import { useVcsActionState } from "../../state/use-vcs-action-state";
-import { usePromachosChatModels } from "../promachos/promachosHome";
+import { usePromachosDraftModels } from "../promachos/promachosHome";
 import { ThreadHeader } from "./ThreadHeader";
 
 export function DraftThreadHeader(props: {
@@ -27,7 +27,7 @@ export function DraftThreadHeader(props: {
   const messages = useMessages();
   const navigation = useNavigation();
   const promachos =
-    usePromachosChatModels({
+    usePromachosDraftModels({
       environmentId: props.thread.environmentId,
       projectId: props.project.id,
     }) !== null;
@@ -56,7 +56,7 @@ export function DraftThreadHeader(props: {
   return (
     <ThreadHeader
       draft
-      projectId={props.project.id}
+      {...(promachos ? { projectId: props.project.id } : {})}
       title={promachos ? gt("New conversation") : gt("New thread")}
       subtitle=""
       hasThreadCwd={props.cwd !== null}
