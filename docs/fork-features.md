@@ -2158,6 +2158,8 @@ sources and reasons.
     "apps/web/src/components/chat/SubagentTooltipContent.tsx",
     "apps/web/src/components/chat/V2ItemInspector.tsx",
     "apps/web/src/components/chat/V2LifecycleRow.tsx",
+    "apps/web/src/components/ThreadContextChip.tsx",
+    "apps/web/src/components/chat/AssistantCitationChip.tsx",
     "packages/client-runtime/src/state/threadExecution.test.ts",
     "packages/client-runtime/src/state/threadExecution.ts",
     "packages/client-runtime/src/state/threadRelationships.test.ts",

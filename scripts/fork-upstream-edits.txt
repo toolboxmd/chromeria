@@ -809,3 +809,5 @@ apps/server/src/orchestration-v2/ProviderEventIngestor.ts
 apps/server/scripts/acp-mock-agent.ts
 apps/server/src/feedback/FeedbackReport.ts
 apps/server/src/cli/feedback.test.ts
+apps/web/src/components/ThreadContextChip.tsx
+apps/web/src/components/chat/AssistantCitationChip.tsx
