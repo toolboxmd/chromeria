@@ -193,6 +193,26 @@ apps/web/src/components/AppSidebarLayout.tsx
 apps/web/src/components/chat/ChatComposer.tsx
 packages/client-runtime/src/operations/commands.test.ts
 packages/client-runtime/src/operations/commands.ts
+apps/mobile/modules/t3-native-controls/android/src/main/java/expo/modules/t3nativecontrols/T3WorkspaceNavigationModule.kt
+apps/mobile/modules/t3-native-controls/ios/T3SidebarTabBarView.swift
+apps/mobile/src/features/agent-awareness/notificationNavigation.ts
+apps/mobile/src/features/layout/AdaptiveWorkspaceLayout.tsx
+apps/mobile/src/features/layout/workspace/AndroidWorkspaceSidebar.android.tsx
+apps/mobile/src/features/layout/workspace/AndroidWorkspaceTabsProvider.tsx
+apps/mobile/src/features/layout/workspace/WorkspaceRootScreen.android.tsx
+apps/mobile/src/features/layout/workspace/WorkspaceRootScreen.tsx
+apps/mobile/src/features/layout/workspace/WorkspaceTabsContext.tsx
+apps/mobile/src/features/layout/workspace/WorkspaceToolbar.tsx
+apps/mobile/src/features/layout/workspace/navigation-tab-order.test.ts
+apps/mobile/src/features/layout/workspace/navigation-tab-order.ts
+apps/mobile/src/features/layout/workspace/navigation-tabs.ts
+apps/mobile/src/features/layout/workspace/workspace-selection-store.test.ts
+apps/mobile/src/features/layout/workspace/workspace-selection-store.ts
+apps/mobile/src/features/layout/workspace/workspace-tab-navigation.ts
+apps/mobile/src/features/layout/workspace/workspace-tabs-state.test.ts
+apps/mobile/src/features/layout/workspace/workspace-tabs-state.ts
+apps/mobile/src/features/threads/ThreadFeed.tsx
+apps/mobile/src/lib/rootNavigation.ts
 
 # Scheduled tasks (#174)
 apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.tsx
