@@ -8,7 +8,10 @@ export function validateScheduledTasksPageSearch(raw: Record<string, unknown>) {
   return { ...validateSettingsRouteSearch(raw), ...validateScheduledTasksSearch(raw) };
 }
 
-/** Old `/settings/scheduled-tasks` links keep their task, environment, scope and anchor. */
+/**
+ * Old `/settings/scheduled-tasks` links keep their task, environment and scope. Their anchor only
+ * named the page, and clearing it there would also drop the task before its editor opens.
+ */
 export function redirectToScheduledTasksPage(): never {
-  throw redirect({ to: "/scheduled-tasks", search: true, hash: true, replace: true });
+  throw redirect({ to: "/scheduled-tasks", search: true, replace: true });
 }

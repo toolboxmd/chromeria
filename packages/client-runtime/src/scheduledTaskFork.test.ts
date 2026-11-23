@@ -395,6 +395,12 @@ describe("scheduled task frequency", () => {
     ["chosen weekdays", fixed({ weekdays: [1, 3] }), "weekly"],
     ["several times a day", fixed({ extraTimes: ["13:00", "17:00"] }), "hourly"],
     ["days of the month", fixed({ monthDays: [1, 15] }), "monthly"],
+    [
+      "several times on days of the month",
+      fixed({ monthDays: [1], extraTimes: ["17:00"] }),
+      "monthly",
+    ],
+    ["several times on chosen weekdays", fixed({ weekdays: [1], extraTimes: ["17:00"] }), "weekly"],
     ["once", { type: "once", runAt: "2026-12-01T10:00:00Z" }, "once"],
     ["a webhook", { type: "webhook" }, "webhook"],
   ] as const)("files %s as %s", (_name, schedule, frequency) => {
@@ -450,6 +456,17 @@ describe("scheduled task frequency", () => {
       ["webhook", ["hook"]],
     ]);
     expect(paused.map((e) => e.task.id)).toEqual(["off-once", "off"]);
+    // The groups sort on their own, whatever order the sections hand over.
+    const hourly = (id: string, nextRunAt: string) =>
+      entry(task(id, { schedule: every(2 * HOUR), nextRunAt }));
+    const unsorted = scheduledTaskFrequencyGroups({
+      upcoming: [],
+      recurring: [
+        hourly("late", "2026-11-22T15:00:00.000Z"),
+        hourly("soon", "2026-11-22T13:00:00.000Z"),
+      ],
+    });
+    expect(unsorted.groups[0]?.entries.map((e) => e.task.id)).toEqual(["soon", "late"]);
   });
 });
 

@@ -247,7 +247,7 @@ describe("settings scope navigation", () => {
 });
 
 describe("scheduled task scope navigation", () => {
-  it("sends an old settings task link to the scheduled tasks page with its task and anchor", async () => {
+  it("sends an old settings task link to the scheduled tasks page with its task, without the anchor", async () => {
     const router = createSettingsRouter(
       "/settings/scheduled-tasks?environmentId=remote-server&taskId=task-1#scheduled-tasks",
     );
@@ -257,7 +257,7 @@ describe("scheduled task scope navigation", () => {
       await router.navigate(router.state.redirect.options);
     }
     expect(router.state.location.pathname).toBe("/scheduled-tasks");
-    expect(router.state.location.hash).toBe("scheduled-tasks");
+    expect(router.state.location.hash).toBe("");
     expect(router.state.matches.at(-1)?.search).toEqual({
       machine: "remote-server",
       environmentId: "remote-server",

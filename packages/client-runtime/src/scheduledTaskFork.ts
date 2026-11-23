@@ -313,8 +313,8 @@ const SCHEDULED_TASK_FREQUENCIES = [
 export type ScheduledTaskFrequency = (typeof SCHEDULED_TASK_FREQUENCIES)[number];
 
 /**
- * How often a schedule runs. Several set times a day count as hourly; an interval from two days up
- * to a week counts as weekly, as chosen weekdays do.
+ * How often a schedule runs. Days of the month or chosen weekdays decide first; several set times
+ * on every day count as hourly. An interval from two days up to a week counts as weekly.
  */
 export function scheduledTaskFrequency(
   schedule: ScheduledTask["schedule"],
@@ -326,9 +326,9 @@ export function scheduledTaskFrequency(
       if (schedule.everyMs < 2 * DAY_MS) return "daily";
       return schedule.everyMs <= 7 * DAY_MS ? "weekly" : "monthly";
     case "fixed_time":
-      if ((schedule.extraTimes ?? []).length > 0) return "hourly";
       if ((schedule.monthDays ?? []).length > 0) return "monthly";
-      return isEveryWeekday(schedule.weekdays) ? "daily" : "weekly";
+      if (!isEveryWeekday(schedule.weekdays)) return "weekly";
+      return (schedule.extraTimes ?? []).length > 0 ? "hourly" : "daily";
     case "once":
       return "once";
     case "webhook":
