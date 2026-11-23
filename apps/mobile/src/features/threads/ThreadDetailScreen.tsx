@@ -235,6 +235,7 @@ import { useOpenLinkedThread } from "./useOpenLinkedThread";
 import { useGlobalVoiceInput } from "../voice-input/VoiceInputProvider";
 import type { OrchestrationV2ProviderSession } from "@t3tools/contracts";
 import { voiceInputBlocksSubmission } from "@t3tools/client-runtime/voice-input";
+import { PromachosChatScope } from "../promachos/PromachosChatScope";
 
 export interface ThreadDetailScreenProps {
   readonly header?: React.ReactNode;
@@ -1702,61 +1703,67 @@ function ThreadDetailBody(
           >
             <WorkspaceMutationIdProvider threadRef={props.selectedThreadDetailRef}>
               <ColumnWidth width={columnWidth}>
-                <ThreadFeed
-                  toolCallVisibility={toolCallVisibility}
+                <PromachosChatScope
                   environmentId={props.environmentId}
+                  projectId={props.selectedThread.projectId}
                   threadId={props.selectedThread.id}
-                  detailRef={props.selectedThreadDetailRef}
-                  workspaceRoot={props.threadCwd}
-                  feed={props.selectedThreadFeed}
-                  pendingHandoff={props.pendingHandoff}
-                  statusLines={statusLines}
-                  worktreeSetup={props.worktreeSetup}
-                  preparingWorktree={
-                    props.creationState?.kind === "preparing" &&
-                    props.creationState.preparingWorktree &&
-                    !props.worktreeSetup
-                  }
-                  queuedMessages={props.queuedMessages}
-                  dispatchingMessageId={props.dispatchingMessageId}
-                  // A native subagent has no composer to edit a pending message in;
-                  // Cancel on the edit banner would discard it.
-                  onEditPendingMessage={
-                    isProviderSubagent || pendingMessageEditBlocked
-                      ? null
-                      : handleEditPendingMessage
-                  }
-                  contentPresentation={props.contentPresentation}
-                  threadTitle={props.selectedThread.title}
-                  latestRun={props.activityRun}
-                  activeWorkStartedAt={props.activeWorkStartedAt}
-                  runlessWorkActive={props.runlessWorkActive ?? false}
-                  listRef={listRef}
-                  freeze={freeze}
-                  anchorMessageId={anchorMessageId}
-                  jumpToMessageId={jumpMessageLoaded ? jumpMessageId : null}
-                  onJumpedToMessage={() => finishThreadMessageJump(selectedThreadKey)}
-                  contentInsetEndAdjustment={combinedContentInsetEndAdjustment}
-                  keyboardOffset={composerKeyboardOffset}
-                  sendingWithKeyboard={sendingWithKeyboard}
-                  fitShortFeedToViewport={questionInFlow && !isKeyboardVisible}
-                  contentBottomInset={
-                    questionInFlow
-                      ? 0
-                      : estimatedOverlayHeight +
-                        (showFloatingStatus ? FLOATING_WORKING_CONTROL_COVERAGE : FEED_END_GAP)
-                  }
-                  contentMaxWidth={contentMaxWidth}
-                  historyControls={props.historyControls}
-                  contentSideInsets={deriveContentSideInsets(nativeMetrics)}
-                  layoutVariant={layoutVariant}
-                  usesAutomaticContentInsets={props.usesAutomaticContentInsets}
-                  onHeaderMaterialVisibilityChange={props.onHeaderMaterialVisibilityChange}
-                  onIsAtEndChange={setIsAtEnd}
-                  skills={selectedProviderSkills}
-                  onCiteAssistantText={canCiteAssistantText ? handleCiteAssistantText : undefined}
-                  onUseArtifactTemplate={handleUseArtifactTemplate}
-                />
+                >
+                  <ThreadFeed
+                    toolCallVisibility={toolCallVisibility}
+                    environmentId={props.environmentId}
+                    threadId={props.selectedThread.id}
+                    detailRef={props.selectedThreadDetailRef}
+                    workspaceRoot={props.threadCwd}
+                    feed={props.selectedThreadFeed}
+                    pendingHandoff={props.pendingHandoff}
+                    statusLines={statusLines}
+                    worktreeSetup={props.worktreeSetup}
+                    preparingWorktree={
+                      props.creationState?.kind === "preparing" &&
+                      props.creationState.preparingWorktree &&
+                      !props.worktreeSetup
+                    }
+                    queuedMessages={props.queuedMessages}
+                    dispatchingMessageId={props.dispatchingMessageId}
+                    // A native subagent has no composer to edit a pending message in;
+                    // Cancel on the edit banner would discard it.
+                    onEditPendingMessage={
+                      isProviderSubagent || pendingMessageEditBlocked
+                        ? null
+                        : handleEditPendingMessage
+                    }
+                    contentPresentation={props.contentPresentation}
+                    threadTitle={props.selectedThread.title}
+                    latestRun={props.activityRun}
+                    activeWorkStartedAt={props.activeWorkStartedAt}
+                    runlessWorkActive={props.runlessWorkActive ?? false}
+                    listRef={listRef}
+                    freeze={freeze}
+                    anchorMessageId={anchorMessageId}
+                    jumpToMessageId={jumpMessageLoaded ? jumpMessageId : null}
+                    onJumpedToMessage={() => finishThreadMessageJump(selectedThreadKey)}
+                    contentInsetEndAdjustment={combinedContentInsetEndAdjustment}
+                    keyboardOffset={composerKeyboardOffset}
+                    sendingWithKeyboard={sendingWithKeyboard}
+                    fitShortFeedToViewport={questionInFlow && !isKeyboardVisible}
+                    contentBottomInset={
+                      questionInFlow
+                        ? 0
+                        : estimatedOverlayHeight +
+                          (showFloatingStatus ? FLOATING_WORKING_CONTROL_COVERAGE : FEED_END_GAP)
+                    }
+                    contentMaxWidth={contentMaxWidth}
+                    historyControls={props.historyControls}
+                    contentSideInsets={deriveContentSideInsets(nativeMetrics)}
+                    layoutVariant={layoutVariant}
+                    usesAutomaticContentInsets={props.usesAutomaticContentInsets}
+                    onHeaderMaterialVisibilityChange={props.onHeaderMaterialVisibilityChange}
+                    onIsAtEndChange={setIsAtEnd}
+                    skills={selectedProviderSkills}
+                    onCiteAssistantText={canCiteAssistantText ? handleCiteAssistantText : undefined}
+                    onUseArtifactTemplate={handleUseArtifactTemplate}
+                  />
+                </PromachosChatScope>
               </ColumnWidth>
             </WorkspaceMutationIdProvider>
           </RenderErrorBoundary>

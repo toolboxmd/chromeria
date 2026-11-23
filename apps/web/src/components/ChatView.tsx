@@ -41,7 +41,7 @@ import { useComposerResume } from "./chat/useComposerResume";
 import { useStartTurnWithPurpose } from "./chat/useStartTurnWithPurpose";
 import { usePromachosInlineCardHost } from "./promachos/PromachosChat";
 import { usePromachosPresentation } from "./promachos/promachosMode";
-import { promachosPicksModel } from "./promachos/promachosStart";
+import { promachosPicksModel } from "@t3tools/client-runtime/promachos/start";
 import { ThreadFind, ThreadFindCanvas } from "./chat/ThreadFindProvider";
 import { closeThreadFind, openThreadFind, useThreadFindOpen } from "./chat/threadFindStore";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";

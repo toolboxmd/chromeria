@@ -143,6 +143,18 @@
       "types": "./src/scheduledTaskFork.ts",
       "default": "./src/scheduledTaskFork.ts"
     },
+    "./promachos/bubbles": {
+      "types": "./src/promachos/bubbles.ts",
+      "default": "./src/promachos/bubbles.ts"
+    },
+    "./promachos/conversations": {
+      "types": "./src/promachos/conversations.ts",
+      "default": "./src/promachos/conversations.ts"
+    },
+    "./promachos/start": {
+      "types": "./src/promachos/start.ts",
+      "default": "./src/promachos/start.ts"
+    },
     "./spectrum-report": {
       "types": "./src/spectrumReport.ts",
       "default": "./src/spectrumReport.ts"

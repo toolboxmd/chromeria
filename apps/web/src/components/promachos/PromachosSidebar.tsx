@@ -27,7 +27,7 @@ import {
 } from "../ui/sidebar";
 import { SharedThreadLabel } from "../people/SharedThreadLabel";
 import { usePersonViewThreads } from "../people/usePersonView";
-import { promachosConversations } from "./promachosConversations";
+import { promachosConversations } from "@t3tools/client-runtime/promachos/conversations";
 import { PromachosNewHome } from "./PromachosNewHome";
 import {
   usePromachosHome,

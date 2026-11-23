@@ -127,6 +127,7 @@ import { useDeviceType } from "../../native/native-layout-metrics";
 import { isDuoDevice } from "../../lib/device-type";
 import {
   memo,
+  use,
   useCallback,
   useEffect,
   useEffectEvent,
@@ -345,6 +346,7 @@ import {
   THREAD_FEED_MAINTAIN_SCROLL_AT_END_THRESHOLD,
 } from "./threadFeedEndFollow";
 import { useMessageTimeFormatter } from "./useMessageTimeFormatter";
+import { PromachosBubbles, PromachosChatContext } from "../promachos/PromachosBubbles";
 
 const WIDE_MARKDOWN_BLOCK_OPTIONS = {
   // iOS blockquotes and selectable text measure separately; definite bubble width matches UIKit's drawing width.
@@ -1313,8 +1315,11 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
   readonly onUseArtifactTemplate?: ((template: CodexArtifactTemplate) => void) | undefined;
   readonly renderImage: MarkdownImageRenderer;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill> | undefined;
+  /** Fork: an assistant reply, which a Promachos chat shows as bubbles (toolboxmd/chromeria#898). */
+  readonly promachosReply?: boolean;
 }) {
   const gt = useGT();
+  const promachosBubbles = use(PromachosChatContext) && props.promachosReply === true;
   const liveMarkdown = useLiveThreadLinkLabels(
     props.markdown,
     props.environmentId,
@@ -1386,6 +1391,7 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
         renderImage={props.renderImage}
         skills={props.skills}
         models={models}
+        promachosBubbles={promachosBubbles}
       />
       {quoteChoices.length > 0 && props.onCiteAssistantText ? (
         <Sheet title={gt("Choose quote source")} onClose={() => setQuoteSelection(null)}>
@@ -1428,6 +1434,7 @@ function AssistantMarkdownBlocks(props: {
   readonly renderImage: MarkdownImageRenderer;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill> | undefined;
   readonly models: ReturnType<typeof useModelMentions>;
+  readonly promachosBubbles?: boolean;
 }) {
   const m = useMessages();
   const { blocks, definitions } = useMemo(() => {
@@ -1438,12 +1445,16 @@ function AssistantMarkdownBlocks(props: {
     );
     const [first] = blocks;
     // A reply rendered as one document resolves its own references; skip the extra parse.
-    const whole = blocks.length === 1 && first?.kind === "markdown" && first.segments.length === 1;
+    const whole =
+      blocks.length === 1 &&
+      first?.kind === "markdown" &&
+      first.segments.length === 1 &&
+      !props.promachosBubbles;
     return {
       blocks,
       definitions: props.definitions ?? (whole ? [] : markdownReferenceDefinitions(props.markdown)),
     };
-  }, [m, props.markdown, props.definitions]);
+  }, [m, props.markdown, props.definitions, props.promachosBubbles]);
   return blocks.map((block, blockIndex) => {
     if (block.kind === "details") {
       return (
@@ -1473,11 +1484,11 @@ function AssistantMarkdownBlocks(props: {
         );
       }
       if (segment.markdown.trim().length === 0) return null;
-      return (
+      const renderText = (markdown: string, key?: string) => (
         <SelectableMarkdownText
-          key={`markdown:${offset}`}
+          key={key}
           markdown={renderCodexInlineDirectivesAsMarkdown(
-            withReferenceDefinitions(segment.markdown, definitions),
+            withReferenceDefinitions(markdown, definitions),
           )}
           skills={props.skills}
           models={props.models}
@@ -1494,6 +1505,15 @@ function AssistantMarkdownBlocks(props: {
           {...props.linkHandlers}
           renderImage={props.renderImage}
         />
+      );
+      return props.promachosBubbles ? (
+        <PromachosBubbles
+          key={`markdown:${offset}`}
+          markdown={segment.markdown}
+          renderText={renderText}
+        />
+      ) : (
+        renderText(segment.markdown, `markdown:${offset}`)
       );
     });
   });
@@ -2748,6 +2768,7 @@ function renderFeedEntry(
               markdownStyles={styles}
               linkHandlers={props.markdownLinkHandlers}
               reply={message.projectedItem}
+              promachosReply
               onUseArtifactTemplate={props.onUseArtifactTemplate}
               renderImage={props.renderMarkdownImage}
               skills={props.skills}

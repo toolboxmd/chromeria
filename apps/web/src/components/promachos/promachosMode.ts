@@ -6,14 +6,17 @@
 import { ScopedProjectRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
-import { promachosMultipleModelSelections } from "./promachosStart";
+import { promachosMultipleModelSelections } from "@t3tools/client-runtime/promachos/start";
 
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
 import { useClientSettings } from "../../hooks/useSettings";
 import { selectProjectGroupingSettings } from "@t3tools/client-runtime/state/project-grouping";
 import { useProjects } from "../../state/entities";
-import { isInPromachosHome, promachosHomeRefs } from "./promachosConversations";
+import {
+  isInPromachosHome,
+  promachosHomeRefs,
+} from "@t3tools/client-runtime/promachos/conversations";
 
 const PROMACHOS_MODE_STORAGE_KEY = "chromeria:promachos-mode";
 const PROMACHOS_HOME_STORAGE_KEY = "chromeria:promachos-home";

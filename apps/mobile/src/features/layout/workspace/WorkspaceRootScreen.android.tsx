@@ -1,3 +1,4 @@
+import { PromachosTabScreen } from "../../promachos/PromachosTabScreen";
 import { useGT } from "gt-react-native";
 import { useAndroidFloatingTabs } from "../../settings/appearance/AppearancePreferencesProvider";
 import { WorkspaceNoTabs } from "./WorkspaceNoTabs";
@@ -102,6 +103,13 @@ function WorkspaceRoot() {
                     <WorkspacePageFrame width={workspacePageWidth ?? null}>
                       <WorkspaceExtraTab tab={tab} />
                     </WorkspacePageFrame>
+                  ) : tab === "promachos" && !layout.usesSplitView ? (
+                    <>
+                      <AppBar embedded title={gt("Promachos")} />
+                      <ScreenContent>
+                        <PromachosTabScreen />
+                      </ScreenContent>
+                    </>
                   ) : layout.usesSplitView ? (
                     <>
                       <NativeStackScreenOptions options={{ headerShown: false }} />
@@ -110,7 +118,9 @@ function WorkspaceRoot() {
                         title={
                           tab === "issues"
                             ? gt("Issues", { $context: "screen title, list of issues" })
-                            : gt("Pull requests")
+                            : tab === "promachos"
+                              ? gt("Promachos")
+                              : gt("Pull requests")
                         }
                       />
                       <WorkspaceEmptyDetail tab={tab} />

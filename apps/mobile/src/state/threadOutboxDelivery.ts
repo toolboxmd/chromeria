@@ -1215,6 +1215,7 @@ export function createThreadOutboxDelivery(): {
           : { worktreeRepositories: workspace.repositories }),
         worktreeBranchName: buildTemporaryWorktreeBranchName(randomHex),
         ...(creation.bare ? { bare: true } : {}),
+        ...(creation.prismRole ? { prismRole: creation.prismRole } : {}),
       }),
     });
     if (AsyncResult.isFailure(deliveryResult) && !hasAccess()) return;

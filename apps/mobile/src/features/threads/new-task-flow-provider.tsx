@@ -116,6 +116,8 @@ import {
   type WorktreeRepositorySelection,
 } from "@t3tools/client-runtime/state/thread-repositories";
 import { useConnectionsReady, useWorkspaceEnvironments } from "../../state/workspace";
+import { promachosPicksModel } from "@t3tools/client-runtime/promachos/start";
+import { usePromachosChatModels } from "../promachos/promachosHome";
 
 type WorkspaceMode = "local" | "worktree";
 
@@ -362,6 +364,11 @@ export function NewTaskFlowProvider(
         null);
 
   const linkedEnvironments = useLinkedEnvironments(selectedProject?.environmentId ?? null);
+  const promachosModels = usePromachosChatModels(
+    selectedProject === null
+      ? null
+      : { environmentId: selectedProject.environmentId, projectId: selectedProject.id },
+  );
   const storedStickyModelSelection = useStickyComposerModelSelection();
   const modelSelectionNow = useNowMinuteMs();
   const projectDefaults = useNewTaskProjectDefaults(selectedProject);
@@ -859,6 +866,7 @@ export function NewTaskFlowProvider(
         )
           ? { bare: true }
           : {}),
+        ...(promachosPicksModel(promachosModels) ? { prismRole: "promachos" as const } : {}),
       },
       createdAt: metadata.createdAt,
     };

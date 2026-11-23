@@ -1,42 +1,32 @@
 /**
- * Groups an assistant reply's top-level Markdown blocks into chat bubbles,
- * one per paragraph. It runs on the reply's single parse, so a code block,
- * list or table is always one bubble, and reference links still resolve
- * against definitions anywhere in the reply.
+ * Groups an assistant reply's top-level Markdown blocks into chat bubbles by the shared Promachos
+ * rule. It runs on the reply's single parse, so a code block, list or table is always one bubble,
+ * and reference links still resolve against definitions anywhere in the reply.
  */
-import type { Element, Root, RootContent } from "hast";
+import {
+  groupPromachosBubbles as groupBlocks,
+  type PromachosBlockRole,
+} from "@t3tools/client-runtime/promachos/bubbles";
+import type { Root, RootContent } from "hast";
 
 import type { MarkdownExtensions } from "~/markdown/wordsHast";
 
 const HEADINGS = new Set(["h1", "h2", "h3", "h4", "h5", "h6"]);
 
-const isHeading = (node: RootContent) => node.type === "element" && HEADINGS.has(node.tagName);
+function roleOf(node: RootContent): PromachosBlockRole {
+  // Whitespace between blocks and comments render nowhere.
+  if (node.type !== "element") return "invisible";
+  // Footnotes span the reply.
+  if (node.tagName === "hr" || node.tagName === "section") return "between";
+  return HEADINGS.has(node.tagName) ? "heading" : "block";
+}
 
 export function groupPromachosBubbles(tree: Root): void {
-  const children: RootContent[] = [];
-  let bubble: Element | null = null;
-  // A heading introduces the block after it, so they share a bubble.
-  let headingOnly = false;
-  for (const node of tree.children) {
-    if (node.type !== "element") {
-      // Whitespace between blocks and comments render nowhere, so never an empty bubble.
-      children.push(node);
-      continue;
-    }
-    if (node.tagName === "hr" || node.tagName === "section") {
-      // A thematic break stands between bubbles; footnotes span the reply.
-      children.push(node);
-      bubble = null;
-      continue;
-    }
-    if (bubble === null || !headingOnly) {
-      bubble = { type: "element", tagName: "div", properties: {}, children: [] };
-      children.push(bubble);
-    }
-    bubble.children.push(node);
-    headingOnly = bubble.children.every(isHeading);
-  }
-  tree.children = children;
+  tree.children = groupBlocks(tree.children, roleOf).map((item) =>
+    item.kind === "bubble"
+      ? { type: "element", tagName: "div", properties: {}, children: item.blocks }
+      : item.block,
+  );
 }
 
 /** One stable object: ChatMarkdown keys its parse cache by the extensions object. */

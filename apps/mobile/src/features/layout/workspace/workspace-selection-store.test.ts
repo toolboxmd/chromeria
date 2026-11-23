@@ -34,9 +34,11 @@ vi.mock("expo-constants", () => ({
 }));
 vi.mock("expo/internal/bundle-origin", () => ({ getBundleOrigin: () => null }));
 vi.mock("expo-linking", () => import(expoLinking.createURL));
+const saved = vi.hoisted(() => ({ launch: {} as Record<string, unknown> }));
 vi.mock("../../../persistence/imperative", () => ({
   loadPreferences: async () => ({
     workspaceSelections: { threads: { environmentId: ENVIRONMENT_ID, threadId: MCP_THREAD_ID } },
+    ...saved.launch,
   }),
   savePreferencesPatch: async () => undefined,
 }));
@@ -63,7 +65,12 @@ vi.mock("../../../state/threads", () => ({
   threadEnvironment: { snapshotAtom: () => undefined },
 }));
 
-import { launchWorkspaceURL } from "./workspace-selection-store";
+vi.mock("../../agent-awareness/notificationNavigation", () => ({
+  agentNotificationLaunchRouted: async () => undefined,
+}));
+vi.mock("../../../lib/rootNavigation", () => ({ rootNavigationPending: () => false }));
+
+import { launchWorkspaceTab, launchWorkspaceURL } from "./workspace-selection-store";
 
 it("reopens a remembered chat whose id has reserved characters at that same chat", async () => {
   const url = await launchWorkspaceURL();
@@ -77,4 +84,18 @@ it("reopens a remembered chat whose id has reserved characters at that same chat
     name: "Thread",
     params: { environmentId: ENVIRONMENT_ID, threadId: MCP_THREAD_ID },
   });
+});
+
+it("reopens the tab used last, and the Promachos tab its last conversation", async () => {
+  saved.launch = {
+    lastWorkspaceTab: "promachos",
+    promachosConversation: { environmentId: ENVIRONMENT_ID, threadId: "promachos-chat" },
+  };
+  expect(await launchWorkspaceURL()).toMatch(/threads\/environment-1\/promachos-chat$/);
+  expect(launchWorkspaceTab()).toBe("promachos");
+
+  // Another tab opens on its list, not beside the last chat.
+  saved.launch = { lastWorkspaceTab: "issues" };
+  expect(await launchWorkspaceURL()).toBeNull();
+  expect(launchWorkspaceTab()).toBe("issues");
 });

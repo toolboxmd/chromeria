@@ -18,6 +18,13 @@ export function setAgentNotificationPathname(pathname: string): void {
  * thread already on screen, and taps (including the cold-start tap) open the
  * notification's deep link through `navigate`.
  */
+let launchResponseRouted: Promise<void> = Promise.resolve();
+
+/** Fork: settles once the notification that launched the app, if any, has been routed. */
+export function agentNotificationLaunchRouted(): Promise<void> {
+  return launchResponseRouted;
+}
+
 export function installAgentNotificationNavigation(navigate: (href: string) => void): () => void {
   const handledResponseIds = new Set<string>();
   Notifications.setNotificationHandler({
@@ -29,7 +36,7 @@ export function installAgentNotificationNavigation(navigate: (href: string) => v
     routeAgentNotificationResponseOnce({ handledResponseIds, response, navigate });
   };
   const subscription = Notifications.addNotificationResponseReceivedListener(handleResponse);
-  void consumeLastAgentNotificationResponse({
+  launchResponseRouted = consumeLastAgentNotificationResponse({
     getLastResponse: () => Notifications.getLastNotificationResponseAsync(),
     clearLastResponse: () => Notifications.clearLastNotificationResponseAsync(),
     handleResponse,

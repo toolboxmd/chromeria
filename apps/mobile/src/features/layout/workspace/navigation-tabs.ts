@@ -28,6 +28,7 @@ export const WORKSPACE_TAB_LABELS = {
 
 export const NAVIGATION_TAB_ICONS = {
   threads: "text.bubble",
+  promachos: "bubble.left.and.bubble.right",
   pullRequests: PullRequestGlyph.pullRequest,
   issues: "git.issue",
   usage: "chart.bar.xaxis",

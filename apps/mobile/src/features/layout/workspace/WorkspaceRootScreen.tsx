@@ -31,13 +31,18 @@ import { WorkspaceConnectionTitle } from "../../home/WorkspaceConnectionTitle";
 import { useAdaptiveWorkspaceLayout } from "../AdaptiveWorkspaceLayout";
 import { PullRequestsScreen } from "../../pull-requests/PullRequestsScreen";
 import { IssuesScreen } from "../../issues/IssuesScreen";
+import { PromachosTabScreen } from "../../promachos/PromachosTabScreen";
 import {
   WorkspaceTabsContext,
   WorkspaceTabsProvider,
   useWorkspaceTabs,
 } from "./WorkspaceTabsContext";
 import { WorkspaceToolbar } from "./WorkspaceToolbar";
-import { WORKSPACE_DOCK, workspaceDockBottomClearance } from "./workspace-tabs-state";
+import {
+  WORKSPACE_DOCK,
+  workspaceDockBottomClearance,
+  workspaceTabSearches,
+} from "./workspace-tabs-state";
 import { WorkspaceTabDock } from "./WorkspaceTabDock";
 import {
   useCompactWorkspaceTabs,
@@ -182,6 +187,11 @@ function WorkspaceRootContent() {
             <PullRequestsScreen />
           ) : state.selectedTab === "issues" ? (
             <IssuesScreen />
+          ) : state.selectedTab === "promachos" ? (
+            <>
+              <NativeStackScreenOptions options={{ headerSearchBarOptions: undefined }} />
+              <PromachosTabScreen />
+            </>
           ) : (
             <WorkspaceExtraTab tab={state.selectedTab} />
           )}
@@ -190,7 +200,7 @@ function WorkspaceRootContent() {
           <WorkspaceTabDock placement="column" />
         ) : null}
         {enabled.length === 0 && !settingsOpen ? null : settingsOpen ||
-          state.selectedTab !== "usage" ? (
+          workspaceTabSearches(state.selectedTab) ? (
           <WorkspaceToolbar sidebar={sidebarNavigation} onNewTask={startNewTask} />
         ) : (
           <WorkspaceSectionToolbar onNewTask={startNewTask} showCompose={false} />

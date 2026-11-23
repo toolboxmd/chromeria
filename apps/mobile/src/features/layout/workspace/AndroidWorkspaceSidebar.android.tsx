@@ -1,3 +1,4 @@
+import { PromachosTabScreen } from "../../promachos/PromachosTabScreen";
 import { useAndroidFloatingTabs } from "../../settings/appearance/AppearancePreferencesProvider";
 import { WorkspaceNoTabs } from "./WorkspaceNoTabs";
 import { useEnabledNavigationTabs } from "./navigation-tabs";
@@ -8,6 +9,8 @@ import { useAndroidControlSizing } from "../../../components/ui/useAndroidContro
 import { FLOATING_TABS } from "./floating-workspace-tabs";
 import { View } from "react-native";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
+import { AppBar } from "../../../components/ui/AppBar";
+import { useGT } from "gt-react-native";
 import { PullRequestsScreen } from "../../pull-requests/PullRequestsScreen";
 import { ListSearchToolbar } from "./ListSearchToolbar.android";
 import { IssuesScreen } from "../../issues/IssuesScreen";
@@ -23,6 +26,7 @@ import { WorkspaceAppBarScope } from "../../../components/ui/WorkspaceAppBar.and
 
 /** The Home route in the sidebar column: the selected tab's list. */
 export function AndroidWorkspaceSidebar() {
+  const gt = useGT();
   const floatingTabsEnabled = useAndroidFloatingTabs();
   const workspace = useWorkspaceTabs()!;
   const enabled = useEnabledNavigationTabs();
@@ -51,6 +55,15 @@ export function AndroidWorkspaceSidebar() {
             </AndroidHomeFabLayout>
           ) : tab === "usage" ? (
             <View className="flex-1 bg-screen" />
+          ) : tab === "promachos" ? (
+            <WorkspaceTabsContext value={context}>
+              <View className="flex-1 bg-header">
+                <AppBar embedded title={gt("Promachos")} />
+                <ScreenContent insetHorizontal>
+                  <PromachosTabScreen />
+                </ScreenContent>
+              </View>
+            </WorkspaceTabsContext>
           ) : tab === "issues" ? (
             <WorkspaceTabsContext value={context}>
               <IssuesScreen

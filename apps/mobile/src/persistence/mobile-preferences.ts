@@ -132,6 +132,11 @@ const ThreadProject = Schema.Struct({
   projectId: Schema.NonEmptyString,
 });
 const isThreadProject = Schema.is(ThreadProject);
+const PromachosConversation = Schema.Struct({
+  environmentId: Schema.NonEmptyString,
+  threadId: Schema.NonEmptyString,
+});
+const isPromachosConversation = Schema.is(PromachosConversation);
 
 export interface Preferences {
   readonly navigationTabOrder?: readonly string[];
@@ -171,6 +176,12 @@ export interface Preferences {
   readonly workingShelfEnabled?: boolean;
   readonly useLastProjectForNewThreads?: boolean;
   readonly lastThreadProject?: typeof ThreadProject.Type;
+  /** Fork: the project that is the Promachos home on this phone (toolboxmd/chromeria#898). */
+  readonly promachosHome?: typeof ThreadProject.Type;
+  /** Fork: the conversation the Promachos tab showed last; unset when it showed its list. */
+  readonly promachosConversation?: typeof PromachosConversation.Type;
+  /** Fork: the tab a cold start without a link reopens (toolboxmd/chromeria#898). */
+  readonly lastWorkspaceTab?: string;
   readonly modelFavorites?: ReadonlyArray<{
     readonly provider: ProviderInstanceId;
     readonly model: string;
@@ -262,6 +273,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     workingShelfEnabled?: boolean;
     useLastProjectForNewThreads?: boolean;
     lastThreadProject?: typeof ThreadProject.Type;
+    promachosHome?: typeof ThreadProject.Type;
+    promachosConversation?: typeof PromachosConversation.Type;
+    lastWorkspaceTab?: string;
     modelFavorites?: Preferences["modelFavorites"];
     threadListSettledShelfExpanded?: boolean;
     threadListSnoozedShelfExpanded?: boolean;
@@ -401,6 +415,15 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (isThreadProject(parsed.lastThreadProject)) {
     preferences.lastThreadProject = parsed.lastThreadProject;
+  }
+  if (isThreadProject(parsed.promachosHome)) {
+    preferences.promachosHome = parsed.promachosHome;
+  }
+  if (isPromachosConversation(parsed.promachosConversation)) {
+    preferences.promachosConversation = parsed.promachosConversation;
+  }
+  if (typeof parsed.lastWorkspaceTab === "string") {
+    preferences.lastWorkspaceTab = parsed.lastWorkspaceTab;
   }
   if (Array.isArray(parsed.modelFavorites)) {
     preferences.modelFavorites = parsed.modelFavorites.filter(

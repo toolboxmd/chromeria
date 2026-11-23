@@ -41,6 +41,7 @@ export interface ProjectThreadStartTurnSpec {
   readonly worktreeBranchName: string;
   /** Fork: start the thread bare (toolboxmd/chromeria#319). */
   readonly bare?: boolean;
+  readonly prismRole?: "promachos";
 }
 
 export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpec) {
@@ -62,6 +63,7 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
     },
     modelSelection: spec.modelSelection,
     ...(spec.bare ? { bare: {} } : {}),
+    ...(spec.prismRole ? { prismRole: spec.prismRole } : {}),
     titleSeed: title,
     runtimeMode: spec.runtimeMode,
     interactionMode: spec.interactionMode,

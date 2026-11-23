@@ -1,9 +1,7 @@
-import { presentThreadShell } from "@t3tools/client-runtime/state/models";
-import { makeThreadFixture } from "../../test-fixtures";
 import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { promachosConversations, promachosHomeRefs } from "./promachosConversations";
+import { promachosConversations, promachosHomeRefs } from "./conversations.ts";
 
 const home = { environmentId: EnvironmentId.make("env-a"), projectId: ProjectId.make("home") };
 const homeOnB = { environmentId: EnvironmentId.make("env-b"), projectId: ProjectId.make("home-b") };
@@ -36,14 +34,14 @@ function thread(
 
 describe("promachosConversations", () => {
   it("hides destination children in the home but keeps inherited-provenance user forks", () => {
-    const child = presentThreadShell(home.environmentId, {
-      ...makeThreadFixture({ projectId: home.projectId }).source,
+    const child = {
+      ...thread("child"),
       delegatedFrom: {
         environmentId: EnvironmentId.make("offline-parent"),
         threadId: ThreadId.make("parent"),
         title: "Parent",
       },
-    });
+    };
     const fork = {
       ...child,
       id: ThreadId.make("user-fork"),

@@ -51,6 +51,7 @@ const QueuedThreadCreationSchema = Schema.Struct({
   repositories: Schema.optional(Schema.Array(Schema.String)),
   startsFromRepositoryDefaults: Schema.optional(Schema.Boolean),
   bare: Schema.optional(Schema.Boolean),
+  prismRole: Schema.optional(Schema.Literal("promachos")),
 });
 
 export const QueuedThreadMessageSchema = Schema.Struct({
@@ -92,6 +93,8 @@ export interface QueuedThreadCreation {
   readonly startsFromRepositoryDefaults?: boolean;
   /** Fork: start the thread bare (toolboxmd/chromeria#319). */
   readonly bare?: boolean;
+  /** Fork: Prism picks the model of a new Promachos conversation (toolboxmd/chromeria#898). */
+  readonly prismRole?: "promachos";
 }
 
 export interface QueuedThreadMessage {
