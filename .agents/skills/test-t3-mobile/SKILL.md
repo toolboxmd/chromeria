@@ -79,7 +79,8 @@ through AgentDevice. For a backend on the device host, use
 on Android. For a remote backend, use its reachable origin.
 
 When the backend runs on another machine than this shell, such as the device
-host, add `--remote <ssh-host>:<checkout>` before the other arguments. The
+host, add `--remote <ssh-host>:<checkout>` before the other arguments, with
+the checkout as an absolute path (`~` is not expanded). The
 helper then mints the credential over `ssh` in that checkout, so `<base-dir>`
 is the backend's path on that machine, and still opens the route through the
 local AgentDevice command.

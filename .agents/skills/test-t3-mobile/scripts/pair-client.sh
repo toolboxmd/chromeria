@@ -24,6 +24,9 @@ mobile_origin="$3"
 agent_device_command="$4"
 shift 4
 
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
 mint_command=(
   node apps/server/src/bin.ts auth pairing create
   --base-dir "$base_dir"
@@ -37,7 +40,6 @@ mint() {
     ssh -- "$remote_host" \
       "cd $(printf '%q' "$remote_checkout") && T3CODE_PORT=$(printf '%q' "$server_port") $(printf '%q ' "${mint_command[@]}")"
   else
-    cd "$(git rev-parse --show-toplevel)"
     T3CODE_PORT="$server_port" "${mint_command[@]}"
   fi
 }
