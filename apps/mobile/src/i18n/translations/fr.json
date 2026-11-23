@@ -5755,5 +5755,19 @@
   "ad208e3e32c85029": "Tout masquer",
   "3328503592789bed": "Zen",
   "856812e7e1fc445e": "Appels d’outils dans la discussion",
-  "8d545d54c0a9e950": "Masque les commandes, modifications et recherches lancées par les agents. Masquer les réussis garde les échecs. Zen n’affiche que les réponses finales. Les approbations, questions et erreurs s’affichent toujours."
+  "8d545d54c0a9e950": "Masque les commandes, modifications et recherches lancées par les agents. Masquer les réussis garde les échecs. Zen n’affiche que les réponses finales. Les approbations, questions et erreurs s’affichent toujours.",
+  "1acdcacbf43bb541": "attend une approbation",
+  "c43e01f0bded3e8d": "approbation accordée",
+  "0ec23c2887bbf820": "approbation refusée",
+  "408f0ac040742766": "approbation traitée",
+  "ea7d64fe084077da": "demande d’approbation fermée",
+  "67101083bb072b33": "a demandé une approbation",
+  "9aa3da7c4b3eb0b4": "attend une réponse",
+  "02faa9361f0444db": "question répondue",
+  "12510540ccd8b916": "question ignorée",
+  "e418f5ef2a0c35ba": "question fermée",
+  "8787bb0bedaf30af": "a posé une question",
+  "2f28dab59b2421d5": "Fil enfant",
+  "cd0f1fd4214233b5": "approbation traitée",
+  "3b987645baba6aec": "question traitée"
 }

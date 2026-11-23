@@ -323,6 +323,11 @@ it.effect("live pending-request listener wakes an ancestor without invoking reco
     const parent = yield* orchestrator.getThreadProjection(root);
     assert.lengthOf(parent.messages, 1);
     assert.include(parent.messages[0]!.text, "an approval");
+    assert.deepStrictEqual(parent.messages[0]!.context?.childRequest, {
+      childThreadId: child,
+      requestId,
+      kind: "approval",
+    });
   }).pipe(
     Effect.provide(
       Layer.merge(
@@ -959,4 +964,86 @@ it.effect.each([
       );
     }).pipe(Effect.provide(runtime()));
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("an edit to a queued wake keeps the relay's child attribution", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* OrchestratorV2;
+    const root = ThreadId.make("edit-root");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create:edit-root"),
+      threadId: root,
+      projectId: ProjectId.make("project:request-edit"),
+      title: "root",
+      modelSelection: { instanceId, model: "gpt-5.1-codex" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("edit-first"),
+      threadId: root,
+      messageId: MessageId.make("edit-first"),
+      text: "Work",
+      attachments: [],
+      dispatchMode: { type: "defer_start" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const childRequest = {
+      childThreadId: ThreadId.make("edit-child"),
+      requestId: RuntimeRequestId.make("edit-approval"),
+      kind: "approval" as const,
+    };
+    const wakeId = MessageId.make("child-request:edit-child:edit-approval:edit-root");
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("edit-wake"),
+      threadId: root,
+      messageId: wakeId,
+      text: "Descendant edit-child is waiting for an approval (edit-approval).",
+      context: { version: 1, records: [], childRequest },
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "system",
+      creationSource: "server",
+    });
+    const queued = (yield* orchestrator.getThreadProjection(root)).runs.find(
+      (run) => run.userMessageId === wakeId,
+    );
+    assert.isDefined(queued);
+    for (const [index, context] of [
+      {
+        version: 1 as const,
+        records: [],
+        childRequest: { ...childRequest, childThreadId: ThreadId.make("forged") },
+      },
+      { version: 1 as const, records: [] },
+    ].entries()) {
+      yield* orchestrator.dispatch({
+        type: "queued-run.edit",
+        commandId: CommandId.make(`edit:${index}`),
+        threadId: root,
+        runId: queued!.id,
+        text: `Edited ${index}`,
+        context,
+      });
+      const projection = yield* orchestrator.getThreadProjection(root);
+      const message = projection.messages.find((candidate) => candidate.id === wakeId);
+      assert.equal(message?.text, `Edited ${index}`);
+      assert.deepStrictEqual(message?.context?.childRequest, childRequest);
+    }
+  }).pipe(
+    Effect.provide(
+      Harness.layerWithRegistry({ name: "request-edit" }, Registry.layerFromAdapters([adapter]), {
+        databaseLayer,
+        runEffectWorker: false,
+      }),
+    ),
+  ),
 );

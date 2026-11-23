@@ -5755,5 +5755,19 @@
   "ad208e3e32c85029": "Ocultar todas",
   "3328503592789bed": "Zen",
   "856812e7e1fc445e": "Chamadas de ferramentas no chat",
-  "8d545d54c0a9e950": "Oculta os comandos, edições e pesquisas que os agentes executam. \"Ocultar bem-sucedidas\" mantém as falhas. Zen mostra só as respostas finais. Aprovações, perguntas e erros sempre aparecem."
+  "8d545d54c0a9e950": "Oculta os comandos, edições e pesquisas que os agentes executam. \"Ocultar bem-sucedidas\" mantém as falhas. Zen mostra só as respostas finais. Aprovações, perguntas e erros sempre aparecem.",
+  "1acdcacbf43bb541": "está aguardando aprovação",
+  "c43e01f0bded3e8d": "aprovação concedida",
+  "0ec23c2887bbf820": "aprovação recusada",
+  "408f0ac040742766": "aprovação respondida",
+  "ea7d64fe084077da": "solicitação de aprovação encerrada",
+  "67101083bb072b33": "pediu aprovação",
+  "9aa3da7c4b3eb0b4": "está aguardando uma resposta",
+  "02faa9361f0444db": "pergunta respondida",
+  "12510540ccd8b916": "pergunta descartada",
+  "e418f5ef2a0c35ba": "pergunta encerrada",
+  "8787bb0bedaf30af": "fez uma pergunta",
+  "2f28dab59b2421d5": "Thread filho",
+  "cd0f1fd4214233b5": "aprovação tratada",
+  "3b987645baba6aec": "pergunta tratada"
 }

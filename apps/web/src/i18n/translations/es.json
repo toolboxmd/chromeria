@@ -13204,5 +13204,18 @@
   "27d76249d09eb69f": "Guía de revisión lista",
   "faa3bb26abb39c93": "Falló la guía de revisión",
   "b7df38b7d8792d78": "Abrir guía",
-  "9e91e9a77b664e4e": "No se pudo iniciar una guía de revisión"
+  "9e91e9a77b664e4e": "No se pudo iniciar una guía de revisión",
+  "1acdcacbf43bb541": "está esperando aprobación",
+  "c43e01f0bded3e8d": "aprobación concedida",
+  "0ec23c2887bbf820": "aprobación rechazada",
+  "408f0ac040742766": "aprobación respondida",
+  "ea7d64fe084077da": "solicitud de aprobación cerrada",
+  "67101083bb072b33": "pidió aprobación",
+  "9aa3da7c4b3eb0b4": "está esperando una respuesta",
+  "02faa9361f0444db": "pregunta respondida",
+  "12510540ccd8b916": "pregunta descartada",
+  "e418f5ef2a0c35ba": "pregunta cerrada",
+  "8787bb0bedaf30af": "hizo una pregunta",
+  "cd0f1fd4214233b5": "aprobación gestionada",
+  "3b987645baba6aec": "pregunta gestionada"
 }

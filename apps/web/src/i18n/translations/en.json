@@ -13226,5 +13226,18 @@
   "27d76249d09eb69f": "Review guide ready",
   "faa3bb26abb39c93": "Review guide failed",
   "b7df38b7d8792d78": "Open guide",
-  "9e91e9a77b664e4e": "Could not start a review guide"
+  "9e91e9a77b664e4e": "Could not start a review guide",
+  "1acdcacbf43bb541": "is waiting for approval",
+  "c43e01f0bded3e8d": "approval was approved",
+  "0ec23c2887bbf820": "approval was declined",
+  "408f0ac040742766": "approval was answered",
+  "ea7d64fe084077da": "approval request closed",
+  "67101083bb072b33": "asked for approval",
+  "9aa3da7c4b3eb0b4": "is waiting for an answer",
+  "02faa9361f0444db": "question was answered",
+  "12510540ccd8b916": "question was dismissed",
+  "e418f5ef2a0c35ba": "question closed",
+  "8787bb0bedaf30af": "asked a question",
+  "cd0f1fd4214233b5": "approval was handled",
+  "3b987645baba6aec": "question was handled"
 }

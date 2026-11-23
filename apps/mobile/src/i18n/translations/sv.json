@@ -5761,5 +5761,19 @@
   "ad208e3e32c85029": "Dölj alla",
   "3328503592789bed": "Zen",
   "856812e7e1fc445e": "Verktygsanrop i chatten",
-  "8d545d54c0a9e950": "Dölj kommandon, redigeringar och sökningar som agenter kör. Dölj lyckade behåller misslyckanden. Zen visar bara slutliga svar. Godkännanden, frågor och fel visas alltid."
+  "8d545d54c0a9e950": "Dölj kommandon, redigeringar och sökningar som agenter kör. Dölj lyckade behåller misslyckanden. Zen visar bara slutliga svar. Godkännanden, frågor och fel visas alltid.",
+  "1acdcacbf43bb541": "väntar på godkännande",
+  "c43e01f0bded3e8d": "godkännande beviljat",
+  "0ec23c2887bbf820": "godkännande avböjt",
+  "408f0ac040742766": "godkännande besvarat",
+  "ea7d64fe084077da": "godkännandebegäran stängd",
+  "67101083bb072b33": "bad om godkännande",
+  "9aa3da7c4b3eb0b4": "väntar på ett svar",
+  "02faa9361f0444db": "frågan besvarad",
+  "12510540ccd8b916": "frågan avfärdad",
+  "e418f5ef2a0c35ba": "frågan stängd",
+  "8787bb0bedaf30af": "ställde en fråga",
+  "2f28dab59b2421d5": "Undertråd",
+  "cd0f1fd4214233b5": "godkännandet hanterat",
+  "3b987645baba6aec": "frågan hanterad"
 }
