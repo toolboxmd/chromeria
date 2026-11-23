@@ -3911,3 +3911,23 @@ sources and reasons.
   "keywords": ["isSteerTurnItem", "requeueUnreadSteers", "unread-steers", "unsentSteers"]
 }
 ```
+
+## cross-host-mobile-pairing
+
+```json
+{
+  "id": "cross-host-mobile-pairing",
+  "purpose": "The test-t3-mobile pairing helper mints its credential over ssh in a remote checkout with --remote, so a backend on the device host pairs a simulator driven by an agent on another machine. Drop when upstream's helper can mint on a remote backend host.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/927"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/compare/main...fix/927-pair-client-remote-backend"
+  ],
+  "newFiles": [],
+  "upstreamFiles": [
+    ".agents/skills/test-t3-mobile/SKILL.md",
+    ".agents/skills/test-t3-mobile/scripts/pair-client.sh"
+  ],
+  "sharedFiles": [],
+  "keywords": ["remote_checkout", "--remote <ssh-host>"]
+}
+```

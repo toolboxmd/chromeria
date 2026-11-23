@@ -3,9 +3,18 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 <server-port> <base-dir> <mobile-origin> <agent-device-command> <target-args...>" >&2
+  echo "Usage: $0 [--remote <ssh-host>:<checkout>] <server-port> <base-dir> <mobile-origin> <agent-device-command> <target-args...>" >&2
   exit 2
 }
+
+remote_host=""
+remote_checkout=""
+if [[ "${1:-}" == "--remote" ]]; then
+  [[ $# -ge 2 && "$2" == ?*:?* ]] || usage
+  remote_host="${2%%:*}"
+  remote_checkout="${2#*:}"
+  shift 2
+fi
 
 [[ $# -ge 5 ]] || usage
 
@@ -18,13 +27,24 @@ shift 4
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-if ! pairing_output="$({
-  T3CODE_PORT="$server_port" node apps/server/src/bin.ts auth pairing create \
-    --base-dir "$base_dir" \
-    --base-url "$mobile_origin" \
-    --ttl 15m \
-    --label "agent-mobile"
-} 2>&1)"; then
+mint_command=(
+  node apps/server/src/bin.ts auth pairing create
+  --base-dir "$base_dir"
+  --base-url "$mobile_origin"
+  --ttl 15m
+  --label "agent-mobile"
+)
+
+mint() {
+  if [[ -n "$remote_host" ]]; then
+    ssh -- "$remote_host" \
+      "cd $(printf '%q' "$remote_checkout") && T3CODE_PORT=$(printf '%q' "$server_port") $(printf '%q ' "${mint_command[@]}")"
+  else
+    T3CODE_PORT="$server_port" "${mint_command[@]}"
+  fi
+}
+
+if ! pairing_output="$(mint 2>&1)"; then
   echo "Could not mint a mobile pairing credential." >&2
   exit 1
 fi
