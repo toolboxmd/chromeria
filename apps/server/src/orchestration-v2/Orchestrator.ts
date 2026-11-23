@@ -2218,7 +2218,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     Effect.fnUntraced(function* (
       events: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">>,
       effects: ReadonlyArray<PendingOrchestrationEffectV2> = [],
-      options: { readonly updateDelegatedCompletionOnly?: boolean } = {},
+      options: {
+        readonly updateDelegatedCompletionOnly?: boolean;
+        readonly updateDelegatedCompletionOnlyRunId?: RunId;
+      } = {},
     ) {
       const withIds = yield* Effect.forEach(events, (event) =>
         makeSystemEvent(event as Omit<OrchestrationV2DomainEvent, "id">),
@@ -2294,6 +2297,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     plan: {
       readonly parentRun: OrchestrationV2Run | undefined;
       readonly message: OrchestrationV2ThreadProjection["messages"][number] | undefined;
+      readonly cancelledWake?: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">>;
     },
     threadProviderInstanceId: ProviderInstanceId,
     occurredAt: DateTime.Utc,
@@ -2324,6 +2328,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             payload: plan.message,
           },
         ]),
+    ...(plan.cancelledWake ?? []),
   ];
 
   /** The parent records `planDelegatedCompletionDelivery` reads for one task: its run, and the queued wake's message, run and tasks. */
@@ -12769,34 +12774,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     for (const event of releasedSiblingEvents(completionPlan.siblings, now))
       yield* emitEvent(event);
-    if (completionPlan.parentRun !== undefined) {
-      yield* emitEvent({
-        type: "run.updated",
-        threadId: command.parentThreadId,
-        runId: completionPlan.parentRun.id,
-        ...(completionPlan.parentRun.rootNodeId === null
-          ? {}
-          : { nodeId: completionPlan.parentRun.rootNodeId }),
-        providerInstanceId: completionPlan.parentRun.providerInstanceId,
-        occurredAt: now,
-        payload: completionPlan.parentRun,
-      });
-    }
-    if (completionPlan.message !== undefined) {
-      yield* emitEvent({
-        type: "message.updated",
-        threadId: command.parentThreadId,
-        ...(completionPlan.message.runId === null ? {} : { runId: completionPlan.message.runId }),
-        ...(completionPlan.message.nodeId === null
-          ? {}
-          : { nodeId: completionPlan.message.nodeId }),
-        providerInstanceId:
-          completionPlan.parentRun?.providerInstanceId ??
-          parentProjection.thread.providerInstanceId,
-        occurredAt: now,
-        payload: completionPlan.message,
-      });
-    }
+    for (const event of delegatedCompletionPlanEvents(
+      command.parentThreadId,
+      completionPlan,
+      parentProjection.thread.providerInstanceId,
+      now,
+    ))
+      yield* emitEvent(event);
     return completionPlan.parentRun?.id;
   });
 
@@ -13017,34 +13001,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (completionPlan === undefined) return;
       for (const event of releasedSiblingEvents(completionPlan.siblings, now))
         yield* emitEvent(event);
-      if (completionPlan.parentRun !== undefined) {
-        yield* emitEvent({
-          type: "run.updated",
-          threadId: command.parentThreadId,
-          runId: completionPlan.parentRun.id,
-          ...(completionPlan.parentRun.rootNodeId === null
-            ? {}
-            : { nodeId: completionPlan.parentRun.rootNodeId }),
-          providerInstanceId: completionPlan.parentRun.providerInstanceId,
-          occurredAt: now,
-          payload: completionPlan.parentRun,
-        });
-      }
-      if (completionPlan.message !== undefined) {
-        yield* emitEvent({
-          type: "message.updated",
-          threadId: command.parentThreadId,
-          ...(completionPlan.message.runId === null ? {} : { runId: completionPlan.message.runId }),
-          ...(completionPlan.message.nodeId === null
-            ? {}
-            : { nodeId: completionPlan.message.nodeId }),
-          providerInstanceId:
-            completionPlan.parentRun?.providerInstanceId ??
-            parentProjection.thread.providerInstanceId,
-          occurredAt: now,
-          payload: completionPlan.message,
-        });
-      }
+      for (const event of delegatedCompletionPlanEvents(
+        command.parentThreadId,
+        completionPlan,
+        parentProjection.thread.providerInstanceId,
+        now,
+      ))
+        yield* emitEvent(event);
     },
   );
 
@@ -17457,6 +17420,97 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     };
   });
 
+  // Fork: a queued wake's text renders each task's latest result, and a Run group's every member.
+  // A task's result is replaced in or taken out of it only when its rewrite renders nothing the
+  // reservation does not own: no Run group, and every other task's latest result is its own.
+  const queuedWakeRewritable = (
+    tasks: ReadonlyArray<OrchestrationV2Subagent>,
+    delivery: OrchestrationV2DelegatedCompletionDelivery,
+    task: OrchestrationV2Subagent,
+  ) =>
+    task.runGroupId === undefined &&
+    delivery.taskIds.every((taskId) => {
+      if (taskId === task.id) return true;
+      const reserved = tasks.find((candidate) => candidate.id === taskId);
+      return (
+        reserved !== undefined &&
+        reserved.runGroupId === undefined &&
+        deliveryOwnsLatestCompletion(delivery, reserved)
+      );
+    });
+
+  // Fork: a task leaves a queued wake that has not started when its newer result cannot be sent
+  // there. The wake is rewritten without it, or cancelled while keeping its delivery, so the
+  // wake's finalization reserves the task's result under its own scope.
+  const leaveQueuedWake = Effect.fn("orchestrationV2.leaveQueuedWake")(function* (input: {
+    readonly parentProjection: Pick<OrchestrationV2ThreadProjection, "messages" | "subagents">;
+    readonly parentRun: OrchestrationV2Run;
+    readonly cohort: OrchestrationV2DelegatedCompletionCohort;
+    readonly delivery: OrchestrationV2DelegatedCompletionDelivery;
+    readonly deliveryRun: OrchestrationV2Run;
+    readonly task: OrchestrationV2Subagent;
+    readonly now: DateTime.Utc;
+  }) {
+    const taskIds = input.delivery.taskIds.filter((taskId) => taskId !== input.task.id);
+    const parentRun: OrchestrationV2Run = {
+      ...input.parentRun,
+      delegatedCompletion: {
+        ...input.cohort,
+        delivery: {
+          ...input.delivery,
+          taskIds,
+          ...(input.delivery.purposeCauses === undefined
+            ? {}
+            : {
+                purposeCauses: input.delivery.purposeCauses.filter(
+                  (cause) => cause.taskId !== input.task.id,
+                ),
+              }),
+        },
+      },
+    };
+    if (taskIds.length === 0) {
+      const threadId = input.deliveryRun.threadId;
+      const records = yield* projectionStore
+        .getThreadRecords(
+          threadId,
+          input.deliveryRun.activeAttemptId === null ? ["nodes"] : ["nodes", "attempts"],
+          { nodeIds: input.deliveryRun.rootNodeId === null ? [] : [input.deliveryRun.rootNodeId] },
+        )
+        .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+      return {
+        task: input.task,
+        parentRun,
+        message: undefined,
+        offer: false,
+        cancelledWake: queuedRunCancellationEvents(
+          { nodes: records.nodes, attempts: records.attempts ?? [] },
+          input.deliveryRun,
+          input.now,
+        ),
+      };
+    }
+    const message = completionDeliveryMessage(input.parentProjection, input.delivery);
+    return {
+      task: input.task,
+      parentRun,
+      message:
+        message === undefined
+          ? undefined
+          : {
+              ...message,
+              text: yield* completionWakeDetail(input.parentProjection, taskIds),
+              delegatedCompletion: {
+                parentRunId: input.parentRun.id,
+                generation: input.delivery.generation,
+                taskIds,
+              },
+              updatedAt: input.now,
+            },
+      offer: false,
+    };
+  });
+
   const planDelegatedCompletionDelivery = Effect.fn(
     "orchestrationV2.planDelegatedCompletionDelivery",
   )(function* (input: {
@@ -17540,12 +17594,44 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const sameCompletion =
         !delivery.taskIds.includes(input.task.id) ||
         deliveryOwnsLatestCompletion(delivery, input.updatedTask);
-      if (
-        deliveryRun?.status === "queued" &&
-        deliveryRun.userMessageId === delivery.messageId &&
-        sameCompletion &&
-        purposeScopesEqual(executionPurposeOf(deliveryRun).scope, deliveryPurpose(combined).scope)
-      ) {
+      const queuedWake =
+        deliveryRun?.status === "queued" && deliveryRun.userMessageId === delivery.messageId;
+      // Fork: a task's newer result replaces the one its queued wake holds when it shares the
+      // wake's own scope, and otherwise takes the task out of the wake. A mixed wake takes none.
+      const replacing =
+        !sameCompletion &&
+        queuedWakeRewritable(input.parentProjection.subagents, delivery, input.updatedTask);
+      const wakeScope =
+        deliveryRun === undefined ? undefined : executionPurposeOf(deliveryRun).scope;
+      const sameScope =
+        wakeScope !== undefined &&
+        !(replacing && wakeScope.type === "unscoped" && wakeScope.reason === "mixed") &&
+        purposeScopesEqual(
+          wakeScope,
+          (replacing
+            ? ExecutionPurpose.purposeFromCauses(
+                [input.updatedTask.completionSource?.purpose],
+                [input.updatedTask.id],
+                "delegated_completion",
+              )
+            : deliveryPurpose(combined)
+          ).scope,
+        );
+      if (queuedWake && replacing && !sameScope) {
+        return yield* leaveQueuedWake({
+          parentProjection: input.parentProjection,
+          parentRun: input.parentRun,
+          cohort: cohort!,
+          delivery,
+          deliveryRun,
+          task: {
+            ...input.updatedTask,
+            completionDelivery: { state: "pending" as const, observedByRunId: null },
+          },
+          now: input.now,
+        });
+      }
+      if (queuedWake && (sameCompletion || replacing) && sameScope) {
         const message = completionDeliveryMessage(input.parentProjection, delivery);
         const nextCohort = {
           ...cohort!,
@@ -18028,33 +18114,68 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       };
       // The parent sent the follow-up after the delegating turn, so no blocking
       // wait owns it and a stop of that turn does not cancel it.
-      const completionPlan = explicitlyStopped
+      const cohort = parentRun?.delegatedCompletion;
+      const delivery = cohort?.delivery ?? null;
+      const deliveryRun = completionDeliveryRun(planRecords, delivery);
+      // Fork: a stopped follow-up is never sent, so its task leaves a queued wake holding its
+      // earlier result.
+      const leavesQueuedWake =
+        explicitlyStopped &&
+        delivery !== null &&
+        queuedWakeRewritable(planRecords.subagents, delivery, task) &&
+        observedDelivery?.state === "claimed" &&
+        parentRun !== undefined &&
+        cohort !== undefined &&
+        delivery.taskIds.includes(task.id) &&
+        deliveryRun?.status === "queued" &&
+        deliveryRun.userMessageId === delivery.messageId;
+      const completionPlan = leavesQueuedWake
         ? {
-            task: updatedTask,
-            parentRun: undefined,
-            message: undefined,
-            offer: false,
+            ...(yield* leaveQueuedWake({
+              parentProjection: planRecords,
+              parentRun,
+              cohort,
+              delivery,
+              deliveryRun,
+              task: {
+                ...updatedTask,
+                completionDelivery: {
+                  state: "disposed" as const,
+                  observedByRunId: null,
+                  disposedBy: "stop" as const,
+                },
+              },
+              now,
+            })),
             siblings: [],
           }
-        : yield* planRunGroupCompletionDelivery({
-            parentProjection,
-            parentRun:
-              followUp &&
-              childRun.delegatedTaskId === undefined &&
-              parentRun?.delegatedCompletion !== undefined
-                ? {
-                    ...parentRun,
-                    delegatedCompletion: {
-                      ...parentRun.delegatedCompletion,
-                      disposition: "open",
-                    },
-                  }
-                : parentRun,
-            task:
-              followUp || followUpEndsStoppedTask ? { ...task, completionWake: "always" } : task,
-            updatedTask,
-            now,
-          });
+        : explicitlyStopped
+          ? {
+              task: updatedTask,
+              parentRun: undefined,
+              message: undefined,
+              offer: false,
+              siblings: [],
+            }
+          : yield* planRunGroupCompletionDelivery({
+              parentProjection,
+              parentRun:
+                followUp &&
+                childRun.delegatedTaskId === undefined &&
+                parentRun?.delegatedCompletion !== undefined
+                  ? {
+                      ...parentRun,
+                      delegatedCompletion: {
+                        ...parentRun.delegatedCompletion,
+                        disposition: "open",
+                      },
+                    }
+                  : parentRun,
+              task:
+                followUp || followUpEndsStoppedTask ? { ...task, completionWake: "always" } : task,
+              updatedTask,
+              now,
+            });
       const resultTransferId = yield* idAllocator.allocate.contextTransfer({
         sourceThreadId: childThreadId,
         targetThreadId: parentThreadId,
@@ -18146,7 +18267,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           payload: resultTransfer,
         },
       ];
-      yield* writeSystemEvents(completionEvents, [], { updateDelegatedCompletionOnly: true });
+      // Only the parent run's update is a cohort write; a wake the task left is cancelled whole.
+      yield* writeSystemEvents(
+        completionEvents,
+        [],
+        parentRun === undefined ? {} : { updateDelegatedCompletionOnlyRunId: parentRun.id },
+      );
       yield* releaseFinishedDelegateSessions(childThreadId, childRun.id, task.id);
 
       if (completionPlan.offer && completionPlan.parentRun !== undefined) {
@@ -18392,9 +18518,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         task.origin !== "app_owned" ||
         task.runId !== parentRun.id ||
         !delivery.taskIds.includes(task.id) ||
-        !deliveryOwnsLatestCompletion(delivery, task) ||
         task.completionDelivery?.state !== "claimed"
       ) {
+        continue;
+      }
+      // Fork: a Stop or group cancel replaced the claimed result without a wake of its own, so
+      // the claim settles with this wake instead of staying claimed after the slot clears.
+      if (!deliveryOwnsLatestCompletion(delivery, task)) {
+        const stopped = yield* completionWasStopped(task);
+        if (task.groupCancel === undefined && !stopped) continue;
+        nextTaskStates.set(
+          task.id,
+          !unconsumed
+            ? { state: "delivered", observedByRunId: null }
+            : stopped
+              ? { state: "disposed", observedByRunId: null, disposedBy: "stop" }
+              : { state: "disposed", observedByRunId: null },
+        );
         continue;
       }
       nextTaskStates.set(task.id, {
