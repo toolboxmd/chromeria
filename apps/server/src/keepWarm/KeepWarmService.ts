@@ -93,11 +93,16 @@ const make = Effect.gen(function* () {
           WHERE i.run_id = r.run_id AND i.type = 'error'
           ORDER BY i.updated_at DESC LIMIT 1
         ) END AS "failureClass"
-      FROM orchestration_v2_projection_runs r
-      WHERE r.thread_id = ${id}
-        AND r.status <> 'queued'
+      FROM (
+        -- Queued turns start out of ordinal order only among recent runs, so the latest
+        -- start is in this bounded window read through the (thread_id, ordinal) index.
+        SELECT * FROM orchestration_v2_projection_runs
+        WHERE thread_id = ${id}
+        ORDER BY ordinal DESC
+        LIMIT 20
+      ) r
+      WHERE r.status <> 'queued'
         AND NOT (r.status = 'cancelled' AND json_extract(r.payload_json, '$.startedAt') IS NULL)
-      -- Queued turns can start out of ordinal order; the cache follows the latest start.
       ORDER BY coalesce(json_extract(r.payload_json, '$.startedAt'), r.requested_at) DESC,
         r.ordinal DESC
       LIMIT 1
