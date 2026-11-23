@@ -41,6 +41,13 @@ describe("promachosBubbleFragments", () => {
     ).toEqual(["See [the docs][d] now", "More later."]);
   });
 
+  it("marks a table alone as a card", () => {
+    const cards = promachosBubbleFragments("Prices:\n\n| a | b |\n| - | - |\n| 1 | 2 |").map(
+      (fragment) => fragment.kind === "bubble" && fragment.card,
+    );
+    expect(cards).toEqual([false, true]);
+  });
+
   it("leaves a thematic break between bubbles", () => {
     expect(fragments("Before.\n\n---\n\nAfter.")).toEqual(["Before.", "---", "After."]);
   });

@@ -26,7 +26,13 @@ function roleOf(node: RootContent): PromachosBlockRole {
 }
 
 export type PromachosFragment =
-  | { readonly kind: "bubble"; readonly markdown: string; readonly offset: number }
+  | {
+      readonly kind: "bubble";
+      readonly markdown: string;
+      readonly offset: number;
+      /** A table alone is its own card rather than a bubble. */
+      readonly card: boolean;
+    }
   | { readonly kind: "break"; readonly offset: number }
   | { readonly kind: "outside"; readonly markdown: string; readonly offset: number };
 
@@ -43,7 +49,12 @@ export function promachosBubbleFragments(markdown: string): PromachosFragment[] 
         const first = item.blocks[0]!;
         const offset = start(first);
         return [
-          { kind: "bubble", markdown: markdown.slice(offset, end(item.blocks.at(-1)!)), offset },
+          {
+            kind: "bubble",
+            markdown: markdown.slice(offset, end(item.blocks.at(-1)!)),
+            offset,
+            card: item.blocks.every((block) => block.type === "table"),
+          },
         ];
       }
       const offset = start(item.block);

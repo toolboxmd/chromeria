@@ -127,6 +127,7 @@ import {
   useThreadSettingsSheetPresentation,
   type NavigationWithFinishTransitioning,
 } from "./use-thread-settings-sheet-presentation";
+import { usePromachosChatModels } from "../promachos/promachosHome";
 
 export const COMPOSER_COLLAPSED_CHROME = 60;
 export const THREAD_COMPOSER_BOTTOM_GUTTER = COMPOSER_BOTTOM_GUTTER;
@@ -257,6 +258,12 @@ function SendActionButton(props: {
 }
 
 export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps) {
+  // Fork: a Promachos chat keeps model and history controls out of the composer.
+  const promachos =
+    usePromachosChatModels({
+      environmentId: props.environmentId,
+      projectId: props.selectedThread.projectId,
+    }) !== null;
   const gt = useGT();
   const messages = useMessages();
   const project = useProject(scopeProjectRef(props.environmentId, props.selectedThread.projectId));
@@ -1030,8 +1037,8 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                   className="min-w-0 shrink flex-row items-center"
                   entering={compactEditor.toolbarControlsEntering}
                 >
-                  {compactControl}
-                  {modelControl}
+                  {promachos ? null : compactControl}
+                  {promachos ? null : modelControl}
                 </Animated.View>
                 <ComposerDictationStartAction
                   size={usesLargeControls ? "large" : "regular"}

@@ -25,17 +25,27 @@ export function PromachosAvatar(props: { readonly size: number }) {
 export function PromachosStatusLine(props: {
   readonly label: string | undefined;
   readonly iconSubtleColor: ColorValue;
+  /** Just before his reply: accent dots and "Typing…" in place of the avatar and step. */
+  readonly typing?: boolean;
 }) {
   const gt = useGT();
   return (
     <View className="min-h-9 flex-row items-center gap-2.5 py-1">
-      <PromachosAvatar size={30} />
+      {props.typing ? (
+        <View className="flex-row items-center gap-1 px-1">
+          <View className="size-1.5 rounded-full bg-primary opacity-40" />
+          <View className="size-1.5 rounded-full bg-primary opacity-70" />
+          <View className="size-1.5 rounded-full bg-primary" />
+        </View>
+      ) : (
+        <PromachosAvatar size={30} />
+      )}
       <ShimmeringWorkContent
         className="min-w-0 flex-1"
         textClassName="text-base text-foreground-secondary"
         icon="brain"
         iconSubtleColor={props.iconSubtleColor}
-        label={props.label ?? gt("Working")}
+        label={props.typing ? gt("Typing…") : (props.label ?? gt("Working"))}
         showIcon={false}
       />
     </View>

@@ -349,6 +349,7 @@ import { useMessageTimeFormatter } from "./useMessageTimeFormatter";
 import { PromachosBubbles, PromachosChatContext } from "../promachos/PromachosBubbles";
 import {
   PROMACHOS_STATUS_ROW_ID,
+  PROMACHOS_TYPING_ROW_ID,
   promachosFeedRows,
   promachosRunIds,
 } from "../promachos/promachosFeed";
@@ -1560,7 +1561,7 @@ function MarkdownDetailsFold(props: {
   );
 }
 
-function useMarkdownStyles(): MarkdownStyleSets {
+function useMarkdownStyles(promachos = false): MarkdownStyleSets {
   const { appearance } = useAppearancePreferences();
   const nativeMarkdownTypography = resolveNativeMarkdownTypography(appearance.baseFontSize);
   const theme = useUniwindTheme();
@@ -1577,10 +1578,15 @@ function useMarkdownStyles(): MarkdownStyleSets {
     theme["--color-border"],
     theme["--color-user-bubble"],
   );
-  const markdownUserBodyColor = theme["--color-user-bubble-foreground"];
+  const userBubble = promachos ? theme["--color-primary"] : theme["--color-user-bubble"];
+  const markdownUserBodyColor = promachos
+    ? theme["--color-primary-foreground"]
+    : theme["--color-user-bubble-foreground"];
   const markdownUserCodeBg = theme["--color-md-user-code-bg"];
   const markdownUserCodeText = theme["--color-md-user-code-text"];
-  const markdownUserInlineCodeText = theme["--color-user-bubble-foreground-muted"];
+  const markdownUserInlineCodeText = promachos
+    ? theme["--color-primary-foreground"]
+    : theme["--color-user-bubble-foreground-muted"];
   const markdownUserFenceBg = theme["--color-md-user-fence-bg"];
   const regularFontFamily = FONT_FAMILIES.regular;
   const boldFontFamily = FONT_FAMILIES.bold;
@@ -1591,7 +1597,9 @@ function useMarkdownStyles(): MarkdownStyleSets {
         color: markdownUserBodyColor,
         strongColor: markdownUserBodyColor,
         mutedColor: markdownUserBodyColor,
-        linkColor: themeColorWithContrast(markdownLinkColor, theme["--color-user-bubble"]),
+        linkColor: promachos
+          ? markdownUserBodyColor
+          : themeColorWithContrast(markdownLinkColor, userBubble),
         inlineCodeColor: markdownUserInlineCodeText,
         codeColor: markdownUserCodeText,
         codeBackgroundColor: markdownUserCodeBg,
@@ -2174,11 +2182,15 @@ function renderFeedEntry(
     );
   }
 
-  if (entry.type === "thinking" && entry.id === PROMACHOS_STATUS_ROW_ID) {
+  if (
+    entry.type === "thinking" &&
+    (entry.id === PROMACHOS_STATUS_ROW_ID || entry.id === PROMACHOS_TYPING_ROW_ID)
+  ) {
     return (
       <PromachosStatusLine
         label={entry.label ?? entry.providerStartingLabel}
         iconSubtleColor={iconSubtleColor}
+        typing={entry.id === PROMACHOS_TYPING_ROW_ID}
       />
     );
   }
@@ -3408,7 +3420,10 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     [androidButtonSize, androidIconSize],
   );
   const screenColor = theme["--color-screen"];
-  const userBubbleColor = theme["--color-user-bubble"];
+  // Fork: the user's bubble in a Promachos chat takes the accent, as his send button does.
+  const userBubbleColor = use(PromachosChatContext)
+    ? theme["--color-primary"]
+    : theme["--color-user-bubble"];
   const openSkillInstructions = (path: string) => {
     void Haptics.selectionAsync();
     navigation.navigate("ThreadFile", {
@@ -3886,7 +3901,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       />
     ) : null;
   };
-  const markdownStyles = useMarkdownStyles();
+  const markdownStyles = useMarkdownStyles(use(PromachosChatContext));
   const renderReasoning = (text: string) => (
     <AssistantMarkdownContent
       markdown={text}

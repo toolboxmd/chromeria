@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ThreadFeedEntry } from "../../lib/threadActivity";
-import { PROMACHOS_STATUS_ROW_ID, promachosFeedRows } from "./promachosFeed";
+import {
+  PROMACHOS_STATUS_ROW_ID,
+  PROMACHOS_TYPING_ROW_ID,
+  promachosFeedRows,
+} from "./promachosFeed";
 
 // Only the fields the presentation reads; the rest of each row is irrelevant here.
 const row = (fields: Record<string, unknown>) =>
@@ -14,8 +18,12 @@ const activity = (type: string) => ({ projectedItem: { item: { type } } });
 
 describe("promachosFeedRows", () => {
   it("keeps the conversation and errors, and collapses his work into one status row", () => {
-    const user = row({ type: "message", id: "user" });
-    const reply = row({ type: "message", id: "reply" });
+    const user = row({ type: "message", id: "user", message: { role: "user", streaming: false } });
+    const reply = row({
+      type: "message",
+      id: "reply",
+      message: { role: "assistant", streaming: false },
+    });
     const rows = promachosFeedRows([
       user,
       row({ type: "run-fold", id: "fold", workingSince: "2026-11-23T14:00:00.000Z" }),
@@ -38,6 +46,17 @@ describe("promachosFeedRows", () => {
     ]);
     expect(rows[1]).toMatchObject({ activities: [activity("error")] });
     expect(rows.at(-1)).toMatchObject({ type: "thinking", label: "Searching the web" });
+  });
+
+  it("holds his reply back while it is written, showing the typing status instead", () => {
+    const reply = row({
+      type: "message",
+      id: "reply",
+      message: { role: "assistant", streaming: true },
+    });
+    expect(promachosFeedRows([row({ type: "thinking", id: "live" }), reply])).toEqual([
+      expect.objectContaining({ id: PROMACHOS_TYPING_ROW_ID }),
+    ]);
   });
 
   it("keeps requests for the user and shows no status once he is done", () => {

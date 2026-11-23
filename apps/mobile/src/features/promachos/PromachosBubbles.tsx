@@ -13,7 +13,7 @@ export function PromachosBubbles(props: {
 }) {
   const fragments = useMemo(() => promachosBubbleFragments(props.markdown), [props.markdown]);
   return (
-    <View className="items-start gap-1">
+    <View className="items-start gap-2">
       {fragments.map((fragment) =>
         fragment.kind === "break" ? (
           <View key={fragment.offset} className="my-2 h-px self-stretch bg-separator" />
@@ -21,9 +21,11 @@ export function PromachosBubbles(props: {
           <View
             key={fragment.offset}
             className={
-              fragment.kind === "bubble"
-                ? "min-w-0 max-w-[85%] rounded-2xl bg-card px-4 py-2.5"
-                : "self-stretch"
+              fragment.kind === "outside"
+                ? "self-stretch"
+                : fragment.card
+                  ? "min-w-0 max-w-[82%]"
+                  : "min-w-0 max-w-[82%] rounded-[18px] bg-grouped-card px-3.5 py-2.5"
             }
           >
             {props.renderText(fragment.markdown)}

@@ -9,6 +9,8 @@ import {
 
 /** The one status row a Promachos chat shows while he works. */
 export const PROMACHOS_STATUS_ROW_ID = "promachos-status";
+/** The status row while his reply is being written; the reply shows once it is done. */
+export const PROMACHOS_TYPING_ROW_ID = "promachos-typing";
 
 type StatusRow = Extract<ThreadFeedEntry, { readonly type: "thinking" }>;
 type ActivityGroup = Extract<ThreadFeedEntry, { readonly type: "activity-group" }>;
@@ -32,6 +34,12 @@ export function promachosFeedRows(rows: ReadonlyArray<ThreadFeedEntry>): ThreadF
   for (const row of rows) {
     switch (row.type) {
       case "message":
+        if (row.message.role === "assistant" && row.message.streaming) {
+          status = { ...statusRow(row, undefined, status), id: PROMACHOS_TYPING_ROW_ID };
+          break;
+        }
+        conversation.push(row);
+        break;
       case "sent-message":
       case "html-render":
       case "mcp-app":
