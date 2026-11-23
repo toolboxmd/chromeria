@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 import { CONVERSATION_PREVIEW_MAX_CHARS, conversationPreviewText } from "./conversationPreview.ts";
 

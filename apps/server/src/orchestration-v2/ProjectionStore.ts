@@ -128,7 +128,7 @@ import {
 } from "./deferredCommandMessage.ts";
 import { readableSearchText } from "./messageSearchIndex.ts";
 import {
-  conversationPreviewFromMessages,
+  conversationPreviewFromProjection,
   conversationPreviewFromRow,
   latestPreviewMessageSql,
 } from "../promachos/conversationPreview.ts";
@@ -2148,10 +2148,7 @@ export function threadShellFromProjection(
     // Thread detail owns message bodies. Keeping them out of shell rows makes
     // initial hydration and streaming updates independent of transcript size.
     remotePendingRequest: remotePendingRequestKind(projection.subagents),
-    latestVisibleMessage:
-      projection.thread.lineage.relationshipToParent === "subagent"
-        ? null
-        : conversationPreviewFromMessages(projection.messages, projection.runs),
+    latestVisibleMessage: conversationPreviewFromProjection(projection),
     latestUserMessageAt: latestUserMessage?.updatedAt ?? null,
     latestUserAuthoredMessageAt,
     hasActionableProposedPlan: projection.plans.some(

@@ -3,6 +3,7 @@ import {
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2LatestVisibleMessageSummary,
   type OrchestrationV2Run,
+  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { isAttachmentOnlyBootstrapPrompt } from "@t3tools/shared/composerContextReferences";
@@ -10,6 +11,13 @@ import * as DateTime from "effect/DateTime";
 import type * as SqlClient from "effect/sql/SqlClient";
 
 import { indexedMessageCondition } from "../orchestration-v2/messageSearchIndex.ts";
+
+/**
+ * Only Promachos conversations carry a preview: no other list shows one, and every thread shell
+ * is resent while its run streams. Conversations from before the role existed have none.
+ */
+const carriesPreview = (thread: OrchestrationV2ThreadProjection["thread"]) =>
+  thread.prismRole === "promachos" && thread.lineage.relationshipToParent !== "subagent";
 
 /** One list row shows one line; this covers a wide sidebar and keeps each shell small. */
 export const CONVERSATION_PREVIEW_MAX_CHARS = 80;
@@ -40,10 +48,11 @@ function leftConversation(run: Pick<OrchestrationV2Run, "status" | "startedAt">)
   );
 }
 
-export function conversationPreviewFromMessages(
-  messages: ReadonlyArray<OrchestrationV2ConversationMessage>,
-  runs: ReadonlyArray<Pick<OrchestrationV2Run, "id" | "status" | "startedAt">>,
+export function conversationPreviewFromProjection(
+  projection: Pick<OrchestrationV2ThreadProjection, "thread" | "messages" | "runs">,
 ): OrchestrationV2LatestVisibleMessageSummary | null {
+  if (!carriesPreview(projection.thread)) return null;
+  const { messages, runs } = projection;
   const leftRunIds = new Set(runs.filter(leftConversation).map((run) => run.id));
   let latest: OrchestrationV2ConversationMessage | null = null;
   for (const message of messages) {
@@ -65,10 +74,13 @@ export function conversationPreviewFromMessages(
 }
 
 /**
- * A shell query column: the newest preview message of `t.thread_id` as JSON, read through the
+ * A shell query column: the newest preview message of thread `t` as JSON, read through the
  * messages' (thread_id, created_at) index. Decode it with `conversationPreviewFromRow`.
  */
-export const latestPreviewMessageSql = (sql: SqlClient.SqlClient) => sql`(
+export const latestPreviewMessageSql = (sql: SqlClient.SqlClient) => sql`CASE
+  WHEN json_extract(t.payload_json, '$.prismRole') = 'promachos'
+    AND json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subagent'
+  THEN (
   SELECT json_object(
     'id', message.message_id,
     'role', message.role,
@@ -88,7 +100,7 @@ export const latestPreviewMessageSql = (sql: SqlClient.SqlClient) => sql`(
     )
   ORDER BY message.created_at DESC, message.message_id DESC
   LIMIT 1
-)`;
+) END`;
 
 export function conversationPreviewFromRow(
   json: string | null,

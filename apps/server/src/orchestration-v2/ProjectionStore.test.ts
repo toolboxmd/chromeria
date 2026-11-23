@@ -8853,19 +8853,26 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       }),
   );
 
-  it.effect("quotes the newest finished user or assistant message in the shell", () =>
+  it.effect.each([
+    ["a Promachos conversation", "promachos"],
+    ["a Code thread", undefined],
+  ] as const)("quotes the newest finished message in the shell of %s", ([name, prismRole]) =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const start = yield* DateTime.now;
-      const threadId = ThreadId.make("thread:projection-shell-preview");
+      const key = name.replaceAll(/\W+/g, "-");
+      const threadId = ThreadId.make(`thread:projection-shell-preview:${key}`);
+      // Code lists show no preview, so their shells do not carry one.
+      const quoted = <A>(preview: A) => (prismRole === undefined ? null : preview);
       yield* projectionStore.apply({
-        id: EventId.make("event:projection-shell-preview:thread"),
+        id: EventId.make(`event:projection-shell-preview:${key}:thread`),
         type: "thread.created",
         threadId,
         occurredAt: start,
         payload: {
           createdBy: "user",
           creationSource: "web",
+          ...(prismRole === undefined ? {} : { prismRole }),
           id: threadId,
           projectId: ProjectId.make("project:projection-shell-preview"),
           title: "Preview",
@@ -8889,7 +8896,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       });
       let step = 0;
       const message = (
-        key: string,
+        messageKey: string,
         fields: Pick<
           OrchestrationV2ConversationMessage,
           "role" | "createdBy" | "text" | "streaming"
@@ -8898,14 +8905,14 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         const at = DateTime.add(start, { seconds: fields.at });
         step += 1;
         return projectionStore.apply({
-          id: EventId.make(`event:projection-shell-preview:${step}`),
+          id: EventId.make(`event:projection-shell-preview:${key}:${step}`),
           type: "message.updated",
           threadId,
           occurredAt: at,
           payload: {
             createdBy: fields.createdBy,
             creationSource: fields.createdBy === "user" ? "web" : "server",
-            id: MessageId.make(`message:projection-shell-preview:${key}`),
+            id: MessageId.make(`message:projection-shell-preview:${key}:${messageKey}`),
             threadId,
             runId: fields.runId ?? null,
             nodeId: null,
@@ -8938,7 +8945,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         streaming: false,
         at: 1,
       });
-      const question = { role: "user", text: "Can you check the release notes?" };
+      const question = quoted({ role: "user", text: "Can you check the release notes?" });
       assert.deepStrictEqual(yield* previews, [question, question]);
 
       // A streaming reply leaves the shell alone, so tokens do not resend every row.
@@ -8958,20 +8965,20 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         streaming: false,
         at: 2,
       });
-      const answer = {
+      const answer = quoted({
         role: "assistant",
         text: "Done I checked the notes. The build is green. The build is green. The build is…",
-      };
+      });
       assert.deepStrictEqual(yield* previews, [answer, answer]);
 
       // Wakes, attachment placeholders and a follow-up removed before it started are not conversation.
-      const removedRunId = RunId.make("run:projection-shell-preview:removed");
+      const removedRunId = RunId.make(`run:projection-shell-preview:${key}:removed`);
       yield* projectionStore.apply({
-        id: EventId.make("event:projection-shell-preview:removed-run"),
+        id: EventId.make(`event:projection-shell-preview:${key}:removed-run`),
         type: "run.created",
         threadId,
         runId: removedRunId,
-        nodeId: NodeId.make("node:projection-shell-preview:removed"),
+        nodeId: NodeId.make(`node:projection-shell-preview:${key}:removed`),
         driver,
         occurredAt: start,
         payload: {
@@ -8981,7 +8988,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           providerInstanceId,
           modelSelection,
           providerThreadId: null,
-          userMessageId: MessageId.make("message:projection-shell-preview:removed"),
+          userMessageId: MessageId.make(`message:projection-shell-preview:${key}:removed`),
           rootNodeId: null,
           activeAttemptId: null,
           status: "cancelled",
