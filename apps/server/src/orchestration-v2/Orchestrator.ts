@@ -17585,6 +17585,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
     });
 
+  const isRestartHold = (latest: OrchestrationV2Run | null) =>
+    latest !== null &&
+    (latest.restartCut !== undefined ||
+      (latest.restartContinuationOfRunId !== undefined && isLiveRun(latest)));
+
   // Fork: a task leaves a queued wake that has not started when its newer result cannot be sent
   // there. The wake is rewritten without it, or cancelled while keeping its delivery, so the
   // wake's finalization reserves the task's result under its own scope.
@@ -17742,10 +17747,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         deliveryOwnsLatestCompletion(delivery, input.updatedTask);
       const queuedWake =
         deliveryRun?.status === "queued" && deliveryRun.userMessageId === delivery.messageId;
-      // Fork: a restart holds a wake it requeues until a person sends it. A new result would wake
-      // the parent at once, so it releases that wake, which carries it or goes ahead of its wake.
-      // It stays held where a new wake would be held too: behind another held run, or while the
-      // thread's workspace setup is unresolved.
+      // Fork: a new result would wake the parent at once, so it releases a wake a restart holds
+      // (nothing ran since the cut but its continuation). The wake stays held where a new wake
+      // would be too: behind another held run, or while workspace setup is unresolved.
       const threadId = input.parentRun.threadId;
       const releasable =
         queuedWake &&
@@ -17754,6 +17758,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (yield* projectionStore.getThreadRecords(threadId, ["runs"]).pipe(
           Effect.map(
             (records) =>
+              isRestartHold(latestExecutedRun(records.runs)) &&
               !worktreeSetupPending(records) &&
               !records.runs.some(
                 (run) =>

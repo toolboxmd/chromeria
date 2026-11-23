@@ -7275,7 +7275,8 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
     { followUp: "other scope in a mixed wake" },
     { followUp: "mixed follow-up in a mixed wake" },
     { followUp: "other scope beside a stopped result" },
-    { followUp: "same scope into a held wake" },
+    { followUp: "same scope into a wake a restart held" },
+    { followUp: "same scope into a wake a provider failure held" },
   ] as const)("a $followUp follow-up of a task in a queued wake", ({ followUp }) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -7427,12 +7428,33 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
       )!;
       assert.equal(wake.status, "queued");
       if (mixed) assert.equal(executionPurposeOf(wake).scope.type, "unscoped");
-      // A restart requeued the wake held, for a person to send.
-      const heldWake = followUp === "same scope into a held wake";
-      if (heldWake) {
+      // A restart cut the parent's turn, or the provider failed it, and the wake waits held for a
+      // person to send it.
+      const restartHeld = followUp === "same scope into a wake a restart held";
+      const failureHeld = followUp === "same scope into a wake a provider failure held";
+      if (restartHeld || failureHeld) {
+        const parentRun = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+          (run) => run.id === runId,
+        )!;
         yield* eventSink.write({
           commandId: CommandId.make(`command:${name}:held`),
           events: [
+            {
+              id: EventId.make(`event:${name}:parent-ended`),
+              type: "run.updated" as const,
+              threadId,
+              runId,
+              providerInstanceId: modelSelection.instanceId,
+              occurredAt: now,
+              payload: restartHeld
+                ? {
+                    ...parentRun,
+                    status: "cancelled" as const,
+                    completedAt: now,
+                    restartCut: { continuation: "scheduled" as const, cutAt: now },
+                  }
+                : { ...parentRun, status: "failed" as const, completedAt: now },
+            },
             {
               id: EventId.make(`event:${name}:held`),
               type: "run.updated" as const,
@@ -7543,10 +7565,10 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
       const task = parent.subagents.find((row) => row.id === child.taskId)!;
       const queued = parent.runs.find((run) => run.id === wake.id)!;
       const reserved = parent.runs.find((run) => run.id === runId)?.delegatedCompletion?.delivery;
-      if (heldWake) {
-        // The newer result releases the held wake, which carries it in place of the older one.
-        assert.equal(queued.status, "queued");
-        assert.equal(queued.queueHeld, false);
+      if (restartHeld || failureHeld) {
+        // A restart's hold is released, and the wake carries the newer result in place of the older
+        // one; a provider failure's hold stays for a person, as on main.
+        assert.equal(queued.status === "queued" && queued.queueHeld === true, failureHeld);
         assert.equal(task.completionDelivery?.state, "claimed");
         assert.deepEqual(
           reserved?.purposeCauses?.map((cause) => cause.runId),
