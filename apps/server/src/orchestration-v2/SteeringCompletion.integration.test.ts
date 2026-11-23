@@ -4743,6 +4743,16 @@ it.effect.each([
     ending: "restart",
     after: "none",
   },
+  // A linked-environment task's next result waits while it is claimed, so it is not held back.
+  {
+    case: "linked-environment task",
+    wakes: [1],
+    change: "remote",
+    owed: [],
+    kept: [0],
+    ending: "restart",
+    after: "none",
+  },
   {
     case: "all results unread",
     wakes: [1],
@@ -4800,6 +4810,14 @@ it.effect.each([
               purpose: executionPurposeOf(parent),
             },
             ...(change === "group" ? { runGroupId: groupId } : {}),
+            ...(change === "remote"
+              ? {
+                  remoteChild: {
+                    environmentId: EnvironmentId.make("environment:remote"),
+                    label: "Remote",
+                  },
+                }
+              : {}),
             status: "completed",
             result: `done ${result}`,
             startedAt: now,

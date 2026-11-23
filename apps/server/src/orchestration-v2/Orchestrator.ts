@@ -3890,9 +3890,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   });
 
   // A restart lost an accepted wake the provider never read. While no other wake holds the
-  // cohort's reservation, it is reserved again for the standalone results it carried that the
-  // parent has not read and nothing replaced. Run group wakes render every member, read or not,
-  // and another wake's reservation has its own scope, so those are not resent.
+  // cohort's reservation, it is reserved again for the local standalone results it carried that
+  // the parent has not read and nothing replaced. Run group wakes render every member, read or
+  // not, and another wake's reservation has its own scope, so those are not resent.
   const reserveUnreadWake = Effect.fn("Orchestrator.reserveUnreadWake")(function* (
     threadId: ThreadId,
     messageId: MessageId,
@@ -3909,6 +3909,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         task.origin === "app_owned" &&
         task.runId === parentRunId &&
         task.runGroupId === undefined &&
+        // A claim would hold back a linked-environment task's next result until the wake ran.
+        task.remoteChild === undefined &&
         task.completionDelivery?.state === "delivered" &&
         task.completionDelivery.messageId === messageId,
     );
