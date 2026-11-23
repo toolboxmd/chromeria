@@ -321,8 +321,30 @@ describe("ProviderContinuationService", () => {
         const attempts = yield* Ref.make(0);
         const cleared = yield* Ref.make(false);
         const disposed = yield* Queue.unbounded<unknown>();
+        const disposals = yield* Ref.make(0);
+        // Disposing the wake's results folds a result of another scope still waiting into it.
+        const folded = {
+          ...delegatedProjection(),
+          runs: [
+            {
+              id: parentRunId,
+              delegatedCompletion: {
+                disposition: "open",
+                nextGeneration: 2,
+                delivery: {
+                  generation: 1,
+                  messageId: delegatedMessageId,
+                  taskIds: ["node-provider-continuation-third"],
+                },
+              },
+            },
+          ],
+        } as unknown as OrchestrationV2ThreadProjection;
         const layerThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
-          getThreadRecords: () => Effect.succeed(delegatedProjection()),
+          getThreadRecords: () =>
+            Ref.get(disposals).pipe(
+              Effect.map((count) => (count === 0 ? delegatedProjection() : folded)),
+            ),
           dispatch: (command) => {
             if ((command as { type: string }).type === "message.dispatch") {
               return Ref.update(attempts, (count) => count + 1).pipe(
@@ -338,7 +360,10 @@ describe("ProviderContinuationService", () => {
                 ),
               );
             }
-            return Queue.offer(disposed, command).pipe(Effect.as({} as never));
+            return Ref.update(disposals, (count) => count + 1).pipe(
+              Effect.andThen(Queue.offer(disposed, command)),
+              Effect.as({} as never),
+            );
           },
         });
         const layerWorker = ProviderContinuationService.layer.pipe(
@@ -372,7 +397,11 @@ describe("ProviderContinuationService", () => {
           }>;
           assert.deepEqual(
             dispositions.map((command) => command.taskId),
-            ["node-provider-continuation-first", "node-provider-continuation-second"],
+            [
+              "node-provider-continuation-first",
+              "node-provider-continuation-second",
+              "node-provider-continuation-third",
+            ],
           );
           for (const command of dispositions) {
             assert.equal(command.type, "delegated_task.completion-delivery.dispose");
