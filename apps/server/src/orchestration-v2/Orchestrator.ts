@@ -18266,10 +18266,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             completedAt: now,
             updatedAt: now,
           };
+      // Fork: a stopped follow-up is not a result, so an unread one stays the one a wake sends.
+      const keepsUnreadResult = explicitlyStopped && observedDelivery?.state === "pending";
       const updatedTask: OrchestrationV2Subagent = {
         ...resultTask,
-        completionSource: { runId: childRun.id, purpose: executionPurposeOf(childRun) },
-        ...(followUp ? { followUpResult: result.text } : {}),
+        ...(keepsUnreadResult
+          ? {}
+          : {
+              completionSource: { runId: childRun.id, purpose: executionPurposeOf(childRun) },
+              ...(followUp ? { followUpResult: result.text } : {}),
+            }),
         updatedAt: now,
         // The cancelling parent gets no wake, and the task records the run it settled from.
         // Fork: a Run group member's result stays owed to the group's one wake.
