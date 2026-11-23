@@ -301,6 +301,16 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("Color White mode council free relay rounds turns fallback label")],
   },
   {
+    id: "promachos-home",
+    title: msg("Promachos home"),
+    to: "/settings/promachos",
+    targetId: "promachos-home",
+    scope: "environment-defaults",
+    searchTerms: [msg("home project persona machine conversations")],
+    environmentOnly: true,
+    forkAdded: true,
+  },
+  {
     id: "promachos-colors",
     title: msg("Promachos Colors"),
     to: "/settings/promachos",

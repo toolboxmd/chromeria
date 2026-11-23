@@ -2649,8 +2649,6 @@
   "2d7086dff1eaaf70": "Neue Unterhaltung",
   "d5c44c9513871a83": "Noch keine Unterhaltungen.",
   "aa4bc8bdbd15b4c8": "Das Zuhause von Promachos ist hier nicht verfügbar. Wähle es erneut.",
-  "294fbf62a392a82a": "Wähle das Projekt, das das Zuhause von Promachos ist, oder erstelle ein neues. Seine Unterhaltungen liegen dort.",
-  "de998655fb47d8f8": "Neues Zuhause · {environment}",
   "9602be4c090d7e07": "Neues Zuhause",
   "23ab008e8dddc625": "Das Zuhause konnte nicht erstellt werden.",
   "407d6f88248d7e60": "Ordner für das neue Zuhause",
@@ -5806,5 +5804,7 @@
   "6d5cbb6a55929e77": "Nicht festgelegt",
   "2ecf88ef9e8e4259": "Zuhause",
   "d2bc8065dc9b2225": "Zuhause",
-  "dc74034af7069dee": "Persona"
+  "dc74034af7069dee": "Persona",
+  "821cf6cd1be4c0e4": "Verbinde eine Umgebung, um das Zuhause von Promachos zu wählen.",
+  "e5e955443524580d": "Wähle das Projekt, das auf diesem Rechner das Zuhause von Promachos ist, oder erstelle ein neues. Dort liegen seine Unterhaltungen."
 }

@@ -2645,8 +2645,6 @@
   "2d7086dff1eaaf70": "Nueva conversación",
   "d5c44c9513871a83": "Aún no hay conversaciones.",
   "aa4bc8bdbd15b4c8": "El hogar de Promachos no está disponible aquí. Vuelve a elegirlo.",
-  "294fbf62a392a82a": "Elige el proyecto que es el hogar de Promachos o crea uno nuevo. Sus conversaciones viven ahí.",
-  "de998655fb47d8f8": "Nuevo hogar · {environment}",
   "9602be4c090d7e07": "Nuevo hogar",
   "23ab008e8dddc625": "No se pudo crear el hogar.",
   "407d6f88248d7e60": "Carpeta para el nuevo hogar",
@@ -5800,5 +5798,7 @@
   "6d5cbb6a55929e77": "Sin definir",
   "2ecf88ef9e8e4259": "Hogar",
   "d2bc8065dc9b2225": "hogar",
-  "dc74034af7069dee": "persona"
+  "dc74034af7069dee": "persona",
+  "821cf6cd1be4c0e4": "Conecta un entorno para elegir el hogar de Promachos.",
+  "e5e955443524580d": "Elige el proyecto que es el hogar de Promachos en esta máquina o crea uno nuevo. Sus conversaciones están allí."
 }

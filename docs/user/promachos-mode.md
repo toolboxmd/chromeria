@@ -9,22 +9,26 @@ Questions and approvals appear as cards in the chat.
 
 ## Start
 
-1. On web or desktop, choose **Promachos** in the switch at the top of the sidebar.
-2. Choose the project that is the Promachos home, or choose **New home** to create
-   one. The choice belongs to that project on that environment, and each browser or
-   desktop app remembers its own.
+1. Open **Settings → Promachos** and choose the project that is the Promachos home,
+   or choose **New home** to create one. Each machine saves its own home, so every
+   app connected to it uses the same home without setup.
+2. On web or desktop, choose **Promachos** in the switch at the top of the sidebar.
 3. Use the round **+** button to start a conversation.
 
-Choose **Code** in the same switch to return to the standard view. To pick another
-home, open the round home button. The conversation's actions, such as rename,
-files and git, are in the menu on its title and the round **…** button next to it.
+Choose **Code** in the same switch to return to the standard view. The conversation's
+actions, such as rename, files and git, are in the menu on its title and the round
+**…** button next to it.
+
+When you are connected to several machines, each one lists its own home. The
+Promachos view shows the conversations of all of them, and a project that is the
+same repository as a home counts as part of it.
 
 ## On the phone
 
 The mobile app has a **Promachos** tab first in the bottom bar. It lists the home's
 conversations, and the button at the bottom starts one. Chats look and behave as on
-desktop; files, git and terminal are in the round **…** menu. The phone remembers its
-own home: choose it in **Settings → Promachos → Home**.
+desktop; files, git and terminal are in the round **…** menu. **Settings → Promachos**
+on the phone changes the same machine setting as on desktop.
 
 Opening the app without a link or notification returns to the tab you used last. On
 the Promachos tab that is the conversation you had open, or the list if you had left
@@ -35,14 +39,18 @@ it. The first time, the app opens on the Promachos tab.
 **New home** asks for a folder, `~/promachos` unless you change it, and creates it on
 the environment's own machine, so it works for remote environments too. The folder
 becomes a git repository with a starter `AGENTS.md` and a `CLAUDE.md` that points to
-it, is added as a project, and is selected as the home.
+it, is added as a project, and becomes that machine's home.
 
 Write the Promachos persona under "Who you are" in that `AGENTS.md`. Every
 conversation in the home reads it.
 
 Files, a git repository or a project already there are kept as they are, so you can
-point **New home** at an existing folder. If creation fails, the picker shows why;
+point **New home** at an existing folder. If creation fails, Settings shows why;
 fix the cause and choose **Create** again.
+
+An agent can set a machine's home without the app: put the project's id under
+`promachosHome` in that server's `settings.json`, the file that also holds its Prism
+roles. Running apps pick up the change without a restart.
 
 ## Good to know
 

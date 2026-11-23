@@ -1,62 +1,46 @@
 /**
  * Promachos mode on the phone: the Promachos tab shows the home's conversations, and a thread of
- * the home renders as his bubble chat. The home lives in this phone's preferences, naming one
- * project on one environment; it spans every project the thread list merges with it. It is chosen in
- * Settings → Promachos.
+ * the home renders as his bubble chat. Each environment names its own home in its server settings,
+ * chosen in Settings → Promachos; the home spans every project the thread list merges with one.
  */
 import { useAtomValue } from "@effect/atom-react";
 import {
   isInPromachosHome,
   promachosHomeRefs,
+  promachosHomes,
 } from "@t3tools/client-runtime/promachos/conversations";
-import {
-  DEFAULT_SERVER_SETTINGS,
-  EnvironmentId,
-  ProjectId,
-  type ScopedProjectRef,
-} from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, type ScopedProjectRef } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { AsyncResult } from "effect/reactivity";
 import { use } from "react";
 
-import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
-import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
+import { useEnvironmentServerConfig, useProjects, useServerConfigs } from "../../state/entities";
+import { mobilePreferencesAtom } from "../../state/preferences";
 import { useMobileProjectGroupingSettings } from "../../state/project-grouping";
-import { useAtomCommand } from "../../state/use-atom-command";
 import {
   navigationCustomizationAvailable,
   resolveHiddenNavigationTabs,
 } from "../layout/workspace/navigation-tab-order";
 import { PromachosDraftContext } from "./promachosDraft";
 
-/** The saved home and how to change it. */
+/**
+ * The homes the connected environments name: `start` is where a new conversation opens, null when
+ * none names a project this phone knows, and `refs` every project of the home.
+ */
 export function usePromachosHome(): {
-  readonly home: ScopedProjectRef | null;
-  readonly setHome: (home: ScopedProjectRef) => void;
+  readonly homes: ReadonlyArray<ScopedProjectRef>;
+  readonly start: ScopedProjectRef | null;
+  readonly refs: ReadonlyArray<ScopedProjectRef>;
 } {
-  const preferences = useAtomValue(mobilePreferencesAtom);
-  const save = useAtomCommand(saveMobilePreferences);
-  const saved = AsyncResult.isSuccess(preferences) ? preferences.value.promachosHome : undefined;
-  return {
-    home:
-      saved === undefined
-        ? null
-        : {
-            environmentId: EnvironmentId.make(saved.environmentId),
-            projectId: ProjectId.make(saved.projectId),
-          },
-    // A conversation of the old home must not reopen on the next cold start.
-    setHome: (next) => void save({ promachosHome: next, promachosConversation: undefined }),
-  };
-}
-
-/** Every project of the Promachos home, across the machines it is merged over. */
-export function usePromachosHomeRefs(
-  home: ScopedProjectRef | null,
-): ReadonlyArray<ScopedProjectRef> {
   const projects = useProjects();
+  const configs = useServerConfigs();
   const grouping = useMobileProjectGroupingSettings();
-  return home === null ? [] : promachosHomeRefs(projects, home, grouping);
+  const homes = promachosHomes(configs, projects, null);
+  return {
+    homes,
+    start: homes[0] ?? null,
+    refs: promachosHomeRefs(projects, homes, grouping),
+  };
 }
 
 /**
@@ -71,8 +55,8 @@ export function usePromachosChatModels(
     navigationCustomizationAvailable() &&
     AsyncResult.isSuccess(preferences) &&
     resolveHiddenNavigationTabs(preferences.value.hiddenNavigationTabs).includes("promachos");
-  const { home } = usePromachosHome();
-  const homeRefs = usePromachosHomeRefs(hidden ? null : home);
+  const { refs } = usePromachosHome();
+  const homeRefs = hidden ? [] : refs;
   const serverConfig = useEnvironmentServerConfig(projectRef?.environmentId ?? null);
   if (projectRef === null || !isInPromachosHome(projectRef, homeRefs)) return null;
   return resolveProjectSettings(
@@ -81,16 +65,20 @@ export function usePromachosChatModels(
   ).settings.prismRoles.promachos.models;
 }
 
-/** The home's name for Settings, or null when there is none. */
+/** The homes' names for Settings, or null when no environment names one. */
 export function usePromachosHomeLabel(): string | null {
-  const { home } = usePromachosHome();
+  const { homes } = usePromachosHome();
   const projects = useProjects();
-  if (home === null) return null;
-  return (
-    projects.find(
-      (project) => project.environmentId === home.environmentId && project.id === home.projectId,
-    )?.title ?? null
+  const titles = new Set(
+    homes.flatMap(
+      (home) =>
+        projects.find(
+          (project) =>
+            project.environmentId === home.environmentId && project.id === home.projectId,
+        )?.title ?? [],
+    ),
   );
+  return titles.size === 0 ? null : [...titles].join(", ");
 }
 
 /**
