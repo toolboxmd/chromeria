@@ -1558,6 +1558,8 @@ export const ServerSettings = Schema.Struct({
   autoBalance: Schema.NullOr(AutoBalanceSettings).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** Fork: which of this machine's projects is the Promachos home. Every client reads it from here. */
+  promachosHome: Schema.NullOr(ProjectId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   /** Beta: Claude and Codex predict the next prompt after completed turns. Codex follows a change at once; open Claude threads after they restart. */
   promptSuggestionsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   sidebarAutoSettleKeepPullRequests: Schema.Boolean.pipe(
@@ -2013,6 +2015,7 @@ export const ServerSettingsPatch = Schema.Struct({
   autoBalance: Schema.optionalKey(Schema.NullOr(AutoBalanceSettings)),
   // Applied under the settings service's write lock, only while `autoBalance` is unset.
   migrateAutoBalance: Schema.optionalKey(AutoBalanceSettings),
+  promachosHome: Schema.optionalKey(Schema.NullOr(ProjectId)),
   promptSuggestionsEnabled: Schema.optionalKey(Schema.Boolean),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({

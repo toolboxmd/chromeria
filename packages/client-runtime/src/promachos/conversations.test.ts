@@ -1,7 +1,7 @@
 import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { promachosConversations, promachosHomeRefs } from "./conversations.ts";
+import { promachosConversations, promachosHomeRefs, promachosHomes } from "./conversations.ts";
 
 const home = { environmentId: EnvironmentId.make("env-a"), projectId: ProjectId.make("home") };
 const homeOnB = { environmentId: EnvironmentId.make("env-b"), projectId: ProjectId.make("home-b") };
@@ -134,7 +134,7 @@ describe("promachosHomeRefs", () => {
       project("env-b", "home-b", "/home/me/dev/promachos", "github.com/me/promachos"),
       project("env-b", "satrapy", "/home/me/dev/satrapy", "github.com/me/satrapy"),
     ];
-    expect(promachosHomeRefs(projects, home, grouped)).toEqual([home, homeOnB]);
+    expect(promachosHomeRefs(projects, [home], grouped)).toEqual([home, homeOnB]);
   });
 
   it("stays on one machine when the sidebar keeps projects separate", () => {
@@ -143,7 +143,50 @@ describe("promachosHomeRefs", () => {
       project("env-b", "home-b", "/home/me/dev/promachos", "github.com/me/promachos"),
     ];
     expect(
-      promachosHomeRefs(projects, home, { ...grouped, sidebarProjectGroupingMode: "separate" }),
+      promachosHomeRefs(projects, [home], { ...grouped, sidebarProjectGroupingMode: "separate" }),
     ).toEqual([home]);
+  });
+
+  it("joins the homes several machines name, each with what the sidebar merges into it", () => {
+    const projects = [
+      project("env-a", "home", "/Users/me/dev/promachos", "github.com/me/promachos"),
+      project("env-b", "home-b", "/home/me/dev/promachos", "github.com/me/promachos"),
+      project("env-c", "persona", "/srv/persona", "github.com/me/persona"),
+      project("env-c", "satrapy", "/srv/satrapy", "github.com/me/satrapy"),
+    ];
+    const onC = {
+      environmentId: EnvironmentId.make("env-c"),
+      projectId: ProjectId.make("persona"),
+    };
+    expect(promachosHomeRefs(projects, [homeOnB, onC], grouped)).toEqual([home, homeOnB, onC]);
+    expect(promachosHomeRefs(projects, [], grouped)).toEqual([]);
+  });
+});
+
+describe("promachosHomes", () => {
+  const config = (promachosHome: string | null) => ({
+    settings: { promachosHome: promachosHome === null ? null : ProjectId.make(promachosHome) },
+  });
+  const projects = [
+    { environmentId: home.environmentId, id: home.projectId },
+    { environmentId: homeOnB.environmentId, id: homeOnB.projectId },
+  ];
+
+  it("reads each environment's own home, the preferred environment's first", () => {
+    const configs = new Map([
+      [home.environmentId, config("home")],
+      [homeOnB.environmentId, config("home-b")],
+      [EnvironmentId.make("env-c"), config(null)],
+    ]);
+    expect(promachosHomes(configs, projects, null)).toEqual([home, homeOnB]);
+    expect(promachosHomes(configs, projects, homeOnB.environmentId)).toEqual([homeOnB, home]);
+  });
+
+  it("leaves out a home whose project this client does not know", () => {
+    const configs = new Map([
+      [home.environmentId, config("deleted")],
+      [homeOnB.environmentId, config("home-b")],
+    ]);
+    expect(promachosHomes(configs, projects, home.environmentId)).toEqual([homeOnB]);
   });
 });
