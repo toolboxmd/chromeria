@@ -3,6 +3,7 @@ import {
   CommandId,
   type MessageId,
   type NodeId,
+  type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -27,6 +28,13 @@ function delegatedCompletionText(taskIds: ReadonlyArray<string>): string {
     ? `Delegated task ${taskList} reached a terminal state. Use task_status with taskId ${taskList} to read the result.`
     : `Delegated tasks ${taskList} reached terminal states. Use task_status with each taskId to read the results.`;
 }
+
+const TERMINAL_TASK_STATUSES = new Set<OrchestrationV2Subagent["status"]>([
+  "completed",
+  "failed",
+  "cancelled",
+  "interrupted",
+]);
 
 function currentDelegatedCompletionDelivery(
   projection: Pick<OrchestrationV2ThreadProjection, "messages" | "runs" | "providerTurns">,
@@ -143,8 +151,8 @@ export const layer = Layer.effectDiscard(
       },
     );
 
-    // Disposing a refused wake's results folds results still waiting into the same unsent
-    // delivery, so it is disposed until that delivery holds nothing new.
+    // A refused wake disposes what one wake used to carry: its results and every result of the
+    // cohort still waiting, including those disposal folds into the same unsent delivery.
     const disposeRefusedWake = Effect.fn("ProviderContinuationService.disposeRefusedWake")(
       function* (
         request: ProviderContinuationRequests.ProviderContinuationRequest,
@@ -171,12 +179,22 @@ export const layer = Layer.effectDiscard(
           }
           const projection = yield* threads.getThreadRecords(
             request.threadId,
-            ["messages", "runs", "providerTurns"],
-            { messageIds: [completion.messageId] },
+            ["messages", "runs", "providerTurns", "subagents"],
+            { messageIds: [completion.messageId], subagentRunIds: [completion.parentRunId] },
           );
-          taskIds = (
-            currentDelegatedCompletionDelivery(projection, completion)?.taskIds ?? []
-          ).filter((taskId) => !disposed.has(taskId));
+          const waiting = (projection.subagents ?? []).filter(
+            (task) =>
+              task.origin === "app_owned" &&
+              task.runId === completion.parentRunId &&
+              task.completionDelivery?.state === "pending" &&
+              TERMINAL_TASK_STATUSES.has(task.status),
+          );
+          taskIds = [
+            ...new Set([
+              ...(currentDelegatedCompletionDelivery(projection, completion)?.taskIds ?? []),
+              ...waiting.map((task) => task.id),
+            ]),
+          ].filter((taskId) => !disposed.has(taskId));
         }
       },
     );

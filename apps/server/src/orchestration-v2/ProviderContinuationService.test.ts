@@ -322,9 +322,20 @@ describe("ProviderContinuationService", () => {
         const cleared = yield* Ref.make(false);
         const disposed = yield* Queue.unbounded<unknown>();
         const disposals = yield* Ref.make(0);
-        // Disposing the wake's results folds a result of another scope still waiting into it.
+        // Disposing the wake's results folds a result of another scope still waiting into it; a
+        // result not folded in (settled_only while its spawning run lives) still waits.
         const folded = {
           ...delegatedProjection(),
+          subagents: [
+            {
+              id: "node-provider-continuation-fourth",
+              origin: "app_owned",
+              runId: parentRunId,
+              status: "completed",
+              completionWake: "settled_only",
+              completionDelivery: { state: "pending", observedByRunId: null },
+            },
+          ],
           runs: [
             {
               id: parentRunId,
@@ -401,6 +412,7 @@ describe("ProviderContinuationService", () => {
               "node-provider-continuation-first",
               "node-provider-continuation-second",
               "node-provider-continuation-third",
+              "node-provider-continuation-fourth",
             ],
           );
           for (const command of dispositions) {
