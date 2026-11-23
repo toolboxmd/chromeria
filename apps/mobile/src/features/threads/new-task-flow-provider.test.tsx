@@ -207,9 +207,9 @@ function setup() {
     return (key === null ? undefined : all[key]) ?? empty;
   });
   mocks.snapshot.mockImplementation(snapshot);
-  mocks.createDraft.mockImplementation((target) => {
+  mocks.createDraft.mockImplementation((target, options?: { promachos?: boolean }) => {
     const key = `new-task:${Object.keys(registry.get(drafts)).length}`;
-    write(key, { project: target });
+    write(key, { project: target, ...(options?.promachos ? { promachos: true } : {}) });
     return key;
   });
   mocks.retargetDraft.mockImplementation((key, target) =>
@@ -417,6 +417,30 @@ it.each([
     expect(message?.creation?.workspaceMode).toBe(workspaceMode);
   },
 );
+
+it("keeps a Promachos draft his conversation when it reopens without the compose button's mark", async () => {
+  using screen = setup();
+  mocks.promachosModels.mockReturnValue([{ model: "any" }]);
+  await screen.render(true, undefined, true);
+  const draftKey = screen.current.draftKey;
+  expect(screen.snapshot(draftKey).promachos).toBe(true);
+  await screen.render(false);
+  await screen.render(true);
+  expect(screen.current.draftKey).toBe(draftKey);
+  act(() => {
+    mocks.writeSettings(draftKey, {
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "placeholder" },
+    });
+    screen.current.setPrompt("Hello");
+  });
+  const message = screen.current.buildPendingTaskMessage({
+    commandId: "command-1",
+    messageId: "message-1",
+    threadId: "thread-1",
+    createdAt: "2026-11-23T00:00:00Z",
+  });
+  expect(message?.creation).toMatchObject({ prismRole: "promachos", promachos: true });
+});
 
 const playbookPrompt = (machine: string) =>
   `Read [triage-playbook.md](/${machine}/triage-playbook.md) and follow it. `;

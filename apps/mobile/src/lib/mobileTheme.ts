@@ -445,12 +445,14 @@ export function createMobileThemeVariables(
     "--color-dot-separator": withAlpha(c.textMuted, 0.35),
     "--color-wordmark": c.text,
     "--color-chevron": withAlpha(c.textMuted, 0.42),
-    // Fork: a Promachos chat's bubbles. The user's is a dark neutral, darker than his replies, in
-    // both appearances (toolboxmd/chromeria#898).
+    // Fork: a Promachos chat's bubbles. The user's is a dark neutral gray, darker than his replies,
+    // in both appearances (toolboxmd/chromeria#898); neutral mixes keep themed ink out of it.
     "--color-promachos-inbound":
-      appearance === "dark" ? flattenThemeColor(withAlpha(c.text, 0.2), c.canvas) : groupedCard,
-    "--color-promachos-outbound":
-      appearance === "dark" ? flattenThemeColor(withAlpha(c.text, 0.09), c.canvas) : c.text,
+      appearance === "dark" ? flattenThemeColor(withAlpha("#ffffff", 0.2), c.canvas) : groupedCard,
+    "--color-promachos-outbound": flattenThemeColor(
+      appearance === "dark" ? withAlpha("#ffffff", 0.09) : withAlpha("#000000", 0.82),
+      c.canvas,
+    ),
     "--color-promachos-outbound-foreground": appearance === "dark" ? c.text : c.canvas,
   };
 }

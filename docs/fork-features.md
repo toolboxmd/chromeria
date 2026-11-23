@@ -1653,6 +1653,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/mobile/generated-uniwind-themes.css",
     "apps/mobile/src/features/threads/thread-route-state.ts",
     "apps/mobile/src/lib/mobileTheme.ts",
+    "apps/mobile/src/state/recover-failed-thread-draft.ts",
     "apps/mobile/src/features/settings/components/settings-page-targets.ts",
     "apps/mobile/src/features/settings/settings-search.ts",
     "apps/mobile/src/state/threadOutboxDelivery.permissions.test.ts"

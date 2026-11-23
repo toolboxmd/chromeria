@@ -452,6 +452,8 @@ export interface ComposerDraft {
   readonly freshContext?: boolean;
   /** Fork (toolboxmd/chromeria#319): this new task starts bare. */
   readonly bare?: boolean;
+  /** Fork (toolboxmd/chromeria#898): the Promachos tab's compose button started this new task. */
+  readonly promachos?: boolean;
   readonly workspaceSelection?: ComposerDraftWorkspaceSelection;
   readonly project?: ComposerDraftProject;
 }
@@ -495,6 +497,7 @@ export type ComposerDraftSettingsUpdate = Pick<
   | "interactionMode"
   | "freshContext"
   | "bare"
+  | "promachos"
   | "workspaceSelection"
   | "project"
 >;
@@ -531,6 +534,7 @@ const ComposerDraftSchema = Schema.Struct({
   interactionMode: Schema.optional(ProviderInteractionModeSchema),
   freshContext: Schema.optional(Schema.Boolean),
   bare: Schema.optional(Schema.Boolean),
+  promachos: Schema.optional(Schema.Boolean),
   workspaceSelection: Schema.optional(ComposerDraftWorkspaceSelectionSchema),
   project: Schema.optional(ComposerDraftProjectSchema),
 });
@@ -1735,6 +1739,7 @@ export function clearComposerDraftContentState(
     project: _project,
     // A sent task's Bare intent never carries into the next new task.
     bare: _bare,
+    promachos: _promachos,
     ...retained
   } = existing;
   const draft = {
@@ -2034,10 +2039,13 @@ export function removeComposerDraftsForEnvironment(
   );
 }
 
-export function createNewTaskDraft(project: {
-  readonly environmentId: EnvironmentId;
-  readonly projectId: ProjectId;
-}): string {
+export function createNewTaskDraft(
+  project: {
+    readonly environmentId: EnvironmentId;
+    readonly projectId: ProjectId;
+  },
+  options?: { readonly promachos?: boolean },
+): string {
   const draftKey = newTaskDraftKey(newDraftId());
   const stamp: ComposerDraftProject = {
     environmentId: project.environmentId,
@@ -2046,7 +2054,11 @@ export function createNewTaskDraft(project: {
   };
   updateComposerDrafts((current) => ({
     ...current,
-    [draftKey]: { ...EMPTY_DRAFT, project: stamp },
+    [draftKey]: {
+      ...EMPTY_DRAFT,
+      project: stamp,
+      ...(options?.promachos ? { promachos: true } : {}),
+    },
   }));
   return draftKey;
 }

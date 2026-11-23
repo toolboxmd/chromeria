@@ -9,6 +9,7 @@ import {
   flushComposerDrafts,
   getComposerDraftSnapshot,
   mergeComposerDraftContent,
+  updateComposerDraftSettings,
 } from "./use-composer-drafts";
 
 export async function recoverFailedThreadDraft(message: QueuedThreadMessage): Promise<void> {
@@ -25,6 +26,9 @@ export async function recoverFailedThreadDraft(message: QueuedThreadMessage): Pr
     context: source.context,
     attachments: [],
   });
+  if (message.creation?.promachos === true) {
+    updateComposerDraftSettings(targetKey, { promachos: true });
+  }
   // Recovery may exceed caps; preserve every file and leave trimming to the editor.
   appendComposerDraftAttachments(targetKey, attachmentsMissingFrom(targetKey, source.attachments), {
     restore: true,

@@ -367,12 +367,6 @@ export function NewTaskFlowProvider(
         null);
 
   const linkedEnvironments = useLinkedEnvironments(selectedProject?.environmentId ?? null);
-  const promachosChatModels = usePromachosChatModels(
-    selectedProject === null
-      ? null
-      : { environmentId: selectedProject.environmentId, projectId: selectedProject.id },
-  );
-  const promachosModels = props.promachos === true ? promachosChatModels : null;
   const storedStickyModelSelection = useStickyComposerModelSelection();
   const modelSelectionNow = useNowMinuteMs();
   const projectDefaults = useNewTaskProjectDefaults(selectedProject);
@@ -390,6 +384,14 @@ export function NewTaskFlowProvider(
           : null;
   const activeNewTask = props.active === false ? null : { pendingKey: activePendingKey };
   const selectedProjectDraft = useComposerDraft(selectedProjectDraftKey);
+  const promachosChatModels = usePromachosChatModels(
+    selectedProject === null
+      ? null
+      : { environmentId: selectedProject.environmentId, projectId: selectedProject.id },
+  );
+  // The draft keeps the mark, so it stays his conversation when reopened from anywhere.
+  const promachosDraft = props.promachos === true || selectedProjectDraft.promachos === true;
+  const promachosModels = promachosDraft ? promachosChatModels : null;
   const prompt = selectedProjectDraft.text;
   const attachments = selectedProjectDraft.attachments;
   const projectGitStatus = useEnvironmentQuery(
@@ -605,9 +607,10 @@ export function NewTaskFlowProvider(
     const current = readFlow().draftKey;
     if (current !== null && isNewTaskDraftKey(current)) {
       retargetNewTaskDraft(current, target, options);
+      if (props.promachos === true) updateComposerDraftSettings(current, { promachos: true });
       return current;
     }
-    return createNewTaskDraft(target);
+    return createNewTaskDraft(target, { promachos: props.promachos === true });
   };
 
   const setProject = (project: EnvironmentProject) => {
@@ -872,6 +875,7 @@ export function NewTaskFlowProvider(
           ? { bare: true }
           : {}),
         ...(promachosPicksModel(promachosModels) ? { prismRole: "promachos" as const } : {}),
+        ...(promachosModels !== null ? { promachos: true } : {}),
       },
       createdAt: metadata.createdAt,
     };
@@ -1012,7 +1016,7 @@ export function NewTaskFlowProvider(
 
   return (
     <ActiveNewTaskContext value={activeNewTask}>
-      <PromachosDraftContext value={props.promachos === true}>
+      <PromachosDraftContext value={promachosDraft}>
         <NewTaskFlowContext.Provider value={value}>{props.children}</NewTaskFlowContext.Provider>
       </PromachosDraftContext>
     </ActiveNewTaskContext>
