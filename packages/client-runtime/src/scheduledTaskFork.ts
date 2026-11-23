@@ -215,16 +215,16 @@ function oneTimeSlot(schedule: ScheduledTask["schedule"]): number | null {
 }
 
 /**
- * In History: an enabled one-shot that ran at or after its slot and is not running, or a v1
- * import with its run whose slot passed and that is not scheduled again. Paused tasks stay out:
- * an edit keeps `lastRunAt` from an earlier schedule, and a manual early run leaves the slot due.
+ * In History: a one-shot, paused or not, that ran at or after its slot and is not running, or a
+ * v1 import with its run whose slot passed and that is not scheduled again. A manual early run
+ * leaves the slot due.
  */
 export function isScheduledTaskHistory(task: ScheduledTask, now: number): boolean {
   const slot = oneTimeSlot(task.schedule);
   if (slot === null) return false;
   const imported = (task.outcomeCheck?.run ?? task.command?.run)?.imported === true;
   if (imported && task.nextRunAt === null && slot <= now) return true;
-  if (!task.enabled || task.lastRunAt === null) return false;
+  if (task.lastRunAt === null) return false;
   return task.lastRunStatus !== "running" && Date.parse(task.lastRunAt) >= slot;
 }
 
