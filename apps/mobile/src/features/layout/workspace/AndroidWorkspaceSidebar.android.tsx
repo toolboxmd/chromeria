@@ -1,4 +1,4 @@
-import { PromachosTabScreen } from "../../promachos/PromachosTabScreen";
+import { AndroidPromachosTab } from "../../promachos/PromachosTabScreen";
 import { useAndroidFloatingTabs } from "../../settings/appearance/AppearancePreferencesProvider";
 import { WorkspaceNoTabs } from "./WorkspaceNoTabs";
 import { useEnabledNavigationTabs } from "./navigation-tabs";
@@ -60,7 +60,7 @@ export function AndroidWorkspaceSidebar() {
               <View className="flex-1 bg-header">
                 <AppBar embedded title={gt("Promachos")} />
                 <ScreenContent insetHorizontal>
-                  <PromachosTabScreen />
+                  <AndroidPromachosTab sidebar />
                 </ScreenContent>
               </View>
             </WorkspaceTabsContext>

@@ -271,7 +271,10 @@ vi.mock("../../pull-requests/PullRequestFilterMenuContext", () => ({
 }));
 vi.mock("../../pull-requests/PullRequestsScreen", () => ({ PullRequestsScreen: () => null }));
 vi.mock("../../issues/IssuesScreen", () => ({ IssuesScreen: () => null }));
-vi.mock("../../promachos/PromachosTabScreen", () => ({ PromachosTabScreen: () => null }));
+vi.mock("../../promachos/PromachosTabScreen", () => ({
+  PromachosTabScreen: () => null,
+  AndroidPromachosTab: () => null,
+}));
 vi.mock("./ListSearchToolbar.android", () => ({ ListSearchToolbar: () => null }));
 vi.mock("./AndroidWorkspaceNavigation", () => ({
   AndroidWorkspaceNavigation: () => null,

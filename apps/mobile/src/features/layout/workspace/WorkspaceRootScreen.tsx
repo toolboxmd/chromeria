@@ -38,6 +38,7 @@ import {
   useWorkspaceTabs,
 } from "./WorkspaceTabsContext";
 import { WorkspaceToolbar } from "./WorkspaceToolbar";
+import { useWorkspaceCompose } from "./useWorkspaceCompose";
 import {
   WORKSPACE_DOCK,
   workspaceDockBottomClearance,
@@ -104,6 +105,8 @@ function WorkspaceRootContent() {
   const compactTabs = useCompactWorkspaceTabs();
   const enabled = useEnabledNavigationTabs();
   const sidebarTabs = useSidebarWorkspaceTabs();
+  // Fork: the Promachos tab compose button where the floating dock does not carry it.
+  const compose = useWorkspaceCompose();
   const sidebarPicker = sidebarTabs === "picker" || (deviceType === "pad" && layout.usesSplitView);
   const sidebarNavigation =
     primaryColumn !== null &&
@@ -206,7 +209,10 @@ function WorkspaceRootContent() {
           workspaceTabSearches(state.selectedTab) ? (
           <WorkspaceToolbar sidebar={sidebarNavigation} onNewTask={startNewTask} />
         ) : (
-          <WorkspaceSectionToolbar onNewTask={startNewTask} showCompose={false} />
+          <WorkspaceSectionToolbar
+            onNewTask={compose?.onPress ?? startNewTask}
+            showCompose={state.selectedTab === "promachos" && compose !== null}
+          />
         )}
       </View>
     </WorkspaceTabsContext>

@@ -25,6 +25,23 @@ export function sharedSlotAbsentee(selected: NavigationTab, last: unknown): Shar
   return holder === "issues" ? "pullRequests" : "issues";
 }
 
+/**
+ * The tabs left out of the bar: the user's hidden ones and the shared slot's absentee, unless the
+ * user hid the slot's holder, so hiding one of pull requests and issues never hides both.
+ */
+export function effectiveHiddenNavigationTabs(input: {
+  readonly savedHidden: readonly unknown[] | undefined;
+  readonly selected: NavigationTab;
+  readonly sharedSlotTab: unknown;
+}): NavigationTab[] {
+  const userHidden = navigationCustomizationAvailable()
+    ? resolveHiddenNavigationTabs(input.savedHidden)
+    : [];
+  const absentee = sharedSlotAbsentee(input.selected, input.sharedSlotTab);
+  const holder = absentee === "issues" ? "pullRequests" : "issues";
+  return userHidden.includes(holder) ? [...userHidden] : [...new Set([...userHidden, absentee])];
+}
+
 // Fork: every section counts, so the Promachos tab (toolboxmd/chromeria#898) opens customization at
 // six sections including Settings, as the Navigation tabs page says.
 export function navigationCustomizationAvailable(

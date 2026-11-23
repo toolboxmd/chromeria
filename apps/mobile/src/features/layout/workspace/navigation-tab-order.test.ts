@@ -5,6 +5,7 @@ import {
   moveNavigationTab,
   overflowNavigationTabs,
   enabledNavigationTabs,
+  effectiveHiddenNavigationTabs,
   sharedSlotAbsentee,
   toggleNavigationTabVisibility,
   resolveSelectedNavigationTab,
@@ -34,6 +35,15 @@ describe("navigation tab order", () => {
     expect(sharedSlotAbsentee("pullRequests", "issues")).toBe("issues");
     expect(sharedSlotAbsentee("threads", "issues")).toBe("pullRequests");
     expect(sharedSlotAbsentee("usage", undefined)).toBe("issues");
+  });
+
+  it("leaves the other shared-slot list in the bar when the user hides one", () => {
+    const hidden = (savedHidden: string[]) =>
+      effectiveHiddenNavigationTabs({ savedHidden, selected: "threads", sharedSlotTab: undefined });
+    expect(hidden([])).toEqual(["issues"]);
+    expect(hidden(["usage"])).toEqual(["usage", "issues"]);
+    expect(hidden(["pullRequests"])).toEqual(["pullRequests"]);
+    expect(hidden(["issues"])).toEqual(["issues"]);
   });
 
   it("moves a section without changing the relative order of the others", () => {

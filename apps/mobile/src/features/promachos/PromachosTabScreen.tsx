@@ -1,4 +1,6 @@
 import { useNavigation } from "@react-navigation/native";
+import { AndroidHomeFabLayout } from "../home/AndroidHomeFab";
+import { usePromachosCompose } from "./usePromachosCompose";
 import { Button } from "../../components/ui/Button";
 import { openSettings } from "../settings/settings-navigation";
 import { useAtomValue } from "@effect/atom-react";
@@ -221,5 +223,17 @@ function PromachosNewHomeRow(props: {
         }
       />
     </View>
+  );
+}
+
+/** Android: the Promachos tab with the Chats tab's floating new-conversation button. */
+export function AndroidPromachosTab(props: { readonly sidebar?: boolean }) {
+  const compose = usePromachosCompose();
+  return compose === null ? (
+    <PromachosTabScreen />
+  ) : (
+    <AndroidHomeFabLayout sidebar={props.sidebar === true} onStartNewTask={compose.onPress}>
+      <PromachosTabScreen />
+    </AndroidHomeFabLayout>
   );
 }

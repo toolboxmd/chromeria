@@ -1644,6 +1644,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/mobile/src/Stack.tsx",
     "apps/mobile/src/features/layout/workspace/useWorkspaceCompose.ts",
     "apps/mobile/src/features/settings/SettingsRouteScreen.tsx",
+    "apps/mobile/src/features/settings/SettingsNavigationRouteScreen.tsx",
     "apps/mobile/src/features/settings/components/settings-page-targets.ts",
     "apps/mobile/src/features/settings/settings-search.ts",
     "apps/mobile/src/state/threadOutboxDelivery.permissions.test.ts"

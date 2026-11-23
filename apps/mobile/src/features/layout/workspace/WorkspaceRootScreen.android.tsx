@@ -1,4 +1,4 @@
-import { PromachosTabScreen } from "../../promachos/PromachosTabScreen";
+import { AndroidPromachosTab } from "../../promachos/PromachosTabScreen";
 import { useGT } from "gt-react-native";
 import { useAndroidFloatingTabs } from "../../settings/appearance/AppearancePreferencesProvider";
 import { WorkspaceNoTabs } from "./WorkspaceNoTabs";
@@ -107,7 +107,7 @@ function WorkspaceRoot() {
                     <>
                       <AppBar embedded title={gt("Promachos")} />
                       <ScreenContent>
-                        <PromachosTabScreen />
+                        <AndroidPromachosTab />
                       </ScreenContent>
                     </>
                   ) : layout.usesSplitView ? (

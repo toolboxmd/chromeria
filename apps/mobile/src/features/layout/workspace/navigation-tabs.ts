@@ -4,10 +4,8 @@ import { AsyncResult } from "effect/reactivity";
 import { Platform } from "react-native";
 import {
   NAVIGATION_TAB_LABELS,
-  navigationCustomizationAvailable,
-  resolveHiddenNavigationTabs,
+  effectiveHiddenNavigationTabs,
   enabledNavigationTabs,
-  sharedSlotAbsentee,
   type NavigationTab,
 } from "./navigation-tab-order";
 import type { AppSymbolName } from "../../../components/ui/AppSymbol";
@@ -46,12 +44,11 @@ export function useHiddenNavigationTabs() {
   const preferences = useAtomValue(mobilePreferencesAtom);
   const selected = useWorkspaceTabs()?.state.selectedTab ?? "threads";
   const saved = AsyncResult.isSuccess(preferences) ? preferences.value : undefined;
-  return [
-    ...(navigationCustomizationAvailable()
-      ? resolveHiddenNavigationTabs(saved?.hiddenNavigationTabs)
-      : []),
-    sharedSlotAbsentee(selected, saved?.sharedSlotTab),
-  ];
+  return effectiveHiddenNavigationTabs({
+    savedHidden: saved?.hiddenNavigationTabs,
+    selected,
+    sharedSlotTab: saved?.sharedSlotTab,
+  });
 }
 
 export function useEnabledNavigationTabs() {

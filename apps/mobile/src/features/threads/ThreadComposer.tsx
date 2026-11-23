@@ -127,7 +127,8 @@ import {
   useThreadSettingsSheetPresentation,
   type NavigationWithFinishTransitioning,
 } from "./use-thread-settings-sheet-presentation";
-import { usePromachosChatModels } from "../promachos/promachosHome";
+import { promachosPicksModel } from "@t3tools/client-runtime/promachos/start";
+import { usePromachosChatModels, usePromachosDraftModels } from "../promachos/promachosHome";
 
 export const COMPOSER_COLLAPSED_CHROME = 60;
 export const THREAD_COMPOSER_BOTTOM_GUTTER = COMPOSER_BOTTOM_GUTTER;
@@ -258,12 +259,17 @@ function SendActionButton(props: {
 }
 
 export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps) {
-  // Fork: a Promachos chat keeps model and history controls out of the composer.
-  const promachos =
-    usePromachosChatModels({
-      environmentId: props.environmentId,
-      projectId: props.selectedThread.projectId,
-    }) !== null;
+  // Fork: a Promachos chat keeps model and history controls out of the composer; a draft is his
+  // only when started on the Promachos tab, and then Prism, not the placeholder, picks its model.
+  const promachosProject = {
+    environmentId: props.environmentId,
+    projectId: props.selectedThread.projectId,
+  };
+  const promachosChatModels = usePromachosChatModels(promachosProject);
+  const promachosDraftModels = usePromachosDraftModels(promachosProject);
+  const promachosModels = props.isDraft ? promachosDraftModels : promachosChatModels;
+  const promachos = promachosModels !== null;
+  const prismPicksModel = props.isDraft === true && promachosPicksModel(promachosModels);
   const gt = useGT();
   const messages = useMessages();
   const project = useProject(scopeProjectRef(props.environmentId, props.selectedThread.projectId));
@@ -346,6 +352,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     });
   const currentModelSelection = props.selectedThread.modelSelection;
   const modelUnavailable =
+    !prismPicksModel &&
     props.connectionState === "connected" &&
     isModelSelectionUnavailable(
       props.serverConfig,

@@ -1,6 +1,7 @@
 import { T, useGT, useMessages, Var } from "gt-react-native";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { DraftEnvironmentControl } from "./DraftEnvironmentControl";
+import { promachosPicksModel } from "@t3tools/client-runtime/promachos/start";
 import { usePromachosDraftModels } from "../promachos/promachosHome";
 import { NativeScrollEdgeEffectsContext } from "../../native/NativeScrollViewMarker";
 import { DraftThreadHeader } from "./DraftThreadHeader";
@@ -178,12 +179,12 @@ export function NewTaskDraftScreen(props: {
   const { getShare, isLoading: isIncomingShareInboxLoading } = useIncomingShare();
   const { projectScopes, selectedProject, selectedProjectKey, setProject } = flow;
   // Fork: a new Promachos conversation shows no project, machine or branch choices.
-  const promachos =
-    usePromachosDraftModels(
-      selectedProject
-        ? { environmentId: selectedProject.environmentId, projectId: selectedProject.id }
-        : null,
-    ) !== null;
+  const promachosModels = usePromachosDraftModels(
+    selectedProject
+      ? { environmentId: selectedProject.environmentId, projectId: selectedProject.id }
+      : null,
+  );
+  const promachos = promachosModels !== null;
   // selectedProject falls back to the environment's first project; remember only a chosen one.
   useRememberThreadProject(
     selectedProject &&
@@ -637,6 +638,8 @@ export function NewTaskDraftScreen(props: {
     }
     if (
       environmentConnected &&
+      // Prism replaces the placeholder of a Promachos first send.
+      !promachosPicksModel(promachosModels) &&
       isModelSelectionUnavailable(
         selectedEnvironmentServerConfig,
         modelSelection,

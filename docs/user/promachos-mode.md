@@ -22,9 +22,9 @@ files and git, are in the menu on its title and the round **…** button next to
 ## On the phone
 
 The mobile app has a **Promachos** tab in the bottom bar. It lists the home's
-conversations, and the round **+** starts one. Chats look and behave as on desktop;
-files, git and terminal are in the round **…** menu. The phone remembers its own
-home: choose it in the tab, and tap the round home button to choose another.
+conversations, and the button at the bottom starts one. Chats look and behave as on
+desktop; files, git and terminal are in the round **…** menu. The phone remembers its
+own home: choose it in **Settings → Promachos → Home**.
 
 Opening the app without a link or notification returns to the tab you used last. On
 the Promachos tab that is the conversation you had open, or the list if you had left

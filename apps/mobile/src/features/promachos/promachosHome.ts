@@ -44,7 +44,8 @@ export function usePromachosHome(): {
             environmentId: EnvironmentId.make(saved.environmentId),
             projectId: ProjectId.make(saved.projectId),
           },
-    setHome: (next) => void save({ promachosHome: next }),
+    // A conversation of the old home must not reopen on the next cold start.
+    setHome: (next) => void save({ promachosHome: next, promachosConversation: undefined }),
   };
 }
 
