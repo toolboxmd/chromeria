@@ -348,12 +348,14 @@ import {
 import { useMessageTimeFormatter } from "./useMessageTimeFormatter";
 import { PromachosBubbles, PromachosChatContext } from "../promachos/PromachosBubbles";
 import {
+  PROMACHOS_NOTICE_ROW_PREFIX,
   PROMACHOS_STATUS_ROW_ID,
+  PROMACHOS_TIME_ROW_PREFIX,
   PROMACHOS_TYPING_ROW_ID,
   promachosFeedRows,
   promachosRunIds,
 } from "../promachos/promachosFeed";
-import { PromachosStatusLine } from "../promachos/PromachosStatusLine";
+import { PromachosLine, PromachosStatusLine } from "../promachos/PromachosStatusLine";
 
 const WIDE_MARKDOWN_BLOCK_OPTIONS = {
   // iOS blockquotes and selectable text measure separately; definite bubble width matches UIKit's drawing width.
@@ -2182,6 +2184,14 @@ function renderFeedEntry(
     );
   }
 
+  if (entry.type === "thinking" && entry.id.startsWith(PROMACHOS_TIME_ROW_PREFIX)) {
+    return <PromachosLine kind="time" at={entry.createdAt} />;
+  }
+
+  if (entry.type === "thinking" && entry.id.startsWith(PROMACHOS_NOTICE_ROW_PREFIX)) {
+    return <PromachosLine kind="notice" label={entry.label ?? ""} />;
+  }
+
   if (
     entry.type === "thinking" &&
     (entry.id === PROMACHOS_STATUS_ROW_ID || entry.id === PROMACHOS_TYPING_ROW_ID)
@@ -2694,7 +2704,9 @@ function renderFeedEntry(
               ) : null}
             </View>
           ) : null}
-          {bubbleBodyVisible ? (
+          {bubbleBodyVisible &&
+          // A Promachos chat shows no row under a sent message, only while it waits to send.
+          (!props.promachos || (entry.pendingMessage && !entry.acknowledged)) ? (
             <View className="mt-1 flex-row items-center justify-end gap-1 pr-0.5">
               {foldRowId !== null && senderRef ? (
                 <OpenSenderThreadButton

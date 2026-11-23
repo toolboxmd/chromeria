@@ -14,7 +14,11 @@ const row = (fields: Record<string, unknown>) =>
     runId: "run-1",
     ...fields,
   }) as unknown as ThreadFeedEntry;
-const activity = (type: string) => ({ projectedItem: { item: { type } } });
+const activity = (type: string, summary = "") => ({
+  id: `${type}-activity`,
+  summary,
+  projectedItem: { item: { type } },
+});
 
 describe("promachosFeedRows", () => {
   it("keeps the conversation and errors, and collapses his work into one status row", () => {
@@ -39,12 +43,13 @@ describe("promachosFeedRows", () => {
       row({ type: "thinking", id: "live" }),
     ]);
     expect(rows.map((entry) => entry.id)).toEqual([
+      "promachos-time:user",
       "user",
       "mixed",
       "reply",
       PROMACHOS_STATUS_ROW_ID,
     ]);
-    expect(rows[1]).toMatchObject({ activities: [activity("error")] });
+    expect(rows[2]).toMatchObject({ activities: [activity("error")] });
     expect(rows.at(-1)).toMatchObject({ type: "thinking", label: "Searching the web" });
   });
 
@@ -59,6 +64,32 @@ describe("promachosFeedRows", () => {
     ]);
   });
 
+  it("turns a Drafter it started into one line, and a long pause into a time line", () => {
+    const rows = promachosFeedRows([
+      row({ type: "message", id: "a", message: { role: "user", streaming: false } }),
+      row({
+        type: "activity-group",
+        id: "drafter",
+        activities: [activity("subagent", "Started Drafter: fix the build")],
+      }),
+      row({
+        type: "message",
+        id: "b",
+        createdAt: "2026-11-23T16:00:00.000Z",
+        message: { role: "assistant", streaming: false },
+      }),
+    ]);
+    expect(
+      rows.map((entry) => [entry.id, entry.type === "thinking" ? (entry.label ?? null) : null]),
+    ).toEqual([
+      ["promachos-time:a", null],
+      ["a", null],
+      ["promachos-notice:subagent-activity", "Started Drafter: fix the build"],
+      ["promachos-time:b", null],
+      ["b", null],
+    ]);
+  });
+
   it("keeps requests for the user and shows no status once he is done", () => {
     const request = row({
       type: "activity-group",
@@ -67,6 +98,6 @@ describe("promachosFeedRows", () => {
     });
     expect(
       promachosFeedRows([request, row({ type: "work-toggle", id: "done", live: false })]),
-    ).toEqual([request]);
+    ).toEqual([expect.objectContaining({ id: "promachos-time:secret" }), request]);
   });
 });
