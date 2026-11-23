@@ -4290,14 +4290,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const unitOf = (taskId: NodeId) =>
       cohortTasks.find((candidate) => candidate.id === taskId)?.runGroupId ?? taskId;
     // A queued wake's scope is immutable, and its text renders each task's latest result and
-    // every Run group member. A unit holding a result of another scope, or one this reservation
-    // no longer owns, leaves the wake whole and waits for its own.
+    // every Run group member, settled ones included. A unit holding a result this reservation
+    // does not own and that is not of the wake's scope leaves the wake whole and waits for its own.
     const blockedUnits = new Set<NodeId>();
     if (deliveryRun?.status === "queued") {
       const runScope = executionPurposeOf(deliveryRun).scope;
       for (const member of cohortTasks) {
+        const state = member.completionDelivery?.state;
+        const renderable =
+          member.id === task.id ||
+          state === "acknowledged" ||
+          state === "delivered" ||
+          state === "disposed" ||
+          foldableTasks.includes(member);
         const owned =
-          (foldableTasks.includes(member) &&
+          (retainedIds.includes(member.id) && deliveryOwnsLatestCompletion(delivery, member)) ||
+          (renderable &&
             purposeScopesEqual(
               runScope,
               ExecutionPurpose.purposeFromCauses(
@@ -4305,17 +4313,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 [member.id],
                 "delegated_completion",
               ).scope,
-            )) ||
-          (retainedIds.includes(member.id) && deliveryOwnsLatestCompletion(delivery, member));
-        const state = member.completionDelivery?.state;
+            ));
         if (
-          member.id !== task.id &&
           member.origin === "app_owned" &&
           member.runId === parentRun.id &&
           isTerminalDelegatedTaskStatus(member.status) &&
-          state !== "acknowledged" &&
-          state !== "delivered" &&
-          state !== "disposed" &&
           !owned
         )
           blockedUnits.add(member.runGroupId ?? member.id);

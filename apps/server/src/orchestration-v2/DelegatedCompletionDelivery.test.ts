@@ -2010,6 +2010,7 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
     readonly reserved?: ReadonlyArray<number>;
     readonly pending: ReadonlyArray<number>;
     readonly patches?: (ids: {
+      readonly readId: NodeId;
       readonly reservedIds: ReadonlyArray<NodeId>;
       readonly pendingIds: ReadonlyArray<NodeId>;
     }) => ReadonlyArray<readonly [NodeId, Partial<OrchestrationV2Subagent>]>;
@@ -2064,7 +2065,7 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
           taskIds: delivery.taskIds,
         },
       });
-      for (const [id, patch] of input.patches?.({ reservedIds, pendingIds }) ?? [])
+      for (const [id, patch] of input.patches?.({ readId: taskId, reservedIds, pendingIds }) ?? [])
         yield* updateTask(threadId, id, patch);
       const afterAcknowledge = yield* sink.latestSequence();
       yield* orchestrator.dispatch({
@@ -2081,6 +2082,7 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
         now,
         threadId,
         runId,
+        readId: taskId,
         reservedIds,
         pendingIds,
         delivery,
@@ -2111,6 +2113,7 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
 
   // Each case leaves one Issue 1 result in the queued Issue 1 wake; the rest wait for their own.
   type ScopedIds = {
+    readonly readId: NodeId;
     readonly reservedIds: ReadonlyArray<NodeId>;
     readonly pendingIds: ReadonlyArray<NodeId>;
   };
@@ -2156,6 +2159,30 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
       kept: (ids) => ids.reservedIds[1]!,
       waiting: (ids) => [ids.reservedIds[0]!],
       waitingIssues: [2],
+    },
+    {
+      name: "a Run group whose read member's newer result is of another scope",
+      key: "scoped-wake-fold-read-member",
+      reserved: [1, 1],
+      pending: [],
+      patches: ({ readId, reservedIds }) => [
+        [
+          readId,
+          {
+            runGroupId: NodeId.make("scoped-wake-fold-read-member-group"),
+            completionDelivery: { state: "pending", observedByRunId: null },
+            completionSource: {
+              runId: RunId.make(`run:${readId}:follow-up`),
+              purpose: { version: 1, scope: issueScope(2), provenance: { type: "declared" } },
+            },
+            followUpResult: "follow-up under Issue 2",
+          },
+        ],
+        [reservedIds[0]!, { runGroupId: NodeId.make("scoped-wake-fold-read-member-group") }],
+      ],
+      kept: (ids) => ids.reservedIds[1]!,
+      waiting: (ids) => [ids.reservedIds[0]!],
+      waitingIssues: [1],
     },
     {
       name: "a Run group with a member of another scope",
