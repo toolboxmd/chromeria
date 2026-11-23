@@ -16,6 +16,7 @@ import type { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAd
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
+import * as SqlClient from "effect/sql/SqlClient";
 import { ClaudeProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as CommandReceipts from "../orchestration-v2/CommandReceiptStore.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
@@ -143,5 +144,36 @@ it.effect("a due ping is one silent turn in the thread's own session, even when 
     yield* TestClock.adjust(KEEP_WARM_INTERVAL_MS);
     yield* keepWarm.reconcile;
     assert.equal((yield* orchestrator.getThreadProjection(threadId)).messages.length, 1);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("the latest request survives cancelled queued runs and a reordered queue", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const at = (minute: number) => `2026-11-23T12:${String(minute).padStart(2, "0")}:00.000Z`;
+    const insert = (
+      thread: string,
+      ordinal: number,
+      status: string,
+      startedAt: string | null,
+      completedAt: string | null,
+    ) => sql`
+      INSERT INTO orchestration_v2_projection_runs
+        (run_id, thread_id, ordinal, provider, status, requested_at, completed_at, payload_json)
+      VALUES (${`${thread}:${ordinal}`}, ${thread}, ${ordinal}, 'claudeAgent', ${status},
+        ${at(0)}, ${completedAt}, ${JSON.stringify({ startedAt, userMessageId: `m:${ordinal}` })})`;
+    // One finished turn, then 20 queued messages cancelled before they started.
+    yield* insert("cancelled", 1, "completed", at(0), at(1));
+    for (let ordinal = 2; ordinal <= 21; ordinal++)
+      yield* insert("cancelled", ordinal, "cancelled", null, at(2));
+    // 21 queued turns where the first one was moved to the end of the queue.
+    for (let ordinal = 2; ordinal <= 21; ordinal++)
+      yield* insert("reordered", ordinal, "completed", at(ordinal - 2), at(ordinal - 1));
+    yield* insert("reordered", 1, "completed", at(20), at(21));
+    assert.equal((yield* KeepWarm.readLatestRequest(ThreadId.make("cancelled")))?.requestAt, at(0));
+    assert.equal(
+      (yield* KeepWarm.readLatestRequest(ThreadId.make("reordered")))?.requestAt,
+      at(20),
+    );
   }).pipe(Effect.provide(layer)),
 );

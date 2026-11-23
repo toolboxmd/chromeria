@@ -65,6 +65,41 @@ const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const isoOrNull = (value: DateTime.Utc | null | undefined) =>
   value == null ? null : DateTime.formatIso(value);
 
+/** The thread's latest-started request, pings and runs the shell hides included. */
+export const readLatestRequest = Effect.fn("KeepWarm.readLatestRequest")(function* (id: ThreadId) {
+  const sql = yield* SqlClient.SqlClient;
+  const [latest] = yield* sql<{
+    readonly requestAt: string | null;
+    readonly promptId: string | null;
+    readonly failureClass: string | null;
+  }>`
+      SELECT
+        coalesce(json_extract(r.payload_json, '$.startedAt'), r.requested_at) AS "requestAt",
+        json_extract(r.payload_json, '$.userMessageId') AS "promptId",
+        CASE WHEN r.status = 'failed' THEN (
+          SELECT json_extract(i.payload_json, '$.failure.class')
+          FROM orchestration_v2_projection_turn_items i
+          WHERE i.run_id = r.run_id AND i.type = 'error'
+          ORDER BY i.updated_at DESC LIMIT 1
+        ) END AS "failureClass"
+      FROM (
+        -- The executed runs that ended last, through the shell's last-executed index (same
+        -- predicate and order). A thread runs one turn at a time, so the latest start is here
+        -- even when queued turns started out of ordinal order or were cancelled unstarted.
+        SELECT * FROM orchestration_v2_projection_runs
+        WHERE thread_id = ${id}
+          AND status <> 'queued'
+          AND NOT (status = 'cancelled' AND json_extract(payload_json, '$.startedAt') IS NULL)
+        ORDER BY (completed_at IS NULL) DESC, completed_at DESC, ordinal DESC, run_id DESC
+        LIMIT 20
+      ) r
+      ORDER BY coalesce(json_extract(r.payload_json, '$.startedAt'), r.requested_at) DESC,
+        r.ordinal DESC
+      LIMIT 1
+    `;
+  return latest;
+});
+
 const make = Effect.gen(function* () {
   const settings = yield* ServerSettings.ServerSettingsService;
   const registry = yield* ProviderRegistry.ProviderRegistry;
@@ -78,35 +113,9 @@ const make = Effect.gen(function* () {
       Effect.provideService(SqlClient.SqlClient, sql),
     );
     if (thread === undefined) return undefined;
-    // Runs the shell hides (pings, idle compactions) still refresh the cache, so read them all.
-    const [latest] = yield* sql<{
-      readonly requestAt: string | null;
-      readonly promptId: string | null;
-      readonly failureClass: string | null;
-    }>`
-      SELECT
-        coalesce(json_extract(r.payload_json, '$.startedAt'), r.requested_at) AS "requestAt",
-        json_extract(r.payload_json, '$.userMessageId') AS "promptId",
-        CASE WHEN r.status = 'failed' THEN (
-          SELECT json_extract(i.payload_json, '$.failure.class')
-          FROM orchestration_v2_projection_turn_items i
-          WHERE i.run_id = r.run_id AND i.type = 'error'
-          ORDER BY i.updated_at DESC LIMIT 1
-        ) END AS "failureClass"
-      FROM (
-        -- Queued turns start out of ordinal order only among recent runs, so the latest
-        -- start is in this bounded window read through the (thread_id, ordinal) index.
-        SELECT * FROM orchestration_v2_projection_runs
-        WHERE thread_id = ${id}
-        ORDER BY ordinal DESC
-        LIMIT 20
-      ) r
-      WHERE r.status <> 'queued'
-        AND NOT (r.status = 'cancelled' AND json_extract(r.payload_json, '$.startedAt') IS NULL)
-      ORDER BY coalesce(json_extract(r.payload_json, '$.startedAt'), r.requested_at) DESC,
-        r.ordinal DESC
-      LIMIT 1
-    `;
+    const latest = yield* readLatestRequest(id).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
     return {
       ...thread,
       latestRunAt: latest?.requestAt ?? null,
