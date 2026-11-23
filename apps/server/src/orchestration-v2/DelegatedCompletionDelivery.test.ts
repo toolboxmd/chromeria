@@ -7275,6 +7275,7 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
     { followUp: "other scope in a mixed wake" },
     { followUp: "mixed follow-up in a mixed wake" },
     { followUp: "other scope beside a stopped result" },
+    { followUp: "same scope into a held wake" },
   ] as const)("a $followUp follow-up of a task in a queued wake", ({ followUp }) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -7426,6 +7427,24 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
       )!;
       assert.equal(wake.status, "queued");
       if (mixed) assert.equal(executionPurposeOf(wake).scope.type, "unscoped");
+      // A restart requeued the wake held, for a person to send.
+      const heldWake = followUp === "same scope into a held wake";
+      if (heldWake) {
+        yield* eventSink.write({
+          commandId: CommandId.make(`command:${name}:held`),
+          events: [
+            {
+              id: EventId.make(`event:${name}:held`),
+              type: "run.updated" as const,
+              threadId,
+              runId: wake.id,
+              providerInstanceId: modelSelection.instanceId,
+              occurredAt: now,
+              payload: { ...wake, queueHeld: true },
+            },
+          ],
+        });
+      }
       const wakeText = (yield* orchestrator.getThreadProjection(threadId)).messages.find(
         (row) => row.id === delivery.messageId,
       )?.text;
@@ -7524,7 +7543,16 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
       const task = parent.subagents.find((row) => row.id === child.taskId)!;
       const queued = parent.runs.find((run) => run.id === wake.id)!;
       const reserved = parent.runs.find((run) => run.id === runId)?.delegatedCompletion?.delivery;
-      if (mixed) {
+      if (heldWake) {
+        // The newer result releases the held wake, which carries it in place of the older one.
+        assert.equal(queued.status, "queued");
+        assert.equal(queued.queueHeld, false);
+        assert.equal(task.completionDelivery?.state, "claimed");
+        assert.deepEqual(
+          reserved?.purposeCauses?.map((cause) => cause.runId),
+          [followUpRunId],
+        );
+      } else if (mixed) {
         // A mixed wake takes no newer result; the wake keeps the Issue 2 result.
         assert.equal(queued.status, "queued");
         assert.equal(task.completionDelivery?.state, "pending");

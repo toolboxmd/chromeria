@@ -2299,6 +2299,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       readonly parentRun: OrchestrationV2Run | undefined;
       readonly message: OrchestrationV2ThreadProjection["messages"][number] | undefined;
       readonly cancelledWake?: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">>;
+      readonly releasedWake?: OrchestrationV2Run;
     },
     threadProviderInstanceId: ProviderInstanceId,
     occurredAt: DateTime.Utc,
@@ -2330,6 +2331,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           },
         ]),
     ...(plan.cancelledWake ?? []),
+    ...(plan.releasedWake === undefined
+      ? []
+      : [
+          {
+            type: "run.updated" as const,
+            threadId,
+            runId: plan.releasedWake.id,
+            ...(plan.releasedWake.rootNodeId === null
+              ? {}
+              : { nodeId: plan.releasedWake.rootNodeId }),
+            providerInstanceId: plan.releasedWake.providerInstanceId,
+            occurredAt,
+            payload: plan.releasedWake,
+          },
+        ]),
   ];
 
   /** The parent records `planDelegatedCompletionDelivery` reads for one task: its run, and the queued wake's message, run and tasks. */
@@ -17726,6 +17742,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         deliveryOwnsLatestCompletion(delivery, input.updatedTask);
       const queuedWake =
         deliveryRun?.status === "queued" && deliveryRun.userMessageId === delivery.messageId;
+      // Fork: a restart holds a wake it requeues until a person sends it. A new result would wake
+      // the parent at once, so it releases that wake, which carries it or goes ahead of its wake.
+      // It stays held where a new wake would be held too: behind another held run, or while the
+      // thread's workspace setup is unresolved.
+      const threadId = input.parentRun.threadId;
+      const releasable =
+        queuedWake &&
+        deliveryRun.queueHeld === true &&
+        !(delivery.taskIds.includes(input.task.id) && sameCompletion) &&
+        (yield* projectionStore.getThreadRecords(threadId, ["runs"]).pipe(
+          Effect.map(
+            (records) =>
+              !worktreeSetupPending(records) &&
+              !records.runs.some(
+                (run) =>
+                  run.id !== deliveryRun.id && run.status === "queued" && run.queueHeld === true,
+              ),
+          ),
+          Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })),
+        ));
+      const releasedWake = releasable ? { ...deliveryRun, queueHeld: false } : undefined;
+      const releaseFields = (cancelled: boolean) =>
+        releasedWake === undefined || cancelled ? {} : { releasedWake };
       // Fork: a task's newer result replaces the one its queued wake holds when it shares the
       // wake's own scope, and otherwise takes the task out of the wake. A mixed wake takes none.
       const replacing =
@@ -17748,7 +17787,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ).scope,
         );
       if (queuedWake && replacing && !sameScope) {
-        return yield* leaveQueuedWake({
+        const left = yield* leaveQueuedWake({
           parentProjection: input.parentProjection,
           parentRun: input.parentRun,
           cohort: cohort!,
@@ -17760,6 +17799,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           },
           now: input.now,
         });
+        return { ...left, ...releaseFields(left.cancelledWake !== undefined) };
       }
       if (queuedWake && (sameCompletion || replacing) && sameScope) {
         const message = completionDeliveryMessage(input.parentProjection, delivery);
@@ -17803,6 +17843,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   updatedAt: input.now,
                 },
           offer: false,
+          ...releaseFields(false),
         };
       }
       if (deliveryRun !== undefined) {
@@ -17818,6 +17859,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           parentRun: undefined,
           message: undefined,
           offer: false,
+          ...releaseFields(false),
         };
       }
       const nextCohort = {
@@ -18414,6 +18456,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         parentRun === undefined ? {} : { updateDelegatedCompletionOnlyRunId: parentRun.id },
       );
       yield* releaseFinishedDelegateSessions(childThreadId, childRun.id, task.id);
+      if ("releasedWake" in completionPlan && completionPlan.releasedWake !== undefined)
+        yield* startNextQueuedRun(parentThreadId).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Failed to start a released delegated-completion wake", {
+              threadId: parentThreadId,
+              cause,
+            }),
+          ),
+        );
 
       if (completionPlan.offer && completionPlan.parentRun !== undefined) {
         yield* offerDelegatedCompletionDelivery(parentThreadId, completionPlan.parentRun.id);
@@ -20099,6 +20150,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ))
     ) {
       yield* mapDispatchError(command)(offerDelegatedCompletionDeliveries(command.parentThreadId));
+    }
+    // Fork: a result that released a wake held since a restart starts it now.
+    if (
+      (command.type === "delegated_task.completion-delivery.acknowledge" ||
+        command.type === "delegated_task.wake-policy" ||
+        command.type === "delegated_task.group-cancel.release" ||
+        command.type === "delegated_task.remote.complete" ||
+        command.type === "delegated_task.remote.observe") &&
+      committed.storedEvents.some(
+        ({ event }) =>
+          event.type === "run.updated" &&
+          event.payload.status === "queued" &&
+          event.payload.queueHeld === false &&
+          event.payload.id !== undefined,
+      )
+    ) {
+      yield* mapDispatchError(command)(startNextQueuedRun(command.parentThreadId));
     }
 
     if (command.type === "message.dispatch" && command.steerFollowUpOfRunId !== undefined) {

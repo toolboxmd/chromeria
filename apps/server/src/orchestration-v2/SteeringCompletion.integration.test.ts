@@ -4743,6 +4743,16 @@ it.effect.each([
     ending: "restart",
     after: "none",
   },
+  // A linked-environment task's next result releases the wake held for the local one and joins it.
+  {
+    case: "a remote result arrives",
+    wakes: [2],
+    change: "remote",
+    owed: [0],
+    kept: [1],
+    ending: "restart",
+    after: "remote result",
+  },
   // A linked-environment task's next result waits while it is claimed, so it is not held back.
   {
     case: "linked-environment task",
@@ -4810,11 +4820,13 @@ it.effect.each([
               purpose: executionPurposeOf(parent),
             },
             ...(change === "group" ? { runGroupId: groupId } : {}),
-            ...(change === "remote"
+            ...(change === "remote" && id === taskIds.at(-1)
               ? {
                   remoteChild: {
                     environmentId: EnvironmentId.make("environment:remote"),
+                    threadId: ThreadId.make(`thread:${name}:remote`),
                     label: "Remote",
+                    cursor: 10,
                   },
                 }
               : {}),
@@ -5041,6 +5053,54 @@ it.effect.each([
                 (item) => item.type === "notification" && item.status === "pending",
               ),
             );
+          }
+          if (after === "remote result") {
+            const remoteId = taskIds.at(-1)!;
+            const remoteThreadId = ThreadId.make(`thread:${name}:remote`);
+            yield* orchestrator.dispatch({
+              type: "delegated_task.remote.complete",
+              commandId: CommandId.make(`${name}:remote-complete`),
+              parentThreadId: threadId,
+              taskId: remoteId,
+              status: "completed",
+              result: "remote follow-up",
+              observation: {
+                cursor: 20,
+                snapshot: {
+                  sequence: 20,
+                  observedAt: "2026-11-23T10:00:00Z",
+                  title: "Remote job",
+                  workState: "result_available",
+                  pendingChildren: 0,
+                  queuedRuns: 0,
+                  recoveryWaiting: false,
+                  incomplete: false,
+                  executionSettled: true,
+                  pendingQuestions: 0,
+                  requestCount: 0,
+                  requests: [],
+                },
+                result: {
+                  environmentId: EnvironmentId.make("environment:remote"),
+                  threadId: remoteThreadId,
+                  runId: RunId.make(`${name}:remote-follow-up`),
+                  eventId: EventId.make(`${name}:remote-follow-up`),
+                  sequence: 20,
+                  status: "completed",
+                  text: "remote follow-up",
+                  truncated: false,
+                },
+              },
+            });
+            yield* worker.drain();
+            const projection = yield* read;
+            const recovered = projection.runs.find((run) => run.userMessageId === wakeIds[0])!;
+            // The held wake no longer waits for a person; the remote result's own scope differs from
+            // the recovered wake's, so it waits for the wake after it instead of being held back.
+            assert.equal(recovered.queueHeld, false);
+            const remote = projection.subagents.find((candidate) => candidate.id === remoteId);
+            assert.equal(remote?.remoteChild?.cursor, 20);
+            assert.equal(remote?.completionDelivery?.state, "pending");
           }
           if (after === "read") {
             // An Issue 2 result can not join the recovered wake, and reading it leaves the wake empty.
