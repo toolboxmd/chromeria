@@ -3247,7 +3247,10 @@
     {
       "t": "span",
       "i": 2,
-      "c": [" ", "sur l’ordinateur qui a ouvert cette page"]
+      "c": [
+        " ",
+        "sur l’ordinateur qui a ouvert cette page"
+      ]
     }
   ],
   "b2d53b4d1d48fbef": [
@@ -3259,7 +3262,10 @@
     {
       "t": "span",
       "i": 2,
-      "c": [" ", "· quiconque l’exécute obtient cet accès"]
+      "c": [
+        " ",
+        "· quiconque l’exécute obtient cet accès"
+      ]
     }
   ],
   "c54cc9c75db9dc58": "N’approuvez qu’une connexion que vous venez de lancer.",
@@ -6979,16 +6985,13 @@
     },
     " : dossier du nouveau foyer"
   ],
-  "c2db1203be9ee89a": "Requiert votre attention",
   "ad78fae7d373cf21": "En cours",
   "37ffec8201f153c1": "Échec",
   "0a260c7744afd0be": "En attente",
-  "0b4638eb516bb6ee": "Limite atteinte",
   "294fbf62a392a82a": "Choisissez le projet qui sert de répertoire principal à Promachos, ou créez-en un nouveau. Ses conversations y sont conservées.",
   "aa4bc8bdbd15b4c8": "Le répertoire principal de Promachos n’est pas disponible ici. Choisissez-le à nouveau.",
   "de998655fb47d8f8": "Nouveau répertoire principal · {environment}",
   "9602be4c090d7e07": "Nouveau répertoire principal",
-  "bfb706e91e5bd82a": "Répertoire principal de Promachos",
   "2d7086dff1eaaf70": "Nouvelle conversation",
   "3fc9da5e9f854f48": "Choisir un autre répertoire principal",
   "f6dd43833eb75fe0": "Aucune conversation pour l’instant.",
@@ -13222,5 +13225,16 @@
   "e418f5ef2a0c35ba": "question fermée",
   "8787bb0bedaf30af": "a posé une question",
   "cd0f1fd4214233b5": "approbation traitée",
-  "3b987645baba6aec": "question traitée"
+  "3b987645baba6aec": "question traitée",
+  "7998912bc78a0434": "Écrit…",
+  "449f3c7e820e22da": "Attend ton approbation",
+  "18951193e34af765": "Attend ta réponse",
+  "b81c8455914a33dc": "Une demande attend",
+  "928f0c48c3594924": "Au travail…",
+  "32476fb3c282248c": "En attente",
+  "70502db9dbd87b2c": "Un problème est survenu",
+  "cec6b19cfbc25866": "Limite d’utilisation atteinte",
+  "6a431c53990c79a4": "A répondu",
+  "4ce525220d6c1052": "Répertoire principal de Promachos: {home}",
+  "47c191801087bbbe": "Non lu"
 }

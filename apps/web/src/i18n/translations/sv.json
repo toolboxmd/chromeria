@@ -3247,7 +3247,10 @@
     {
       "t": "span",
       "i": 2,
-      "c": [" ", "på datorn som öppnade den här sidan"]
+      "c": [
+        " ",
+        "på datorn som öppnade den här sidan"
+      ]
     }
   ],
   "b2d53b4d1d48fbef": [
@@ -3259,7 +3262,10 @@
     {
       "t": "span",
       "i": 2,
-      "c": [" ", "· den som kör den får den här åtkomsten"]
+      "c": [
+        " ",
+        "· den som kör den får den här åtkomsten"
+      ]
     }
   ],
   "c54cc9c75db9dc58": "Godkänn bara en inloggning som du själv precis har startat.",
@@ -6980,16 +6986,13 @@
     },
     ": mapp för det nya hemmet"
   ],
-  "c2db1203be9ee89a": "Behöver dig",
   "ad78fae7d373cf21": "Arbetar",
   "37ffec8201f153c1": "Misslyckades",
   "0a260c7744afd0be": "Väntar",
-  "0b4638eb516bb6ee": "Gränsen har nåtts",
   "294fbf62a392a82a": "Välj projektet som är Promachos hem, eller skapa ett nytt. Hans konversationer finns där.",
   "aa4bc8bdbd15b4c8": "Promachos hem är inte tillgängligt här. Välj det igen.",
   "de998655fb47d8f8": "Nytt hem · {environment}",
   "9602be4c090d7e07": "Nytt hem",
-  "bfb706e91e5bd82a": "Promachos hem",
   "2d7086dff1eaaf70": "Ny konversation",
   "3fc9da5e9f854f48": "Välj ett annat hem",
   "f6dd43833eb75fe0": "Inga konversationer än.",
@@ -13229,5 +13232,16 @@
   "e418f5ef2a0c35ba": "frågan stängd",
   "8787bb0bedaf30af": "ställde en fråga",
   "cd0f1fd4214233b5": "godkännandet hanterat",
-  "3b987645baba6aec": "frågan hanterad"
+  "3b987645baba6aec": "frågan hanterad",
+  "7998912bc78a0434": "Skriver…",
+  "449f3c7e820e22da": "Behöver ditt godkännande",
+  "18951193e34af765": "Väntar på ditt svar",
+  "b81c8455914a33dc": "En begäran väntar",
+  "928f0c48c3594924": "Arbetar…",
+  "32476fb3c282248c": "Väntar",
+  "70502db9dbd87b2c": "Något gick fel",
+  "cec6b19cfbc25866": "Nådde en användningsgräns",
+  "6a431c53990c79a4": "Har svarat",
+  "4ce525220d6c1052": "Promachos hem: {home}",
+  "47c191801087bbbe": "Oläst"
 }

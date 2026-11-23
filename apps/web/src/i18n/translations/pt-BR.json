@@ -3247,7 +3247,10 @@
     {
       "t": "span",
       "i": 2,
-      "c": [" ", "no computador que abriu esta página"]
+      "c": [
+        " ",
+        "no computador que abriu esta página"
+      ]
     }
   ],
   "b2d53b4d1d48fbef": [
@@ -3259,7 +3262,10 @@
     {
       "t": "span",
       "i": 2,
-      "c": [" ", "· quem executar recebe este acesso"]
+      "c": [
+        " ",
+        "· quem executar recebe este acesso"
+      ]
     }
   ],
   "c54cc9c75db9dc58": "Aprove apenas um login que você acabou de iniciar.",
@@ -6978,16 +6984,13 @@
     },
     ": pasta para a nova base"
   ],
-  "c2db1203be9ee89a": "Precisa de você",
   "ad78fae7d373cf21": "Trabalhando",
   "37ffec8201f153c1": "Falhou",
   "0a260c7744afd0be": "Aguardando",
-  "0b4638eb516bb6ee": "Limite atingido",
   "294fbf62a392a82a": "Escolha o projeto que é a base do Promachos ou crie um novo. As conversas dele ficam lá.",
   "aa4bc8bdbd15b4c8": "A base do Promachos não está disponível aqui. Escolha-a novamente.",
   "de998655fb47d8f8": "Nova base · {environment}",
   "9602be4c090d7e07": "Nova base",
-  "bfb706e91e5bd82a": "Base do Promachos",
   "2d7086dff1eaaf70": "Nova conversa",
   "3fc9da5e9f854f48": "Escolher outra base",
   "f6dd43833eb75fe0": "Nenhuma conversa ainda.",
@@ -13222,5 +13225,16 @@
   "e418f5ef2a0c35ba": "pergunta encerrada",
   "8787bb0bedaf30af": "fez uma pergunta",
   "cd0f1fd4214233b5": "aprovação tratada",
-  "3b987645baba6aec": "pergunta tratada"
+  "3b987645baba6aec": "pergunta tratada",
+  "7998912bc78a0434": "Digitando…",
+  "449f3c7e820e22da": "Precisa da sua aprovação",
+  "18951193e34af765": "Aguardando sua resposta",
+  "b81c8455914a33dc": "Há uma solicitação aguardando",
+  "928f0c48c3594924": "Trabalhando…",
+  "32476fb3c282248c": "Aguardando",
+  "70502db9dbd87b2c": "Algo deu errado",
+  "cec6b19cfbc25866": "Atingiu um limite de uso",
+  "6a431c53990c79a4": "Respondeu",
+  "4ce525220d6c1052": "Base do Promachos: {home}",
+  "47c191801087bbbe": "Não lida"
 }
