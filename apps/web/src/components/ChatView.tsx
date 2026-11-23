@@ -1885,8 +1885,10 @@ export default function ChatView(props: ChatViewProps) {
           providerSubagentModels,
           reportedModelSelection,
         );
+  // Fork: a Promachos chat shows no branch, worktree or permission controls.
   const showComposerContextStrip =
     !embedded &&
+    !promachosChat &&
     shouldShowComposerContextStrip({
       isDraftHeroState,
       persistInActiveThreads: settings.persistComposerContextStrip,
