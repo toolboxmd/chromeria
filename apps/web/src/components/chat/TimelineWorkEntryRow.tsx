@@ -34,6 +34,7 @@ import {
 import { claudeSkillInvocation } from "@t3tools/shared/toolActivity";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
 import { memo, use, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { SideThreadsOpenContext } from "~/hooks/useSideThreadTrigger";
 import {
   workEntryDisplayIndicatesToolFailure,
   workEntrySignalsSevereFailure,
@@ -405,8 +406,10 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
   const { threadRef, onImageExpand, timestampFormat } = ctx;
   const { retryableWorkspacePreparationRunIds, onRetryWorkspacePreparation } = ctx;
   const threadTarget = useThreadReadTarget(workEntry, ctx.activeThreadEnvironmentId);
+  // Read-only timelines (guest page, linked pane) cannot open another thread.
+  const canOpenThreads = use(SideThreadsOpenContext);
   const createdThread =
-    workEntry.projectedItem?.item.type === "thread_created"
+    canOpenThreads && workEntry.projectedItem?.item.type === "thread_created"
       ? workEntry.projectedItem.item
       : undefined;
   const notifiedSubagentThreadId =
