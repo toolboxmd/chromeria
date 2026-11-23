@@ -106,7 +106,7 @@ export function IdleModeControl({
     if (next === choice) return;
     update({
       threadIdleModes: {
-        [threadId]: threadIdleModeFor(next, { now: Date.now(), wightHours: wightHours ?? null }),
+        [threadId]: threadIdleModeFor(next, wightHours ?? null),
       },
     });
   };

@@ -247,6 +247,7 @@ import {
   threadFeedCompactionLabels,
   failedFeedRunIds,
   deriveThreadFeedPresentation,
+  foldKeepWarmPings,
   threadFeedRunIsUnsettled,
   isContextCompactionActivityGroup,
   isContextHandoffActivityGroup,
@@ -2216,6 +2217,10 @@ function renderFeedEntry(
     return <PromachosLine kind="time" at={entry.createdAt} />;
   }
 
+  if (entry.type === "keep-warm") {
+    return <PromachosLine kind="notice" label={entry.label} />;
+  }
+
   if (entry.type === "thinking" && entry.id.startsWith(PROMACHOS_NOTICE_ROW_PREFIX)) {
     return <PromachosLine kind="notice" label={entry.label ?? ""} />;
   }
@@ -3203,25 +3208,28 @@ function useThreadFeedPresentation(
   const locale = useLocale();
   // Fork: a Promachos chat opens every turn, so his interim replies show as bubbles too.
   const promachos = use(PromachosChatContext);
-  const rows = appendPendingThreadMessages(
-    deriveThreadFeedPresentation(
-      props.feed,
-      props.latestRun,
-      promachos ? promachosRunIds(props.feed) : expandedTurnIds,
-      new Set(
-        Object.entries(expandedWorkGroups)
-          .filter(([, expanded]) => expanded)
-          .map(([groupId]) => groupId),
+  const rows = foldKeepWarmPings(
+    appendPendingThreadMessages(
+      deriveThreadFeedPresentation(
+        props.feed,
+        props.latestRun,
+        promachos ? promachosRunIds(props.feed) : expandedTurnIds,
+        new Set(
+          Object.entries(expandedWorkGroups)
+            .filter(([, expanded]) => expanded)
+            .map(([groupId]) => groupId),
+        ),
+        props.activeWorkStartedAt,
+        props.runlessWorkActive ?? false,
+        feedCache,
+        { toolCallVisibility: props.toolCallVisibility ?? "showAll", revealedMessageId },
+        messages,
+        locale,
       ),
-      props.activeWorkStartedAt,
-      props.runlessWorkActive ?? false,
-      feedCache,
-      { toolCallVisibility: props.toolCallVisibility ?? "showAll", revealedMessageId },
-      messages,
-      locale,
+      props.feed,
+      props.queuedMessages,
     ),
-    props.feed,
-    props.queuedMessages,
+    messages,
   );
   return promachos ? promachosFeedRows(rows) : rows;
 }

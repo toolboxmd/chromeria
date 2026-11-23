@@ -28,9 +28,10 @@ export function threadIdleChoice(mode: ThreadIdleMode | undefined, now: number):
 /** The setting value that turns on `choice`; null clears the thread's entry. */
 export function threadIdleModeFor(
   choice: ThreadIdleChoice,
-  input: { readonly now: number; readonly wightHours: number | null },
+  wightHours: number | null,
+  now = Date.now(),
 ): ThreadIdleMode | null {
-  const enabledAt = new Date(input.now).toISOString();
+  const enabledAt = new Date(now).toISOString();
   switch (choice) {
     case "off":
       return null;
@@ -40,7 +41,7 @@ export function threadIdleModeFor(
       return {
         type: "wight",
         enabledAt,
-        expiresAt: input.wightHours === null ? null : input.now + input.wightHours * 3_600_000,
+        expiresAt: wightHours === null ? null : now + wightHours * 3_600_000,
       };
   }
 }

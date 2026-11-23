@@ -70,6 +70,9 @@ export function promachosFeedRows(rows: ReadonlyArray<ThreadFeedEntry>): ThreadF
       case "mcp-app":
         push(row);
         break;
+      case "keep-warm":
+        push(lineRow(row, PROMACHOS_NOTICE_ROW_PREFIX, row.label));
+        break;
       case "activity-group": {
         if (isRequest(row)) {
           push(row);
