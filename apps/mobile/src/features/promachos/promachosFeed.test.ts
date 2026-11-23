@@ -90,6 +90,17 @@ describe("promachosFeedRows", () => {
     ]);
   });
 
+  it("names a lone live tool call in the status line", () => {
+    const rows = promachosFeedRows([
+      row({
+        type: "activity-group",
+        id: "tool",
+        activities: [{ ...activity("dynamic_tool", "Searching the web"), live: true }],
+      }),
+    ]);
+    expect(rows.at(-1)).toMatchObject({ id: PROMACHOS_STATUS_ROW_ID, label: "Searching the web" });
+  });
+
   it("keeps requests for the user and shows no status once he is done", () => {
     const request = row({
       type: "activity-group",

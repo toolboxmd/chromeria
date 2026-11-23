@@ -237,4 +237,46 @@ describe("Promachos V2 timeline", () => {
       "c",
     ]);
   });
+  it("shows a real projected system notice as one notice line", () => {
+    const now = DateTime.makeUnsafe(at(3));
+    const notice = {
+      id: TurnItemId.make("notice"),
+      threadId: ThreadId.make("chat"),
+      runId: null,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal: 1,
+      status: "completed",
+      title: null,
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+      type: "system_notice",
+      message: "Updated 3 routines",
+    } satisfies OrchestrationV2TurnItem;
+    const timelineEntries = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: [
+        {
+          item: notice,
+          position: 0,
+          visibility: "local",
+          sourceThreadId: notice.threadId,
+          sourceItemId: notice.id,
+        },
+      ],
+      optimisticMessages: [],
+    });
+    const rows = chat({ ...base, timelineEntries }).filter(
+      (row) => !row.id.startsWith(PROMACHOS_TIME_ROW_PREFIX),
+    );
+    expect(rows).toEqual([
+      expect.objectContaining({
+        kind: "thinking",
+        label: expect.stringContaining("Updated 3 routines"),
+      }),
+    ]);
+  });
 });

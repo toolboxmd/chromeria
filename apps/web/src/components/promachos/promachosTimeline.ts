@@ -80,7 +80,21 @@ export function promachosTimelineRows(rows: MessagesTimelineRow[]): MessagesTime
         const errors = row.groupedEntries.filter(
           (entry) => entry.itemType === "error" || entry.sourceActivityKind === "runtime.error",
         );
-        if (errors.length > 0) push({ ...row, groupedEntries: errors });
+        if (errors.length > 0) {
+          push({ ...row, groupedEntries: errors });
+          break;
+        }
+        for (const entry of row.groupedEntries) {
+          const label = entry.detail ?? entry.label;
+          if (entry.itemType !== undefined && NOTICE_ITEM_TYPES.has(entry.itemType) && label) {
+            push({
+              kind: "thinking",
+              id: `${PROMACHOS_NOTICE_ROW_PREFIX}${entry.id}`,
+              createdAt: entry.createdAt,
+              label,
+            });
+          }
+        }
         break;
       }
       case "work-live":

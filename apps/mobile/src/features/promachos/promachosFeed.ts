@@ -82,6 +82,8 @@ export function promachosFeedRows(rows: ReadonlyArray<ThreadFeedEntry>): ThreadF
           push({ ...row, activities: errors });
           break;
         }
+        const live = row.activities.findLast((activity) => activity.live === true);
+        if (live !== undefined) status = statusRow(row, live.summary, status);
         for (const activity of row.activities) {
           if (NOTICE_ITEM_TYPES.has(activity.projectedItem.item.type) && activity.summary) {
             push(lineRow(row, PROMACHOS_NOTICE_ROW_PREFIX, activity.summary, activity.id));
