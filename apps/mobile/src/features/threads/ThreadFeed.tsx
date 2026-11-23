@@ -347,6 +347,12 @@ import {
 } from "./threadFeedEndFollow";
 import { useMessageTimeFormatter } from "./useMessageTimeFormatter";
 import { PromachosBubbles, PromachosChatContext } from "../promachos/PromachosBubbles";
+import {
+  PROMACHOS_STATUS_ROW_ID,
+  promachosFeedRows,
+  promachosRunIds,
+} from "../promachos/promachosFeed";
+import { PromachosStatusLine } from "../promachos/PromachosStatusLine";
 
 const WIDE_MARKDOWN_BLOCK_OPTIONS = {
   // iOS blockquotes and selectable text measure separately; definite bubble width matches UIKit's drawing width.
@@ -2042,6 +2048,8 @@ function renderFeedEntry(
     | "workspaceRoot"
     | "worktreeSetup"
   > & {
+    /** Fork: a Promachos chat, whose replies carry no action row (toolboxmd/chromeria#898). */
+    readonly promachos: boolean;
     /** The fold row of the turn the worktree setup handed off to. */
     readonly setupFoldRowId: string | null;
     readonly setupDetailsOpen: boolean;
@@ -2163,6 +2171,15 @@ function renderFeedEntry(
           />
         ) : null}
       </View>
+    );
+  }
+
+  if (entry.type === "thinking" && entry.id === PROMACHOS_STATUS_ROW_ID) {
+    return (
+      <PromachosStatusLine
+        label={entry.label ?? entry.providerStartingLabel}
+        iconSubtleColor={iconSubtleColor}
+      />
     );
   }
 
@@ -2351,6 +2368,7 @@ function renderFeedEntry(
       props.unsettledTurnId !== null &&
       message.runId === props.unsettledTurnId;
     const showAssistantMeta =
+      !props.promachos &&
       message.role === "assistant" &&
       props.terminalAssistantMessageIds.has(message.id) &&
       !assistantTurnStillInProgress &&
@@ -3123,11 +3141,13 @@ function useThreadFeedPresentation(
   const [feedCache] = useState(createThreadFeedCache);
   const messages = useMessages();
   const locale = useLocale();
-  return appendPendingThreadMessages(
+  // Fork: a Promachos chat opens every turn, so his interim replies show as bubbles too.
+  const promachos = use(PromachosChatContext);
+  const rows = appendPendingThreadMessages(
     deriveThreadFeedPresentation(
       props.feed,
       props.latestRun,
-      expandedTurnIds,
+      promachos ? promachosRunIds(props.feed) : expandedTurnIds,
       new Set(
         Object.entries(expandedWorkGroups)
           .filter(([, expanded]) => expanded)
@@ -3143,6 +3163,7 @@ function useThreadFeedPresentation(
     props.feed,
     props.queuedMessages,
   );
+  return promachos ? promachosFeedRows(rows) : rows;
 }
 
 type DisclosureLayout = {
@@ -3984,6 +4005,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   if (jumpReady && revealedMessageId !== jumpToMessageId) {
     setInteractionState((current) => ({ ...current, revealedMessageId: jumpToMessageId }));
   }
+  const promachos = use(PromachosChatContext);
   const [appendPendingTurn] = useState(createPendingTurnAppender);
   const presentedFeed = appendGuestPendingMessages(
     appendPendingTurn(
@@ -4369,6 +4391,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
           ) : null}
           {renderFeedEntry(info, {
             m,
+            promachos,
             userMessageGrouping: info.item.userMessageGrouping,
             formatMessageTime,
             environmentId: props.environmentId,
