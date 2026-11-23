@@ -2569,14 +2569,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const acceptedIds = new Set(delivery.taskIds);
     const pendingIds = new Set(pendingTaskIds);
     for (const task of projection.subagents) {
-      const state = pendingIds.has(task.id)
-        ? "claimed"
+      const completionDelivery = pendingIds.has(task.id)
+        ? ({ state: "claimed", observedByRunId: null } as const)
         : acceptedIds.has(task.id) &&
             deliveryOwnsLatestCompletion(delivery, task) &&
             task.completionDelivery?.state === "claimed"
-          ? "delivered"
+          ? ({
+              state: "delivered",
+              observedByRunId: null,
+              messageId: input.messageId,
+              ...(task.completionSource === undefined
+                ? {}
+                : { completionRunId: task.completionSource.runId }),
+            } as const)
           : undefined;
-      if (state === undefined) continue;
+      if (completionDelivery === undefined) continue;
       yield* emitEvent({
         type: "subagent.updated",
         threadId,
@@ -2585,7 +2592,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         driver: task.driver,
         providerInstanceId: task.providerInstanceId,
         occurredAt: now,
-        payload: { ...task, completionDelivery: { state, observedByRunId: null }, updatedAt: now },
+        payload: { ...task, completionDelivery, updatedAt: now },
       });
     }
     yield* emitEvent({
@@ -3889,6 +3896,123 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     payload: { ...item, status: "cancelled" as const, completedAt: now, updatedAt: now },
   });
 
+  // Fork: a restart cut the run before the provider read a wake it had accepted. The local
+  // standalone results that wake still owes (not read, not replaced) become fresh results, and
+  // the mailbox plans them as it plans any result. Run group and linked-environment results stay.
+  const returnUnreadWakeResults = Effect.fn("Orchestrator.returnUnreadWakeResults")(function* (
+    threadId: ThreadId,
+    messageId: MessageId,
+    parentRunId: RunId,
+  ) {
+    const records = yield* projectionStore.getThreadRecords(
+      threadId,
+      ["runs", "messages", "subagents"],
+      { messageRoles: ["user"], subagentRunIds: [parentRunId] },
+    );
+    const parentRun = records.runs.find((candidate) => candidate.id === parentRunId);
+    const now = yield* DateTime.now;
+    const owed = records.subagents.flatMap((task) =>
+      task.origin === "app_owned" &&
+      task.runId === parentRunId &&
+      task.runGroupId === undefined &&
+      task.remoteChild === undefined &&
+      isTerminalDelegatedTaskStatus(task.status) &&
+      task.completionDelivery?.state === "delivered" &&
+      task.completionDelivery.messageId === messageId &&
+      task.completionDelivery.completionRunId === task.completionSource?.runId
+        ? [
+            {
+              ...task,
+              completionDelivery: { state: "pending" as const, observedByRunId: null },
+              updatedAt: now,
+            },
+          ]
+        : [],
+    );
+    const [first, ...rest] = owed;
+    if (
+      first === undefined ||
+      parentRun?.delegatedCompletion?.disposition !== "open" ||
+      records.thread.archivedAt !== null ||
+      records.thread.deletedAt !== null
+    )
+      return;
+    const plan = yield* planDelegatedCompletionDelivery({
+      parentProjection: {
+        ...records,
+        subagents: records.subagents.map(
+          (task) => owed.find((candidate) => candidate.id === task.id) ?? task,
+        ),
+      },
+      parentRun,
+      task: first,
+      updatedTask: first,
+      now,
+      siblingIds: rest.map((task) => task.id),
+    });
+    const completionDelivery = plan.task.completionDelivery ?? first.completionDelivery;
+    yield* writeSystemEvents([
+      ...[plan.task, ...rest.map((task) => ({ ...task, completionDelivery }))].map((task) => ({
+        type: "subagent.updated" as const,
+        threadId,
+        runId: parentRunId,
+        nodeId: task.id,
+        driver: task.driver,
+        providerInstanceId: task.providerInstanceId,
+        occurredAt: now,
+        payload: task,
+      })),
+      ...delegatedCompletionPlanEvents(threadId, plan, records.thread.providerInstanceId, now),
+    ]);
+    if (plan.offer && plan.parentRun !== undefined)
+      yield* offerDelegatedCompletionDelivery(threadId, plan.parentRun.id);
+  });
+
+  // Fork: a fresh wake must not start ahead of a restart continuation, so a cut run's unread
+  // accepted wakes return their results only once it has taken its place or will not come.
+  const returnCutRunWakeResults = Effect.fn("Orchestrator.returnCutRunWakeResults")(function* (
+    threadId: ThreadId,
+    runId: RunId,
+  ) {
+    const { runs, turnItems } = yield* projectionStore.getThreadRecords(
+      threadId,
+      ["runs", "turnItems"],
+      { turnItemTypes: ["notification"], turnItemStatuses: ["cancelled"], turnItemRunIds: [runId] },
+    );
+    const run = runs.find((candidate) => candidate.id === runId);
+    const cutAt = run?.restartCut?.cutAt;
+    // A notice settled before the cut ended with a live turn, which keeps main's outcome.
+    const unread = turnItems.filter(
+      (item) =>
+        cutAt !== undefined &&
+        item.completedAt !== null &&
+        DateTime.toEpochMillis(item.completedAt) >= DateTime.toEpochMillis(cutAt),
+    );
+    if (
+      run?.restartCut === undefined ||
+      unread.length === 0 ||
+      (run.restartCut.continuation === "scheduled" &&
+        !runs.some((candidate) => candidate.restartContinuationOfRunId === runId) &&
+        (yield* awaitsRestartContinuation(run))) ||
+      (yield* projectionStore.hasRunInterruptRequest(threadId, runId))
+    )
+      return;
+    const { messages } = yield* projectionStore.getThreadRecords(threadId, ["messages"], {
+      messageRoles: ["user"],
+      messageRunIds: [runId],
+    });
+    for (const message of messages) {
+      const mailbox = message.delegatedCompletion;
+      if (
+        mailbox !== undefined &&
+        unread.some(
+          (item) => item.id === idAllocator.derive.userTurnItem({ messageId: message.id }),
+        )
+      )
+        yield* returnUnreadWakeResults(threadId, message.id, mailbox.parentRunId);
+    }
+  });
+
   // A steer still pending after its run ended was never read: the provider marks one it read
   // completed, and one Stop dropped cancelled. It runs next, in its place among waiting messages.
   const requeueUnreadSteers = Effect.fn("Orchestrator.requeueUnreadSteers")(function* (
@@ -3917,6 +4041,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             messageRunIds: wakeRunIds,
           })).messages;
     const placed = [];
+    const returned = new Set<RunId>();
     for (const item of unread) {
       const run = projection.runs.find((candidate) => candidate.id === item.runId);
       const message =
@@ -3941,6 +4066,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const delivered = mailbox !== undefined && (!reserved || reservation.taskIds.length === 0);
       if (item.type === "notification" && delivered) {
         yield* writeSystemEvents([settledWakeItemEvent(item, yield* DateTime.now)]);
+        returned.add(run.id);
         continue;
       }
       // Stop drops a steer it reached; say so, as the adapter does for steers it still held.
@@ -4067,6 +4193,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
     }
+    // Fork: the steers above keep main's replay whatever happens to a mailbox return.
+    for (const runId of returned)
+      yield* returnCutRunWakeResults(threadId, runId).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Failed to return unread wake results", { threadId, cause }),
+        ),
+      );
   });
 
   const resumeQueuedRuns = Effect.gen(function* () {
@@ -20001,6 +20134,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         startNextQueuedRun(command.threadId, { latestRunEnded: true }),
       );
     }
+    // Fork: the restart continuation took its place or was declined, so the wakes its run
+    // accepted and never read return their results behind it.
+    if (command.type === "message.dispatch" && command.restartContinuationOfRunId !== undefined) {
+      yield* returnCutRunWakeResults(command.threadId, command.restartContinuationOfRunId).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Failed to return unread wake results", {
+            threadId: command.threadId,
+            cause,
+          }),
+        ),
+      );
+    }
 
     if (
       command.type === "delegated_task.remote.observe" ||
@@ -20802,6 +20947,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           reason,
         },
       });
+      // Fork: no continuation will take the run's place, so the wakes it accepted and never
+      // read return their results now. Forked, because a caller may hold the thread lock.
+      yield* threadDispatch.withLock(threadId, returnCutRunWakeResults(threadId, sourceRunId)).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Failed to return unread wake results", { threadId, cause }),
+        ),
+        Effect.forkIn(requestWakeScope),
+      );
     },
     (effect, _threadId, sourceRunId) =>
       effect.pipe(

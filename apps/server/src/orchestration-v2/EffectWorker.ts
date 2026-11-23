@@ -171,6 +171,15 @@ export const layerExecutor: Layer.Layer<
     return OrchestrationEffectExecutorV2.of({
       settleRefusedRun: Effect.fn("OrchestrationEffectExecutorV2.settleRefusedRun")(
         function* (effect, refusal) {
+          // Fork: a refused continuation never runs, so its cut is declined like one that failed.
+          if (effect.request.type === "provider-runtime.continue") {
+            yield* threads.recordRestartCutDecline(
+              effect.threadId,
+              effect.request.sourceRunId,
+              RESTART_CUT_REASONS.EFFECT_FAILED,
+            );
+            return;
+          }
           if (
             effect.request.type !== "provider-turn.start" &&
             effect.request.type !== "provider-turn.restart"
