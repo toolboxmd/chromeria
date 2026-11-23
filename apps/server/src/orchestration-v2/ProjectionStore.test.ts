@@ -8853,17 +8853,12 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       }),
   );
 
-  it.effect.each([
-    ["a Promachos conversation", "promachos"],
-    ["a Code thread", undefined],
-  ] as const)("quotes the newest finished message in the shell of %s", ([name, prismRole]) =>
+  it.effect("quotes the newest finished user or assistant message in the shell", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const start = yield* DateTime.now;
-      const key = name.replaceAll(/\W+/g, "-");
+      const key = "preview";
       const threadId = ThreadId.make(`thread:projection-shell-preview:${key}`);
-      // Code lists show no preview, so their shells do not carry one.
-      const quoted = <A>(preview: A) => (prismRole === undefined ? null : preview);
       yield* projectionStore.apply({
         id: EventId.make(`event:projection-shell-preview:${key}:thread`),
         type: "thread.created",
@@ -8872,7 +8867,6 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         payload: {
           createdBy: "user",
           creationSource: "web",
-          ...(prismRole === undefined ? {} : { prismRole }),
           id: threadId,
           projectId: ProjectId.make("project:projection-shell-preview"),
           title: "Preview",
@@ -8900,15 +8894,16 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         fields: Pick<
           OrchestrationV2ConversationMessage,
           "role" | "createdBy" | "text" | "streaming"
-        > & { readonly at: number; readonly runId?: RunId },
+        > & { readonly at: number; readonly updatedAt?: number; readonly runId?: RunId },
       ) => {
         const at = DateTime.add(start, { seconds: fields.at });
+        const updatedAt = DateTime.add(start, { seconds: fields.updatedAt ?? fields.at });
         step += 1;
         return projectionStore.apply({
           id: EventId.make(`event:projection-shell-preview:${key}:${step}`),
           type: "message.updated",
           threadId,
-          occurredAt: at,
+          occurredAt: updatedAt,
           payload: {
             createdBy: fields.createdBy,
             creationSource: fields.createdBy === "user" ? "web" : "server",
@@ -8921,7 +8916,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             attachments: [],
             streaming: fields.streaming,
             createdAt: at,
-            updatedAt: at,
+            updatedAt,
           },
         });
       };
@@ -8945,7 +8940,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         streaming: false,
         at: 1,
       });
-      const question = quoted({ role: "user", text: "Can you check the release notes?" });
+      const question = { role: "user", text: "Can you check the release notes?" };
       assert.deepStrictEqual(yield* previews, [question, question]);
 
       // A streaming reply leaves the shell alone, so tokens do not resend every row.
@@ -8965,10 +8960,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         streaming: false,
         at: 2,
       });
-      const answer = quoted({
+      const answer = {
         role: "assistant",
-        text: "Done I checked the notes. The build is green. The build is green. The build is…",
-      });
+        text: "Done I checked the notes. The build is green. The build is gree…",
+      };
       assert.deepStrictEqual(yield* previews, [answer, answer]);
 
       // Wakes, attachment placeholders and a follow-up removed before it started are not conversation.
@@ -9006,6 +9001,15 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         streaming: false,
         at: 5,
         runId: removedRunId,
+      });
+      // The newest message is the one written last, not the one touched last.
+      yield* message("touched", {
+        role: "assistant",
+        createdBy: "agent",
+        text: "An earlier reply, finished late",
+        streaming: false,
+        at: 1.5,
+        updatedAt: 9,
       });
       yield* message("wake", {
         role: "user",

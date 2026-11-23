@@ -12,15 +12,8 @@ import type * as SqlClient from "effect/sql/SqlClient";
 
 import { indexedMessageCondition } from "../orchestration-v2/messageSearchIndex.ts";
 
-/**
- * Only Promachos conversations carry a preview: no other list shows one, and every thread shell
- * is resent while its run streams. Conversations from before the role existed have none.
- */
-const carriesPreview = (thread: OrchestrationV2ThreadProjection["thread"]) =>
-  thread.prismRole === "promachos" && thread.lineage.relationshipToParent !== "subagent";
-
 /** One list row shows one line; this covers a wide sidebar and keeps each shell small. */
-export const CONVERSATION_PREVIEW_MAX_CHARS = 80;
+export const CONVERSATION_PREVIEW_MAX_CHARS = 64;
 // Markdown is stripped from at most this much of the stored text.
 const PREVIEW_SOURCE_CHARS = 2_000;
 
@@ -51,7 +44,8 @@ function leftConversation(run: Pick<OrchestrationV2Run, "status" | "startedAt">)
 export function conversationPreviewFromProjection(
   projection: Pick<OrchestrationV2ThreadProjection, "thread" | "messages" | "runs">,
 ): OrchestrationV2LatestVisibleMessageSummary | null {
-  if (!carriesPreview(projection.thread)) return null;
+  // As in search's predicate: no list shows a subagent thread.
+  if (projection.thread.lineage.relationshipToParent === "subagent") return null;
   const { messages, runs } = projection;
   const leftRunIds = new Set(runs.filter(leftConversation).map((run) => run.id));
   let latest: OrchestrationV2ConversationMessage | null = null;
@@ -67,7 +61,11 @@ export function conversationPreviewFromProjection(
       latest = message;
   }
   if (latest === null) return null;
-  const text = conversationPreviewText(latest.text.slice(0, PREVIEW_SOURCE_CHARS));
+  // Characters, as SQLite's substr counts them.
+  const source = Array.from(latest.text.slice(0, PREVIEW_SOURCE_CHARS * 2))
+    .slice(0, PREVIEW_SOURCE_CHARS)
+    .join("");
+  const text = conversationPreviewText(source);
   return text === null
     ? null
     : { id: latest.id, role: latest.role, text, updatedAt: latest.updatedAt };
@@ -77,10 +75,7 @@ export function conversationPreviewFromProjection(
  * A shell query column: the newest preview message of thread `t` as JSON, read through the
  * messages' (thread_id, created_at) index. Decode it with `conversationPreviewFromRow`.
  */
-export const latestPreviewMessageSql = (sql: SqlClient.SqlClient) => sql`CASE
-  WHEN json_extract(t.payload_json, '$.prismRole') = 'promachos'
-    AND json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subagent'
-  THEN (
+export const latestPreviewMessageSql = (sql: SqlClient.SqlClient) => sql`(
   SELECT json_object(
     'id', message.message_id,
     'role', message.role,
@@ -100,7 +95,7 @@ export const latestPreviewMessageSql = (sql: SqlClient.SqlClient) => sql`CASE
     )
   ORDER BY message.created_at DESC, message.message_id DESC
   LIMIT 1
-) END`;
+)`;
 
 export function conversationPreviewFromRow(
   json: string | null,
@@ -124,18 +119,38 @@ export function conversationPreviewFromRow(
 }
 
 /** One line of plain text from a message's Markdown, capped; null when nothing readable is left. */
+// A link target may hold one level of parentheses, as in `https://x.dev/a_(b)`.
+const LINK_TARGET = String.raw`\((?:[^()\s]|\([^()\s]*\))*(?:\s+"[^"]*")?\)`;
+const IMAGE = new RegExp(String.raw`!\[([^\]]*)\]` + LINK_TARGET, "g");
+const LINK = new RegExp(String.raw`\[([^\]]*)\]` + LINK_TARGET, "g");
+
+/** Emphasis markers outside code spans; a code span keeps its text as written. */
+function stripInline(line: string): string {
+  return line
+    .split(/(`+)([^`]*?)\1/g)
+    .map((part, index) => {
+      if (index % 3 === 1) return "";
+      if (index % 3 === 2) return part;
+      return part
+        .replace(/\*\*|__|~~|`+/g, "")
+        .replace(/(?<![\w*])[*_]((?:(?![*_]).)+?)[*_](?![\w*])/g, "$1");
+    })
+    .join("");
+}
+
 export function conversationPreviewText(markdown: string): string | null {
   const plain = assistantCitationsToPlainText(markdown)
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/^\s*(?:```|~~~).*$/gm, " ")
     .replace(/^\s*(?:[-*_]\s*){3,}$/gm, " ")
     .replace(/^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-*:?\s*$/gm, " ")
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(IMAGE, "$1")
+    .replace(LINK, "$1")
     .replace(/^\s*(?:>\s?)+/gm, "")
     .replace(/^\s*(?:#{1,6}\s+|[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)/gm, "")
-    .replace(/\*\*|__|~~|`+/g, "")
-    .replace(/(?<![\w*])[*_]((?:(?![*_]).)+?)[*_](?![\w*])/g, "$1")
+    .split("\n")
+    .map(stripInline)
+    .join("\n")
     .replace(/\s+/g, " ")
     .trim();
   if (plain.length === 0) return null;

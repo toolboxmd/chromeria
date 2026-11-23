@@ -17,6 +17,12 @@ describe("conversationPreviewText", () => {
     ],
     ["snake_case words", "Set my_var_name in config_file", "Set my_var_name in config_file"],
     ["links and images", "See [the docs](https://x.dev) ![logo](a.png)", "See the docs logo"],
+    [
+      "a link target with parentheses",
+      'See [the docs](https://x.dev/a_(b) "Docs")',
+      "See the docs",
+    ],
+    ["code spans as written", "Run `foo__bar` and ``a*b*c``", "Run foo__bar and a*b*c"],
     ["lists and quotes", "> Quoted\n- [ ] todo\n1. first\n* second", "Quoted todo first second"],
     ["code fences keep their code", "```ts\nconst a = 1;\n```", "const a = 1;"],
     ["tables and rules", "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n---", "| a | b | | 1 | 2 |"],
