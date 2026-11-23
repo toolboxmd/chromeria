@@ -3,6 +3,7 @@ import {
   CommandId,
   type MessageId,
   type NodeId,
+  type OrchestrationV2Run,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   type ThreadId,
@@ -34,6 +35,12 @@ const TERMINAL_TASK_STATUSES = new Set<OrchestrationV2Subagent["status"]>([
   "failed",
   "cancelled",
   "interrupted",
+]);
+
+const LIVE_RUN_STATUSES = new Set<OrchestrationV2Run["status"]>([
+  "preparing",
+  "starting",
+  "running",
 ]);
 
 function currentDelegatedCompletionDelivery(
@@ -151,8 +158,9 @@ export const layer = Layer.effectDiscard(
       },
     );
 
-    // A refused wake disposes what one wake used to carry: its results and every result of the
-    // cohort still waiting, including those disposal folds into the same unsent delivery.
+    // A refused wake disposes what one wake used to carry: its results and every waiting result
+    // of the cohort a wake may carry, including those disposal folds into the same delivery. A
+    // settled_only result of a live spawning run stays pending for that run's wait.
     const disposeRefusedWake = Effect.fn("ProviderContinuationService.disposeRefusedWake")(
       function* (
         request: ProviderContinuationRequests.ProviderContinuationRequest,
@@ -182,12 +190,16 @@ export const layer = Layer.effectDiscard(
             ["messages", "runs", "providerTurns", "subagents"],
             { messageIds: [completion.messageId], subagentRunIds: [completion.parentRunId] },
           );
+          const spawningRun = projection.runs.find((run) => run.id === completion.parentRunId);
+          const spawningRunLive =
+            spawningRun !== undefined && LIVE_RUN_STATUSES.has(spawningRun.status);
           const waiting = (projection.subagents ?? []).filter(
             (task) =>
               task.origin === "app_owned" &&
               task.runId === completion.parentRunId &&
               task.completionDelivery?.state === "pending" &&
-              TERMINAL_TASK_STATUSES.has(task.status),
+              TERMINAL_TASK_STATUSES.has(task.status) &&
+              (!spawningRunLive || task.completionWake === "always"),
           );
           taskIds = [
             ...new Set([

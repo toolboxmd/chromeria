@@ -322,23 +322,27 @@ describe("ProviderContinuationService", () => {
         const cleared = yield* Ref.make(false);
         const disposed = yield* Queue.unbounded<unknown>();
         const disposals = yield* Ref.make(0);
-        // Disposing the wake's results folds a result of another scope still waiting into it; a
-        // result not folded in (settled_only while its spawning run lives) still waits.
+        // Disposing the wake's results folds a result of another scope still waiting into it, and
+        // another always-wake result waits outside it. A settled_only result of the live spawning
+        // run is no wake's to carry, so it stays pending for that run's wait.
+        const waiting = (id: string, completionWake: "always" | "settled_only") => ({
+          id,
+          origin: "app_owned",
+          runId: parentRunId,
+          status: "completed",
+          completionWake,
+          completionDelivery: { state: "pending", observedByRunId: null },
+        });
         const folded = {
           ...delegatedProjection(),
           subagents: [
-            {
-              id: "node-provider-continuation-fourth",
-              origin: "app_owned",
-              runId: parentRunId,
-              status: "completed",
-              completionWake: "settled_only",
-              completionDelivery: { state: "pending", observedByRunId: null },
-            },
+            waiting("node-provider-continuation-fourth", "always"),
+            waiting("node-provider-continuation-fifth", "settled_only"),
           ],
           runs: [
             {
               id: parentRunId,
+              status: "running",
               delegatedCompletion: {
                 disposition: "open",
                 nextGeneration: 2,
