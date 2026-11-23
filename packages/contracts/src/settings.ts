@@ -24,6 +24,7 @@ import * as SchemaTransformation from "effect/SchemaTransformation";
 import {
   EnvironmentId,
   ForwardCompatibleNullable,
+  IsoDateTime,
   ForwardCompatibleOptional,
   OmittedWhenNull,
   ProjectId,
@@ -1907,6 +1908,13 @@ export const ServerSettingsPatch = Schema.Struct({
   prismRoles: Schema.optionalKey(PrismRoleKitsPatch),
   spectrum: Schema.optionalKey(SpectrumSettings),
   threadIdleModes: Schema.optionalKey(Schema.Record(ThreadId, Schema.NullOr(ThreadIdleMode))),
+  // Applied under the settings write lock, only to an entry still activated at `enabledAt`.
+  threadIdleModesIfCurrent: Schema.optionalKey(
+    Schema.Record(
+      ThreadId,
+      Schema.Struct({ enabledAt: IsoDateTime, next: Schema.NullOr(ThreadIdleMode) }),
+    ),
+  ),
   worktreeCleanup: Schema.optionalKey(
     Schema.NullOr(
       Schema.Union([

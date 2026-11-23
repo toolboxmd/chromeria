@@ -122,16 +122,17 @@ const make = Effect.gen(function* () {
     return run?.requestAt ?? null;
   });
 
-  /** Writes inside the settings lock, only while the entry is still the activation read. */
+  /**
+   * Applied under the settings write lock, only while the entry is still the activation read, so
+   * a ping or stop never undoes the user's choice. Only this serialized loop changes an entry.
+   */
   const replaceCurrent = Effect.fn("KeepWarm.replaceCurrent")(function* (
     id: ThreadId,
     mode: KeepWarmMode,
-    next: (current: KeepWarmMode) => KeepWarmMode | null,
+    next: KeepWarmMode | null,
   ) {
-    yield* settings.updateSettingsIf((current) => {
-      const entry = current.threadIdleModes[id];
-      if (entry?.type !== "keepWarm" || entry.enabledAt !== mode.enabledAt) return null;
-      return { threadIdleModes: { [id]: next(entry) } };
+    yield* settings.updateSettings({
+      threadIdleModesIfCurrent: { [id]: { enabledAt: mode.enabledAt, next } },
     });
   });
 
@@ -148,12 +149,10 @@ const make = Effect.gen(function* () {
     thread: readThread,
     end: Effect.fn("KeepWarm.end")(function* (id, mode, reason) {
       const at = iso(yield* Clock.currentTimeMillis);
-      yield* replaceCurrent(id, mode, (entry) =>
-        reason === null
-          ? null
-          : entry.stopped !== null
-            ? entry
-            : { ...entry, stopped: { at, reason } },
+      yield* replaceCurrent(
+        id,
+        mode,
+        reason === null ? null : { ...mode, stopped: { at, reason } },
       );
     }),
     ping: Effect.fn("KeepWarm.ping")(function* (thread, mode, dueMs) {
@@ -188,11 +187,7 @@ const make = Effect.gen(function* () {
       if (!sent) return;
       const lastPingAt =
         (yield* pingRequestAt(thread.id, messageId)) ?? iso(yield* Clock.currentTimeMillis);
-      yield* replaceCurrent(thread.id, mode, (entry) =>
-        entry.lastPingAt !== null && entry.lastPingAt >= lastPingAt
-          ? entry
-          : { ...entry, lastPingAt },
-      );
+      yield* replaceCurrent(thread.id, mode, { ...mode, lastPingAt });
     }),
   });
   const reconcile = runtime

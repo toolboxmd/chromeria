@@ -23,6 +23,7 @@ import {
   type ServerProvider,
   ServerSettings,
   type ServerSettingsPatch,
+  ThreadId,
   withIdleCompaction,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -405,6 +406,7 @@ export function applyServerSettingsPatch(
     worktreeCleanup: worktreeCleanupPatch,
     // Merged per entry below; its `null` removals must not reach deepMerge.
     threadIdleModes: threadIdleModesPatch,
+    threadIdleModesIfCurrent: threadIdleModesIfCurrentPatch,
     usageLimitSources: usageLimitSourcesPatch,
     textGenerators: textGeneratorsPatch,
     secretProviders: secretProvidersPatch,
@@ -627,9 +629,18 @@ export function applyServerSettingsPatch(
     ...(patch.defaultProjectScripts !== undefined
       ? { defaultProjectScripts: patch.defaultProjectScripts }
       : {}),
-    ...(threadIdleModesPatch !== undefined
+    ...(threadIdleModesPatch !== undefined || threadIdleModesIfCurrentPatch !== undefined
       ? {
-          threadIdleModes: mergeSettingsEntries(current.threadIdleModes, threadIdleModesPatch),
+          threadIdleModes: mergeSettingsEntries(
+            mergeSettingsEntries(current.threadIdleModes, threadIdleModesPatch ?? {}),
+            Object.fromEntries(
+              Object.entries(threadIdleModesIfCurrentPatch ?? {}).flatMap(([id, change]) =>
+                current.threadIdleModes[ThreadId.make(id)]?.enabledAt === change.enabledAt
+                  ? [[id, change.next]]
+                  : [],
+              ),
+            ),
+          ),
         }
       : {}),
     ...(usageLimitSourcesPatch !== undefined

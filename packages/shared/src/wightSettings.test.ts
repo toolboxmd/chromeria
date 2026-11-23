@@ -28,3 +28,29 @@ it("sets, replaces and clears one thread's idle mode without changing another", 
     disabled.threadIdleModes,
   );
 });
+
+it("a conditional idle-mode write applies only to the activation it read", () => {
+  const thread = ThreadId.make("thread");
+  const warm = {
+    type: "keepWarm" as const,
+    enabledAt: "2026-11-23T10:00:00.000Z",
+    lastPingAt: null,
+    stopped: null,
+  };
+  const settings = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+    threadIdleModes: { [thread]: warm },
+  });
+  const pinged = { ...warm, lastPingAt: "2026-11-23T10:55:00.000Z" };
+  expect(
+    applyServerSettingsPatch(settings, {
+      threadIdleModesIfCurrent: { [thread]: { enabledAt: warm.enabledAt, next: pinged } },
+    }).threadIdleModes[thread],
+  ).toEqual(pinged);
+  // The user turned it off, or chose Wight, after the loop read the entry.
+  const off = applyServerSettingsPatch(settings, { threadIdleModes: { [thread]: null } });
+  expect(
+    applyServerSettingsPatch(off, {
+      threadIdleModesIfCurrent: { [thread]: { enabledAt: warm.enabledAt, next: pinged } },
+    }).threadIdleModes,
+  ).toEqual({});
+});

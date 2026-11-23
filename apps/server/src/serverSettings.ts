@@ -271,11 +271,6 @@ export class ServerSettingsService extends Context.Service<
       patch: ServerSettingsPatch,
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
 
-    /** Builds the patch from the settings inside the write lock; null writes nothing. */
-    readonly updateSettingsIf: (
-      build: (current: ServerSettings) => ServerSettingsPatch | null,
-    ) => Effect.Effect<ServerSettings, ServerSettingsError>;
-
     readonly updateProviderInstance: (
       mutation: ProviderInstanceMutation,
       patch?: ServerSettingsPatch,
@@ -338,13 +333,6 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
       updateTestSettings((currentSettings) =>
         Effect.succeed(applyServerSettingsPatch(currentSettings, patch)),
       ),
-    updateSettingsIf: (build) =>
-      updateTestSettings((currentSettings) => {
-        const patch = build(currentSettings);
-        return Effect.succeed(
-          patch === null ? currentSettings : applyServerSettingsPatch(currentSettings, patch),
-        );
-      }),
     updateProviderInstance: (mutation, patch = {}) =>
       updateTestSettings((currentSettings) =>
         Effect.gen(function* () {
@@ -1239,11 +1227,8 @@ const make = Effect.gen(function* () {
   };
 
   const updateAndPersistSettings = (
-    patchFor: ServerSettingsPatch | ((current: ServerSettings) => ServerSettingsPatch | null),
-    update: (
-      current: ServerSettings,
-      patch: ServerSettingsPatch,
-    ) => Effect.Effect<ServerSettings, ServerSettingsError>,
+    patch: ServerSettingsPatch,
+    update: (current: ServerSettings) => Effect.Effect<ServerSettings, ServerSettingsError>,
   ): Effect.Effect<ServerSettings, ServerSettingsError> =>
     writeSemaphore.withPermits(1)(
       Effect.gen(function* () {
@@ -1255,13 +1240,11 @@ const make = Effect.gen(function* () {
             cause: parseFailure.value,
           });
         }
-        const patch = typeof patchFor === "function" ? patchFor(current) : patchFor;
-        if (patch === null) return yield* getMaterializedSettings;
         // An older client echoes a reference as the redacted marker; restore it before vetting so
         // a removed provider's reference is cleared below rather than restored by persistence.
         const updated = withoutRedirectedSimlockTokens(
           current,
-          withEchoedSecretReferences(current, yield* update(current, patch)),
+          withEchoedSecretReferences(current, yield* update(current)),
         );
         // Vet before secrets: a variable the policy hides from clients is not one they removed.
         const vetted = managed.vetWrite(current, yield* normalizeServerSettings(updated), patch);
@@ -1320,11 +1303,6 @@ const make = Effect.gen(function* () {
         yield* emitChange(next);
         return resolved;
       }),
-    );
-
-  const applySettingsPatch = (current: ServerSettings, patch: ServerSettingsPatch) =>
-    ensureSecretProviderWritesAllowed(patch, settingsPath).pipe(
-      Effect.as(applyServerSettingsPatch(current, patch)),
     );
 
   const withSettingsSnapshot: ServerSettingsService["Service"]["withSettingsSnapshot"] = (use) =>
@@ -1473,8 +1451,12 @@ const make = Effect.gen(function* () {
     start,
     ready: Deferred.await(startedDeferred),
     getSettings: getMaterializedSettings,
-    updateSettings: (patch) => updateAndPersistSettings(patch, applySettingsPatch),
-    updateSettingsIf: (build) => updateAndPersistSettings(build, applySettingsPatch),
+    updateSettings: (patch) =>
+      updateAndPersistSettings(patch, (current) =>
+        ensureSecretProviderWritesAllowed(patch, settingsPath).pipe(
+          Effect.as(applyServerSettingsPatch(current, patch)),
+        ),
+      ),
     updateProviderInstance: (mutation, patch = {}) =>
       updateAndPersistSettings(patch, (current) =>
         Effect.gen(function* () {
