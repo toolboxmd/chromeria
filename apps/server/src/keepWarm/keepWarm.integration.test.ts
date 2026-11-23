@@ -13,6 +13,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import type { ProviderAdapterV2 } from "@t3tools/provider-core/server/ProviderAdapter";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
@@ -103,6 +104,14 @@ it.effect("a due ping is one silent turn in the thread's own session, even when 
       createdBy: "user",
       creationSource: "web",
     });
+    // The user snoozed the thread past the ping; the ping must not wake it.
+    const snoozedUntil = "2099-01-01T00:00:00.000Z";
+    yield* orchestrator.dispatch({
+      type: "thread.snooze",
+      commandId: CommandId.make("keep-warm:snooze"),
+      threadId,
+      snoozedUntil,
+    });
     yield* settings.updateSettings({ threadIdleModes: { [threadId]: mode } });
     yield* TestClock.adjust(KEEP_WARM_INTERVAL_MS);
     yield* keepWarm.reconcile;
@@ -130,6 +139,12 @@ it.effect("a due ping is one silent turn in the thread's own session, even when 
       [[messageId, KEEP_WARM_PING_TEXT]],
     );
     assert.equal(projection.runs.length, 1);
+    assert.equal(
+      projection.thread.snoozedUntil === null
+        ? null
+        : DateTime.formatIso(projection.thread.snoozedUntil),
+      snoozedUntil,
+    );
     assert.deepEqual(projection.runs[0]?.modelSelection, { instanceId, model: "claude-haiku-4-5" });
     const recorded = (yield* settings.getSettings).threadIdleModes[threadId];
     assert.equal(
