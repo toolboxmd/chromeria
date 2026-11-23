@@ -25,6 +25,7 @@ import {
   threadEnvironment,
 } from "../../../state/threads";
 import { agentNotificationLaunchRouted } from "../../agent-awareness/notificationNavigation";
+import { promachosConversationInHome } from "../../promachos/promachosLaunch";
 import { rootNavigationPending } from "../../../lib/rootNavigation";
 import {
   navigationCustomizationAvailable,
@@ -195,7 +196,12 @@ export async function launchWorkspaceURL(): Promise<string | null> {
   }
   await metrics;
   if (!thread || !workspaceSelectionCheck.thread(thread)) return null;
-  if (launch.promachosConversation) return threadURL(thread);
+  if (launch.promachosConversation) {
+    if (promachosConversationInHome(thread, preferences)) return threadURL(thread);
+    // The home moved on another device: the tab opens on its list instead.
+    void savePreferencesPatch({ promachosConversation: undefined }).catch(() => undefined);
+    return null;
+  }
   // Other tabs open on their list; Chats reopens its chat only beside the list.
   if (launch.tab !== undefined && launch.tab !== "threads") return null;
   if (!workspaceHasColumns()) return null;

@@ -25,9 +25,10 @@ import { PromachosDraftContext } from "./promachosDraft";
 
 /**
  * The homes the connected environments name: `start` is where a new conversation opens, null when
- * none names a project this phone knows, and `refs` every project of the home.
+ * none names a project this phone knows, and `refs` every project of the home. `active: false`
+ * skips the work while the Promachos tab is hidden.
  */
-export function usePromachosHome(): {
+export function usePromachosHome(active = true): {
   readonly homes: ReadonlyArray<ScopedProjectRef>;
   readonly start: ScopedProjectRef | null;
   readonly refs: ReadonlyArray<ScopedProjectRef>;
@@ -35,7 +36,7 @@ export function usePromachosHome(): {
   const projects = useProjects();
   const configs = useServerConfigs();
   const grouping = useMobileProjectGroupingSettings();
-  const homes = promachosHomes(configs, projects, null);
+  const homes = active ? promachosHomes(configs, projects, null) : [];
   return {
     homes,
     start: homes[0] ?? null,
@@ -55,8 +56,7 @@ export function usePromachosChatModels(
     navigationCustomizationAvailable() &&
     AsyncResult.isSuccess(preferences) &&
     resolveHiddenNavigationTabs(preferences.value.hiddenNavigationTabs).includes("promachos");
-  const { refs } = usePromachosHome();
-  const homeRefs = hidden ? [] : refs;
+  const { refs: homeRefs } = usePromachosHome(!hidden);
   const serverConfig = useEnvironmentServerConfig(projectRef?.environmentId ?? null);
   if (projectRef === null || !isInPromachosHome(projectRef, homeRefs)) return null;
   return resolveProjectSettings(

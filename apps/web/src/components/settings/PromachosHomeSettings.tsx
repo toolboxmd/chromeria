@@ -1,10 +1,15 @@
-import { useAtomValue } from "@effect/atom-react";
-import { type EnvironmentId, ProjectId, type ServerSettings } from "@t3tools/contracts";
+import {
+  AuthSettingsWriteScope,
+  type EnvironmentId,
+  ProjectId,
+  type ServerSettings,
+} from "@t3tools/contracts";
 import { T, useGT } from "gt-react";
 
 import { useEnvironments } from "../../state/environments";
 import { useProjects, useServerConfigs } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
+import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { PromachosNewHome } from "../promachos/PromachosNewHome";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -55,7 +60,8 @@ function PromachosHomeRow({
 }) {
   const gt = useGT();
   const projects = useProjects().filter((project) => project.environmentId === environmentId);
-  const canWrite = useAtomValue(serverEnvironment.updateSettings.permissionAtom(environmentId));
+  // The settings command reports no required scope, so its permission atom would always allow it.
+  const canWrite = useEnvironmentScope(environmentId, AuthSettingsWriteScope);
   const update = useAtomCommand(serverEnvironment.updateSettings, "Promachos home update");
   const save = (promachosHome: ProjectId | null) =>
     void update({ environmentId, input: { patch: { promachosHome } } });
@@ -102,6 +108,7 @@ function PromachosHomeRow({
         <PromachosNewHome
           environmentId={environmentId}
           label={newHomeLabel}
+          disabled={!canWrite}
           onCreated={(created) => save(created.projectId)}
         />
       </div>

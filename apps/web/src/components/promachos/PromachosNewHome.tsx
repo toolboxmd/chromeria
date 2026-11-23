@@ -31,15 +31,18 @@ const createHome = createEnvironmentRpcCommand(connectionAtomRuntime, {
 export function PromachosNewHome({
   environmentId,
   label,
+  disabled,
   onCreated,
 }: {
   environmentId: EnvironmentId;
   label: string;
+  /** Set when the home could be created but not saved as this machine's home. */
+  disabled: boolean;
   onCreated: (home: ScopedProjectRef) => void;
 }) {
   const gt = useGT();
   const create = useAtomCommand(createHome, { reportFailure: false });
-  const canCreate = useAtomValue(createHome.permissionAtom(environmentId));
+  const canCreate = useAtomValue(createHome.permissionAtom(environmentId)) && !disabled;
   // Null while the form is closed.
   const [path, setPath] = useState<string | null>(null);
   const [pending, setPending] = useState(false);

@@ -12,6 +12,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import {
+  AuthSettingsWriteScope,
   DEFAULT_PROMACHOS_HOME_PATH,
   PROMACHOS_HOME_WS_METHODS,
   type EnvironmentId,
@@ -32,6 +33,7 @@ import { connectionAtomRuntime } from "../../connection/runtime";
 import { useNowMinuteMs } from "../../lib/clock";
 import { useProjects, useServerConfigs, useVisibleThreadShells } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
+import { useEnvironmentScope } from "../../state/session";
 import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { savedConnectionsByIdAtom } from "../../state/use-remote-environment-registry";
@@ -120,7 +122,7 @@ function useForgetConversationOnList() {
 
 /**
  * Settings → Promachos: each connected machine's projects, its home checked. The home is that
- * machine's server setting, so every client connected to it follows; tapping the home clears it.
+ * machine's server setting, so every client connected to it follows; "Not set" clears it.
  */
 export function PromachosHomePicker() {
   const gt = useGT();
@@ -157,9 +159,8 @@ function PromachosEnvironmentHome(props: {
 }) {
   const gt = useGT();
   const projects = useProjects().filter((project) => project.environmentId === props.environmentId);
-  const canWrite = useAtomValue(
-    serverEnvironment.updateSettings.permissionAtom(props.environmentId),
-  );
+  // The settings command reports no required scope, so its permission atom would always allow it.
+  const canWrite = useEnvironmentScope(props.environmentId, AuthSettingsWriteScope);
   const update = useAtomCommand(serverEnvironment.updateSettings, "Promachos home update");
   const save = (promachosHome: ProjectId | null) =>
     void update({ environmentId: props.environmentId, input: { patch: { promachosHome } } });
@@ -175,18 +176,25 @@ function PromachosEnvironmentHome(props: {
             )
       }
     >
+      <ListActionRow
+        icon={props.home === null ? "checkmark" : "xmark"}
+        label={gt("Not set")}
+        disabled={!canWrite}
+        onPress={() => save(null)}
+      />
       {projects.map((project) => (
         <ListActionRow
           key={project.id}
           icon={project.id === props.home ? "checkmark" : "house"}
           label={project.title}
           disabled={!canWrite}
-          onPress={() => save(project.id === props.home ? null : project.id)}
+          onPress={() => save(project.id)}
         />
       ))}
       <PromachosNewHomeRow
         environmentId={props.environmentId}
         label={gt("New home")}
+        disabled={!canWrite}
         onCreated={(created) => save(created.projectId)}
       />
     </ListSection>
@@ -197,11 +205,13 @@ function PromachosEnvironmentHome(props: {
 function PromachosNewHomeRow(props: {
   readonly environmentId: EnvironmentId;
   readonly label: string;
+  /** Set when the home could be created but not saved as this machine's home. */
+  readonly disabled: boolean;
   readonly onCreated: (home: ScopedProjectRef) => void;
 }) {
   const gt = useGT();
   const create = useAtomCommand(createHome, { reportFailure: false });
-  const canCreate = useAtomValue(createHome.permissionAtom(props.environmentId));
+  const canCreate = useAtomValue(createHome.permissionAtom(props.environmentId)) && !props.disabled;
   const submit = async (path: string) => {
     if (path.trim().length === 0) return;
     const result = await create({

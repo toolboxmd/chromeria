@@ -51,6 +51,7 @@ export function promachosHomeRefs(
   homes: ReadonlyArray<ScopedProjectRef>,
   settings: ProjectGroupingSettings,
 ): ScopedProjectRef[] {
+  if (homes.length === 0) return [];
   const homeKeys = new Set(
     projects
       .filter((project) =>

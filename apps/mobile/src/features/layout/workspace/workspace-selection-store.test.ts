@@ -71,6 +71,10 @@ vi.mock("../../agent-awareness/notificationNavigation", () => ({
   agentNotificationLaunchRouted: async () => undefined,
 }));
 vi.mock("../../../lib/rootNavigation", () => ({ rootNavigationPending: () => false }));
+const home = vi.hoisted(() => ({ hasConversation: true }));
+vi.mock("../../promachos/promachosLaunch", () => ({
+  promachosConversationInHome: () => home.hasConversation,
+}));
 
 import { launchWorkspaceTab, launchWorkspaceURL } from "./workspace-selection-store";
 
@@ -95,6 +99,12 @@ it("reopens the tab used last, and the Promachos tab its last conversation", asy
   };
   expect(await launchWorkspaceURL()).toMatch(/threads\/environment-1\/promachos-chat$/);
   expect(launchWorkspaceTab()).toBe("promachos");
+
+  // Another device moved the home away from that conversation: the tab opens on its list.
+  home.hasConversation = false;
+  expect(await launchWorkspaceURL()).toBeNull();
+  expect(launchWorkspaceTab()).toBe("promachos");
+  home.hasConversation = true;
 
   // Another tab opens on its list, not beside the last chat.
   saved.launch = { lastWorkspaceTab: "issues" };

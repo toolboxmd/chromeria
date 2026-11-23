@@ -30,8 +30,9 @@ export function usePromachosMode(): [boolean, (enabled: boolean) => void] {
 /**
  * The Promachos home as the connected environments name it: `start` is where a new conversation
  * opens, null when no environment names a home this client knows, and `refs` every project of it.
+ * `active: false` skips the work for callers outside Promachos mode.
  */
-export function usePromachosHome(): {
+export function usePromachosHome(active = true): {
   readonly start: ScopedProjectRef | null;
   readonly refs: ReadonlyArray<ScopedProjectRef>;
 } {
@@ -39,7 +40,7 @@ export function usePromachosHome(): {
   const configs = useServerConfigs();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const groupingSettings = useClientSettings(selectProjectGroupingSettings);
-  const homes = promachosHomes(configs, projects, primaryEnvironmentId);
+  const homes = active ? promachosHomes(configs, projects, primaryEnvironmentId) : [];
   return {
     start: homes[0] ?? null,
     refs: promachosHomeRefs(projects, homes, groupingSettings),
@@ -49,7 +50,7 @@ export function usePromachosHome(): {
 /** Whether a thread in `projectRef` renders as a Promachos chat right now. */
 function usePromachosChat(projectRef: ScopedProjectRef | null): boolean {
   const [enabled] = usePromachosMode();
-  const { refs } = usePromachosHome();
+  const { refs } = usePromachosHome(enabled);
   return enabled && projectRef !== null && isInPromachosHome(projectRef, refs);
 }
 

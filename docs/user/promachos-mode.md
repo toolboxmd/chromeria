@@ -20,8 +20,9 @@ actions, such as rename, files and git, are in the menu on its title and the rou
 **…** button next to it.
 
 When you are connected to several machines, each one lists its own home. The
-Promachos view shows the conversations of all of them, and a project that is the
-same repository as a home counts as part of it.
+Promachos view shows the conversations of all of them. While the sidebar groups
+projects by repository, a project on a machine without a home that is the same
+repository as a home counts as part of it.
 
 ## On the phone
 
