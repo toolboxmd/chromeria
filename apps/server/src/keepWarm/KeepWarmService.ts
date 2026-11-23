@@ -78,22 +78,61 @@ const make = Effect.gen(function* () {
       Effect.provideService(SqlClient.SqlClient, sql),
     );
     if (thread === undefined) return undefined;
+    // Runs the shell hides (pings, idle compactions) still refresh the cache, so read them all.
+    const [latest] = yield* sql<{
+      readonly requestAt: string | null;
+      readonly pingFailureClass: string | null;
+    }>`
+      SELECT
+        coalesce(json_extract(r.payload_json, '$.startedAt'), r.requested_at) AS "requestAt",
+        CASE WHEN r.status = 'failed'
+          AND json_extract(r.payload_json, '$.userMessageId') LIKE 'keep-warm:%'
+        THEN (
+          SELECT json_extract(i.payload_json, '$.failure.class')
+          FROM orchestration_v2_projection_turn_items i
+          WHERE i.run_id = r.run_id AND i.type = 'error'
+          ORDER BY i.updated_at DESC LIMIT 1
+        ) END AS "pingFailureClass"
+      FROM orchestration_v2_projection_runs r
+      WHERE r.thread_id = ${id}
+        AND r.status <> 'queued'
+        AND NOT (r.status = 'cancelled' AND json_extract(r.payload_json, '$.startedAt') IS NULL)
+      ORDER BY r.ordinal DESC
+      LIMIT 1
+    `;
     return {
       ...thread,
-      latestRunAt: isoOrNull(thread.latestRunCompletedAt ?? thread.latestRunStartedAt),
+      latestRunAt: latest?.requestAt ?? null,
       latestUserMessageAt: isoOrNull(thread.latestUserAuthoredMessageAt),
+      latestPingHitUsageLimit: latest?.pingFailureClass === "usage_limit",
     } satisfies KeepWarmThread;
   });
 
-  /** Changes the entry only while it is still the activation the caller read. */
+  /** When the ping's run asked the provider, for clients that see no pings in the shell. */
+  const pingRequestAt = Effect.fn("KeepWarm.pingRequestAt")(function* (
+    id: ThreadId,
+    messageId: string,
+  ) {
+    const [run] = yield* sql<{ readonly requestAt: string | null }>`
+      SELECT coalesce(json_extract(payload_json, '$.startedAt'), requested_at) AS "requestAt"
+      FROM orchestration_v2_projection_runs
+      WHERE thread_id = ${id} AND json_extract(payload_json, '$.userMessageId') = ${messageId}
+      LIMIT 1
+    `;
+    return run?.requestAt ?? null;
+  });
+
+  /** Writes inside the settings lock, only while the entry is still the activation read. */
   const replaceCurrent = Effect.fn("KeepWarm.replaceCurrent")(function* (
     id: ThreadId,
     mode: KeepWarmMode,
-    next: KeepWarmMode | null,
+    next: (current: KeepWarmMode) => KeepWarmMode | null,
   ) {
-    const current = (yield* settings.getSettings).threadIdleModes[id];
-    if (current?.type !== "keepWarm" || current.enabledAt !== mode.enabledAt) return;
-    yield* settings.updateSettings({ threadIdleModes: { [id]: next } });
+    yield* settings.updateSettingsIf((current) => {
+      const entry = current.threadIdleModes[id];
+      if (entry?.type !== "keepWarm" || entry.enabledAt !== mode.enabledAt) return null;
+      return { threadIdleModes: { [id]: next(entry) } };
+    });
   });
 
   const runtime = yield* makeKeepWarm<
@@ -109,10 +148,12 @@ const make = Effect.gen(function* () {
     thread: readThread,
     end: Effect.fn("KeepWarm.end")(function* (id, mode, reason) {
       const at = iso(yield* Clock.currentTimeMillis);
-      yield* replaceCurrent(
-        id,
-        mode,
-        reason === null ? null : { ...mode, stopped: { at, reason } },
+      yield* replaceCurrent(id, mode, (entry) =>
+        reason === null
+          ? null
+          : entry.stopped !== null
+            ? entry
+            : { ...entry, stopped: { at, reason } },
       );
     }),
     ping: Effect.fn("KeepWarm.ping")(function* (thread, mode, dueMs) {
@@ -145,8 +186,13 @@ const make = Effect.gen(function* () {
           ),
         );
       if (!sent) return;
-      const lastPingAt = iso(yield* Clock.currentTimeMillis);
-      yield* replaceCurrent(thread.id, mode, { ...mode, lastPingAt });
+      const lastPingAt =
+        (yield* pingRequestAt(thread.id, messageId)) ?? iso(yield* Clock.currentTimeMillis);
+      yield* replaceCurrent(thread.id, mode, (entry) =>
+        entry.lastPingAt !== null && entry.lastPingAt >= lastPingAt
+          ? entry
+          : { ...entry, lastPingAt },
+      );
     }),
   });
   const reconcile = runtime

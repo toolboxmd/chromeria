@@ -94,10 +94,11 @@ the cache instead of writing it again. The control shows when the next ping is d
 and when it stops by itself. Pings never notify you or mark the thread unread; the
 chat shows them as one gray line, such as "Kept warm, 4 pings".
 
-It stops by itself 24 hours after your last message, at the provider's usage
-limit, and when you archive or settle the thread; the control says which. Only
-Claude threads offer it, because other providers' caches do not last an hour. On
-a Claude API key the cache lasts 5 minutes, so the ping does not help there.
+It stops by itself 24 hours after your last message or after you turned it on,
+whichever is later; at the provider's usage limit; and when you archive or settle
+the thread. The control says which. Only Claude threads offer it, because other
+providers' caches do not last an hour. On a Claude API key the cache lasts 5
+minutes, so the ping does not help there.
 
 ### Keep a thread working with Wight mode
 

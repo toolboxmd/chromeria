@@ -2229,11 +2229,13 @@ function isSilentRunForShell(
   run: OrchestrationV2ThreadProjection["runs"][number],
   projection: Pick<OrchestrationV2ThreadProjection, "messages" | "turnItems">,
 ): boolean {
+  // A failed ping stops keep-warm; it never becomes the thread's reply.
+  if (isKeepWarmPingMessage({ id: run.userMessageId })) return true;
+  const prompt = projection.messages.find((message) => message.id === run.userMessageId);
+  if (prompt === undefined) return false;
   return (
     run.status !== "failed" &&
-    projection.messages.some(
-      (message) => message.id === run.userMessageId && isSilentPrompt(message),
-    ) &&
+    idleCompactionOf(prompt) !== undefined &&
     !projection.turnItems.some(
       (item) => item.runId === run.id && item.type === "compaction" && item.status === "failed",
     )
@@ -8556,19 +8558,21 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     // Mirrors isSilentRunForShell.
     const isSilentShellRun = (alias: string) => {
       const run = sql.literal(alias);
-      return sql`(
+      return sql`((
+        json_extract(${run}.payload_json, '$.userMessageId') LIKE 'keep-warm:%'
+      ) OR (
         ${run}.status <> 'failed'
         AND EXISTS (
           SELECT 1 FROM orchestration_v2_projection_messages prompt
           WHERE prompt.message_id = json_extract(${run}.payload_json, '$.userMessageId')
-            AND ${isSilentPromptMessage("prompt")}
+            AND ${isIdleCompactionMessage("prompt")}
         ) AND NOT EXISTS (
           SELECT 1 FROM orchestration_v2_projection_turn_items compaction
           WHERE compaction.thread_id = ${run}.thread_id AND compaction.run_id = ${run}.run_id
             AND compaction.type = 'compaction'
             AND compaction.status = 'failed'
         )
-      )`;
+      ))`;
     };
     // The newest run not held or outlived before it started, matching latestUnheldRun.
     const presentedShellRunId = (threadId: Statement.Fragment) => sql`(

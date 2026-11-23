@@ -34,7 +34,7 @@ const thread = (id = ID): WightThread => ({
   pendingRuntimeRequest: null,
   hasActionableProposedPlan: false,
   limitRecovery: null,
-  hasQueuedRuns: false,
+  hasPendingRuns: false,
 });
 const provider = (percent: number, instanceId = INSTANCE) =>
   ({
@@ -250,7 +250,7 @@ describe("Wight mode", () => {
 
   it("holds archived, interrupted, pending input and queued turns; unknown providers and zero limits pause", () => {
     expect(wightIdle({ ...thread(), archivedAt: DateTime.makeUnsafe(0) })).toBe(false);
-    expect(wightIdle({ ...thread(), hasQueuedRuns: true })).toBe(false);
+    expect(wightIdle({ ...thread(), hasPendingRuns: true })).toBe(false);
     expect(wightIdle({ ...thread(), hasActionableProposedPlan: true })).toBe(false);
     expect(wightIdle({ ...thread(), status: "cancelled" })).toBe(false);
     expect(wightPaused(undefined, 80)).toBe(true);

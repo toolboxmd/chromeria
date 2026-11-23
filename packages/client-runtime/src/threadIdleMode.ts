@@ -79,7 +79,7 @@ function keepWarmStopText(reason: KeepWarmStopReason, resolve: MFunctionType = m
 
 type KeepWarmShell = Pick<
   OrchestrationV2ThreadShell,
-  "latestRunCompletedAt" | "latestRunStartedAt" | "latestUserAuthoredMessageAt"
+  "latestRunRequestedAt" | "latestRunStartedAt" | "latestUserAuthoredMessageAt"
 >;
 
 const isoOf = (value: DateTime.Utc | null | undefined): string | null =>
@@ -88,7 +88,7 @@ const isoOf = (value: DateTime.Utc | null | undefined): string | null =>
 /** Next ping and the automatic stop, in epoch milliseconds, mirroring the server. */
 function keepWarmTimes(mode: KeepWarmMode, thread: KeepWarmShell | undefined) {
   return keepWarmSchedule(mode, {
-    latestRunAt: isoOf(thread?.latestRunCompletedAt ?? thread?.latestRunStartedAt),
+    latestRunAt: isoOf(thread?.latestRunStartedAt ?? thread?.latestRunRequestedAt),
     latestUserMessageAt: isoOf(thread?.latestUserAuthoredMessageAt),
   });
 }

@@ -40,7 +40,7 @@ export type WightThread = Pick<
   | "hasActionableProposedPlan"
   | "lastErrorClass"
   | "limitRecovery"
-> & { readonly hasQueuedRuns: boolean };
+> & { readonly hasPendingRuns: boolean };
 
 /** Reset recovery owns usage-limit failures; Wight only continues successfully idle work. */
 export function wightIdle(thread: WightThread): boolean {
@@ -50,7 +50,7 @@ export function wightIdle(thread: WightThread): boolean {
     thread.pendingRuntimeRequest === null &&
     !thread.hasActionableProposedPlan &&
     thread.activeRunId === null &&
-    !thread.hasQueuedRuns &&
+    !thread.hasPendingRuns &&
     thread.limitRecovery == null &&
     (thread.status === "idle" || thread.status === "completed")
   );

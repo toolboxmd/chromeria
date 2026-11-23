@@ -17,8 +17,11 @@ import { wightIdle, type WightThread } from "../wight/wightMode.ts";
 
 export type KeepWarmThread = WightThread &
   Pick<OrchestrationV2ThreadShell, "settledOverride"> & {
+    /** When the latest request started, pings and other runs the shell hides included. */
     readonly latestRunAt: string | null;
     readonly latestUserMessageAt: string | null;
+    /** The latest run is a ping the provider refused at its usage limit. */
+    readonly latestPingHitUsageLimit: boolean;
   };
 
 /** A ping the provider refused is retried after this, under the same command id. */
@@ -52,7 +55,12 @@ export function decideKeepWarm(input: {
   // Providers load after startup; an unknown instance is not yet a reason to stop.
   if (provider !== undefined && !supportsKeepWarm(provider.driver))
     return { type: "stop", reason: "unsupportedProvider" };
-  if (thread.limitRecovery != null || usageLimitReached(provider))
+  if (
+    thread.limitRecovery != null ||
+    thread.lastErrorClass === "usage_limit" ||
+    thread.latestPingHitUsageLimit ||
+    usageLimitReached(provider)
+  )
     return { type: "stop", reason: "usageLimit" };
   const { nextPingAt, stopsAt } = keepWarmSchedule(mode, thread);
   if (now >= stopsAt) return { type: "stop", reason: "userAway" };

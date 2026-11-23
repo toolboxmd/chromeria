@@ -40,9 +40,11 @@ const thread = (patch: Partial<KeepWarmThread> = {}): KeepWarmThread => ({
   pendingRuntimeRequest: null,
   hasActionableProposedPlan: false,
   limitRecovery: null,
-  hasQueuedRuns: false,
+  hasPendingRuns: false,
   latestRunAt: iso(0),
   latestUserMessageAt: iso(0),
+  latestPingHitUsageLimit: false,
+  lastErrorClass: null,
   ...patch,
 });
 const provider = (usedPercent: number, driver = "claudeAgent") =>
@@ -133,10 +135,10 @@ describe("Keep cache warm", () => {
       const h = yield* harness(withMode(warm()), thread({ status: "running", activeRunId: null }));
       yield* TestClock.adjust(KEEP_WARM_INTERVAL_MS);
       yield* h.reconcile();
-      h.thread({ status: "completed", hasQueuedRuns: true });
+      h.thread({ status: "completed", hasPendingRuns: true });
       yield* h.reconcile();
       expect(h.pings).toHaveLength(0);
-      h.thread({ hasQueuedRuns: false });
+      h.thread({ hasPendingRuns: false });
       yield* h.reconcile();
       expect(h.pings).toHaveLength(1);
     }).pipe(Effect.scoped),
@@ -208,6 +210,11 @@ describe("Keep cache warm", () => {
     [
       "in usage-limit recovery",
       { limitRecovery: { resetAt: iso(HOUR) } as KeepWarmThread["limitRecovery"] },
+      { type: "stop", reason: "usageLimit" },
+    ],
+    [
+      "whose last ping hit the usage limit",
+      { latestPingHitUsageLimit: true },
       { type: "stop", reason: "usageLimit" },
     ],
   ] as const)("a %s thread is not pinged", (_name, patch, decision) => {

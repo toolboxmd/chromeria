@@ -14,11 +14,14 @@ export const readWightThread = Effect.fn("Wight.readThread")(function* (threadId
   const shell = yield* projections.getThreadShell(threadId);
   if (shell === null) return undefined;
   const sql = yield* SqlClient.SqlClient;
-  const queued = yield* sql`
+  // The shell hides silent runs (idle compactions, keep-warm pings), so read the runs themselves.
+  const pending = yield* sql`
     SELECT 1 FROM orchestration_v2_projection_runs
-    WHERE thread_id = ${threadId} AND status = 'queued' LIMIT 1
+    WHERE thread_id = ${threadId}
+      AND status IN ('queued', 'preparing', 'starting', 'running', 'waiting')
+    LIMIT 1
   `;
-  return { ...shell, hasQueuedRuns: queued.length > 0 };
+  return { ...shell, hasPendingRuns: pending.length > 0 };
 });
 
 /** A stale idle-mode turn never creates a run, a message or a queued continuation. */

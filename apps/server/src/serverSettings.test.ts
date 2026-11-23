@@ -365,6 +365,27 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       }).pipe(Effect.provide(layerServerSettings())),
   );
 
+  it.effect(
+    "a conditional write sees the latest settings and writes nothing when it declines",
+    () =>
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        const fs = yield* FileSystem.FileSystem;
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        yield* service.updateSettings({ autoUpdateProviders: true });
+        const before = yield* fs.readFileString(config.settingsPath);
+        yield* service.updateSettingsIf((current) => {
+          assert.isTrue(current.autoUpdateProviders);
+          return null;
+        });
+        assert.equal(yield* fs.readFileString(config.settingsPath), before);
+        const updated = yield* service.updateSettingsIf((current) =>
+          current.autoUpdateProviders ? { autoUpdateProviders: false } : null,
+        );
+        assert.isFalse(updated.autoUpdateProviders);
+      }).pipe(Effect.provide(layerServerSettings())),
+  );
+
   it.effect("migrates saved token delivery to paragraph buffering without resetting settings", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;

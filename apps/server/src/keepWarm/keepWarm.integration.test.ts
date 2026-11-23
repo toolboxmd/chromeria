@@ -139,5 +139,9 @@ it.effect("a due ping is one silent turn in the thread's own session, even when 
     const shell = yield* projections.getThreadShell(threadId);
     assert.equal(shell?.latestRunId, null);
     assert.equal(shell?.latestUserMessageAt, null);
+    // The shell shows the thread idle, but the ping's run has not finished: no second ping.
+    yield* TestClock.adjust(KEEP_WARM_INTERVAL_MS);
+    yield* keepWarm.reconcile;
+    assert.equal((yield* orchestrator.getThreadProjection(threadId)).messages.length, 1);
   }).pipe(Effect.provide(layer)),
 );

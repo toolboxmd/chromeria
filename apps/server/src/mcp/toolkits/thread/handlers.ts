@@ -269,6 +269,11 @@ export const layer = McpToolAccess.toLayer(
             threads,
             projection: { thread },
           } = yield* readThread(input.threadId);
+          if (input.keepCacheWarm !== undefined && input.modelSelection !== undefined)
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "Set keepCacheWarm and modelSelection in separate calls.",
+            });
           if (input.keepCacheWarm !== undefined) {
             const keepWarm = yield* KeepWarm.KeepWarm;
             yield* keepWarm.set(thread.id, input.keepCacheWarm).pipe(
