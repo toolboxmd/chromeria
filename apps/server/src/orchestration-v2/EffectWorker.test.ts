@@ -19,6 +19,7 @@ import {
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import { RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -757,12 +758,14 @@ it.effect("settles a delegated child once its restart continuation fails for goo
     const timestamp = DateTime.formatIso(yield* DateTime.now);
     const events = yield* Ref.make<ReadonlyArray<string>>([]);
     const recovered = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
+    const declined = yield* Ref.make<ReadonlyArray<string>>([]);
     const layer = layerExecutorFor({
       events,
       continueAfterRestart: true,
       threads: {
         getThreadRecords: () => Effect.fail(new Error("provider instance removed") as never),
-        recordRestartCutDecline: () => Effect.void,
+        recordRestartCutDecline: (_threadId, sourceRunId, reason) =>
+          Ref.update(declined, (declines) => [...declines, `${sourceRunId}:${reason}`]),
         recoverDelegatedTask: (childThreadId) =>
           Ref.update(recovered, (ids) => [...ids, childThreadId]),
       },
@@ -791,6 +794,10 @@ it.effect("settles a delegated child once its restart continuation fails for goo
         Exit.isFailure(yield* Effect.exit(executor.execute(effect, { willRetry: false }))),
       );
       assert.deepEqual(yield* Ref.get(recovered), [threadId]);
+      // A continuation its authority check refused never runs, so its cut is declined too.
+      yield* Ref.set(declined, []);
+      yield* executor.settleRefusedRun!(effect, "refused");
+      assert.deepEqual(yield* Ref.get(declined), [`${runId}:${RESTART_CUT_REASONS.EFFECT_FAILED}`]);
     }).pipe(Effect.provide(layer));
   }),
 );
