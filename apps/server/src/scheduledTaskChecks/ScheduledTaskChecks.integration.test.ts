@@ -38,6 +38,7 @@ import type * as PlatformError from "effect/PlatformError";
 import type { MigrationError } from "effect/sql/Migrator";
 import type { SqlError } from "effect/sql/SqlError";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -2162,4 +2163,45 @@ it.effect(
         assert.deepEqual(task.purposeIntent, purpose(2));
       }).pipe(Effect.provide(runtime(database)), Effect.scoped);
     }).pipe(Effect.scoped),
+);
+
+it.effect("the live list shows a save and a delete as soon as each returns", () =>
+  Effect.gen(function* () {
+    const database = yield* tempDatabase;
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const input = {
+        id: ScheduledTaskId.make("scheduled-task:live-list"),
+        title: "Nightly review",
+        purposeIntent: { version: 1 as const, intent: { type: "unscoped" as const } },
+        prompt: "Review the day",
+        enabled: false,
+        projectId,
+        threadId: null,
+        workspaceStrategy: { type: "root" as const },
+        modelSelection: selection,
+        runtimeMode: "approval-required" as const,
+        interactionMode: "default" as const,
+        schedule: { type: "interval" as const, everyMs: 60_000 },
+      };
+      yield* service.upsert(input);
+      const titles = yield* Queue.unbounded<ReadonlyArray<string>>();
+      yield* service.subscribeList().pipe(
+        Stream.runForEach((result) =>
+          Queue.offer(
+            titles,
+            result.tasks.map((task) => task.title),
+          ),
+        ),
+        Effect.forkScoped,
+      );
+      assert.deepEqual(yield* Queue.take(titles), ["Nightly review"]);
+
+      yield* service.upsert({ ...input, title: "Nightly review 2", requireExisting: true });
+      assert.deepEqual(yield* Queue.take(titles), ["Nightly review 2"]);
+
+      yield* service.delete({ id: input.id });
+      assert.deepEqual(yield* Queue.take(titles), []);
+    }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+  }).pipe(Effect.scoped),
 );

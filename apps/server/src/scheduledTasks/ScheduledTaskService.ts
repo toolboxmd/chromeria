@@ -644,9 +644,12 @@ export const layer = Layer.effect(
     const dueTasks = DueHint.make();
     const pendingWebhooks = DueHint.make();
     // Every scheduled_tasks write that can change next_run_at, enabled or run state notifies.
-    const notifyChanged = dueTasks.invalidate.pipe(
-      Effect.andThen(PubSub.publish(changesPubSub, undefined)),
-      Effect.asVoid,
+    // Subscribers re-read the list, so a write inside a transaction notifies once it commits.
+    const notifyChanged = sql.afterCommit(
+      dueTasks.invalidate.pipe(
+        Effect.andThen(PubSub.publish(changesPubSub, undefined)),
+        Effect.asVoid,
+      ),
     );
 
     const selectAllRows = () =>

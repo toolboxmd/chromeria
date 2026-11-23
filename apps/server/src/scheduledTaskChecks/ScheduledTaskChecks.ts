@@ -311,7 +311,7 @@ const makeEngine = Effect.gen(function* () {
   });
 
   const runs = yield* makeCheckedRuns({
-    changed: PubSub.publish(changes, undefined).pipe(Effect.asVoid),
+    changed: sql.afterCommit(PubSub.publish(changes, undefined).pipe(Effect.asVoid)),
     workOpen: (run) => {
       const last = run.sends.at(-1);
       return last === undefined || run.threadId === null
