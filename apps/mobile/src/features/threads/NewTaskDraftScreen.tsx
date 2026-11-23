@@ -1,6 +1,7 @@
 import { T, useGT, useMessages, Var } from "gt-react-native";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { DraftEnvironmentControl } from "./DraftEnvironmentControl";
+import { usePromachosChatModels } from "../promachos/promachosHome";
 import { NativeScrollEdgeEffectsContext } from "../../native/NativeScrollViewMarker";
 import { DraftThreadHeader } from "./DraftThreadHeader";
 import { useComposerAttachmentActions } from "../../state/use-composer-attachment-actions";
@@ -176,6 +177,13 @@ export function NewTaskDraftScreen(props: {
   const flowKey = newTaskFlowKey(currentRoute);
   const { getShare, isLoading: isIncomingShareInboxLoading } = useIncomingShare();
   const { projectScopes, selectedProject, selectedProjectKey, setProject } = flow;
+  // Fork: a new Promachos conversation shows no project, machine or branch choices.
+  const promachos =
+    usePromachosChatModels(
+      selectedProject
+        ? { environmentId: selectedProject.environmentId, projectId: selectedProject.id }
+        : null,
+    ) !== null;
   // selectedProject falls back to the environment's first project; remember only a chosen one.
   useRememberThreadProject(
     selectedProject &&
@@ -1020,8 +1028,8 @@ export function NewTaskDraftScreen(props: {
           />
         </View>
       ) : null}
-      {viewportHeight < SHORT_DRAFT_VIEWPORT_HEIGHT ? contextControls : null}
-      {flow.canChooseWorkspace ? workspaceControls : null}
+      {promachos || viewportHeight >= SHORT_DRAFT_VIEWPORT_HEIGHT ? null : contextControls}
+      {flow.canChooseWorkspace && !promachos ? workspaceControls : null}
     </View>
   );
 
@@ -1077,7 +1085,7 @@ export function NewTaskDraftScreen(props: {
           <DraftThreadHeader thread={thread} project={selectedProject} cwd={flow.workspaceCwd} />
         }
         draftMode={{
-          content: heroViewport,
+          content: promachos ? () => null : heroViewport,
           controls: draftControls,
           editorRef: promptInputRef,
           sendBlockedReason: setupBlockReason,
