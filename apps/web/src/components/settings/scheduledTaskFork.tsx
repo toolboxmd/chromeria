@@ -3,8 +3,10 @@ import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
 import {
   forkTaskSummary,
   isScheduledTaskHistory,
+  type ScheduledTaskFrequency,
   type ScheduledTaskListEntry,
   scheduledTaskEntryKey,
+  scheduledTaskFrequencyGroups,
   scheduledTaskSections,
   uniqueMachineLabels,
 } from "@t3tools/client-runtime/scheduled-task-fork";
@@ -172,6 +174,17 @@ export function ScheduledTaskList({
     failingOnly: failingOnly && anyFailing,
   });
 
+  const frequencyGroups = scheduledTaskFrequencyGroups(sections);
+  const frequencyTitles: Record<ScheduledTaskFrequency, string> = {
+    minutes: gt("Every few minutes", { $context: "scheduled tasks section" }),
+    hourly: gt("Hourly", { $context: "scheduled tasks section" }),
+    daily: gt("Daily", { $context: "scheduled tasks section" }),
+    weekly: gt("Weekly", { $context: "scheduled tasks section" }),
+    monthly: gt("Monthly or rarer", { $context: "scheduled tasks section" }),
+    once: gt("One time", { $context: "scheduled tasks section" }),
+    webhook: gt("On a webhook", { $context: "scheduled tasks section" }),
+  };
+
   const loaded = states.filter((state) => state.connected && state.error === null && state.tasks);
   const populated = loaded.some((state) => state.tasks && state.tasks.length > 0);
   const summaries: Record<keyof typeof SCOPE_SUMMARY_TEMPLATES, string[]> = {
@@ -272,14 +285,14 @@ export function ScheduledTaskList({
           />
         </SettingsGroup>
       ) : null}
-      {sections.upcoming.length > 0 ? (
-        <ScheduledTaskListSection title={gt("Upcoming", { $context: "scheduled tasks section" })}>
-          {sections.upcoming.map(row)}
+      {frequencyGroups.groups.map((group) => (
+        <ScheduledTaskListSection key={group.frequency} title={frequencyTitles[group.frequency]}>
+          {group.entries.map(row)}
         </ScheduledTaskListSection>
-      ) : null}
-      {sections.recurring.length > 0 ? (
-        <ScheduledTaskListSection title={gt("Recurring", { $context: "scheduled tasks section" })}>
-          {sections.recurring.map(row)}
+      ))}
+      {frequencyGroups.paused.length > 0 ? (
+        <ScheduledTaskListSection title={gt("Paused", { $context: "scheduled tasks section" })}>
+          {frequencyGroups.paused.map(row)}
         </ScheduledTaskListSection>
       ) : null}
       {sections.history.length > 0 ? (
