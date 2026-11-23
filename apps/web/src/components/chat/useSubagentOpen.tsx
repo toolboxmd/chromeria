@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { use, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import type {
   EnvironmentId,
@@ -12,6 +12,7 @@ import {
   subagentChildTarget,
   type SubagentChildTarget,
 } from "@t3tools/client-runtime/state/thread-relationships";
+import { SideThreadsOpenContext } from "../../hooks/useSideThreadTrigger";
 import { openLinkedThreadRead } from "../../lib/sideChatPane";
 import { useServerConfigs } from "../../state/entities";
 import { RemoteTaskViewer } from "./RemoteTaskViewer";
@@ -42,7 +43,8 @@ export function useSubagentOpen(
     remote.environmentId !== parentRef.environmentId
       ? { parentRef, remote, threadId: remote.threadId }
       : null;
-  const canOpen = source || direct || readOnly !== null;
+  // Read-only timelines (guest page, linked pane) cannot open another thread.
+  const canOpen = use(SideThreadsOpenContext) && (source || direct || readOnly !== null);
   const openWithIntent = (intent: SideThreadOpenIntent) => {
     if (source) setViewing(true);
     else if (direct && target !== null) {
