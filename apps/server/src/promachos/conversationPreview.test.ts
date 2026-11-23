@@ -40,6 +40,11 @@ describe("conversationPreviewText", () => {
     ],
     ["a comment across lines", "Before <!-- one\ntwo --> after", "Before after"],
     [
+      "formatted text before a comment that spans lines",
+      "**Ready**: run `vp i` <!-- draft note\nfor later -->",
+      "Ready: run vp i",
+    ],
+    [
       "a comment opener inside a code span",
       "Use `<!--` to start a comment.",
       "Use <!-- to start a comment.",

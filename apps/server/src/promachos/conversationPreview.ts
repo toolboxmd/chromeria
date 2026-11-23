@@ -141,7 +141,7 @@ function stripInline(line: string, state: { inComment: boolean }): string {
   while (index < line.length) {
     if (state.inComment) {
       const end = line.indexOf("-->", index);
-      if (end === -1) return prose;
+      if (end === -1) break;
       prose += " ";
       index = end + 3;
       state.inComment = false;
