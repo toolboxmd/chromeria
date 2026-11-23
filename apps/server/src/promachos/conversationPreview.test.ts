@@ -23,6 +23,12 @@ describe("conversationPreviewText", () => {
       "Edit __init__.py, _not emphasis_",
       "Edit __init__.py, _not emphasis_",
     ],
+    [
+      "globs as written",
+      "Run tests in src/**/*.test.ts and 2 * 3 * 4",
+      "Run tests in src/**/*.test.ts and 2 * 3 * 4",
+    ],
+    ["nested emphasis", "***Done*** and **bold *both***", "Done and bold both"],
     ["links and images", "See [the docs](https://x.dev) ![logo](a.png)", "See the docs logo"],
     [
       "a link target with parentheses",

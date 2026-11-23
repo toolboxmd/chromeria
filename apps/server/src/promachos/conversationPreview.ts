@@ -190,8 +190,9 @@ function stripInline(line: string, state: { inComment: boolean }): string {
       .replace(LINK, "$1")
       .replace(REFERENCE_LINK, "$1")
       // Underscores stay: in replies they name files and identifiers far more often than emphasis.
-      .replace(/\*\*|~~/g, "")
-      .replace(/(?<![\w*])\*((?:(?!\*).)+?)\*(?![\w*])/g, "$1")
+      // Only paired markers: a glob such as `src/**/*.ts` is not emphasis.
+      .replace(/(?<![\w*~])(\*\*|~~)(?=\S)(.+?)(?<=\S)\1(?![\w*~])/g, "$2")
+      .replace(/(?<![\w*])\*(?=\S)((?:(?!\*).)+?)(?<=\S)\*(?![\w*])/g, "$1")
       .replace(KEPT, (_match, keptIndex: string) => kept[Number(keptIndex)]!)
   );
 }
