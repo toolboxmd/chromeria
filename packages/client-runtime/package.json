@@ -151,6 +151,10 @@
       "types": "./src/promachos/conversations.ts",
       "default": "./src/promachos/conversations.ts"
     },
+    "./promachos/status": {
+      "types": "./src/promachos/status.ts",
+      "default": "./src/promachos/status.ts"
+    },
     "./promachos/start": {
       "types": "./src/promachos/start.ts",
       "default": "./src/promachos/start.ts"

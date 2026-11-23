@@ -1,3 +1,4 @@
+import { promachosStatusText } from "@t3tools/client-runtime/promachos/status";
 import { useGT, useLocale } from "gt-react-native";
 import { View, type ColorValue } from "react-native";
 
@@ -46,7 +47,7 @@ export function PromachosStatusLine(props: {
         textClassName="text-base text-foreground-secondary"
         icon="brain"
         iconSubtleColor={props.iconSubtleColor}
-        label={props.typing ? gt("Typing…") : (props.label ?? gt("Working"))}
+        label={props.typing ? gt("Typing…") : (promachosStatusText(props.label) ?? gt("Working"))}
         showIcon={false}
       />
     </View>

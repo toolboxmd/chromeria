@@ -96,7 +96,7 @@ export function promachosFeedRows(rows: ReadonlyArray<ThreadFeedEntry>): ThreadF
         if (row.workingSince !== undefined) status = statusRow(row, undefined, status);
         break;
       case "thinking":
-        status = statusRow(row, row.label ?? row.providerStartingLabel, status);
+        status = statusRow(row, row.label, status);
         break;
       default:
         break;

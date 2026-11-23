@@ -1,3 +1,4 @@
+import { promachosStatusText } from "@t3tools/client-runtime/promachos/status";
 import { useGT } from "gt-react";
 import { SmileIcon } from "lucide-react";
 import type { MouseEvent, ReactNode } from "react";
@@ -78,7 +79,7 @@ export function PromachosStatusLine({
   typing: boolean;
 }) {
   const gt = useGT();
-  const text = typing ? gt("Typing…") : (label ?? gt("Working"));
+  const text = typing ? gt("Typing…") : (promachosStatusText(label) ?? gt("Working"));
   return (
     <div className="flex min-h-9 items-center gap-2.5 py-1" role="status" aria-label={text}>
       {typing ? (

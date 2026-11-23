@@ -448,12 +448,7 @@ export function ThinkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind:
   const { isCompacting, isPreparingWorktree, liveAnswerPreview, providerStartingLabel } =
     use(TimelineRowActivityCtx);
   if (ctx.promachos && (row.id === PROMACHOS_STATUS_ROW_ID || row.id === PROMACHOS_TYPING_ROW_ID)) {
-    return (
-      <PromachosStatusLine
-        label={(providerStartingLabel === null ? null : m(providerStartingLabel)) ?? row.label}
-        typing={row.id === PROMACHOS_TYPING_ROW_ID}
-      />
-    );
+    return <PromachosStatusLine label={row.label} typing={row.id === PROMACHOS_TYPING_ROW_ID} />;
   }
   if (isPreparingWorktree || isCompacting) return <WorkLogRow label="" />;
   // A failed group keeps this disclosure while an approval waits, but nothing is thinking then.

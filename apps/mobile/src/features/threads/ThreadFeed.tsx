@@ -2198,7 +2198,7 @@ function renderFeedEntry(
   ) {
     return (
       <PromachosStatusLine
-        label={entry.label ?? entry.providerStartingLabel}
+        label={entry.label}
         iconSubtleColor={iconSubtleColor}
         typing={entry.id === PROMACHOS_TYPING_ROW_ID}
       />
