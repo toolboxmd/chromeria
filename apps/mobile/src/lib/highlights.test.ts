@@ -9,6 +9,7 @@ import { resolveHighlightLanguage } from "./highlightLanguage";
 import { highlightCode, highlightCommand, tokenizeCode, type HighlightedLines } from "./highlights";
 import type { MaterialYouPalette } from "./materialYouPalette";
 import { materialYouPaletteToMobileThemeVariables } from "./materialYouTheme.android";
+import { promachosReplyCodeFence } from "./promachosCodeFence";
 import { codeFenceRenderer } from "../native/codeBlockMarkdown";
 import { getMobileThemeVariables } from "./mobileTheme";
 import { getMobileThemeRuntimeVariables } from "./mobileThemeVariables";
@@ -114,12 +115,15 @@ describe("highlightCode", () => {
       ...MOBILE_THEME_IDS.map((themeId) => getMobileThemeVariables(themeId, appearance)),
       ...materialYou(appearance),
     ];
-    // A Promachos user's bubble draws its code in the dark scheme in both appearances, and a
-    // Promachos reply's fence is flattened over the screen, as ThreadFeed draws them.
+    // Light Promachos replies keep their fence; only the dark scheme's fences change.
+    for (const variables of themes("light")) {
+      expect(promachosReplyCodeFence(variables, "light")).toBe(variables["--color-md-code-bg"]);
+    }
+    // A Promachos user's bubble draws its code in the dark scheme in both appearances.
     const fences = [
       ...themes("dark").flatMap((variables) => [
         over(variables["--color-md-code-bg"], variables["--color-thread-canvas"]),
-        over(variables["--color-md-code-bg"], variables["--color-screen"]),
+        rgba(promachosReplyCodeFence(variables, "dark")),
         over(variables["--color-md-user-fence-bg"], variables["--color-user-bubble"]),
       ]),
       ...[...themes("dark"), ...themes("light")].map((variables) =>

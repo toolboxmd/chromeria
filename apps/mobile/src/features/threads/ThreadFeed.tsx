@@ -236,6 +236,7 @@ import {
 } from "../../lib/layout";
 import { uuidv4 } from "../../lib/uuid";
 import { resolveNativeMarkdownTypography } from "../../lib/appearancePreferences";
+import { promachosReplyCodeFence } from "../../lib/promachosCodeFence";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { PierreEntryIcon } from "../../components/PierreEntryIcon";
 import {
@@ -1577,7 +1578,7 @@ function MarkdownDetailsFold(props: {
 }
 
 function useMarkdownStyles(promachos = false): MarkdownStyleSets {
-  const { appearance } = useAppearancePreferences();
+  const { appearance, themeAppearance } = useAppearancePreferences();
   const nativeMarkdownTypography = resolveNativeMarkdownTypography(appearance.baseFontSize);
   const theme = useUniwindTheme();
   const markdownBodyColor = theme["--color-md-body"];
@@ -1655,9 +1656,8 @@ function useMarkdownStyles(promachos = false): MarkdownStyleSets {
         inlineCodeColor: markdownInlineCodeText,
         codeColor: markdownCodeText,
         codeBackgroundColor: markdownCodeBg,
-        // Fork: opaque in a Promachos reply, so its lighter bubble cannot show through.
         codeBlockBackgroundColor: promachos
-          ? flattenThemeColor(markdownCodeBg, theme["--color-screen"])
+          ? promachosReplyCodeFence(theme, themeAppearance)
           : markdownCodeBg,
         fileTextColor: markdownCodeText,
         quoteMarkerColor: markdownBlockquoteBorder,
