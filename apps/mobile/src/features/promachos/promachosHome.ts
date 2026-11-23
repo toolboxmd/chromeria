@@ -21,7 +21,10 @@ import { useEnvironmentServerConfig, useProjects } from "../../state/entities";
 import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
 import { useMobileProjectGroupingSettings } from "../../state/project-grouping";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { useHiddenNavigationTabs } from "../layout/workspace/navigation-tabs";
+import {
+  navigationCustomizationAvailable,
+  resolveHiddenNavigationTabs,
+} from "../layout/workspace/navigation-tab-order";
 
 export function usePromachosHome(): [
   ScopedProjectRef | null,
@@ -58,7 +61,11 @@ export function usePromachosHomeRefs(
 export function usePromachosChatModels(
   projectRef: ScopedProjectRef | null,
 ): ReadonlyArray<unknown> | null {
-  const hidden = useHiddenNavigationTabs().includes("promachos");
+  const preferences = useAtomValue(mobilePreferencesAtom);
+  const hidden =
+    navigationCustomizationAvailable() &&
+    AsyncResult.isSuccess(preferences) &&
+    resolveHiddenNavigationTabs(preferences.value.hiddenNavigationTabs).includes("promachos");
   const [home] = usePromachosHome();
   const homeRefs = usePromachosHomeRefs(hidden ? null : home);
   const serverConfig = useEnvironmentServerConfig(projectRef?.environmentId ?? null);

@@ -7,7 +7,7 @@ import {
   groupPromachosBubbles as groupBlocks,
   type PromachosBlockRole,
 } from "@t3tools/client-runtime/promachos/bubbles";
-import type { Root, RootContent } from "hast";
+import type { Element, Root, RootContent } from "hast";
 
 import type { MarkdownExtensions } from "~/markdown/wordsHast";
 
@@ -24,7 +24,12 @@ function roleOf(node: RootContent): PromachosBlockRole {
 export function groupPromachosBubbles(tree: Root): void {
   tree.children = groupBlocks(tree.children, roleOf).map((item) =>
     item.kind === "bubble"
-      ? { type: "element", tagName: "div", properties: {}, children: item.blocks }
+      ? {
+          type: "element",
+          tagName: "div",
+          properties: {},
+          children: item.blocks.filter((node): node is Element => node.type === "element"),
+        }
       : item.block,
   );
 }

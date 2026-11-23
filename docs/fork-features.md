@@ -1632,6 +1632,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/mobile/src/features/layout/workspace/workspace-tabs-state.test.ts",
     "apps/mobile/src/features/layout/workspace/workspace-tabs-state.ts",
     "apps/mobile/src/features/threads/ThreadFeed.tsx",
+    "apps/mobile/src/features/threads/new-task-flow-provider.test.tsx",
     "apps/mobile/src/lib/rootNavigation.ts"
   ],
   "sharedFiles": [
