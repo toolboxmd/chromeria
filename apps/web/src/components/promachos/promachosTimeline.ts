@@ -59,6 +59,14 @@ export function promachosTimelineRows(rows: MessagesTimelineRow[]): MessagesTime
       case "mcp-app":
         push(row);
         break;
+      case "keep-warm":
+        push({
+          kind: "thinking",
+          id: `${PROMACHOS_NOTICE_ROW_PREFIX}${row.id}`,
+          createdAt: row.createdAt,
+          label: row.label,
+        });
+        break;
       case "event": {
         const item = row.projectedItem.item;
         if (item.type === "error") {

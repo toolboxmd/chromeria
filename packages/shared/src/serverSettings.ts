@@ -23,6 +23,7 @@ import {
   type ServerProvider,
   ServerSettings,
   type ServerSettingsPatch,
+  ThreadId,
   withIdleCompaction,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -236,6 +237,25 @@ function mergeModelSelectionOptionsById(input: {
   return [...merged.entries()].map(([id, value]) => ({ id, value }));
 }
 
+/** Conditional idle-mode writes compare against the modes after this patch's other writes. */
+function mergeIdleModesIfCurrent(
+  modes: ServerSettings["threadIdleModes"],
+  changes: NonNullable<ServerSettingsPatch["threadIdleModesIfCurrent"]>,
+): ServerSettings["threadIdleModes"] {
+  return mergeSettingsEntries(
+    modes,
+    Object.fromEntries(
+      Object.entries(changes).flatMap(([id, change]) => {
+        const current = modes[ThreadId.make(id)];
+        return current?.type === change.expected.type &&
+          current.enabledAt === change.expected.enabledAt
+          ? [[id, change.next]]
+          : [];
+      }),
+    ),
+  );
+}
+
 function mergeSettingsEntries<Value>(
   current: Readonly<Record<string, Value>>,
   patch: Readonly<Record<string, Value | null>>,
@@ -404,7 +424,8 @@ export function applyServerSettingsPatch(
     backgroundActivity,
     worktreeCleanup: worktreeCleanupPatch,
     // Merged per entry below; its `null` removals must not reach deepMerge.
-    wightModes: wightModesPatch,
+    threadIdleModes: threadIdleModesPatch,
+    threadIdleModesIfCurrent: threadIdleModesIfCurrentPatch,
     usageLimitSources: usageLimitSourcesPatch,
     textGenerators: textGeneratorsPatch,
     secretProviders: secretProvidersPatch,
@@ -627,8 +648,13 @@ export function applyServerSettingsPatch(
     ...(patch.defaultProjectScripts !== undefined
       ? { defaultProjectScripts: patch.defaultProjectScripts }
       : {}),
-    ...(wightModesPatch !== undefined
-      ? { wightModes: mergeSettingsEntries(current.wightModes, wightModesPatch) }
+    ...(threadIdleModesPatch !== undefined || threadIdleModesIfCurrentPatch !== undefined
+      ? {
+          threadIdleModes: mergeIdleModesIfCurrent(
+            mergeSettingsEntries(current.threadIdleModes, threadIdleModesPatch ?? {}),
+            threadIdleModesIfCurrentPatch ?? {},
+          ),
+        }
       : {}),
     ...(usageLimitSourcesPatch !== undefined
       ? {

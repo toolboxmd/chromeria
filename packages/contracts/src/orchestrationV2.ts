@@ -4520,8 +4520,9 @@ export type OrchestrationV2ServerCommand =
       readonly purposeSource?: ExecutionPurpose;
       /** The original app-owned handoff, resolved before run creation. */
       readonly purposeDelegatedTaskId?: NodeId;
-      /** Server-only Wight compare-and-start identity, absent from the wire schema. */
-      readonly wightAdmission?: {
+      /** Server-only idle-mode compare-and-start identity, absent from the wire schema. */
+      readonly idleAdmission?: {
+        readonly mode: "wight" | "keepWarm";
         readonly latestRunId: RunId | null;
         readonly updatedAt: number;
         readonly providerInstanceId: ProviderInstanceId;

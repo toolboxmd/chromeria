@@ -1,5 +1,6 @@
 import { ThreadTools } from "@t3tools/contracts";
 import { ThreadBare } from "@t3tools/contracts";
+import { KeepWarmStopReason } from "@t3tools/contracts";
 import * as McpRouting from "../../McpRouting.ts";
 import {
   PendingRequestInput,
@@ -229,6 +230,12 @@ const ThreadConfigurationTool = Tool.make("t3_thread_configuration", {
     modelSelection: ModelSelection,
     runtimeMode: RuntimeMode,
     interactionMode: ProviderInteractionMode,
+    keepCacheWarm: Schema.optional(
+      Schema.Struct({
+        enabled: Schema.Boolean,
+        stoppedReason: Schema.optional(KeepWarmStopReason),
+      }),
+    ),
   }),
 })
   .annotate(Tool.Readonly, true)
@@ -236,12 +243,13 @@ const ThreadConfigurationTool = Tool.make("t3_thread_configuration", {
 const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   ...commandTool,
   description:
-    "Set a thread's provider, model, and options. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`.",
+    "Set a thread's provider, model, and options. Omit `threadId` for this thread. Permission modes stay. Values from `orchestrator_capabilities`. `keepCacheWarm` pings an idle Claude thread hourly so its prompt cache stays warm.",
   success: Schema.Union([ThreadConfigurationTool.successSchema, commandTool.success]),
   parameters: McpRouting.parameters(
     Schema.Struct({
       threadId: Schema.optional(ThreadId),
       modelSelection: Schema.optional(ModelSelection),
+      keepCacheWarm: Schema.optional(Schema.Boolean),
     }),
   ),
 }).annotate(Tool.Destructive, true);

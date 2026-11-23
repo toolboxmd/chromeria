@@ -11,17 +11,28 @@ const decodeMode = Schema.decodeUnknownSync(WightMode);
 const activation = { enabledAt: "2026-10-08T17:00:00.000Z", expiresAt: null };
 
 describe("Wight settings", () => {
-  it("preserves v1 activations and instance quota limits through unrelated settings writes", () => {
+  it("keeps instance quota limits and one idle mode per thread through unrelated writes", () => {
     const input = {
-      wightModes: { existing: activation },
+      threadIdleModes: {
+        wight: { type: "wight", ...activation },
+        warm: {
+          type: "keepWarm",
+          enabledAt: activation.enabledAt,
+          hiddenRequestAt: null,
+          stopped: null,
+        },
+      },
       providerInstances: { codex: { driver: "codex", wightLimitPercent: 35 } },
     };
     const decoded = decodeSettings(input);
     expect(encodeSettings({ ...decoded, autoUpdateProviders: true })).toMatchObject(input);
-    expect(decodeSettings({}).wightModes).toEqual({});
-    expect(decodePatch({ wightModes: { existing: null } })).toEqual({
-      wightModes: { existing: null },
+    expect(decodeSettings({}).threadIdleModes).toEqual({});
+    expect(decodePatch({ threadIdleModes: { wight: null } })).toEqual({
+      threadIdleModes: { wight: null },
     });
+    expect(() =>
+      decodePatch({ threadIdleModes: { both: { ...activation, hiddenRequestAt: null } } }),
+    ).toThrow();
   });
 
   it.each([-1, 101, 1.5, Number.POSITIVE_INFINITY])("rejects invalid quota %s", (limit) => {

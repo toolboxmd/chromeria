@@ -30,6 +30,7 @@ import type * as ThreadManagement from "../../../orchestration-v2/ThreadManageme
 import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageIntake.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
+import * as KeepWarm from "../../../keepWarm/KeepWarmService.ts";
 import { queuedRunsInDeliveryOrder } from "../../../orchestration-v2/QueuedRunOrder.ts";
 import { ThreadToolkit } from "./tools.ts";
 
@@ -248,6 +249,7 @@ export const layer = McpToolAccess.toLayer(
           const {
             projection: { thread },
           } = yield* readThread(input.threadId);
+          const keepWarm = yield* KeepWarm.KeepWarm;
           return {
             ...(thread.bare === undefined ? {} : { bare: thread.bare }),
             ...(thread.tools === undefined ? {} : { tools: thread.tools }),
@@ -255,6 +257,9 @@ export const layer = McpToolAccess.toLayer(
             modelSelection: thread.modelSelection,
             runtimeMode: thread.runtimeMode,
             interactionMode: thread.interactionMode,
+            keepCacheWarm: yield* keepWarm
+              .read(thread.id)
+              .pipe(Effect.mapError(() => unavailable())),
           };
         }),
       ),
@@ -264,6 +269,24 @@ export const layer = McpToolAccess.toLayer(
             threads,
             projection: { thread },
           } = yield* readThread(input.threadId);
+          if (input.keepCacheWarm !== undefined && input.modelSelection !== undefined)
+            return yield* new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "Set keepCacheWarm and modelSelection in separate calls.",
+            });
+          if (input.keepCacheWarm !== undefined) {
+            const keepWarm = yield* KeepWarm.KeepWarm;
+            yield* keepWarm.set(thread.id, input.keepCacheWarm).pipe(
+              Effect.mapError((error) =>
+                error._tag === "KeepWarmUnsupportedError"
+                  ? new OrchestratorMcpFailure({
+                      code: "invalid_request",
+                      message: error.message,
+                    })
+                  : unavailable(),
+              ),
+            );
+          }
           if (input.modelSelection === undefined)
             return {
               threadId: thread.id,

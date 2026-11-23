@@ -47,6 +47,10 @@
       "types": "./src/composerModelMentions.ts",
       "default": "./src/composerModelMentions.ts"
     },
+    "./thread-idle-mode": {
+      "types": "./src/threadIdleMode.ts",
+      "default": "./src/threadIdleMode.ts"
+    },
     "./contract-labels": {
       "types": "./src/contractLabels.ts",
       "default": "./src/contractLabels.ts"

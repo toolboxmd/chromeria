@@ -65,6 +65,7 @@ import {
   ArrowRightIcon,
   BotIcon,
   CircleAlertIcon,
+  FlameIcon,
   MessagesSquareIcon,
   Minimize2Icon,
   ChevronDownIcon,
@@ -1685,6 +1686,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
                   row.kind === "attempt-fold" ||
                   row.kind === "html-render" ||
                   row.kind === "sent-message" ||
+                  row.kind === "keep-warm" ||
                   row.kind === "mcp-app" ||
                   row.kind === "viewed-images"
                 ? "pb-2"
@@ -1728,6 +1730,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "turn-fold" ? <TurnFoldTimelineRow key={row.id} row={row} /> : null}
       {row.kind === "attempt-fold" ? <AttemptFoldTimelineRow row={row} /> : null}
       {row.kind === "context-compaction" ? <ContextCompactionTimelineRow row={row} /> : null}
+      {row.kind === "keep-warm" ? <KeepWarmTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "user" ? <UserMessageRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
@@ -1764,6 +1767,23 @@ function WorktreeSetupTimelineRow({
       }
       onOpenTerminal={onOpenTerminal}
     />
+  );
+}
+
+function KeepWarmTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "keep-warm" }> }) {
+  return (
+    <div
+      role="separator"
+      aria-label={row.label}
+      className="mx-auto flex w-full max-w-(--chat-content-max-width) items-center gap-3 py-1 text-xs text-muted-foreground"
+    >
+      <span className="h-px flex-1 bg-border/70" />
+      <span className="flex min-w-0 items-center gap-1.5">
+        <FlameIcon aria-hidden="true" className="size-3" />
+        {row.label}
+      </span>
+      <span className="h-px flex-1 bg-border/70" />
+    </div>
   );
 }
 

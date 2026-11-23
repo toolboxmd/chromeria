@@ -34,7 +34,7 @@ const thread = (id = ID): WightThread => ({
   pendingRuntimeRequest: null,
   hasActionableProposedPlan: false,
   limitRecovery: null,
-  hasQueuedRuns: false,
+  hasPendingRuns: false,
 });
 const provider = (percent: number, instanceId = INSTANCE) =>
   ({
@@ -47,7 +47,9 @@ const provider = (percent: number, instanceId = INSTANCE) =>
   }) as unknown as ServerProvider;
 const activate = (ids: readonly ThreadId[], expiresAt: number | null = null): ServerSettings => ({
   ...DEFAULT_SERVER_SETTINGS,
-  wightModes: Object.fromEntries(ids.map((id) => [id, { enabledAt: iso(0), expiresAt }])),
+  threadIdleModes: Object.fromEntries(
+    ids.map((id) => [id, { type: "wight" as const, enabledAt: iso(0), expiresAt }]),
+  ),
 });
 
 /** Resumes synchronously adopt a turn, standing in for command admission; reconcile completion is the worker drain. */
@@ -248,7 +250,7 @@ describe("Wight mode", () => {
 
   it("holds archived, interrupted, pending input and queued turns; unknown providers and zero limits pause", () => {
     expect(wightIdle({ ...thread(), archivedAt: DateTime.makeUnsafe(0) })).toBe(false);
-    expect(wightIdle({ ...thread(), hasQueuedRuns: true })).toBe(false);
+    expect(wightIdle({ ...thread(), hasPendingRuns: true })).toBe(false);
     expect(wightIdle({ ...thread(), hasActionableProposedPlan: true })).toBe(false);
     expect(wightIdle({ ...thread(), status: "cancelled" })).toBe(false);
     expect(wightPaused(undefined, 80)).toBe(true);
@@ -272,9 +274,10 @@ describe("Wight mode", () => {
 
   it("per-thread patches preserve siblings and remove disabled entries", () => {
     const settings = activate([ID, ThreadId.make("sibling")]);
-    const next = applyServerSettingsPatch(settings, { wightModes: { [ID]: null } });
-    expect(next.wightModes[ID]).toBeUndefined();
-    expect(next.wightModes[ThreadId.make("sibling")]).toEqual({
+    const next = applyServerSettingsPatch(settings, { threadIdleModes: { [ID]: null } });
+    expect(next.threadIdleModes[ID]).toBeUndefined();
+    expect(next.threadIdleModes[ThreadId.make("sibling")]).toEqual({
+      type: "wight",
       enabledAt: iso(0),
       expiresAt: null,
     });

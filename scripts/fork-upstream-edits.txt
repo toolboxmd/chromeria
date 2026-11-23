@@ -187,6 +187,9 @@ apps/web/src/components/settings/ProviderInstanceCard.tsx
 docs/user/thread-sidebar.md
 packages/contracts/src/providerInstance.ts
 packages/shared/src/serverSettings.ts
+apps/mobile/src/lib/threadActivity.test.ts
+apps/web/src/components/chat/MessagesTimeline.logic.test.ts
+apps/web/src/components/chat/MessagesTimeline.logic.ts
 
 # Promachos mode (#175)
 apps/server/src/auth/RpcAuthorization.test.ts

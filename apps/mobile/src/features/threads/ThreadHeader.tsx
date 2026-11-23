@@ -9,6 +9,7 @@ import {
 import type { ThreadInspectorMode } from "./thread-inspector-navigation";
 import { useWorkspaceBackNavigation } from "../layout/workspace/useAndroidWorkspaceNavigation";
 import { EnvironmentId, type ProjectId } from "@t3tools/contracts";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 
 import { usePromachosChatModels } from "../promachos/promachosHome";
 import { PromachosTitlePill } from "../promachos/PromachosTitlePill";
@@ -17,6 +18,7 @@ import {
   useThreadGitMenuDefinition,
   type ThreadGitControlsProps,
 } from "./ThreadGitControls";
+import { useThreadIdleModeMenu } from "./useThreadIdleModeMenu";
 
 export function ThreadHeader(props: {
   readonly title: string;
@@ -29,6 +31,8 @@ export function ThreadHeader(props: {
   readonly onOpenFilesInspector: () => void;
   /** Fork: a Promachos chat shows his name pill and one "…" menu (toolboxmd/chromeria#898). */
   readonly projectId?: ProjectId;
+  /** Fork: what the thread does while idle (toolboxmd/chromeria#928). */
+  readonly thread?: EnvironmentThreadShell;
 }) {
   const gt = useGT();
   const m = useMessages();
@@ -50,7 +54,10 @@ export function ThreadHeader(props: {
         },
       ]
     : [];
-  const menus = [gitMenu, terminalMenu].filter((menu): menu is AppBarMenu => menu !== null);
+  const idleMenu = useThreadIdleModeMenu(props.thread ?? null);
+  const menus = [idleMenu, gitMenu, terminalMenu].filter(
+    (menu): menu is AppBarMenu => menu !== null,
+  );
   const promachos =
     usePromachosChatModels(
       props.projectId === undefined

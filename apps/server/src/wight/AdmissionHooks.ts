@@ -5,16 +5,17 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import { keepWarmPaused } from "../keepWarm/keepWarm.ts";
 import { wightPaused } from "./wightMode.ts";
 
-type WightCommand = Extract<OrchestrationV2ServerCommand, { type: "message.dispatch" }>;
+type IdleCommand = Extract<OrchestrationV2ServerCommand, { type: "message.dispatch" }>;
 
 /** Settings and provider admission runs under dispatch serialization, outside SQL guards. */
 export class AdmissionHooks extends Context.Reference<{
-  readonly permits: (command: WightCommand) => Effect.Effect<boolean>;
+  readonly permits: (command: IdleCommand) => Effect.Effect<boolean>;
 }>("t3/wight/AdmissionHooks", {
   defaultValue: () => ({
-    permits: (command) => Effect.succeed(command.wightAdmission === undefined),
+    permits: (command) => Effect.succeed(command.idleAdmission === undefined),
   }),
 }) {}
 
@@ -24,22 +25,25 @@ export const layer = Layer.effect(
     const settings = yield* ServerSettings.ServerSettingsService;
     const registry = yield* ProviderRegistry.ProviderRegistry;
     return {
-      permits: Effect.fn("Wight.permits")(
-        function* (command: WightCommand) {
-          const admission = command.wightAdmission;
+      permits: Effect.fn("IdleMode.permits")(
+        function* (command: IdleCommand) {
+          const admission = command.idleAdmission;
           if (admission === undefined) return true;
           const current = yield* settings.getSettings;
-          const active = current.wightModes[command.threadId];
-          const now = yield* Clock.currentTimeMillis;
+          const active = current.threadIdleModes[command.threadId];
           if (
-            !active ||
-            active.enabledAt !== admission.enabledAt ||
-            (active.expiresAt !== null && active.expiresAt <= now)
+            active === undefined ||
+            active.type !== admission.mode ||
+            active.enabledAt !== admission.enabledAt
           )
             return false;
           const provider = (yield* registry.getProviders).find(
             (entry) => entry.instanceId === admission.providerInstanceId,
           );
+          if (active.type === "keepWarm")
+            return active.stopped === null && !keepWarmPaused(provider);
+          const now = yield* Clock.currentTimeMillis;
+          if (active.expiresAt !== null && active.expiresAt <= now) return false;
           return !wightPaused(
             provider,
             current.providerInstances[admission.providerInstanceId]?.wightLimitPercent ??

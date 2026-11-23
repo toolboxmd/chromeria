@@ -29,6 +29,7 @@ import {
   threadFeedCompactionLabels,
   createThreadFeedCache,
   deriveThreadFeedPresentation,
+  foldKeepWarmPings,
   messageFoldRunId,
   type ThreadFeedCache,
   type ThreadFeedEntry,
@@ -2353,4 +2354,44 @@ it("caps live thought previews while preserving reasoning detail", () => {
   expect(activity.detail).toBe(text);
   expect(JSON.parse(activity.getFullDetail()!).item).toMatchObject({ text });
   expect(activity.getCopyText()).toContain(text);
+});
+
+describe("foldKeepWarmPings", () => {
+  it("folds consecutive pings and their replies into one growing line", () => {
+    const message = (id: string, role: "user" | "assistant", runId: string) =>
+      ({
+        type: "message",
+        id,
+        createdAt: "2026-11-23T10:00:00Z",
+        message: {
+          id: MessageId.make(id),
+          role,
+          text: role === "user" ? "Prompt" : "Ok",
+          attachments: [],
+          runId: RunId.make(runId),
+          streaming: false,
+          visibility: "local",
+          sourceThreadId: ThreadId.make("thread"),
+          createdAt: "2026-11-23T10:00:00Z",
+          updatedAt: "2026-11-23T10:00:00Z",
+        },
+      }) satisfies ThreadFeedEntry;
+    const ping = (n: number) => [
+      message(`keep-warm:thread:0:${n}`, "user", `ping-${n}`),
+      message(`ping-reply-${n}`, "assistant", `ping-${n}`),
+    ];
+    const rows = foldKeepWarmPings([
+      message("ask", "user", "real"),
+      ...ping(1),
+      ...ping(2),
+      message("back", "user", "return"),
+      ...ping(3),
+    ]);
+    expect(rows.map((row) => (row.type === "keep-warm" ? row.label : row.id))).toEqual([
+      "ask",
+      "Kept warm, 2 pings",
+      "back",
+      "Kept warm, 1 ping",
+    ]);
+  });
 });

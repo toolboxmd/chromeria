@@ -91,6 +91,7 @@ export * from "./clientRpcPermissions.ts";
 export * from "./people.ts";
 export * from "./prism.ts";
 export * from "./wight.ts";
+export * from "./threadIdleMode.ts";
 export * from "./promachosHome.ts";
 export * from "./spectrumSettings.ts";
 

@@ -34,7 +34,7 @@ import * as Harness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import { ServerActivation } from "../serverActivation.ts";
 import * as Hooks from "./AdmissionHooks.ts";
 import * as Wight from "./WightService.ts";
-import { wightAdmissionPlan, readWightThread } from "./admission.ts";
+import { idleAdmissionPlan, readWightThread } from "./admission.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
 const threadId = ThreadId.make("wight:integration");
@@ -101,7 +101,9 @@ const setup = Effect.gen(function* () {
     createdBy: "user",
     creationSource: "web",
   });
-  yield* settings.updateSettings({ wightModes: { [threadId]: { enabledAt, expiresAt: null } } });
+  yield* settings.updateSettings({
+    threadIdleModes: { [threadId]: { type: "wight", enabledAt, expiresAt: null } },
+  });
 });
 const prepared = Effect.gen(function* () {
   const thread = yield* readWightThread(threadId);
@@ -116,7 +118,8 @@ const prepared = Effect.gen(function* () {
     dispatchMode: { type: "start_immediately" },
     createdBy: "user",
     creationSource: "server",
-    wightAdmission: {
+    idleAdmission: {
+      mode: "wight",
       latestRunId: thread.latestRunId,
       updatedAt: DateTime.toEpochMillis(thread.updatedAt),
       providerInstanceId: instanceId,
@@ -152,7 +155,7 @@ it.effect.each(["disabled", "quota", "timer", "stop"] as const)(
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const settings = yield* Settings.ServerSettingsService;
       if (change === "disabled")
-        yield* settings.updateSettings({ wightModes: { [threadId]: null } });
+        yield* settings.updateSettings({ threadIdleModes: { [threadId]: null } });
       if (change === "quota")
         yield* settings.updateSettings({
           providerInstances: {
@@ -162,7 +165,13 @@ it.effect.each(["disabled", "quota", "timer", "stop"] as const)(
       if (change === "timer") {
         const now = yield* DateTime.now;
         yield* settings.updateSettings({
-          wightModes: { [threadId]: { enabledAt, expiresAt: DateTime.toEpochMillis(now) + 1_000 } },
+          threadIdleModes: {
+            [threadId]: {
+              type: "wight",
+              enabledAt,
+              expiresAt: DateTime.toEpochMillis(now) + 1_000,
+            },
+          },
         });
         yield* TestClock.adjust(1_000);
       }
@@ -276,7 +285,7 @@ it.effect.each([false, true])(
         payload: { ...run, status: "completed", completedAt: yield* DateTime.now },
       });
       const command = yield* prepared;
-      const plan = wightAdmissionPlan(command);
+      const plan = idleAdmissionPlan(command);
       if (plan === null) return yield* Effect.die("Missing prepared Wight guard");
       const events = template.storedEvents.flatMap<OrchestrationV2DomainEvent>(({ event }) => {
         if (event.type === "run.created")

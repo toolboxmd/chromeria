@@ -64,6 +64,7 @@ import type {
 import {
   IDLE_COMPACTION_TEXT,
   idleCompactionOf,
+  isKeepWarmPingMessage,
   isQueuedProviderThreadPlaceholder,
   OrchestrationV2AppThreadJson as OrchestrationV2AppThreadJsonSchema,
   OrchestrationV2CheckpointJson as OrchestrationV2CheckpointJsonSchema,
@@ -2040,7 +2041,7 @@ export function threadShellFromProjection(
   );
 
   const userMessages = projection.messages
-    .filter((message) => message.role === "user" && idleCompactionOf(message) === undefined)
+    .filter((message) => message.role === "user" && !isSilentPrompt(message))
     .toSorted(
       (left, right) =>
         DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
@@ -2220,15 +2221,21 @@ function activeProviderGoalForShell(
   return providerThreads.find((thread) => thread.id === activeProviderThreadId)?.goal ?? null;
 }
 
+/** T3 Code's own idle compactions and keep-warm pings, which the shell does not present. */
+const isSilentPrompt = (message: OrchestrationV2ThreadProjection["messages"][number]) =>
+  idleCompactionOf(message) !== undefined || isKeepWarmPingMessage(message);
+
 function isSilentRunForShell(
   run: OrchestrationV2ThreadProjection["runs"][number],
   projection: Pick<OrchestrationV2ThreadProjection, "messages" | "turnItems">,
 ): boolean {
+  // A failed ping stops keep-warm; it never becomes the thread's reply.
+  if (isKeepWarmPingMessage({ id: run.userMessageId })) return true;
+  const prompt = projection.messages.find((message) => message.id === run.userMessageId);
+  if (prompt === undefined) return false;
   return (
     run.status !== "failed" &&
-    projection.messages.some(
-      (message) => message.id === run.userMessageId && idleCompactionOf(message) !== undefined,
-    ) &&
+    idleCompactionOf(prompt) !== undefined &&
     !projection.turnItems.some(
       (item) => item.runId === run.id && item.type === "compaction" && item.status === "failed",
     )
@@ -5214,6 +5221,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 latest.status = 'cancelled'
                 AND json_extract(latest.payload_json, '$.startedAt') IS NULL
               )
+              -- A refused keep-warm ping stops keep-warm; it never arms the thread's recovery.
+              AND coalesce(json_extract(latest.payload_json, '$.userMessageId'), '')
+                NOT LIKE 'keep-warm:%'
             -- latestExecutedRun: the run that ended last (runRanAfter).
             ORDER BY latest.completed_at IS NULL DESC, latest.completed_at DESC,
               latest.ordinal DESC, latest.run_id DESC
@@ -8545,10 +8555,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         )
       )`;
     };
+    // Mirrors isSilentPrompt: T3 Code's own idle compactions and keep-warm pings.
+    const isSilentPromptMessage = (alias: string) =>
+      sql`(${isIdleCompactionMessage(alias)} OR ${sql.literal(`${alias}.message_id`)} LIKE 'keep-warm:%')`;
     // Mirrors isSilentRunForShell.
     const isSilentShellRun = (alias: string) => {
       const run = sql.literal(alias);
-      return sql`(
+      return sql`((
+        coalesce(json_extract(${run}.payload_json, '$.userMessageId'), '') LIKE 'keep-warm:%'
+      ) OR (
         ${run}.status <> 'failed'
         AND EXISTS (
           SELECT 1 FROM orchestration_v2_projection_messages prompt
@@ -8560,7 +8575,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             AND compaction.type = 'compaction'
             AND compaction.status = 'failed'
         )
-      )`;
+      ))`;
     };
     // The newest run not held or outlived before it started, matching latestUnheldRun.
     const presentedShellRunId = (threadId: Statement.Fragment) => sql`(
@@ -8770,7 +8785,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 FROM orchestration_v2_projection_messages message
                 WHERE message.thread_id = t.thread_id
                   AND message.role = 'user'
-                  AND NOT ${isIdleCompactionMessage("message")}
+                  AND NOT ${isSilentPromptMessage("message")}
                 ORDER BY message.updated_at DESC, message.message_id DESC
                 LIMIT 1
               ) AS latest_user_message_at,
@@ -8780,7 +8795,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 WHERE message.thread_id = t.thread_id
                   AND message.role = 'user'
                   AND json_extract(message.payload_json, '$.createdBy') = 'user'
-                  AND NOT ${isIdleCompactionMessage("message")}
+                  AND NOT ${isSilentPromptMessage("message")}
                 ORDER BY message.updated_at DESC, message.message_id DESC
                 LIMIT 1
               ) AS latest_user_authored_message_at,
@@ -8813,6 +8828,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   candidate.status = 'cancelled'
                   AND json_extract(candidate.payload_json, '$.startedAt') IS NULL
                 )
+                -- A keep-warm ping is never the thread's reply, even when it hit a limit.
+                AND coalesce(json_extract(candidate.payload_json, '$.userMessageId'), '')
+                  NOT LIKE 'keep-warm:%'
               -- latestExecutedRun: the run that ended last (runRanAfter).
               ORDER BY candidate.completed_at IS NULL DESC, candidate.completed_at DESC,
                 candidate.ordinal DESC, candidate.run_id DESC
@@ -9085,7 +9103,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 SELECT message.updated_at
                 FROM orchestration_v2_projection_messages message
                 WHERE message.thread_id = t.thread_id AND message.role = 'user'
-                  AND NOT ${isIdleCompactionMessage("message")}
+                  AND NOT ${isSilentPromptMessage("message")}
                 ORDER BY message.updated_at DESC, message.message_id DESC
                 LIMIT 1
               ) AS latest_user_message_at,
@@ -9094,7 +9112,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 FROM orchestration_v2_projection_messages message
                 WHERE message.thread_id = t.thread_id AND message.role = 'user'
                   AND json_extract(message.payload_json, '$.createdBy') = 'user'
-                  AND NOT ${isIdleCompactionMessage("message")}
+                  AND NOT ${isSilentPromptMessage("message")}
                 ORDER BY message.updated_at DESC, message.message_id DESC
                 LIMIT 1
               ) AS latest_user_authored_message_at
@@ -9140,7 +9158,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                     SELECT 1 FROM orchestration_v2_projection_messages message
                     WHERE message.thread_id = t.thread_id AND message.role = 'user'
                       AND json_extract(message.payload_json, '$.createdBy') = 'user'
-                      AND NOT ${isIdleCompactionMessage("message")}
+                      AND NOT ${isSilentPromptMessage("message")}
                       AND message.updated_at > COALESCE(
                         json_extract(link.payload_json, '$.startedAt'), link.updated_at
                       )
