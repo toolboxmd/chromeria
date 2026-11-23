@@ -9,7 +9,7 @@ import { ComposerBanner } from "../chat/ComposerBanner";
  * The message body paints itself `text-foreground`, so it is re-inked too.
  */
 export const PROMACHOS_OUTBOUND_BUBBLE_CLASS_NAME =
-  "rounded-[18px] px-3.5 py-2.5 [--contrast-message-foreground:var(--primary-foreground)] [--message-foreground:var(--primary-foreground)] [--message-surface:var(--primary)] [&_.text-foreground]:text-message-foreground";
+  "rounded-[18px] px-3.5 py-2.5 [--contrast-message-foreground:var(--primary-foreground)] [--message-foreground:var(--primary-foreground)] [--message-surface:var(--primary)] [&_.text-foreground]:text-message-foreground [&_.text-muted-foreground]:text-message-foreground/75";
 
 /** Where the composer's question or approval card appears inside the chat. */
 export function PromachosInlineCardHost({
