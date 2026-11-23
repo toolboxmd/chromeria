@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { promachosBubbleFragments } from "./promachosBubbles";
+import { promachosBubbleFragments } from "./promachosBubbleFragments";
 
 function fragments(markdown: string) {
   return promachosBubbleFragments(markdown).map((fragment) =>
