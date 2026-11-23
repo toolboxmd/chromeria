@@ -3,6 +3,7 @@ import {
   type OrchestrationV2ThreadShell,
   type ServerProvider,
   type ServerSettings,
+  ThreadId,
   type WightMode,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -55,6 +56,16 @@ export function wightIdle(thread: WightThread): boolean {
   );
 }
 
+const wightActivations = (settings: ServerSettings): Array<readonly [string, WightMode]> =>
+  Object.entries(settings.threadIdleModes).flatMap(([id, mode]) =>
+    mode.type === "wight" ? [[id, mode] as const] : [],
+  );
+
+const wightActivation = (settings: ServerSettings, id: string): WightMode | undefined => {
+  const mode = settings.threadIdleModes[ThreadId.make(id)];
+  return mode?.type === "wight" ? mode : undefined;
+};
+
 /** New inputs already reach the provider through normal user/report/answer delivery. */
 const wightContinueText = (now: string) =>
   `Continue. Current date and time: ${now}. (Wight mode.)\nConsider any new user messages, child reports and answers in this conversation since your last turn.`;
@@ -79,8 +90,11 @@ export const makeWightMode = Effect.fnUntraced(function* <E, R>(deps: {
   const reconcile = Effect.fn("WightMode.reconcile")(function* (): Effect.fn.Return<void, E, R> {
     const settings = yield* deps.settings;
     const now = yield* Clock.currentTimeMillis;
-    const nextDeadline = Object.values(settings.wightModes)
-      .flatMap((mode) => (mode.expiresAt !== null && mode.expiresAt > now ? [mode.expiresAt] : []))
+    const activations = wightActivations(settings);
+    const nextDeadline = activations
+      .flatMap(([, mode]) =>
+        mode.expiresAt !== null && mode.expiresAt > now ? [mode.expiresAt] : [],
+      )
       .reduce<number | null>(
         (earliest, time) => (earliest === null ? time : Math.min(earliest, time)),
         null,
@@ -103,9 +117,9 @@ export const makeWightMode = Effect.fnUntraced(function* <E, R>(deps: {
         );
       }
     }
-    if (Object.keys(settings.wightModes).length === 0) return;
+    if (activations.length === 0) return;
     const providers = yield* deps.providers;
-    for (const [id, activation] of Object.entries(settings.wightModes)) {
+    for (const [id, activation] of activations) {
       if (activation.expiresAt !== null && activation.expiresAt <= now) continue;
       if (yield* deps.retired(id)) continue;
       const thread = yield* deps.thread(id);
@@ -117,7 +131,7 @@ export const makeWightMode = Effect.fnUntraced(function* <E, R>(deps: {
       if (wightPaused(provider, limit)) continue;
       // Inputs may have changed while reading the shell; the dispatch also compares the live thread.
       const currentSettings = yield* deps.settings;
-      const current = currentSettings.wightModes[thread.id];
+      const current = wightActivation(currentSettings, thread.id);
       const sendAt = yield* Clock.currentTimeMillis;
       if (
         !current ||
@@ -140,7 +154,7 @@ export const makeWightMode = Effect.fnUntraced(function* <E, R>(deps: {
         activation,
         Effect.gen(function* () {
           const current = yield* deps.settings;
-          const active = current.wightModes[thread.id];
+          const active = wightActivation(current, thread.id);
           if (
             !active ||
             active.enabledAt !== activation.enabledAt ||

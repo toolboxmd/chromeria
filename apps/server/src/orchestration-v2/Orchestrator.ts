@@ -16,7 +16,7 @@ import {
 } from "@t3tools/contracts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as WightAdmission from "../wight/AdmissionHooks.ts";
-import { wightAdmissionPlan } from "../wight/admission.ts";
+import { idleAdmissionPlan } from "../wight/admission.ts";
 import {
   reconcileChildRequests,
   reconcilePendingChildRequests,
@@ -19308,7 +19308,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command.usageLimitContinuationOfRunId ??
     command.manualContinuationOfRunId ??
     command.forkPrismRetryOfRunId ??
-    command.wightAdmission?.latestRunId ??
+    // A keep-warm ping is not part of the thread's delegated work.
+    (command.idleAdmission?.mode === "wight" ? command.idleAdmission.latestRunId : null) ??
     undefined;
 
   const replayCommandReceipt = Effect.fn("orchestrationV2.dispatch.replayReceipt")(function* (
@@ -19545,8 +19546,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     )
       forkPlans.push(propagatedStopAdmission(command.parentThreadId, command.forkRetirementStop));
     if (command.type === "message.dispatch") {
-      const wightPlan = wightAdmissionPlan(command);
-      if (wightPlan !== null) forkPlans.push(wightPlan);
+      const idlePlan = idleAdmissionPlan(command);
+      if (idlePlan !== null) forkPlans.push(idlePlan);
     }
     const plan = yield* Effect.gen(function* () {
       if (heldProviderWake && command.type === "message.dispatch") {
@@ -19601,7 +19602,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: "Wight activation no longer permits continuation.",
+          cause: "The thread's idle mode no longer permits this turn.",
         });
       const interceptor = yield* ForkCommandInterceptor;
       const forkPlan = yield* interceptor

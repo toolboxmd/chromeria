@@ -59,6 +59,7 @@ import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 import { secretProviderDefinitions } from "./secrets/secretProviderDefinitions.ts";
 import { watchDirectoryReplacements } from "./watchDirectoryReplacements.ts";
 import { migratePrismRoleOverrides } from "./prism/PrismRoleOverrides.ts";
+import { foldLegacyWightModes } from "./wight/legacyWightModes.ts";
 import { savesSpectrumWhiteLabel } from "./spectrum/settings.ts";
 import {
   readSecretFieldValues,
@@ -923,7 +924,9 @@ const make = Effect.gen(function* () {
         : migrateLegacyProviderSettings(settings, legacyProviders, providerHistory),
     );
     const folded = settingsFileTrusted
-      ? migratePrismRoleOverrides(foldLegacyProjectSettings(loaded, legacyProjectRows))
+      ? foldLegacyWightModes(
+          migratePrismRoleOverrides(foldLegacyProjectSettings(loaded, legacyProjectRows)),
+        )
       : loaded;
     // Remove retired keys only after copying secrets and writing the new file; failures retry on next load.
     const legacySecretsCopied = yield* Effect.forEach(

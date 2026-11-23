@@ -21,11 +21,11 @@ export const readWightThread = Effect.fn("Wight.readThread")(function* (threadId
   return { ...shell, hasQueuedRuns: queued.length > 0 };
 });
 
-/** Stale Wight admission never creates a run, a message or a queued continuation. */
-export function wightAdmissionPlan(
+/** A stale idle-mode turn never creates a run, a message or a queued continuation. */
+export function idleAdmissionPlan(
   command: Extract<OrchestrationV2ServerCommand, { type: "message.dispatch" }>,
 ): ForkCommitPlan | null {
-  const expected = command.wightAdmission;
+  const expected = command.idleAdmission;
   if (expected === undefined) return null;
   const threadId = command.threadId;
   return {

@@ -274,7 +274,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
     ).pipe(Effect.provide(layerServerSettings())),
   );
   it.effect(
-    "preserves saved V1 Prism kits and opaque Wight settings through unrelated writes",
+    "preserves saved V1 Prism kits and moves saved Wight activations into thread idle modes",
     () =>
       Effect.gen(function* () {
         const config = yield* ServerConfig.ServerConfig;
@@ -347,12 +347,19 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         );
         const initial = yield* service.getSettings;
         assert.deepEqual(initial.prismRoles, opaque.prismRoles);
-        assert.deepEqual(initial.wightModes, opaque.wightModes);
+        assert.isUndefined(initial.wightModes);
+        assert.deepEqual(
+          initial.threadIdleModes,
+          Object.fromEntries(
+            Object.entries(opaque.wightModes).map(([id, mode]) => [id, { type: "wight", ...mode }]),
+          ),
+        );
         assert.deepEqual(initial.projectSettingsOverrides[ProjectId.make("legacy")], project);
         yield* service.updateSettings({ responseStreamingMode: "turn" });
         const persisted = JSON.parse(yield* fs.readFileString(config.settingsPath));
         assert.deepEqual(persisted.prismRoles, opaque.prismRoles);
-        assert.deepEqual(persisted.wightModes, opaque.wightModes);
+        assert.isUndefined(persisted.wightModes);
+        assert.deepEqual(persisted.threadIdleModes, initial.threadIdleModes);
         assert.isTrue(persisted.autoUpdateProviders);
         assert.deepEqual(persisted.projectSettingsOverrides.legacy, project);
       }).pipe(Effect.provide(layerServerSettings())),

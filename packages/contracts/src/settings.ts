@@ -62,7 +62,7 @@ import {
   ProviderInstanceId,
   ProviderDriverKind,
 } from "./providerInstance.ts";
-import { WightMode } from "./wight.ts";
+import { ThreadIdleMode } from "./threadIdleMode.ts";
 import { PullRequestMergeMethod } from "./pullRequest.ts";
 import {
   CloudSpeechModelId,
@@ -1419,7 +1419,8 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   ...forkOpaqueSettingsFields,
-  wightModes: Schema.Record(ThreadId, WightMode).pipe(
+  // Saved `wightModes` stays opaque above; the settings service moves it here on load.
+  threadIdleModes: Schema.Record(ThreadId, ThreadIdleMode).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
   autoUpdateProviders: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -1905,7 +1906,7 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   prismRoles: Schema.optionalKey(PrismRoleKitsPatch),
   spectrum: Schema.optionalKey(SpectrumSettings),
-  wightModes: Schema.optionalKey(Schema.Record(ThreadId, Schema.NullOr(WightMode))),
+  threadIdleModes: Schema.optionalKey(Schema.Record(ThreadId, Schema.NullOr(ThreadIdleMode))),
   worktreeCleanup: Schema.optionalKey(
     Schema.NullOr(
       Schema.Union([

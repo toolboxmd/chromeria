@@ -58,7 +58,8 @@ const make = Effect.gen(function* () {
           dispatchMode: { type: "start_immediately" },
           createdBy: "user",
           creationSource: "server",
-          wightAdmission: {
+          idleAdmission: {
+            mode: "wight",
             latestRunId: thread.latestRunId,
             updatedAt: DateTime.toEpochMillis(thread.updatedAt),
             providerInstanceId: thread.providerInstanceId,
