@@ -15,6 +15,7 @@ import {
   type ModelSelection,
   NodeId,
   type OrchestrationV2Run,
+  type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   ProjectId,
   ProviderDriverKind,
@@ -1975,15 +1976,55 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
     }),
   );
 
-  const queueScopedCompletionWake = (key: string, pendingIssues: ReadonlyArray<number>) =>
+  const updateTask = (
+    threadId: ThreadId,
+    taskId: NodeId,
+    patch: Partial<OrchestrationV2Subagent>,
+  ) =>
     Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const task = (yield* orchestrator.getThreadProjection(threadId)).subagents.find(
+        (row) => row.id === taskId,
+      )!;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make(`event:${taskId}:patched`),
+            type: "subagent.updated",
+            threadId,
+            runId: task.runId!,
+            nodeId: task.id,
+            driver,
+            providerInstanceId: modelSelection.instanceId,
+            occurredAt: task.updatedAt,
+            payload: { ...task, ...patch },
+          },
+        ],
+      });
+    });
+
+  const queueScopedCompletionWake = (input: {
+    readonly key: string;
+    /** Issues of results reserved in the Issue 1 wake beside the one the parent reads. */
+    readonly reserved?: ReadonlyArray<number>;
+    readonly pending: ReadonlyArray<number>;
+    readonly patches?: (ids: {
+      readonly reservedIds: ReadonlyArray<NodeId>;
+      readonly pendingIds: ReadonlyArray<NodeId>;
+    }) => ReadonlyArray<readonly [NodeId, Partial<OrchestrationV2Subagent>]>;
+  }) =>
+    Effect.gen(function* () {
+      const { key } = input;
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const sink = yield* EventSink.EventSinkV2;
       const now = yield* DateTime.now;
       const threadId = ThreadId.make(`${key}-parent`);
       const runId = RunId.make(`${key}-origin`);
       const taskId = NodeId.make(`${key}-read`);
-      const pendingIds = pendingIssues.map((_, index) => NodeId.make(`${key}-pending-${index}`));
+      const reserved = input.reserved ?? [];
+      const reservedIds = reserved.map((_, index) => NodeId.make(`${key}-reserved-${index}`));
+      const pendingIds = input.pending.map((_, index) => NodeId.make(`${key}-pending-${index}`));
       yield* seedParentWithTerminalTask({
         threadId,
         projectId: ProjectId.make(`${key}-project`),
@@ -1991,11 +2032,15 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
         rootNodeId: NodeId.make(`${key}-root`),
         taskId,
         deliveryState: "claimed",
-        deliveryTaskIds: [taskId],
-        siblingTasks: pendingIds.map((id) => ({ id, deliveryState: "pending" })),
+        deliveryTaskIds: [taskId, ...reservedIds],
+        siblingTasks: [
+          ...reservedIds.map((id) => ({ id, deliveryState: "claimed" as const })),
+          ...pendingIds.map((id) => ({ id, deliveryState: "pending" as const })),
+        ],
         issueByTask: new Map([
           [taskId, 1],
-          ...pendingIds.map((id, index) => [id, pendingIssues[index]!] as const),
+          ...reservedIds.map((id, index) => [id, reserved[index]!] as const),
+          ...pendingIds.map((id, index) => [id, input.pending[index]!] as const),
         ]),
         completionWake: "always",
         now,
@@ -2019,6 +2064,8 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
           taskIds: delivery.taskIds,
         },
       });
+      for (const [id, patch] of input.patches?.({ reservedIds, pendingIds }) ?? [])
+        yield* updateTask(threadId, id, patch);
       const afterAcknowledge = yield* sink.latestSequence();
       yield* orchestrator.dispatch({
         type: "delegated_task.completion-delivery.acknowledge",
@@ -2034,6 +2081,7 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
         now,
         threadId,
         runId,
+        reservedIds,
         pendingIds,
         delivery,
         wake,
@@ -2058,61 +2106,127 @@ it.layer(layerContinuationWorkerTest)("interrupted completion wakes", (it) => {
       Stream.runDrain,
     );
 
-  it.effect("acknowledging a queued wake folds in only results of its own scope", () =>
-    Effect.gen(function* () {
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const { sink, now, threadId, runId, pendingIds, delivery, wake, projection } =
-        yield* queueScopedCompletionWake("scoped-wake-fold", [2, 1]);
-      const [otherScope, sameScope] = pendingIds as [NodeId, NodeId];
-      assert.equal(wake.status, "queued");
-      assert.deepEqual(executionPurposeOf(wake).scope, issueScope(1));
-      const message = projection.messages.find((row) => row.id === delivery.messageId);
-      assert.deepEqual(message?.delegatedCompletion?.taskIds, [sameScope]);
-      assert.equal(message?.text, `Delegated task ${sameScope} [completed]:\nchild finished`);
-      const reserved = projection.runs.find((run) => run.id === runId)?.delegatedCompletion
-        ?.delivery;
-      assert.deepEqual(reserved?.taskIds, [sameScope]);
-      assert.deepEqual(reserved?.purposeCauses, [
-        { taskId: sameScope, ...issueCompletionSource(sameScope, new Map([[sameScope, 1]]))! },
-      ]);
-      const stateOf = (tasks: OrchestrationV2ThreadProjection["subagents"], id: NodeId) =>
-        tasks.find((task) => task.id === id)?.completionDelivery?.state;
-      assert.equal(stateOf(projection.subagents, otherScope), "pending");
-      assert.equal(stateOf(projection.subagents, sameScope), "claimed");
+  const stateOf = (tasks: OrchestrationV2ThreadProjection["subagents"], id: NodeId) =>
+    tasks.find((task) => task.id === id)?.completionDelivery?.state;
 
-      const afterWake = yield* sink.latestSequence();
-      yield* sink.write({
-        events: [
+  // Each case leaves one Issue 1 result in the queued Issue 1 wake; the rest wait for their own.
+  type ScopedIds = {
+    readonly reservedIds: ReadonlyArray<NodeId>;
+    readonly pendingIds: ReadonlyArray<NodeId>;
+  };
+  const scopedFoldCases: ReadonlyArray<{
+    readonly name: string;
+    readonly key: string;
+    readonly reserved: ReadonlyArray<number>;
+    readonly pending: ReadonlyArray<number>;
+    readonly patches?: (
+      ids: ScopedIds,
+    ) => ReadonlyArray<readonly [NodeId, Partial<OrchestrationV2Subagent>]>;
+    readonly kept: (ids: ScopedIds) => NodeId;
+    readonly waiting: (ids: ScopedIds) => ReadonlyArray<NodeId>;
+    readonly waitingIssues: ReadonlyArray<number>;
+  }> = [
+    {
+      name: "a pending result of another scope",
+      key: "scoped-wake-fold-pending",
+      reserved: [],
+      pending: [2, 1],
+      kept: (ids) => ids.pendingIds[1]!,
+      waiting: (ids) => [ids.pendingIds[0]!],
+      waitingIssues: [2],
+    },
+    {
+      name: "a reserved task's newer result of another scope",
+      key: "scoped-wake-fold-follow-up",
+      reserved: [1, 1],
+      pending: [],
+      patches: ({ reservedIds }) => [
+        [
+          reservedIds[0]!,
           {
-            ...runEvent({
-              threadId,
-              runId: wake.id,
-              ordinal: wake.ordinal,
-              status: "completed",
-              now,
-            }),
-            payload: { ...wake, status: "completed", startedAt: now, completedAt: now },
+            completionDelivery: { state: "pending", observedByRunId: null },
+            completionSource: {
+              runId: RunId.make(`run:${reservedIds[0]}:follow-up`),
+              purpose: { version: 1, scope: issueScope(2), provenance: { type: "declared" } },
+            },
+            followUpResult: "follow-up under Issue 2",
           },
         ],
-      });
-      yield* reservedWake(sink, afterWake, otherScope);
-      const settled = yield* orchestrator.getThreadProjection(threadId);
-      assert.equal(stateOf(settled.subagents, sameScope), "delivered");
-      const successor = settled.runs.find((run) => run.id === runId)?.delegatedCompletion?.delivery;
-      assert.deepEqual(successor?.taskIds, [otherScope]);
-      assert.deepEqual(
-        successor?.purposeCauses?.map((cause) => cause.purpose.scope),
-        [issueScope(2)],
-      );
-      assert.notEqual(successor?.messageId, delivery.messageId);
-    }),
+      ],
+      kept: (ids) => ids.reservedIds[1]!,
+      waiting: (ids) => [ids.reservedIds[0]!],
+      waitingIssues: [2],
+    },
+    {
+      name: "a Run group with a member of another scope",
+      key: "scoped-wake-fold-group",
+      reserved: [1],
+      pending: [1, 2],
+      patches: ({ pendingIds }) =>
+        pendingIds.map((id) => [id, { runGroupId: NodeId.make("scoped-wake-fold-group") }]),
+      kept: (ids) => ids.reservedIds[0]!,
+      waiting: (ids) => ids.pendingIds,
+      waitingIssues: [1, 2],
+    },
+  ];
+
+  it.effect.each(scopedFoldCases)(
+    "acknowledging a queued wake keeps $name for its own wake",
+    (scenario) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const result = yield* queueScopedCompletionWake(scenario);
+        const { sink, now, threadId, runId, delivery, wake, projection } = result;
+        const kept = scenario.kept(result);
+        const waiting = scenario.waiting(result);
+        assert.equal(wake.status, "queued");
+        assert.deepEqual(executionPurposeOf(wake).scope, issueScope(1));
+        const message = projection.messages.find((row) => row.id === delivery.messageId);
+        assert.deepEqual(message?.delegatedCompletion?.taskIds, [kept]);
+        assert.equal(message?.text, `Delegated task ${kept} [completed]:\nchild finished`);
+        const reserved = projection.runs.find((run) => run.id === runId)?.delegatedCompletion
+          ?.delivery;
+        assert.deepEqual(reserved?.taskIds, [kept]);
+        assert.deepEqual(reserved?.purposeCauses, [
+          { taskId: kept, ...issueCompletionSource(kept, new Map([[kept, 1]]))! },
+        ]);
+        assert.equal(stateOf(projection.subagents, kept), "claimed");
+        for (const id of waiting) assert.equal(stateOf(projection.subagents, id), "pending");
+
+        const afterWake = yield* sink.latestSequence();
+        yield* sink.write({
+          events: [
+            {
+              ...runEvent({
+                threadId,
+                runId: wake.id,
+                ordinal: wake.ordinal,
+                status: "completed",
+                now,
+              }),
+              payload: { ...wake, status: "completed", startedAt: now, completedAt: now },
+            },
+          ],
+        });
+        yield* reservedWake(sink, afterWake, waiting[0]!);
+        const settled = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(stateOf(settled.subagents, kept), "delivered");
+        const successor = settled.runs.find((run) => run.id === runId)?.delegatedCompletion
+          ?.delivery;
+        assert.sameMembers([...(successor?.taskIds ?? [])], [...waiting]);
+        assert.sameDeepMembers(
+          successor?.purposeCauses?.map((cause) => cause.purpose.scope) ?? [],
+          scenario.waitingIssues.map(issueScope),
+        );
+        assert.notEqual(successor?.messageId, delivery.messageId);
+      }),
   );
 
   it.effect("acknowledging a queued wake's last result leaves another scope its own wake", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const { sink, threadId, runId, pendingIds, delivery, wake, afterAcknowledge } =
-        yield* queueScopedCompletionWake("scoped-wake-empty", [2]);
+        yield* queueScopedCompletionWake({ key: "scoped-wake-empty", pending: [2] });
       const [otherScope] = pendingIds as [NodeId];
       assert.equal(wake.status, "cancelled");
       yield* reservedWake(sink, afterAcknowledge, otherScope);
