@@ -13216,5 +13216,16 @@
   "27d76249d09eb69f": "Granskningsguiden är klar",
   "faa3bb26abb39c93": "Granskningsguiden misslyckades",
   "b7df38b7d8792d78": "Öppna guiden",
-  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide"
+  "9e91e9a77b664e4e": "Kunde inte starta en granskningsguide",
+  "1acdcacbf43bb541": "väntar på godkännande",
+  "c43e01f0bded3e8d": "godkännande beviljat",
+  "0ec23c2887bbf820": "godkännande avböjt",
+  "408f0ac040742766": "godkännande besvarat",
+  "ea7d64fe084077da": "godkännandebegäran stängd",
+  "67101083bb072b33": "bad om godkännande",
+  "9aa3da7c4b3eb0b4": "väntar på ett svar",
+  "02faa9361f0444db": "frågan besvarad",
+  "12510540ccd8b916": "frågan avfärdad",
+  "e418f5ef2a0c35ba": "frågan stängd",
+  "8787bb0bedaf30af": "ställde en fråga"
 }

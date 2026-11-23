@@ -326,6 +326,8 @@ import { resolveUserMessageIntentBadge } from "./userMessageIntentBadge";
 import { fileChipClipboardPath, fileChipMenu, resolveFileChipTarget } from "./fileChipMenu";
 import { useFileChipShare } from "./useFileChipShare";
 import { useOpenLinkedThread } from "./useOpenLinkedThread";
+import { useChildRequestNotice } from "./useChildRequestNotice";
+import type { ChildRequestNoticeAttribution } from "@t3tools/contracts";
 import { useOpenThreadLink } from "./useOpenThreadLink";
 import {
   MarkdownImageAvailableWidthContext,
@@ -1611,6 +1613,8 @@ function AgentMessageFoldHeader(props: {
   readonly senderThreadId?: ThreadId;
   /** A linked environment's sender title, for when this client cannot reach it. */
   readonly senderTitle?: string;
+  /** Fork: a descendant's relayed request, named by its child thread (toolboxmd/chromeria#906). */
+  readonly childRequest?: ChildRequestNoticeAttribution;
   readonly summary: string;
   readonly expanded: boolean;
   readonly onToggle: () => void;
@@ -1619,12 +1623,18 @@ function AgentMessageFoldHeader(props: {
   const senderShell = useQuietThreadShell(
     props.senderThreadId ? scopeThreadRef(props.environmentId, props.senderThreadId) : null,
   );
+  const childNotice = useChildRequestNotice(props.environmentId, props.childRequest);
+  const openLinkedThread = useOpenLinkedThread();
   const gt = useGT();
-  const label = senderShell?.title.trim() || props.senderTitle?.trim() || gt("Agent");
+  const label =
+    senderShell?.title.trim() ||
+    props.senderTitle?.trim() ||
+    (childNotice === null ? gt("Agent") : gt("Child thread"));
+  const summary = childNotice?.summary ?? props.summary;
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={gt("{label}: {summary}", { label, summary: props.summary })}
+      accessibilityLabel={gt("{label}: {summary}", { label, summary })}
       accessibilityHint={
         props.expanded
           ? gt("Double tap to hide the message.")
@@ -1639,20 +1649,42 @@ function AgentMessageFoldHeader(props: {
       }}
     >
       <SymbolView
-        name="bubble.left.and.bubble.right"
+        name={childNotice?.symbol ?? "bubble.left.and.bubble.right"}
         size={14}
         weight="medium"
         tintColorClassName="accent-user-bubble-foreground-muted"
         type="monochrome"
       />
-      <Text
-        numberOfLines={1}
-        className="max-w-[50%] shrink-0 font-t3-medium text-sm text-user-bubble-foreground-muted"
-      >
-        {label}
-      </Text>
+      {childNotice === null ? (
+        <Text
+          numberOfLines={1}
+          className="max-w-[50%] shrink-0 font-t3-medium text-sm text-user-bubble-foreground-muted"
+        >
+          {label}
+        </Text>
+      ) : (
+        <Pressable
+          accessibilityRole="link"
+          accessibilityLabel={gt("Open {title}", { title: label })}
+          hitSlop={6}
+          className="max-w-[50%] shrink-0"
+          onPress={() =>
+            openLinkedThread({
+              environmentId: String(childNotice.childRef.environmentId),
+              threadId: String(childNotice.childRef.threadId),
+            })
+          }
+        >
+          <Text
+            numberOfLines={1}
+            className="font-t3-medium text-sm text-user-bubble-foreground-muted underline"
+          >
+            {label}
+          </Text>
+        </Pressable>
+      )}
       <Text numberOfLines={1} className="min-w-0 shrink text-sm text-user-bubble-foreground">
-        {props.summary}
+        {summary}
       </Text>
       <ThreadDisclosureChevron
         expanded={props.expanded}
@@ -2332,9 +2364,15 @@ function renderFeedEntry(
     }
     if (isUser) {
       const enterAnimated = isFreshTimestamp(message.createdAt);
-      const foldRowId = presentation.attribution === "agent" ? `agent:${message.id}` : null;
+      const foldRowId =
+        presentation.attribution === "agent" || presentation.attribution === "child"
+          ? `agent:${message.id}`
+          : null;
       // A linked environment's agent sent it from a thread there.
       const senderRef =
+        (presentation.childRequest
+          ? scopeThreadRef(props.environmentId, presentation.childRequest.childThreadId)
+          : null) ??
         message.linkedSender ??
         (message.senderThreadId
           ? scopeThreadRef(props.environmentId, message.senderThreadId)
@@ -2465,6 +2503,9 @@ function renderFeedEntry(
                   environmentId={senderRef?.environmentId ?? props.environmentId}
                   senderThreadId={senderRef?.threadId}
                   {...(message.linkedSender ? { senderTitle: message.linkedSender.title } : {})}
+                  {...(presentation.childRequest
+                    ? { childRequest: presentation.childRequest }
+                    : {})}
                   summary={
                     replaceComposerContextReferences(presentation.text, (ref) => ref.label)
                       .split(/\r?\n/)
@@ -4409,7 +4450,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
               const { attribution } = resolveUserMessagePresentation(entry.message);
               return attribution === "automation" || attribution === "agent"
                 ? `message:${attribution}`
-                : `message:${entry.message.role}`;
+                : attribution === "child"
+                  ? "message:agent"
+                  : `message:${entry.message.role}`;
             }}
             getFixedItemSize={getFixedItemSize}
             drawDistance={500}

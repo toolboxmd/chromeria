@@ -5761,5 +5761,17 @@
   "ad208e3e32c85029": "Alle ausblenden",
   "3328503592789bed": "Zen",
   "856812e7e1fc445e": "Tool-Aufrufe im Chat",
-  "8d545d54c0a9e950": "Die Befehle, Bearbeitungen und Suchen ausblenden, die Agenten ausführen. „Erfolgreiche ausblenden“ behält Fehler. „Zen“ zeigt nur endgültige Antworten. Genehmigungen, Fragen und Fehler werden immer angezeigt."
+  "8d545d54c0a9e950": "Die Befehle, Bearbeitungen und Suchen ausblenden, die Agenten ausführen. „Erfolgreiche ausblenden“ behält Fehler. „Zen“ zeigt nur endgültige Antworten. Genehmigungen, Fragen und Fehler werden immer angezeigt.",
+  "1acdcacbf43bb541": "wartet auf Freigabe",
+  "c43e01f0bded3e8d": "Freigabe erteilt",
+  "0ec23c2887bbf820": "Freigabe abgelehnt",
+  "408f0ac040742766": "Freigabe beantwortet",
+  "ea7d64fe084077da": "Freigabeanfrage geschlossen",
+  "67101083bb072b33": "hat um Freigabe gebeten",
+  "9aa3da7c4b3eb0b4": "wartet auf eine Antwort",
+  "02faa9361f0444db": "Frage beantwortet",
+  "12510540ccd8b916": "Frage verworfen",
+  "e418f5ef2a0c35ba": "Frage geschlossen",
+  "8787bb0bedaf30af": "hat eine Frage gestellt",
+  "2f28dab59b2421d5": "Unterthread"
 }

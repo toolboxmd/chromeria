@@ -323,6 +323,11 @@ it.effect("live pending-request listener wakes an ancestor without invoking reco
     const parent = yield* orchestrator.getThreadProjection(root);
     assert.lengthOf(parent.messages, 1);
     assert.include(parent.messages[0]!.text, "an approval");
+    assert.deepStrictEqual(parent.messages[0]!.context?.childRequest, {
+      childThreadId: child,
+      requestId,
+      kind: "approval",
+    });
   }).pipe(
     Effect.provide(
       Layer.merge(

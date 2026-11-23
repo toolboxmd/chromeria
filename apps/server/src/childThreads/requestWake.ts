@@ -112,6 +112,15 @@ export const reconcileChildRequests = Effect.fn("childThreads.reconcileRequests"
               messageId,
               createdBy: "system",
               creationSource: "server",
+              context: {
+                version: 1,
+                records: [],
+                childRequest: {
+                  childThreadId: childId,
+                  requestId: request.id,
+                  kind: request.kind === "user_input" ? "question" : "approval",
+                },
+              },
               attachments: [],
               deliveryIntent: "auto",
               dispatchMode: { type: "queue_after_active" },

@@ -970,7 +970,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "https://github.com/toolboxmd/chromeria/issues/422",
     "https://github.com/toolboxmd/chromeria/issues/255",
     "https://github.com/toolboxmd/chromeria/issues/652",
-    "https://github.com/toolboxmd/chromeria/issues/866"
+    "https://github.com/toolboxmd/chromeria/issues/866",
+    "https://github.com/toolboxmd/chromeria/issues/906"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/181",
@@ -1015,11 +1016,17 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/childThreads/PendingRequestIngress.ts",
     "apps/server/src/childThreads/PendingRequestService.ts",
     "apps/server/src/childThreads/pendingResponseAdmission.ts",
-    "apps/server/src/childThreads/requestWake.noRequests.test.ts"
+    "apps/server/src/childThreads/requestWake.noRequests.test.ts",
+    "apps/web/src/components/chat/useChildRequestNotice.ts",
+    "apps/mobile/src/features/threads/useChildRequestNotice.ts"
   ],
   "upstreamFiles": [
     "packages/client-runtime/src/userMessage.ts",
     "packages/client-runtime/src/userMessage.test.ts",
+    "apps/mobile/src/features/threads/ThreadFeed.tsx",
+    "apps/mobile/src/features/threads/ThreadQueueControl.tsx",
+    "apps/web/src/components/chat/QueuedRunsControl.tsx",
+    "packages/contracts/src/composerContext.ts",
     "packages/provider-core/src/server/IdAllocator.ts",
     "apps/server/src/orchestration-v2/BackgroundWorkStop.integration.test.ts",
     "packages/client-runtime/src/state/threadDetail.ts",

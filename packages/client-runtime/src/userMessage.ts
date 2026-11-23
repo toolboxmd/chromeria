@@ -1,11 +1,14 @@
 import {
   type ChatAttachment,
+  type ChildRequestNoticeAttribution,
   type ChatFileAttachment,
   type GuestMessageAttribution,
   type OrchestrationMessageContext,
   type OrchestrationV2Actor,
   type OrchestrationV2CreationSource,
   type OrchestrationV2IdleCompaction,
+  type OrchestrationV2PendingRuntimeRequestSummary,
+  type OrchestrationV2RuntimeRequest,
   type OrchestrationV2UserMessageInputIntent,
   ScheduledTaskId,
 } from "@t3tools/contracts";
@@ -76,16 +79,32 @@ export function resolveUserMessagePresentation(message: {
   readonly createdBy?: OrchestrationV2Actor;
   readonly creationSource?: OrchestrationV2CreationSource;
   readonly scheduledTaskId?: ScheduledTaskId | undefined;
-  readonly context?: { readonly guest?: GuestMessageAttribution | undefined } | undefined;
+  readonly context?:
+    | {
+        readonly guest?: GuestMessageAttribution | undefined;
+        readonly childRequest?: ChildRequestNoticeAttribution | undefined;
+      }
+    | undefined;
 }): {
   readonly text: string;
-  readonly attribution: "automation" | "agent" | "t3code" | "guest" | null;
+  readonly attribution: "automation" | "agent" | "t3code" | "guest" | "child" | null;
   readonly scheduledTaskId: ScheduledTaskId | undefined;
   /** Set when `attribution` is "guest". */
   readonly guestName?: string;
+  /** Set when `attribution` is "child". */
+  readonly childRequest?: ChildRequestNoticeAttribution;
 } {
   if (message.role !== "user") {
     return { text: message.text, attribution: null, scheduledTaskId: undefined };
+  }
+  // Fork: only the server relay sends as the system; WebSocket intake stamps clients as the user.
+  const childRequest = message.context?.childRequest;
+  if (
+    childRequest !== undefined &&
+    message.createdBy === "system" &&
+    message.creationSource === "server"
+  ) {
+    return { text: message.text, attribution: "child", scheduledTaskId: undefined, childRequest };
   }
   // The stored text names the guest for the agent; people see the guest's own words.
   const guest = message.context?.guest;
@@ -149,4 +168,65 @@ export function resolveUserMessageGrouping(
     groupedWithNext: isOwnMessage(message) && isOwnMessage(next),
     continuesSteer: groupedWithPrevious && isSteer(message) && isSteer(previous),
   };
+}
+
+/** Fork: where a descendant's request stands, for the one-line notice that relayed it. */
+export type ChildRequestNoticeState =
+  | "waiting"
+  | "approved"
+  | "declined"
+  | "answered"
+  | "closed"
+  | "unknown";
+
+export const CHILD_REQUEST_NOTICE_LABELS = {
+  approval: {
+    waiting: msg("is waiting for approval"),
+    approved: msg("approval was approved"),
+    declined: msg("approval was declined"),
+    answered: msg("approval was answered"),
+    closed: msg("approval request closed"),
+    unknown: msg("asked for approval"),
+  },
+  question: {
+    waiting: msg("is waiting for an answer"),
+    approved: msg("question was answered"),
+    declined: msg("question was dismissed"),
+    answered: msg("question was answered"),
+    closed: msg("question closed"),
+    unknown: msg("asked a question"),
+  },
+} satisfies Record<ChildRequestNoticeAttribution["kind"], Record<ChildRequestNoticeState, string>>;
+
+/**
+ * The child's shell names its pending request, so a waiting notice needs no detail subscription;
+ * `request` is read from the child's detail only once the shell no longer names it.
+ */
+export function resolveChildRequestNoticeState(input: {
+  readonly requestId: ChildRequestNoticeAttribution["requestId"];
+  readonly pendingRuntimeRequest:
+    | Pick<OrchestrationV2PendingRuntimeRequestSummary, "id">
+    | null
+    | undefined;
+  readonly request:
+    | Pick<OrchestrationV2RuntimeRequest, "kind" | "status" | "decision">
+    | null
+    | undefined;
+}): ChildRequestNoticeState {
+  if (input.pendingRuntimeRequest?.id === input.requestId) return "waiting";
+  const request = input.request;
+  if (request === null || request === undefined) return "unknown";
+  switch (request.status) {
+    case "pending":
+      return "waiting";
+    case "expired":
+    case "cancelled":
+      return "closed";
+    case "resolved":
+      if (request.kind === "user_input") return "answered";
+      if (request.decision === undefined) return "answered";
+      return request.decision === "decline" || request.decision === "cancel"
+        ? "declined"
+        : "approved";
+  }
 }
