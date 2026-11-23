@@ -3937,7 +3937,7 @@ sources and reasons.
 ```json
 {
   "id": "mobile-dark-code-punctuation",
-  "purpose": "Mobile dark-scheme code blocks draw pierre-dark's #636363 punctuation in its ANSI white #bcbcbc, and every fence under dark-scheme code is black-backed (dark user fences of built-in and Material You themes, a Promachos user's fence in both appearances, and a dark Promachos reply's fence made opaque over the screen), so punctuation, punctuation.special included, reaches 4.5:1. The light scheme keeps pierre-light. Drop when @pierre/highlights' dark punctuation and upstream's dark fences reach 4.5:1 together.",
+  "purpose": "Mobile dark-scheme code blocks draw pierre-dark's #636363 punctuation in its ANSI white #bcbcbc, and backs these fences for dark-scheme code: dark user fences in the built-in and Material You themes are black-backed, a Promachos user's fence is black-backed in both appearances, and a Promachos reply's fence is opaque over the screen in dark appearance. On those fences punctuation, punctuation.special included, reaches 4.5:1. The light scheme keeps pierre-light. Drop when @pierre/highlights' dark punctuation and upstream's dark fences reach 4.5:1 together.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/923"],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/main...mobile-dark-punctuation-contrast"],
   "newFiles": ["apps/mobile/src/lib/promachosCodeFence.ts"],
