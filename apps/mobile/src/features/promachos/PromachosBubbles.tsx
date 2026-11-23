@@ -1,7 +1,7 @@
 import { createContext, useMemo, type ReactNode } from "react";
 import { View } from "react-native";
 
-import { promachosBubbleFragments } from "./promachosBubbles";
+import { promachosBubbleFragments } from "./promachosBubbleFragments";
 
 /** Whether the thread on screen is a Promachos chat, whose replies render as bubbles. */
 export const PromachosChatContext = createContext(false);
