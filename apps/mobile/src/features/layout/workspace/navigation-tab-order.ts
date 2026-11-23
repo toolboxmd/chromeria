@@ -1,8 +1,8 @@
 import { msg } from "gt-react-native";
 
 export const NAVIGATION_TAB_ORDER = [
-  "threads",
   "promachos",
+  "threads",
   "pullRequests",
   "issues",
   "usage",
@@ -65,7 +65,10 @@ function isNavigationTab(value: unknown): value is NavigationTab {
 /** Complete older preferences without losing their order or retaining removed sections. */
 export function resolveNavigationTabOrder(saved?: readonly unknown[]): readonly NavigationTab[] {
   if (!saved?.length) return NAVIGATION_TAB_ORDER;
-  return [...new Set([...saved.filter(isNavigationTab), ...NAVIGATION_TAB_ORDER])];
+  const known = saved.filter(isNavigationTab);
+  // Fork: an order saved before the Promachos tab existed gets it in front, as the default has it.
+  const promachos = known.includes("promachos") ? [] : (["promachos"] as const);
+  return [...new Set([...promachos, ...known, ...NAVIGATION_TAB_ORDER])];
 }
 
 export function moveNavigationTab(

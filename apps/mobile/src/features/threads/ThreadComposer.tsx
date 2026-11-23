@@ -219,6 +219,7 @@ function SendActionButton(props: {
   readonly presentation: ComposerSendPresentation;
   readonly disabled: boolean;
   readonly onSend: (followUp?: ActiveTurnComposerAction) => void;
+  readonly variant?: "primary" | "neutral";
 }) {
   const { presentation } = props;
   const gt = useGT();
@@ -228,7 +229,7 @@ function SendActionButton(props: {
       accessibilityLabel={props.accessibilityLabel}
       size={props.size}
       icon={presentation.icon}
-      variant="primary"
+      variant={props.variant ?? "primary"}
       disabled={props.disabled}
       onPress={() => props.onSend()}
     />
@@ -1079,6 +1080,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                     presentation={sendPresentation}
                     disabled={!canSend}
                     onSend={handleSend}
+                    variant={promachos ? "neutral" : "primary"}
                   />
                 )}
               </View>
@@ -1147,6 +1149,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                       presentation={sendPresentation}
                       disabled={!canSend}
                       onSend={handleSend}
+                      variant={promachos ? "neutral" : "primary"}
                     />
                   ) : null}
                 </View>

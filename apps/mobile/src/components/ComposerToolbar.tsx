@@ -289,7 +289,7 @@ export function ComposerActionButton(props: {
   readonly disabled?: boolean;
   readonly icon: ComponentProps<typeof SymbolView>["name"];
   readonly onPress: () => void;
-  readonly variant?: "primary" | "danger";
+  readonly variant?: "primary" | "danger" | "neutral";
   // Menu injects onLongPress on Android and onTouchStart/onPress on iOS.
   readonly onLongPress?: PressableProps["onLongPress"];
   readonly onTouchStart?: PressableProps["onTouchStart"];
@@ -317,7 +317,9 @@ export function ComposerActionButton(props: {
             ? "bg-danger"
             : props.disabled
               ? "bg-foreground/12"
-              : "bg-primary",
+              : props.variant === "neutral"
+                ? "bg-foreground"
+                : "bg-primary",
         )}
       >
         {/* Fade the icon as one layer: a translucent tint, or opacity on a Tabler icon (which
@@ -335,7 +337,9 @@ export function ComposerActionButton(props: {
                 ? "accent-danger-foreground"
                 : props.disabled
                   ? "accent-foreground"
-                  : "accent-primary-foreground"
+                  : props.variant === "neutral"
+                    ? "accent-screen"
+                    : "accent-primary-foreground"
             }
             type="monochrome"
           />

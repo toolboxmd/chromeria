@@ -12,8 +12,8 @@ export interface WorkspaceLaunch {
 
 /**
  * Fork (toolboxmd/chromeria#898): a cold start without a link reopens the tab used last, and the
- * Promachos tab its last conversation. A link, notification or quick action wins: it opens as
- * before, on the default tab.
+ * Promachos tab its last conversation; with nothing remembered it opens on the Promachos tab. A
+ * link, notification or quick action wins: it opens as before, on the default tab.
  */
 export function resolveWorkspaceLaunch(input: {
   readonly launchIntent: boolean;
@@ -24,7 +24,10 @@ export function resolveWorkspaceLaunch(input: {
     | { readonly environmentId: string; readonly threadId: string }
     | undefined;
 }): WorkspaceLaunch {
-  const tab = NAVIGATION_TAB_ORDER.find((candidate) => candidate === input.lastTab);
+  const tab =
+    input.lastTab === undefined
+      ? "promachos"
+      : NAVIGATION_TAB_ORDER.find((candidate) => candidate === input.lastTab);
   if (input.launchIntent || tab === undefined || input.hiddenTabs.includes(tab))
     return { tab: undefined, promachosConversation: null };
   return {

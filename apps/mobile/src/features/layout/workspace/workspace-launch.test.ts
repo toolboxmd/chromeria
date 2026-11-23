@@ -61,13 +61,17 @@ describe("resolveWorkspaceLaunch", () => {
         promachosConversation: undefined,
       }),
     ).toEqual(none);
-    expect(
+  });
+
+  it("opens on the Promachos tab when no tab is remembered, unless the user hid it", () => {
+    const launch = (hiddenTabs: string[]) =>
       resolveWorkspaceLaunch({
         launchIntent: false,
-        hiddenTabs: [],
+        hiddenTabs,
         lastTab: undefined,
         promachosConversation: undefined,
-      }),
-    ).toEqual(none);
+      });
+    expect(launch([])).toEqual({ tab: "promachos", promachosConversation: null });
+    expect(launch(["promachos"])).toEqual({ tab: undefined, promachosConversation: null });
   });
 });

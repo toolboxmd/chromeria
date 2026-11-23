@@ -26,7 +26,21 @@ describe("navigation tab order", () => {
   it("fills missing sections and drops removed placeholders, duplicates, and Settings", () => {
     expect(
       resolveNavigationTabOrder(["usage", "home", "inbox", "settings", "usage", null]),
-    ).toEqual(["usage", "threads", "promachos", "pullRequests", "issues"]);
+    ).toEqual(["promachos", "usage", "threads", "pullRequests", "issues"]);
+    expect(resolveNavigationTabOrder(["issues", "threads", "pullRequests", "usage"])).toEqual([
+      "promachos",
+      "issues",
+      "threads",
+      "pullRequests",
+      "usage",
+    ]);
+    expect(resolveNavigationTabOrder(["threads", "promachos"])).toEqual([
+      "threads",
+      "promachos",
+      "pullRequests",
+      "issues",
+      "usage",
+    ]);
     expect(resolveNavigationTabOrder()).toEqual(NAVIGATION_TAB_ORDER);
   });
 
@@ -73,8 +87,8 @@ describe("navigation tab order", () => {
     const order = moveNavigationTab(undefined, "usage", 0);
     const hidden = toggleNavigationTabVisibility([], "usage");
     expect(enabledNavigationTabs(order, hidden)).toEqual([
-      "threads",
       "promachos",
+      "threads",
       "pullRequests",
       "issues",
     ]);

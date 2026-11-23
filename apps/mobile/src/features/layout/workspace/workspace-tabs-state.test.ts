@@ -64,17 +64,17 @@ describe("workspace root navigation", () => {
 
   it("follows the saved order, completed with the registered sections", () => {
     expect(resolveWorkspaceTabOrder(undefined)).toEqual([
-      "threads",
       "promachos",
+      "threads",
       "pullRequests",
       "issues",
       "usage",
     ]);
     expect(resolveWorkspaceTabOrder(["home", "usage", "issues", "threads"])).toEqual([
+      "promachos",
       "usage",
       "issues",
       "threads",
-      "promachos",
       "pullRequests",
     ]);
   });

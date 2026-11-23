@@ -5,18 +5,19 @@ import { createPortal } from "react-dom";
 import { ComposerBanner } from "../chat/ComposerBanner";
 
 /**
- * Re-points the message tokens so the user's bubble takes the accent, as his send button does.
+ * Re-points the message tokens so the user's bubble is the theme's ink, as the send button is.
  * The message body paints itself `text-foreground`, so it is re-inked too.
  */
 export const PROMACHOS_OUTBOUND_BUBBLE_CLASS_NAME =
-  "rounded-[18px] px-3.5 py-2.5 [--contrast-message-foreground:var(--primary-foreground)] [--message-foreground:var(--primary-foreground)] [--message-surface:var(--primary)] [&_.text-foreground]:text-message-foreground [&_.text-muted-foreground]:text-message-foreground/75";
+  "rounded-[18px] px-3.5 py-2.5 [--contrast-message-foreground:var(--background)] [--message-foreground:var(--background)] [--message-surface:var(--foreground)] [&_.text-foreground]:text-message-foreground [&_.text-muted-foreground]:text-message-foreground/75";
 
 /**
  * One pill row for the composer: attach on the left, the prompt in the middle, dictation and send
  * on the right. Rows the composer adds (validation, live transcription) wrap onto their own line.
+ * The send button takes the theme's ink instead of the accent.
  */
 export const PROMACHOS_COMPOSER_SURFACE_CLASS_NAME =
-  "flex flex-wrap items-end rounded-4xl [&>*]:basis-full [&>[data-chat-composer-body]]:min-w-0 [&>[data-chat-composer-body]]:flex-1 [&>[data-chat-composer-body]]:basis-0 [&>[data-chat-composer-body]]:px-2 [&>[data-chat-composer-body]]:py-2 [&_.composer-tiptap]:min-h-[calc(1lh+--spacing(2))] [&>[data-chat-composer-footer]:not(.hidden)]:contents [&_[data-chat-composer-controls=footer]]:hidden [&_[data-chat-composer-attach]]:order-first [&_[data-chat-composer-attach]]:m-0 [&_[data-chat-composer-attach]]:basis-auto [&_[data-chat-composer-attach]]:py-1.5 [&_[data-chat-composer-attach]]:ps-1.5 [&_[data-chat-composer-actions=right]]:flex-none [&_[data-chat-composer-actions=right]]:basis-auto [&_[data-chat-composer-actions=right]]:py-1.5 [&_[data-chat-composer-actions=right]]:pe-1.5";
+  "flex flex-wrap items-end rounded-4xl [--message-action-foreground:var(--background)] [--message-action-hover:color-mix(in_srgb,var(--foreground)_85%,var(--background))] [--message-action:var(--foreground)] [&>*]:basis-full [&>[data-chat-composer-body]]:min-w-0 [&>[data-chat-composer-body]]:flex-1 [&>[data-chat-composer-body]]:basis-0 [&>[data-chat-composer-body]]:px-2 [&>[data-chat-composer-body]]:py-2 [&_.composer-tiptap]:min-h-[calc(1lh+--spacing(2))] [&>[data-chat-composer-footer]:not(.hidden)]:contents [&_[data-chat-composer-controls=footer]]:hidden [&_[data-chat-composer-attach]]:order-first [&_[data-chat-composer-attach]]:m-0 [&_[data-chat-composer-attach]]:basis-auto [&_[data-chat-composer-attach]]:py-1.5 [&_[data-chat-composer-attach]]:ps-1.5 [&_[data-chat-composer-actions=right]]:flex-none [&_[data-chat-composer-actions=right]]:basis-auto [&_[data-chat-composer-actions=right]]:py-1.5 [&_[data-chat-composer-actions=right]]:pe-1.5";
 
 /** Where the composer's question or approval card appears inside the chat. */
 export function PromachosInlineCardHost({

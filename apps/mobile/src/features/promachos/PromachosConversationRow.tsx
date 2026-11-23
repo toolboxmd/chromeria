@@ -8,7 +8,6 @@ import {
   threadHasUnseenCompletion,
   type ThreadListV2Status,
 } from "../threads/threadListV2";
-import { PromachosAvatar } from "./PromachosStatusLine";
 
 // Thread shells carry no message text, so the preview line says where the conversation stands.
 const PREVIEW: Record<ThreadListV2Status, string> = {
@@ -31,7 +30,7 @@ function rowTime(input: string, nowMs: number, locale: string) {
     : at.toLocaleDateString(locale, { month: "short", day: "numeric" });
 }
 
-/** One conversation in the Promachos list: avatar, title, time, where it stands, unread dot. */
+/** One conversation in the Promachos list: title, time, where it stands, unread dot. */
 export function PromachosConversationRow(props: {
   readonly thread: EnvironmentThreadShell;
   readonly nowMs: number;
@@ -46,10 +45,9 @@ export function PromachosConversationRow(props: {
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={props.thread.title}
-      className="h-20 flex-row items-center gap-3.5 px-4 active:opacity-60"
+      className="h-20 flex-row items-center px-4 active:opacity-60"
       onPress={props.onPress}
     >
-      <PromachosAvatar size={48} />
       <View className="min-w-0 flex-1 gap-0.5">
         <View className="flex-row items-baseline gap-2">
           <Text numberOfLines={1} className="min-w-0 flex-1 font-t3-medium text-xl text-foreground">

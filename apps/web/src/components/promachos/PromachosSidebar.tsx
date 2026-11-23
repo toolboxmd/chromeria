@@ -29,7 +29,7 @@ import {
 import { SharedThreadLabel } from "../people/SharedThreadLabel";
 import { usePersonViewThreads } from "../people/usePersonView";
 import { promachosConversations } from "@t3tools/client-runtime/promachos/conversations";
-import { PromachosAvatar, PromachosRoundButton } from "./PromachosChrome";
+import { PromachosRoundButton } from "./PromachosChrome";
 import { PromachosNewHome } from "./PromachosNewHome";
 import {
   usePromachosHome,
@@ -206,9 +206,8 @@ function PromachosConversationList({
                 onClick={() => {
                   if (isMobile) setOpenMobile(false);
                 }}
-                className="flex h-18 items-center gap-3 px-3 hover:bg-accent/60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring aria-[current=page]:bg-accent"
+                className="flex h-18 items-center px-3 hover:bg-accent/60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring aria-[current=page]:bg-accent"
               >
-                <PromachosAvatar size="lg" />
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="flex items-baseline gap-2">
                     <span className="min-w-0 flex-1 truncate font-medium text-base text-foreground">

@@ -1,29 +1,12 @@
 import { promachosStatusText } from "@t3tools/client-runtime/promachos/status";
 import { useGT, useLocale } from "gt-react";
-import { ClockIcon, SmileIcon } from "lucide-react";
+import { ClockIcon } from "lucide-react";
 import type { MouseEvent, ReactNode } from "react";
-
-import { cn } from "~/lib/utils";
 
 import { observeVisibleAnimation } from "../../lib/visibleAnimation";
 import { ActivityShimmerOverlay } from "../chat/TimelineRowParts";
 
-/** His avatar: Chromeria's own mark on the accent, the same in the list and the chat. */
-export function PromachosAvatar({ size }: { size: "sm" | "md" | "lg" }) {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        "inline-flex shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground",
-        size === "sm" ? "size-7" : size === "md" ? "size-8" : "size-12",
-      )}
-    >
-      <SmileIcon className={size === "lg" ? "size-6" : "size-4"} />
-    </span>
-  );
-}
-
-/** The chat's centered name pill: his avatar and the conversation's title. */
+/** The chat's centered name pill: the conversation's title. */
 export function PromachosTitlePill({
   title,
   label,
@@ -40,9 +23,8 @@ export function PromachosTitlePill({
       aria-haspopup={onClick ? "menu" : undefined}
       disabled={onClick === undefined}
       onClick={onClick}
-      className="inline-flex h-10 min-w-0 max-w-80 items-center gap-2 rounded-full border bg-card pr-4 pl-1.5 shadow-xs/5 enabled:cursor-pointer enabled:hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      className="inline-flex h-10 min-w-0 max-w-80 items-center rounded-full border bg-card px-4 shadow-xs/5 enabled:cursor-pointer enabled:hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
     >
-      <PromachosAvatar size="sm" />
       <span className="min-w-0 truncate font-medium text-sm">{title}</span>
     </button>
   );
@@ -83,14 +65,12 @@ export function PromachosStatusLine({
   return (
     <div className="flex min-h-9 items-center gap-2.5 py-1" role="status" aria-label={text}>
       {typing ? (
-        <span aria-hidden className="flex items-center gap-1 px-1 text-primary">
+        <span aria-hidden className="flex items-center gap-1 px-1 text-muted-foreground">
           <span className="size-1.5 rounded-full bg-current opacity-40" />
           <span className="size-1.5 rounded-full bg-current opacity-70" />
           <span className="size-1.5 rounded-full bg-current" />
         </span>
-      ) : (
-        <PromachosAvatar size="md" />
-      )}
+      ) : null}
       <span
         ref={observeVisibleAnimation}
         className="relative min-w-0 overflow-hidden whitespace-nowrap text-muted-foreground text-sm"

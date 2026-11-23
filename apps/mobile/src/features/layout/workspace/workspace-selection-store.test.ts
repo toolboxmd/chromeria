@@ -34,7 +34,9 @@ vi.mock("expo-constants", () => ({
 }));
 vi.mock("expo/internal/bundle-origin", () => ({ getBundleOrigin: () => null }));
 vi.mock("expo-linking", () => import(expoLinking.createURL));
-const saved = vi.hoisted(() => ({ launch: {} as Record<string, unknown> }));
+const saved = vi.hoisted(() => ({
+  launch: { lastWorkspaceTab: "threads" } as Record<string, unknown>,
+}));
 vi.mock("../../../persistence/imperative", () => ({
   loadPreferences: async () => ({
     workspaceSelections: { threads: { environmentId: ENVIRONMENT_ID, threadId: MCP_THREAD_ID } },
