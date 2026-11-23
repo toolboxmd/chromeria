@@ -2,6 +2,9 @@ import { purposeFromCauses } from "./ExecutionPurpose.ts";
 import {
   CommandId,
   type MessageId,
+  type NodeId,
+  type OrchestrationV2Run,
+  type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -26,6 +29,19 @@ function delegatedCompletionText(taskIds: ReadonlyArray<string>): string {
     ? `Delegated task ${taskList} reached a terminal state. Use task_status with taskId ${taskList} to read the result.`
     : `Delegated tasks ${taskList} reached terminal states. Use task_status with each taskId to read the results.`;
 }
+
+const TERMINAL_TASK_STATUSES = new Set<OrchestrationV2Subagent["status"]>([
+  "completed",
+  "failed",
+  "cancelled",
+  "interrupted",
+]);
+
+const LIVE_RUN_STATUSES = new Set<OrchestrationV2Run["status"]>([
+  "preparing",
+  "starting",
+  "running",
+]);
 
 function currentDelegatedCompletionDelivery(
   projection: Pick<OrchestrationV2ThreadProjection, "messages" | "runs" | "providerTurns">,
@@ -142,6 +158,59 @@ export const layer = Layer.effectDiscard(
       },
     );
 
+    // A refused wake disposes what one wake used to carry: its results and every waiting result
+    // of the cohort a wake may carry, including those disposal folds into the same delivery. A
+    // settled_only result of a live spawning run stays pending for that run's wait.
+    const disposeRefusedWake = Effect.fn("ProviderContinuationService.disposeRefusedWake")(
+      function* (
+        request: ProviderContinuationRequests.ProviderContinuationRequest,
+        completion: NonNullable<
+          ProviderContinuationRequests.ProviderContinuationRequest["delegatedCompletion"]
+        >,
+        firstTaskIds: ReadonlyArray<NodeId>,
+      ) {
+        const disposed = new Set<NodeId>();
+        let taskIds = firstTaskIds;
+        while (taskIds.length > 0) {
+          for (const taskId of taskIds) {
+            disposed.add(taskId);
+            const commandId = yield* ids.allocate.command({
+              fixtureName: "delegated-completion",
+              commandName: "dispose-disabled",
+            });
+            yield* threads.dispatch({
+              type: "delegated_task.completion-delivery.dispose",
+              commandId,
+              parentThreadId: request.threadId,
+              taskId,
+            });
+          }
+          const projection = yield* threads.getThreadRecords(
+            request.threadId,
+            ["messages", "runs", "providerTurns", "subagents"],
+            { messageIds: [completion.messageId], subagentRunIds: [completion.parentRunId] },
+          );
+          const spawningRun = projection.runs.find((run) => run.id === completion.parentRunId);
+          const spawningRunLive =
+            spawningRun !== undefined && LIVE_RUN_STATUSES.has(spawningRun.status);
+          const waiting = (projection.subagents ?? []).filter(
+            (task) =>
+              task.origin === "app_owned" &&
+              task.runId === completion.parentRunId &&
+              task.completionDelivery?.state === "pending" &&
+              TERMINAL_TASK_STATUSES.has(task.status) &&
+              (!spawningRunLive || task.completionWake === "always"),
+          );
+          taskIds = [
+            ...new Set([
+              ...(currentDelegatedCompletionDelivery(projection, completion)?.taskIds ?? []),
+              ...waiting.map((task) => task.id),
+            ]),
+          ].filter((taskId) => !disposed.has(taskId));
+        }
+      },
+    );
+
     const dispatchContinuation = Effect.fn("ProviderContinuationService.dispatchContinuation")(
       function* (request: ProviderContinuationRequests.ProviderContinuationRequest) {
         const projection = yield* threads.getThreadRecords(
@@ -214,26 +283,7 @@ export const layer = Layer.effectDiscard(
                     },
                   ).pipe(
                     Effect.andThen(
-                      Effect.forEach(
-                        delivery.taskIds,
-                        (taskId) =>
-                          ids.allocate
-                            .command({
-                              fixtureName: "delegated-completion",
-                              commandName: "dispose-disabled",
-                            })
-                            .pipe(
-                              Effect.flatMap((disposeCommandId) =>
-                                threads.dispatch({
-                                  type: "delegated_task.completion-delivery.dispose",
-                                  commandId: disposeCommandId,
-                                  parentThreadId: request.threadId,
-                                  taskId,
-                                }),
-                              ),
-                            ),
-                        { discard: true },
-                      ),
+                      disposeRefusedWake(request, request.delegatedCompletion!, delivery.taskIds),
                     ),
                     Effect.andThen(
                       request.clearIfCurrent !== undefined

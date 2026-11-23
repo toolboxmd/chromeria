@@ -321,8 +321,45 @@ describe("ProviderContinuationService", () => {
         const attempts = yield* Ref.make(0);
         const cleared = yield* Ref.make(false);
         const disposed = yield* Queue.unbounded<unknown>();
+        const disposals = yield* Ref.make(0);
+        // Disposing the wake's results folds a result of another scope still waiting into it, and
+        // another always-wake result waits outside it. A settled_only result of the live spawning
+        // run is no wake's to carry, so it stays pending for that run's wait.
+        const waiting = (id: string, completionWake: "always" | "settled_only") => ({
+          id,
+          origin: "app_owned",
+          runId: parentRunId,
+          status: "completed",
+          completionWake,
+          completionDelivery: { state: "pending", observedByRunId: null },
+        });
+        const folded = {
+          ...delegatedProjection(),
+          subagents: [
+            waiting("node-provider-continuation-fourth", "always"),
+            waiting("node-provider-continuation-fifth", "settled_only"),
+          ],
+          runs: [
+            {
+              id: parentRunId,
+              status: "running",
+              delegatedCompletion: {
+                disposition: "open",
+                nextGeneration: 2,
+                delivery: {
+                  generation: 1,
+                  messageId: delegatedMessageId,
+                  taskIds: ["node-provider-continuation-third"],
+                },
+              },
+            },
+          ],
+        } as unknown as OrchestrationV2ThreadProjection;
         const layerThreads = Layer.mock(ThreadManagementService.ThreadManagementService)({
-          getThreadRecords: () => Effect.succeed(delegatedProjection()),
+          getThreadRecords: () =>
+            Ref.get(disposals).pipe(
+              Effect.map((count) => (count === 0 ? delegatedProjection() : folded)),
+            ),
           dispatch: (command) => {
             if ((command as { type: string }).type === "message.dispatch") {
               return Ref.update(attempts, (count) => count + 1).pipe(
@@ -338,7 +375,10 @@ describe("ProviderContinuationService", () => {
                 ),
               );
             }
-            return Queue.offer(disposed, command).pipe(Effect.as({} as never));
+            return Ref.update(disposals, (count) => count + 1).pipe(
+              Effect.andThen(Queue.offer(disposed, command)),
+              Effect.as({} as never),
+            );
           },
         });
         const layerWorker = ProviderContinuationService.layer.pipe(
@@ -372,7 +412,12 @@ describe("ProviderContinuationService", () => {
           }>;
           assert.deepEqual(
             dispositions.map((command) => command.taskId),
-            ["node-provider-continuation-first", "node-provider-continuation-second"],
+            [
+              "node-provider-continuation-first",
+              "node-provider-continuation-second",
+              "node-provider-continuation-third",
+              "node-provider-continuation-fourth",
+            ],
           );
           for (const command of dispositions) {
             assert.equal(command.type, "delegated_task.completion-delivery.dispose");
