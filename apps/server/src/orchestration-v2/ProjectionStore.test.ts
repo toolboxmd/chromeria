@@ -9002,6 +9002,43 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         at: 5,
         runId: removedRunId,
       });
+      // A keep-warm ping and its one-word reply are not conversation.
+      const pingRunId = RunId.make(`run:projection-shell-preview:${key}:ping`);
+      const pingMessageId = MessageId.make(`keep-warm:${threadId}:0:0`);
+      yield* projectionStore.apply({
+        id: EventId.make(`event:projection-shell-preview:${key}:ping-run`),
+        type: "run.created",
+        threadId,
+        runId: pingRunId,
+        nodeId: NodeId.make(`node:projection-shell-preview:${key}:ping`),
+        driver,
+        occurredAt: start,
+        payload: {
+          id: pingRunId,
+          threadId,
+          ordinal: 2,
+          providerInstanceId,
+          modelSelection,
+          providerThreadId: null,
+          userMessageId: pingMessageId,
+          rootNodeId: null,
+          activeAttemptId: null,
+          status: "completed",
+          requestedAt: start,
+          startedAt: start,
+          completedAt: start,
+          checkpointId: null,
+          contextHandoffId: null,
+        },
+      });
+      yield* message("ping-reply", {
+        role: "assistant",
+        createdBy: "agent",
+        text: "OK",
+        streaming: false,
+        at: 6,
+        runId: pingRunId,
+      });
       // The newest message is the one written last, not the one touched last.
       yield* message("touched", {
         role: "assistant",

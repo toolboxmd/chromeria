@@ -1,4 +1,5 @@
 import {
+  isKeepWarmPingMessage,
   MessageId,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2LatestVisibleMessageSummary,
@@ -20,8 +21,8 @@ const PREVIEW_SOURCE_CHARS = 1_000;
 /**
  * The newest message a conversation list may quote: a finished assistant message or one the user
  * wrote. The same messages search indexes, so wakes, compaction prompts and attachment
- * placeholders never show. Exclude system notices, such as keep-warm pings and their replies,
- * both here and in `latestPreviewMessageSql`.
+ * placeholders never show. System notices are excluded by run in `leftConversation` and
+ * `latestPreviewMessageSql`.
  */
 function isConversationPreviewMessage(
   message: Pick<OrchestrationV2ConversationMessage, "role" | "createdBy" | "streaming" | "text">,
@@ -32,9 +33,13 @@ function isConversationPreviewMessage(
   return !isAttachmentOnlyBootstrapPrompt(message.text);
 }
 
-// A rolled-back run left the conversation; a queued or unstarted cancelled one never reached it.
-function leftConversation(run: Pick<OrchestrationV2Run, "status" | "startedAt">): boolean {
+// A rolled-back run left the conversation; a queued or unstarted cancelled one never reached it,
+// and a keep-warm ping's reply is not conversation.
+function leftConversation(
+  run: Pick<OrchestrationV2Run, "status" | "startedAt" | "userMessageId">,
+): boolean {
   return (
+    isKeepWarmPingMessage({ id: run.userMessageId }) ||
     run.status === "rolled_back" ||
     run.status === "queued" ||
     (run.status === "cancelled" && run.startedAt === null)
@@ -89,7 +94,8 @@ export const latestPreviewMessageSql = (sql: SqlClient.SqlClient) => sql`(
       SELECT 1 FROM orchestration_v2_projection_runs run
       WHERE run.run_id = message.run_id
         AND (
-          run.status IN ('rolled_back', 'queued')
+          coalesce(json_extract(run.payload_json, '$.userMessageId'), '') LIKE 'keep-warm:%'
+          OR run.status IN ('rolled_back', 'queued')
           OR (run.status = 'cancelled' AND json_extract(run.payload_json, '$.startedAt') IS NULL)
         )
     )
