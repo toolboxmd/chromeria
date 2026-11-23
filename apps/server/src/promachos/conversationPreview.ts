@@ -118,13 +118,14 @@ export function conversationPreviewFromRow(
       };
 }
 
-/** One line of plain text from a message's Markdown, capped; null when nothing readable is left. */
 // A link target may hold one level of parentheses, as in `https://x.dev/a_(b)`.
 const LINK_TARGET = String.raw`\((?:[^()\s]|\([^()\s]*\))*(?:\s+"[^"]*")?\)`;
 const IMAGE = new RegExp(String.raw`!\[([^\]]*)\]` + LINK_TARGET, "g");
 const LINK = new RegExp(String.raw`\[([^\]]*)\]` + LINK_TARGET, "g");
+const REFERENCE_LINK = /!?\[([^\]]*)\]\[[^\]]*\]/g;
+const FENCE = /^\s{0,3}(`{3,}|~{3,})/;
 
-/** Emphasis markers outside code spans; a code span keeps its text as written. */
+/** Inline syntax outside code spans; a code span keeps its text as written. */
 function stripInline(line: string): string {
   return line
     .split(/(`+)([^`]*?)\1/g)
@@ -132,27 +133,52 @@ function stripInline(line: string): string {
       if (index % 3 === 1) return "";
       if (index % 3 === 2) return part;
       return part
+        .replace(IMAGE, "$1")
+        .replace(LINK, "$1")
+        .replace(REFERENCE_LINK, "$1")
         .replace(/\*\*|__|~~|`+/g, "")
         .replace(/(?<![\w*])[*_]((?:(?![*_]).)+?)[*_](?![\w*])/g, "$1");
     })
     .join("");
 }
 
+/** A line's text without its block syntax: quote, heading or list markers. */
+function stripBlock(line: string): string {
+  const quoted = line.replace(/^\s*(?:>\s?)+/, "");
+  const heading = /^\s{0,3}#{1,6}(?:\s+(.*?))?(?:\s+#+)?\s*$/.exec(quoted);
+  if (heading) return heading[1] ?? "";
+  return quoted.replace(/^\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)/, "");
+}
+
+/** One line of plain text from a message's Markdown, capped; null when nothing readable is left. */
 export function conversationPreviewText(markdown: string): string | null {
-  const plain = assistantCitationsToPlainText(markdown)
+  const lines: string[] = [];
+  let fence: string | null = null;
+  for (const line of assistantCitationsToPlainText(markdown)
     .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/^\s*(?:```|~~~).*$/gm, " ")
-    .replace(/^\s*(?:[-*_]\s*){3,}$/gm, " ")
-    .replace(/^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-*:?\s*$/gm, " ")
-    .replace(IMAGE, "$1")
-    .replace(LINK, "$1")
-    .replace(/^\s*(?:>\s?)+/gm, "")
-    .replace(/^\s*(?:#{1,6}\s+|[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)/gm, "")
-    .split("\n")
-    .map(stripInline)
-    .join("\n")
-    .replace(/\s+/g, " ")
-    .trim();
+    .split("\n")) {
+    const marker = FENCE.exec(line)?.[1];
+    if (fence !== null) {
+      const closes =
+        marker !== undefined &&
+        marker[0] === fence[0] &&
+        marker.length >= fence.length &&
+        line.trim() === marker;
+      if (closes) fence = null;
+      else lines.push(line);
+      continue;
+    }
+    if (marker !== undefined) {
+      fence = marker;
+      continue;
+    }
+    // Reference definitions, rules and table delimiter rows have no words.
+    if (/^\s{0,3}\[[^\]]+\]:\s*\S/.test(line)) continue;
+    if (/^\s*(?:[-*_]\s*){3,}$/.test(line)) continue;
+    if (/^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-*:?\s*$/.test(line)) continue;
+    lines.push(stripInline(stripBlock(line)));
+  }
+  const plain = lines.join(" ").replace(/\s+/g, " ").trim();
   if (plain.length === 0) return null;
   const chars = Array.from(plain);
   return chars.length <= CONVERSATION_PREVIEW_MAX_CHARS
