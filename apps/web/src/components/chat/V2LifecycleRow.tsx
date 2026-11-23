@@ -87,6 +87,8 @@ export function V2LifecycleRow(props: {
 }) {
   const { item } = props;
   const gt = useGT();
+  // Read-only timelines (guest page, linked pane) cannot open another thread.
+  const canOpenThreads = use(SideThreadsOpenContext);
   if (item.type === "run_interrupt_result") {
     return (
       <TimelineSystemDivider
@@ -115,7 +117,7 @@ export function V2LifecycleRow(props: {
         }
         icon={GitForkIcon}
         actionLabel={item.source.type === "run" ? gt("Open source conversation") : gt("Open fork")}
-        onAction={() => props.onOpenThread(relatedThreadId)}
+        {...(canOpenThreads ? { onAction: () => props.onOpenThread(relatedThreadId) } : {})}
       />
     );
   }
@@ -132,18 +134,20 @@ export function V2LifecycleRow(props: {
           <span className="min-w-0 flex-1 truncate text-sm font-medium">
             {item.title ?? gt("Created thread")}
           </span>
-          <Button
-            size="xs"
-            variant="outline"
-            aria-label={
-              item.title != null
-                ? gt("Open {title}", { title: item.title })
-                : gt("Open created thread")
-            }
-            onClick={() => props.onOpenThread(item.targetThreadId)}
-          >
-            <T>Open chat</T>
-          </Button>
+          {canOpenThreads ? (
+            <Button
+              size="xs"
+              variant="outline"
+              aria-label={
+                item.title != null
+                  ? gt("Open {title}", { title: item.title })
+                  : gt("Open created thread")
+              }
+              onClick={() => props.onOpenThread(item.targetThreadId)}
+            >
+              <T>Open chat</T>
+            </Button>
+          ) : null}
         </div>
       );
     }
@@ -161,16 +165,18 @@ export function V2LifecycleRow(props: {
           )
         }
         trailing={
-          <InlineButton
-            aria-label={
-              item.title != null
-                ? gt("Open {title}", { title: item.title })
-                : gt("Open created thread")
-            }
-            onClick={() => props.onOpenThread(item.targetThreadId)}
-          >
-            <T>Open chat</T>
-          </InlineButton>
+          canOpenThreads ? (
+            <InlineButton
+              aria-label={
+                item.title != null
+                  ? gt("Open {title}", { title: item.title })
+                  : gt("Open created thread")
+              }
+              onClick={() => props.onOpenThread(item.targetThreadId)}
+            >
+              <T>Open chat</T>
+            </InlineButton>
+          ) : undefined
         }
       />
     );
