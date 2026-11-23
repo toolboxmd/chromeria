@@ -7277,6 +7277,7 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
     { followUp: "other scope beside a stopped result" },
     { followUp: "same scope into a wake a restart held" },
     { followUp: "same scope into a wake a provider failure held" },
+    { followUp: "same scope into a failure-held wake after a later restart" },
   ] as const)("a $followUp follow-up of a task in a queued wake", ({ followUp }) =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -7431,7 +7432,9 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
       // A restart cut the parent's turn, or the provider failed it, and the wake waits held for a
       // person to send it.
       const restartHeld = followUp === "same scope into a wake a restart held";
-      const failureHeld = followUp === "same scope into a wake a provider failure held";
+      const laterRestart = followUp === "same scope into a failure-held wake after a later restart";
+      const failureHeld =
+        followUp === "same scope into a wake a provider failure held" || laterRestart;
       if (restartHeld || failureHeld) {
         const parentRun = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
           (run) => run.id === runId,
@@ -7464,6 +7467,27 @@ it.layer(layerTest)("delegated task follow-up turns after the delegating turn", 
               occurredAt: now,
               payload: { ...wake, queueHeld: true },
             },
+            // A later, unrelated run that a restart cut: its restart did not hold this wake.
+            ...(laterRestart
+              ? [
+                  (() => {
+                    const later = runEvent({
+                      threadId,
+                      runId: RunId.make(`run:${name}-later`),
+                      ordinal: wake.ordinal + 1,
+                      status: "cancelled",
+                      now,
+                    });
+                    return {
+                      ...later,
+                      payload: {
+                        ...later.payload,
+                        restartCut: { continuation: "scheduled" as const, cutAt: now },
+                      },
+                    };
+                  })(),
+                ]
+              : []),
           ],
         });
       }

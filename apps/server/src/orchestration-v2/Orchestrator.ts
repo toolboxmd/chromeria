@@ -17585,10 +17585,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
     });
 
-  const isRestartHold = (latest: OrchestrationV2Run | null) =>
-    latest !== null &&
-    (latest.restartCut !== undefined ||
-      (latest.restartContinuationOfRunId !== undefined && isLiveRun(latest)));
+  // A wake a restart requeued held comes after the run the restart cut, and nothing but that
+  // restart's continuation has run since; a wake held earlier (a failure, Stop) comes before it.
+  const isRestartHold = (runs: ReadonlyArray<OrchestrationV2Run>, wake: OrchestrationV2Run) => {
+    const latest = latestExecutedRun(runs);
+    const cut =
+      latest?.restartCut !== undefined
+        ? latest
+        : latest?.restartContinuationOfRunId !== undefined && isLiveRun(latest)
+          ? runs.find((run) => run.id === latest.restartContinuationOfRunId)
+          : undefined;
+    return cut?.restartCut !== undefined && wake.ordinal > cut.ordinal;
+  };
 
   // Fork: a task leaves a queued wake that has not started when its newer result cannot be sent
   // there. The wake is rewritten without it, or cancelled while keeping its delivery, so the
@@ -17758,7 +17766,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (yield* projectionStore.getThreadRecords(threadId, ["runs"]).pipe(
           Effect.map(
             (records) =>
-              isRestartHold(latestExecutedRun(records.runs)) &&
+              isRestartHold(records.runs, deliveryRun) &&
               !worktreeSetupPending(records) &&
               !records.runs.some(
                 (run) =>
