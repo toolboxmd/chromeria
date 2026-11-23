@@ -387,6 +387,7 @@ describe("scheduled task frequency", () => {
     ["every hour", { type: "interval", everyMs: HOUR }, "hourly"],
     ["every 23 hours", { type: "interval", everyMs: 23 * HOUR }, "hourly"],
     ["every day", { type: "interval", everyMs: DAY }, "daily"],
+    ["every 36 hours", { type: "interval", everyMs: 36 * HOUR }, "weekly"],
     ["every 3 days", { type: "interval", everyMs: 3 * DAY }, "weekly"],
     ["every week", { type: "interval", everyMs: 7 * DAY }, "weekly"],
     ["every 8 days", { type: "interval", everyMs: 8 * DAY }, "monthly"],

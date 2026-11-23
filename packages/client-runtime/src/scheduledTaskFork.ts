@@ -314,7 +314,7 @@ export type ScheduledTaskFrequency = (typeof SCHEDULED_TASK_FREQUENCIES)[number]
 
 /**
  * How often a schedule runs. Days of the month or chosen weekdays decide first; several set times
- * on every day count as hourly. An interval from two days up to a week counts as weekly.
+ * on every day count as hourly. An interval over a day and up to a week counts as weekly.
  */
 export function scheduledTaskFrequency(
   schedule: ScheduledTask["schedule"],
@@ -323,7 +323,7 @@ export function scheduledTaskFrequency(
     case "interval":
       if (schedule.everyMs < HOUR_MS) return "minutes";
       if (schedule.everyMs < DAY_MS) return "hourly";
-      if (schedule.everyMs < 2 * DAY_MS) return "daily";
+      if (schedule.everyMs === DAY_MS) return "daily";
       return schedule.everyMs <= 7 * DAY_MS ? "weekly" : "monthly";
     case "fixed_time":
       if ((schedule.monthDays ?? []).length > 0) return "monthly";
