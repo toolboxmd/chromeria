@@ -15,7 +15,7 @@ import { indexedMessageCondition } from "../orchestration-v2/messageSearchIndex.
 /** One list row shows one line; this covers a wide sidebar and keeps each shell small. */
 export const CONVERSATION_PREVIEW_MAX_CHARS = 64;
 // Markdown is stripped from at most this much of the stored text.
-const PREVIEW_SOURCE_CHARS = 2_000;
+const PREVIEW_SOURCE_CHARS = 1_000;
 
 /**
  * The newest message a conversation list may quote: a finished assistant message or one the user
@@ -123,54 +123,103 @@ const LINK_TARGET = String.raw`\((?:[^()\s]|\([^()\s]*\))*(?:\s+"[^"]*")?\)`;
 const IMAGE = new RegExp(String.raw`!\[([^\]]*)\]` + LINK_TARGET, "g");
 const LINK = new RegExp(String.raw`\[([^\]]*)\]` + LINK_TARGET, "g");
 const REFERENCE_LINK = /!?\[([^\]]*)\]\[[^\]]*\]/g;
+const ESCAPABLE = /[!-/:-@[-`{-~]/;
 const FENCE = /^\s{0,3}(`{3,}|~{3,})/;
+const QUOTE = /^\s*(?:>\s?)+/;
+// Private-use marks around the index of a kept piece, so prose rules never touch it.
+const KEPT = /(\d+)/g;
 
-/** Inline syntax outside code spans; a code span keeps its text as written. */
+/**
+ * Inline syntax off one line of prose. Code spans and backslash-escaped characters are set aside
+ * first and come back as written, so emphasis and link rules only see prose.
+ */
 function stripInline(line: string): string {
-  return line
-    .split(/(`+)([^`]*?)\1/g)
-    .map((part, index) => {
-      if (index % 3 === 1) return "";
-      if (index % 3 === 2) return part;
-      return part
-        .replace(IMAGE, "$1")
-        .replace(LINK, "$1")
-        .replace(REFERENCE_LINK, "$1")
-        .replace(/\*\*|__|~~|`+/g, "")
-        .replace(/(?<![\w*])[*_]((?:(?![*_]).)+?)[*_](?![\w*])/g, "$1");
-    })
-    .join("");
+  const kept: string[] = [];
+  const keep = (value: string) => `${kept.push(value) - 1}`;
+  let prose = "";
+  let index = 0;
+  while (index < line.length) {
+    const char = line[index]!;
+    if (char === "\\" && ESCAPABLE.test(line[index + 1] ?? "")) {
+      prose += keep(line[index + 1]!);
+      index += 2;
+      continue;
+    }
+    if (char !== "`") {
+      prose += char;
+      index += 1;
+      continue;
+    }
+    let length = 0;
+    while (line[index + length] === "`") length += 1;
+    // A span closes at the next backtick run of exactly the same length.
+    let close = index + length;
+    for (;;) {
+      close = line.indexOf("`".repeat(length), close);
+      if (close === -1 || (line[close - 1] !== "`" && line[close + length] !== "`")) break;
+      while (line[close] === "`") close += 1;
+    }
+    if (close === -1) {
+      prose += "`".repeat(length);
+      index += length;
+      continue;
+    }
+    const code = line.slice(index + length, close);
+    prose += keep(/^ .*\S.* $/.test(code) ? code.slice(1, -1) : code);
+    index = close + length;
+  }
+  return prose
+    .replace(/<!--.*?-->/g, " ")
+    .replace(IMAGE, "$1")
+    .replace(LINK, "$1")
+    .replace(REFERENCE_LINK, "$1")
+    .replace(/\*\*|__|~~/g, "")
+    .replace(/(?<![\w*])[*_]((?:(?![*_]).)+?)[*_](?![\w*])/g, "$1")
+    .replace(KEPT, (_match, keptIndex: string) => kept[Number(keptIndex)]!);
 }
 
-/** A line's text without its block syntax: quote, heading or list markers. */
+/** A line's text without its heading or list marker; the quote marker is already off. */
 function stripBlock(line: string): string {
-  const quoted = line.replace(/^\s*(?:>\s?)+/, "");
-  const heading = /^\s{0,3}#{1,6}(?:\s+(.*?))?(?:\s+#+)?\s*$/.exec(quoted);
+  const heading = /^\s{0,3}#{1,6}(?:\s+(.*?))?(?:\s+#+)?\s*$/.exec(line);
   if (heading) return heading[1] ?? "";
-  return quoted.replace(/^\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)/, "");
+  return line.replace(/^\s*(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)/, "");
 }
 
 /** One line of plain text from a message's Markdown, capped; null when nothing readable is left. */
 export function conversationPreviewText(markdown: string): string | null {
   const lines: string[] = [];
-  let fence: string | null = null;
-  for (const line of assistantCitationsToPlainText(markdown)
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .split("\n")) {
-    const marker = FENCE.exec(line)?.[1];
+  let fence: { readonly marker: string; readonly quoted: boolean } | null = null;
+  let inComment = false;
+  for (const raw of assistantCitationsToPlainText(markdown).split("\n")) {
+    const unquoted = raw.replace(QUOTE, "");
     if (fence !== null) {
-      const closes =
+      const content = fence.quoted ? unquoted : raw;
+      const marker = /^\s{0,3}(`{3,}|~{3,})\s*$/.exec(content)?.[1];
+      if (
         marker !== undefined &&
-        marker[0] === fence[0] &&
-        marker.length >= fence.length &&
-        line.trim() === marker;
-      if (closes) fence = null;
-      else lines.push(line);
+        marker[0] === fence.marker[0] &&
+        marker.length >= fence.marker.length
+      )
+        fence = null;
+      else lines.push(content);
       continue;
     }
-    if (marker !== undefined) {
-      fence = marker;
+    const opening = FENCE.exec(unquoted)?.[1];
+    if (opening !== undefined) {
+      fence = { marker: opening, quoted: unquoted !== raw };
       continue;
+    }
+    let line = unquoted;
+    if (inComment) {
+      const end = line.indexOf("-->");
+      if (end === -1) continue;
+      line = line.slice(end + 3);
+      inComment = false;
+    }
+    const open = line.lastIndexOf("<!--");
+    if (open !== -1 && !line.includes("-->", open)) {
+      line = line.slice(0, open);
+      inComment = true;
     }
     // Reference definitions, rules and table delimiter rows have no words.
     if (/^\s{0,3}\[[^\]]+\]:\s*\S/.test(line)) continue;

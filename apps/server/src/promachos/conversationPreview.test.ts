@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
+
 import { CONVERSATION_PREVIEW_MAX_CHARS, conversationPreviewText } from "./conversationPreview.ts";
 
 describe("conversationPreviewText", () => {
@@ -27,6 +29,16 @@ describe("conversationPreviewText", () => {
     ["closing heading hashes", "## Done ##", "Done"],
     ["reference links", "See [the docs][ref].\n\n[ref]: https://example.com", "See the docs."],
     ["fenced code as written", "```sh\n# install\n**vp** i\n```", "# install **vp** i"],
+    ["a fence inside a quote", "> ```sh\n> # install\n> **vp** i\n> ```", "# install **vp** i"],
+    ["a comment inside a fence", "```html\n<!-- keep -->\n```", "<!-- keep -->"],
+    ["a code span holding a shorter backtick run", "Use ``a`b__c`` here", "Use a`b__c here"],
+    ["escaped characters", "\\*not emphasis\\* and 1\\. item", "*not emphasis* and 1. item"],
+    [
+      "a composer file mention",
+      `Open ${serializeComposerFileLink("pkg/__init__.py")}`,
+      "Open __init__.py",
+    ],
+    ["a comment across lines", "Before <!-- one\ntwo --> after", "Before after"],
     ["lists and quotes", "> Quoted\n- [ ] todo\n1. first\n* second", "Quoted todo first second"],
     ["code fences keep their code", "```ts\nconst a = 1;\n```", "const a = 1;"],
     ["tables and rules", "| a | b |\n| --- | --- |\n| 1 | 2 |\n\n---", "| a | b | | 1 | 2 |"],
