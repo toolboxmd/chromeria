@@ -27,7 +27,12 @@ export function groupPromachosBubbles(tree: Root): void {
       ? {
           type: "element",
           tagName: "div",
-          properties: {},
+          // A table alone is its own card rather than a bubble.
+          properties: item.blocks.every(
+            (node) => node.type === "element" && node.tagName === "table",
+          )
+            ? { dataPromachosCard: "" }
+            : {},
           children: item.blocks.filter((node): node is Element => node.type === "element"),
         }
       : item.block,
@@ -41,5 +46,5 @@ const PROMACHOS_BUBBLE_EXTENSIONS: MarkdownExtensions = { promachosBubbles: true
 export const PROMACHOS_BUBBLE_MARKDOWN = {
   extensions: PROMACHOS_BUBBLE_EXTENSIONS,
   className:
-    "flex flex-col items-start gap-1 [&>div]:min-w-0 [&>div]:max-w-[85%] [&>div]:rounded-2xl [&>div]:bg-message [&>div]:px-4 [&>div]:py-2.5 [&>div]:text-message-foreground [&>div>:first-child]:mt-0 [&>div>:last-child]:mb-0 [&>div:empty]:hidden [&>hr]:self-stretch [&>section]:self-stretch",
+    "flex flex-col items-start gap-2 [&>div]:min-w-0 [&>div]:max-w-[82%] [&>div]:rounded-[18px] [&>div]:bg-message [&>div]:px-3.5 [&>div]:py-2.5 [&>div]:text-message-foreground [&>div[data-promachos-card]]:bg-transparent [&>div[data-promachos-card]]:p-0 [&>div>:first-child]:mt-0 [&>div>:last-child]:mb-0 [&>div:empty]:hidden [&>hr]:self-stretch [&>section]:self-stretch",
 };

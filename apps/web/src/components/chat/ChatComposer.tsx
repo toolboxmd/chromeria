@@ -371,6 +371,7 @@ export interface ChatComposerHandle {
 
 export interface ChatComposerProps {
   inlineCardHost?: HTMLElement | null;
+  promachos?: boolean;
   composerDraftTarget: ScopedThreadRef | DraftId;
   environmentId: EnvironmentId;
   canOperateThread: boolean;
@@ -2684,7 +2685,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     : composerControlsCollapsed
       ? 0
       : expandedControlsIconOnlyBlockCount;
-  const composerControls = (
+  // Fork: a Promachos chat keeps model, mode and branch controls out of the composer.
+  const composerControls = props.promachos ? null : (
     <ComposerControlsBar
       environmentId={environmentId}
       workspaceCwd={gitCwd}

@@ -10,19 +10,24 @@ type FoldInput = Pick<
   Parameters<typeof deriveMessagesTimelineRows>[0],
   "timelineEntries" | "latestRun" | "isWorking" | "runlessWorkActive" | "runningRunId"
 >;
-const WORKING_ROW: MessagesTimelineRow = {
-  kind: "working",
-  id: "promachos-working",
-  createdAt: null,
-};
+/** The one status row while he works; its label names his latest live step. */
+export const PROMACHOS_STATUS_ROW_ID = "promachos-status";
+/** The status row while his reply is being written; the reply shows once it is done. */
+export const PROMACHOS_TYPING_ROW_ID = "promachos-typing";
 
-/** The conversation and outputs, with technical activity collapsed into one static indicator. */
+/** The conversation and outputs, with technical activity collapsed into one status row. */
 export function promachosTimelineRows(rows: MessagesTimelineRow[]): MessagesTimelineRow[] {
   const conversation: MessagesTimelineRow[] = [];
   let working = false;
+  let typing = false;
+  let label: string | undefined;
   for (const row of rows) {
     switch (row.kind) {
       case "message":
+        if (row.message.role === "assistant" && row.message.streaming) {
+          typing = true;
+          break;
+        }
         conversation.push(row);
         break;
       case "proposed-plan":
@@ -42,17 +47,32 @@ export function promachosTimelineRows(rows: MessagesTimelineRow[]): MessagesTime
         break;
       }
       case "work-live":
-        working ||= row.active;
+        if (row.active) {
+          working = true;
+          label = row.entry.toolTitle ?? row.entry.label;
+        }
         break;
       case "working":
+        working = true;
+        break;
       case "thinking":
         working = true;
+        label = row.label ?? label;
         break;
       default:
         break;
     }
   }
-  return working ? [...conversation, WORKING_ROW] : conversation;
+  if (!working && !typing) return conversation;
+  return [
+    ...conversation,
+    {
+      kind: "thinking",
+      id: typing ? PROMACHOS_TYPING_ROW_ID : PROMACHOS_STATUS_ROW_ID,
+      createdAt: null,
+      ...(label === undefined ? {} : { label }),
+    },
+  ];
 }
 
 /** Imported V1 turns use synthetic fold keys; attempt folds can also hide interim replies. */

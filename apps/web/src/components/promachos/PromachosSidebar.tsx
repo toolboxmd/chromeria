@@ -3,19 +3,20 @@ import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environ
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
 import type { ScopedProjectRef } from "@t3tools/contracts";
 import { Link, useParams } from "@tanstack/react-router";
-import { msg, T, useGT, useMessages } from "gt-react";
-import { HouseIcon, SquarePenIcon } from "lucide-react";
+import { msg, T, useGT, useLocale, useMessages } from "gt-react";
+import { HouseIcon, PlusIcon } from "lucide-react";
 
 import { isElectron } from "../../env";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { useEnvironments } from "../../state/environments";
 import { useProjects, useVisibleThreadShells } from "../../state/entities";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../../threadRoutes";
-import { formatRelativeTimeLabel } from "../../timestampFormat";
-import { resolveSidebarThreadStatus, type SidebarThreadStatus } from "../Sidebar.logic";
+import {
+  hasUnseenCompletion,
+  resolveSidebarRowStatus,
+  type SidebarThreadStatus,
+} from "../Sidebar.logic";
 import { SidebarChromeFooter, SidebarChromeHeader } from "../sidebar/SidebarChrome";
-import { Badge } from "../ui/badge";
-import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import {
   SidebarContent,
@@ -28,23 +29,13 @@ import {
 import { SharedThreadLabel } from "../people/SharedThreadLabel";
 import { usePersonViewThreads } from "../people/usePersonView";
 import { promachosConversations } from "@t3tools/client-runtime/promachos/conversations";
+import { PromachosAvatar, PromachosRoundButton } from "./PromachosChrome";
 import { PromachosNewHome } from "./PromachosNewHome";
 import {
   usePromachosHome,
   usePromachosHomeRefs,
   useStartPromachosConversation,
 } from "./promachosMode";
-
-const STATUS_BADGE: Partial<
-  Record<SidebarThreadStatus, { label: string; variant: "warning" | "info" | "error" }>
-> = {
-  approval: { label: msg("Needs you", { $context: "thread status" }), variant: "warning" },
-  input: { label: msg("Needs you", { $context: "thread status" }), variant: "warning" },
-  working: { label: msg("Working", { $context: "thread status" }), variant: "info" },
-  failed: { label: msg("Failed", { $context: "thread status" }), variant: "error" },
-  waiting: { label: msg("Waiting", { $context: "thread status" }), variant: "info" },
-  limited: { label: msg("Limit reached", { $context: "thread status" }), variant: "warning" },
-};
 
 function projectLabel(
   project: EnvironmentProject,
@@ -145,6 +136,7 @@ function PromachosConversationList({
 }) {
   const gt = useGT();
   const resolve = useMessages();
+  const locale = useLocale();
   const threads = useVisibleThreadShells();
   const personThreads = usePersonViewThreads(threads);
   const homeRefs = usePromachosHomeRefs(home);
@@ -161,78 +153,111 @@ function PromachosConversationList({
 
   return (
     <SidebarGroup>
-      <div className="flex items-center gap-1 pb-1">
+      <div className="flex items-center justify-between px-3 pb-2">
         <Menu>
           <MenuTrigger
-            render={<Button size="sm" variant="ghost" aria-label={gt("Promachos home")} />}
+            render={
+              <button
+                type="button"
+                aria-label={gt("Promachos home: {home}", { home: homeLabel })}
+                className="inline-flex size-10 cursor-pointer items-center justify-center rounded-full border bg-card shadow-xs/5 hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&_svg]:size-4"
+              />
+            }
           >
             <HouseIcon />
-            <span className="truncate">{homeLabel}</span>
           </MenuTrigger>
           <MenuPopup align="start">
+            <MenuItem disabled>{homeLabel}</MenuItem>
             <MenuItem onClick={onChangeHome}>
               <T>Choose another home</T>
             </MenuItem>
           </MenuPopup>
         </Menu>
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          aria-label={gt("New conversation")}
-          title={gt("New conversation")}
+        <PromachosRoundButton
+          label={gt("New conversation")}
           onClick={() => {
             if (isMobile) setOpenMobile(false);
             void startConversation(home);
           }}
         >
-          <SquarePenIcon />
-        </Button>
+          <PlusIcon />
+        </PromachosRoundButton>
       </div>
-      <SidebarMenu>
-        {conversations.length === 0 ? (
-          <p className="px-2 py-1 text-muted-foreground text-xs">
-            <T>No conversations yet.</T>
-          </p>
-        ) : null}
+      {conversations.length === 0 ? (
+        <p className="px-3 py-1 text-muted-foreground text-sm">
+          <T>No conversations yet.</T>
+        </p>
+      ) : null}
+      <ul className="flex flex-col">
         {conversations.map((thread) => {
           const threadRef = scopeThreadRef(thread.environmentId, thread.id);
           const threadKey = scopedThreadKey(threadRef);
-          const status = resolveSidebarThreadStatus(thread);
-          const badge = STATUS_BADGE[status];
+          const status = resolveSidebarRowStatus(thread);
+          const unread =
+            status === "ready"
+              ? hasUnseenCompletion(thread)
+              : status !== "working" && status !== "preparing";
           return (
-            <SidebarMenuItem key={threadKey}>
-              <SidebarMenuButton
-                isActive={threadKey === routeThreadKey}
-                render={
-                  <Link
-                    to="/$environmentId/$threadId"
-                    params={buildThreadRouteParams(threadRef)}
-                    onClick={() => {
-                      if (isMobile) setOpenMobile(false);
-                    }}
-                  />
-                }
+            <li key={threadKey}>
+              <Link
+                to="/$environmentId/$threadId"
+                params={buildThreadRouteParams(threadRef)}
+                aria-current={threadKey === routeThreadKey ? "page" : undefined}
+                onClick={() => {
+                  if (isMobile) setOpenMobile(false);
+                }}
+                className="flex h-18 items-center gap-3 px-3 hover:bg-accent/60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring aria-[current=page]:bg-accent"
               >
-                <span className="min-w-0 flex-1 truncate">{thread.title}</span>
-                <SharedThreadLabel coOwners={thread.source.coOwners} />
-                {badge ? (
-                  <Badge size="sm" variant={badge.variant}>
-                    {resolve(badge.label)}
-                  </Badge>
-                ) : (
-                  <span className="shrink-0 text-muted-foreground text-xs tabular-nums">
-                    {formatRelativeTimeLabel(
-                      thread.latestUserMessageAt ?? thread.updatedAt,
-                      undefined,
-                      resolve,
-                    )}
+                <PromachosAvatar size="lg" />
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="flex items-baseline gap-2">
+                    <span className="min-w-0 flex-1 truncate font-medium text-base text-foreground">
+                      {thread.title}
+                    </span>
+                    <SharedThreadLabel coOwners={thread.source.coOwners} />
+                    <span className="shrink-0 text-muted-foreground/70 text-xs tabular-nums">
+                      {rowTime(thread.latestUserMessageAt ?? thread.updatedAt, locale)}
+                    </span>
                   </span>
-                )}
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+                  <span className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate text-muted-foreground text-sm">
+                      {resolve(PREVIEW[status])}
+                    </span>
+                    {unread ? (
+                      <span
+                        aria-label={gt("Unread")}
+                        className="size-2.5 shrink-0 rounded-full bg-primary"
+                      />
+                    ) : null}
+                  </span>
+                </span>
+              </Link>
+            </li>
           );
         })}
-      </SidebarMenu>
+      </ul>
     </SidebarGroup>
   );
+}
+
+// Thread shells carry no message text, so the preview line says where the conversation stands.
+const PREVIEW: Record<SidebarThreadStatus, string> = {
+  approval: msg("Needs your approval", { $context: "Promachos conversation preview" }),
+  input: msg("Waiting for your answer", { $context: "Promachos conversation preview" }),
+  request: msg("A request is waiting", { $context: "Promachos conversation preview" }),
+  preparing: msg("Working…", { $context: "Promachos conversation preview" }),
+  working: msg("Working…", { $context: "Promachos conversation preview" }),
+  waiting: msg("Waiting", { $context: "Promachos conversation preview" }),
+  failed: msg("Something went wrong", { $context: "Promachos conversation preview" }),
+  limited: msg("Reached a usage limit", { $context: "Promachos conversation preview" }),
+  ready: msg("Replied", { $context: "Promachos conversation preview" }),
+};
+
+/** Today's time of day, or the date for an older conversation. */
+function rowTime(input: string, locale: string) {
+  const at = new Date(input);
+  if (Number.isNaN(at.getTime())) return "";
+  return at.toDateString() === new Date().toDateString()
+    ? at.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" })
+    : at.toLocaleDateString(locale, { month: "short", day: "numeric" });
 }

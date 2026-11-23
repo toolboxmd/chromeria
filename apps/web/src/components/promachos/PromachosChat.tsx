@@ -1,34 +1,15 @@
 import type { MaintainScrollAtEndOptions } from "@legendapp/list/react";
-import { useGT } from "gt-react";
 import { useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 import { ComposerBanner } from "../chat/ComposerBanner";
 
 /**
- * Re-points the message tokens so the user's bubble reads as the outbound
- * side of a chat: the theme's foreground as surface, its background as ink.
+ * Re-points the message tokens so the user's bubble takes the accent, as his send button does.
  * The message body paints itself `text-foreground`, so it is re-inked too.
  */
 export const PROMACHOS_OUTBOUND_BUBBLE_CLASS_NAME =
-  "rounded-2xl px-4 py-2.5 [--contrast-message-foreground:var(--background)] [--message-foreground:var(--background)] [--message-surface:var(--foreground)] [&_.text-foreground]:text-message-foreground";
-
-const INBOUND_BUBBLE_CLASS_NAME =
-  "min-w-0 max-w-[85%] rounded-2xl bg-message px-4 py-2.5 text-message-foreground";
-
-/** Static, so a long turn costs no repaints. */
-export function PromachosWorkingBubble() {
-  const gt = useGT();
-  return (
-    <div className={INBOUND_BUBBLE_CLASS_NAME} role="status" aria-label={gt("Working")}>
-      <span aria-hidden className="flex h-5 items-center gap-1 text-muted-foreground">
-        <span className="size-1.5 rounded-full bg-current opacity-40" />
-        <span className="size-1.5 rounded-full bg-current opacity-70" />
-        <span className="size-1.5 rounded-full bg-current" />
-      </span>
-    </div>
-  );
-}
+  "rounded-[18px] px-3.5 py-2.5 [--contrast-message-foreground:var(--primary-foreground)] [--message-foreground:var(--primary-foreground)] [--message-surface:var(--primary)] [&_.text-foreground]:text-message-foreground";
 
 /** Where the composer's question or approval card appears inside the chat. */
 export function PromachosInlineCardHost({

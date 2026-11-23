@@ -14,7 +14,12 @@ import {
   deriveMessagesTimelineRows,
   type MessagesTimelineRow,
 } from "../chat/MessagesTimeline.logic";
-import { promachosTimelineDisclosures, promachosTimelineRows } from "./promachosTimeline";
+import {
+  PROMACHOS_STATUS_ROW_ID,
+  PROMACHOS_TYPING_ROW_ID,
+  promachosTimelineDisclosures,
+  promachosTimelineRows,
+} from "./promachosTimeline";
 
 const at = (n: number) => `2026-01-01T00:00:${String(n).padStart(2, "0")}Z`;
 function message(
@@ -175,10 +180,33 @@ describe("Promachos V2 timeline", () => {
     ] as MessagesTimelineRow[];
     const rows = promachosTimelineRows([
       ...outputRows,
-      { kind: "thinking", id: "thought", createdAt: null },
+      { kind: "thinking", id: "thought", createdAt: null, label: "Reading the manifest" },
       { kind: "working", id: "work", createdAt: null },
     ]);
-    expect(rows.map((row) => row.id)).toEqual(["html", "app", "promachos-working"]);
+    expect(rows.map((row) => row.id)).toEqual(["html", "app", PROMACHOS_STATUS_ROW_ID]);
+    expect(rows.at(-1)).toMatchObject({ kind: "thinking", label: "Reading the manifest" });
     expect(promachosTimelineRows(outputRows).map((row) => row.id)).toEqual(["html", "app"]);
+  });
+  it("holds his reply back while it is written, showing the typing status instead", () => {
+    const rows = promachosTimelineRows([
+      {
+        kind: "message",
+        id: "reply",
+        createdAt: at(1),
+        message: {
+          id: MessageId.make("reply"),
+          role: "assistant",
+          text: "Half a rep",
+          runId: null,
+          createdAt: at(1),
+          updatedAt: at(1),
+          streaming: true,
+        },
+        showAssistantMeta: false,
+        showAssistantCopyButton: false,
+        assistantCopyStreaming: true,
+      } as MessagesTimelineRow,
+    ]);
+    expect(rows.map((row) => row.id)).toEqual([PROMACHOS_TYPING_ROW_ID]);
   });
 });

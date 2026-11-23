@@ -3615,6 +3615,7 @@ export default function ChatView(props: ChatViewProps) {
                 ? { onOpenProjectSettings: handleOpenDraftProjectSettingsStable }
                 : {})}
               {...(threadFindEnabled ? { onFindInThread: openThreadFindStable } : {})}
+              promachos={promachosChat}
             />
           </header>
         )}
@@ -3869,6 +3870,7 @@ export default function ChatView(props: ChatViewProps) {
                             {!composerMounted ? null : (
                               <ChatComposer
                                 inlineCardHost={promachosCardHost.composerHost}
+                                promachos={promachosChat}
                                 canOperateThread={canOperateThread}
                                 reportedModelSelection={reportedModelSelection}
                                 multipleModelSelections={viewMultipleModelSelections}
