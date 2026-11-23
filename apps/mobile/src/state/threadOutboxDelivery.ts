@@ -1082,7 +1082,12 @@ export function createThreadOutboxDelivery(): {
       },
       serverConfig.providers,
     );
-    if (isModelSelectionUnavailable(serverConfig, settings.modelSelection, creation.projectId)) {
+    // Fork: Prism replaces the placeholder model of a Promachos first send (toolboxmd/chromeria#898).
+    const prismPicksModel = creation.prismRole !== undefined;
+    if (
+      !prismPicksModel &&
+      isModelSelectionUnavailable(serverConfig, settings.modelSelection, creation.projectId)
+    ) {
       const { title, detail } = describeUnavailableModelSelection(
         serverConfig,
         settings.modelSelection,
@@ -1128,7 +1133,10 @@ export function createThreadOutboxDelivery(): {
       serverEnvironment.configValueAtom(queuedMessage.environmentId),
     );
     if (!currentConfig) return yield* retryDelivery;
-    if (isModelSelectionUnavailable(currentConfig, settings.modelSelection, creation.projectId)) {
+    if (
+      !prismPicksModel &&
+      isModelSelectionUnavailable(currentConfig, settings.modelSelection, creation.projectId)
+    ) {
       const { title, detail } = describeUnavailableModelSelection(
         currentConfig,
         settings.modelSelection,
