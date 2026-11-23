@@ -842,8 +842,16 @@ export type OrchestrationV2DelegatedCompletionTaskDeliveryState =
 
 export const OrchestrationV2DelegatedCompletionTaskDelivery = Schema.Union([
   Schema.Struct({
-    state: Schema.Literals(["pending", "claimed", "acknowledged", "delivered"]),
+    state: Schema.Literals(["pending", "claimed", "acknowledged"]),
     observedByRunId: Schema.NullOr(RunId),
+  }),
+  Schema.Struct({
+    state: Schema.Literal("delivered"),
+    observedByRunId: Schema.NullOr(RunId),
+    // Fork: the steered wake that carried this result and the run the result came from, so a
+    // restart can return it when the provider accepted that wake and never read it.
+    messageId: Schema.optional(MessageId),
+    completionRunId: Schema.optional(RunId),
   }),
   Schema.Struct({
     state: Schema.Literal("disposed"),
