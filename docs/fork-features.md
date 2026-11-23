@@ -1633,7 +1633,6 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/mobile/src/features/layout/workspace/workspace-tab-navigation.ts",
     "apps/mobile/src/features/layout/workspace/workspace-tabs-state.test.ts",
     "apps/mobile/src/features/layout/workspace/workspace-tabs-state.ts",
-    "apps/mobile/src/features/threads/ThreadFeed.tsx",
     "apps/mobile/src/features/threads/new-task-flow-provider.test.tsx",
     "apps/mobile/src/lib/rootNavigation.ts",
     "apps/mobile/src/components/ui/AppBar.tsx",
@@ -1653,6 +1652,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/mobile/src/state/threadOutboxDelivery.permissions.test.ts"
   ],
   "sharedFiles": [
+    "apps/mobile/src/features/threads/ThreadFeed.tsx",
     "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
     "apps/mobile/src/features/threads/new-task-flow-provider.tsx",
     "apps/mobile/src/lib/projectThreadStartTurn.ts",
