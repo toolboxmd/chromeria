@@ -142,15 +142,14 @@ const withDispatchBarrier = (barrier: DispatchBarrier) =>
         ...policy,
         decide: (input) =>
           policy.decide(input).pipe(
-            Effect.flatMap((decision) => {
-              if (decision._tag !== "fork") return Effect.succeed(decision);
-              return barrier.beforeMark
-                ? hold.pipe(Effect.as(decision))
-                : Effect.succeed({
-                    ...decision,
-                    dispatch: hold.pipe(Effect.andThen(decision.dispatch)),
-                  });
-            }),
+            Effect.tap((decision) =>
+              decision._tag === "fork" && barrier.beforeMark ? hold : Effect.void,
+            ),
+            Effect.map((decision) =>
+              decision._tag === "fork" && !barrier.beforeMark
+                ? { ...decision, dispatch: hold.pipe(Effect.andThen(decision.dispatch)) }
+                : decision,
+            ),
           ),
       };
       return ScheduledTaskService.layer.pipe(
@@ -2329,6 +2328,51 @@ it.effect(
         assert.equal(edited.title, "Edited concurrently");
         assert.equal(edited.projectId, destination);
         assert.equal(edited.threadMode, "fresh_session");
+      }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
+
+it.effect.each(["runAt", "at"] as const)(
+  "moves an enabled pending one-time task after its %s arrives",
+  (field) =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const sql = yield* SqlClient.SqlClient;
+        const destination = ProjectId.make("project:due-move");
+        yield* sql`
+          INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+          VALUES (${destination}, 'Destination', '/projects/due-move', '[]', ${CANONICAL}, ${CANONICAL})
+        `;
+        const runAt = "2026-10-08T12:00:00.001Z";
+        const input = {
+          title: "One-time work",
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+          prompt: "Review",
+          enabled: true,
+          projectId,
+          threadId: null,
+          workspaceStrategy: { type: "root" },
+          modelSelection: selection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          schedule: field === "runAt" ? { type: "once", runAt } : { type: "once", at: runAt },
+        } as const;
+        const { task: original } = yield* service.upsert(input);
+        yield* TestClock.adjust(2);
+        const { task: moved } = yield* service.upsert({
+          ...input,
+          id: original.id,
+          projectId: destination,
+          requireExisting: true,
+        });
+        assert.equal(moved.projectId, destination);
+        assert.deepEqual(moved.schedule, original.schedule);
+        assert.equal(moved.nextRunAt, runAt);
+        assert.equal(moved.runCount, 0);
+        assert.equal(moved.id, original.id);
       }).pipe(Effect.provide(runtime(database)), Effect.scoped);
     }).pipe(Effect.scoped),
 );

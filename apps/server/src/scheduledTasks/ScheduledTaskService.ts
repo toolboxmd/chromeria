@@ -2031,13 +2031,13 @@ export const layer = Layer.effect(
               // of silently resetting an existing row.
               yield* localFence;
               const existingTask = yield* findTask(id);
-              if (existingTask !== null && existingTask.projectId !== input.projectId) {
-                if (existingTask.lastRunStatus === "running")
-                  return yield* taskError(
-                    "Let the running scheduled task finish before moving it.",
-                    { taskId: id },
-                  );
-                yield* dispatchPolicy.assertMoveAllowed(id);
+              const moving = existingTask !== null && existingTask.projectId !== input.projectId;
+              if (moving && existingTask.lastRunStatus === "running")
+                return yield* taskError("Let the running scheduled task finish before moving it.", {
+                  taskId: id,
+                });
+              if (moving) {
+                yield* dispatchPolicy.assertRunIdle(id, "move");
                 const destination = yield* sql`
                   SELECT 1 FROM projection_projects
                   WHERE project_id = ${input.projectId} AND deleted_at IS NULL
@@ -2053,6 +2053,11 @@ export const layer = Layer.effect(
                       taskId: id,
                     },
                   );
+              } else if (existingTask !== null && accepted !== undefined) {
+                // Replacing a certificate would leave a checked run using retired authority.
+                const current = yield* automation.current("schedule", id);
+                if (Option.getOrUndefined(current)?.id !== accepted.certificate.id)
+                  yield* dispatchPolicy.assertRunIdle(id, "edit");
               }
               if (extensionCommit !== undefined) yield* extensionCommit;
               const currentThread = resolveThreadBinding(input, existingTask);
@@ -2139,7 +2144,6 @@ export const layer = Layer.effect(
                   : input.schedule.type === "once" && "runAt" in input.schedule
                     ? { type: "once", runAt: iso(DateTime.makeUnsafe(input.schedule.runAt)) }
                     : input.schedule;
-              yield* requireFutureOnce({ enabled: input.enabled, schedule }, now, id);
               const webhook =
                 input.schedule.type === "webhook"
                   ? yield* Effect.gen(function* () {

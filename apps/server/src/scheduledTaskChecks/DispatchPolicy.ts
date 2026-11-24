@@ -29,7 +29,10 @@ export class ScheduledTaskDispatchFailed extends Schema.TaggedError<ScheduledTas
 ) {}
 
 export interface ScheduledTaskDispatchPolicyShape {
-  readonly assertMoveAllowed: (id: ScheduledTaskId) => Effect.Effect<void, ScheduledTaskError>;
+  readonly assertRunIdle: (
+    id: ScheduledTaskId,
+    operation: "move" | "edit",
+  ) => Effect.Effect<void, ScheduledTaskError>;
   readonly decide: (input: {
     readonly task: ScheduledTask;
     readonly trigger: "scheduled" | "manual" | "webhook";
@@ -44,7 +47,7 @@ export class ScheduledTaskDispatchPolicy extends Context.Reference<ScheduledTask
   "t3/scheduledTaskChecks/ScheduledTaskDispatchPolicy",
   {
     defaultValue: () => ({
-      assertMoveAllowed: () => Effect.void,
+      assertRunIdle: () => Effect.void,
       decide: () => Effect.succeed(upstreamDecision),
     }),
   },

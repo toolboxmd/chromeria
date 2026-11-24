@@ -1392,6 +1392,118 @@ it.live("moves a disabled schedule through both MCP update tools", () =>
   ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
+it.live(
+  "preserves the current certificate when a same-project edit would strand an admitted run",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const source = yield* makeNode(
+          descriptorOf("scheduler-held-source", "Scheduler held source", { peerAuthority: 1 }),
+          "disk",
+          { productionKernel: true, attachmentRequests: true },
+        );
+        const node = yield* makeNode(
+          descriptorOf("scheduler-held-edit", "Scheduler held edit", { peerAuthority: 1 }),
+          "disk",
+          {
+            productionKernel: true,
+            attachmentRequests: true,
+            nativeOwners: true,
+            manualScheduler: Scheduler.Scheduler.of({ register: () => Effect.void }),
+          },
+        );
+        const parent = ThreadId.make("scheduler-held-edit-parent");
+        yield* linkTo(source.links, node, "full-access");
+        yield* seedParent(source, parent);
+        const environmentId = node.environmentId;
+        const created = yield* nativeCall(source, parent, "schedule_task", {
+          environmentId,
+          projectId: node.project.id,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+          title: "Paused authority probe",
+          prompt: "Disposable",
+          schedule: { type: "interval", everyMs: 60_000 },
+          enabled: false,
+          bindToCurrentThread: false,
+          command: "true",
+          clientRequestId: "create-held-edit-probe",
+        });
+        expect(created.isError, json(created)).not.toBe(true);
+        const { scheduledTaskId } = yield* decodeAutomationScheduleReceipt(
+          created.structuredContent,
+        );
+        yield* Effect.gen(function* () {
+          const sql = Context.get(node.database, SqlClient.SqlClient);
+          const read = CheckStore.readCheckState(scheduledTaskId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
+          const certificate = AutomationAuthority.currentAutomationCertificate(
+            "schedule",
+            scheduledTaskId,
+          ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+          const invalidProject = yield* nativeCall(source, parent, "update_scheduled_task", {
+            environmentId,
+            scheduledTaskId,
+            projectId: source.project.id,
+            clientRequestId: "reject-foreign-project-held-edit",
+          });
+          expect(invalidProject.isError, json(invalidProject)).toBe(true);
+          expect(json(invalidProject)).toContain(`Project ${source.project.id} was not found.`);
+          expect((yield* node.scheduled.list()).tasks[0]?.projectId).toBe(node.project.id);
+
+          const state = (yield* read)!;
+          const authority = (yield* certificate)!;
+          const slot = "2026-10-16T00:00:00Z";
+          const active = yield* CheckStore.writeCheckState(state, {
+            ...state,
+            runs: [
+              {
+                id: "paused-test-admitted-run",
+                slot,
+                checkVersion: null,
+                threadId: null,
+                checkCwd: null,
+                stage: "running",
+                attempt: 0,
+                retryAt: null,
+                hasWork: false,
+                sends: [],
+                error: null,
+                check: null,
+                automationCertificateId: authority.id,
+              },
+            ],
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+          const rejected = yield* nativeCall(source, parent, "update_scheduled_task", {
+            environmentId,
+            scheduledTaskId,
+            title: "Must not replace the active certificate",
+            clientRequestId: "reject-held-edit-probe",
+          });
+          expect(rejected.isError, json(rejected)).toBe(true);
+          expect(json(rejected)).toContain(
+            "Let the unfinished scheduled run finish before editing",
+          );
+          expect((yield* certificate)?.id).toBe(authority.id);
+          expect(yield* read).toEqual(active);
+        }).pipe(
+          Effect.ensuring(
+            nativeCall(source, parent, "delete_scheduled_task", {
+              environmentId,
+              scheduledTaskId,
+              clientRequestId: "delete-held-edit-probe",
+            }).pipe(
+              Effect.tap((reply) =>
+                Effect.sync(() => expect(reply.isError, json(reply)).not.toBe(true)),
+              ),
+              Effect.orDie,
+            ),
+          ),
+        );
+      }),
+    ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
+);
+
 it.live("scheduler-replay382: replayed creation preserves later independent schedule edits", () =>
   Effect.scoped(
     Effect.gen(function* () {

@@ -537,17 +537,22 @@ const policyLayer = Layer.effect(
   Effect.gen(function* () {
     const { runs, sql } = yield* Engine;
     return {
-      assertMoveAllowed: Effect.fn("ScheduledTaskDispatchPolicy.assertMoveAllowed")(function* (id) {
-        const state = yield* readCheckState(id).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.mapError(toTaskError(id)),
-        );
-        if (state !== null && unfinishedRun(state) !== undefined)
-          return yield* new ScheduledTaskError({
-            message: "Let the unfinished scheduled run finish before moving the task.",
-            taskId: id,
-          });
-      }),
+      assertRunIdle: Effect.fn("ScheduledTaskDispatchPolicy.assertRunIdle")(
+        function* (id, operation) {
+          const state = yield* readCheckState(id).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(toTaskError(id)),
+          );
+          if (state !== null && unfinishedRun(state) !== undefined)
+            return yield* new ScheduledTaskError({
+              message:
+                operation === "move"
+                  ? "Let the unfinished scheduled run finish before moving the task."
+                  : "Let the unfinished scheduled run finish before editing the task.",
+              taskId: id,
+            });
+        },
+      ),
       decide: Effect.fn("ScheduledTaskDispatchPolicy.decide")((input) =>
         runs.decide(input).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       ),
@@ -785,9 +790,11 @@ const decoratedLayer = Layer.effect(
             !isForkScheduledTaskSchedule(schedule) ||
             !forkSameSchedule(existing.schedule, schedule);
           if (
+            input.enabled &&
             schedule.type === "once" &&
-            changed &&
-            Date.parse("at" in schedule ? schedule.at : schedule.runAt) <= now
+            "at" in schedule &&
+            (changed || existing?.enabled !== input.enabled) &&
+            Date.parse(schedule.at) <= now
           )
             return yield* refused("The one-shot time is in the past.", input.id);
           if (schedule.type === "fixed_time" && isForkScheduledTaskSchedule(schedule)) {
