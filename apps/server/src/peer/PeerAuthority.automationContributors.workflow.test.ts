@@ -63,6 +63,7 @@ import {
   json,
   makeNode,
   nativeCall,
+  nativeInvalidParams,
   seedParent,
   selection,
   traceAutomationValidation,
@@ -1327,6 +1328,20 @@ it.live("moves a disabled schedule through both MCP update tools", () =>
           });
           expect(rejected.isError, json(rejected)).toBe(true);
           expect(json(rejected)).toContain(error);
+          expect(yield* getTask(node.project.id)).toEqual(original);
+        }
+
+        const wrongVariant = { ...schedule, weekdays: [1] };
+        for (const [tool, invalidSchedule] of [
+          ["schedule_task", wrongVariant],
+          ["update_scheduled_task", json(wrongVariant)],
+        ] as const) {
+          const rejected = yield* nativeInvalidParams(node, parent, tool, {
+            scheduledTaskId,
+            schedule: invalidSchedule,
+            clientRequestId: `reject-interval-weekdays-${tool}`,
+          });
+          expect(json(rejected)).toContain("weekdays");
           expect(yield* getTask(node.project.id)).toEqual(original);
         }
 

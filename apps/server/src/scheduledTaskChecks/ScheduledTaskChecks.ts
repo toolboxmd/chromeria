@@ -5,6 +5,7 @@ import { requestDigest } from "../mcp/McpRequestReceipts.ts";
 import * as MutationReceipts from "../scheduledTasks/mutationReceipts.ts";
 import {
   isForkScheduledTaskSchedule,
+  scheduledTaskThreadMode,
   OrchestrationV2RunJson,
   ScheduledTaskError,
   ScheduledTaskId,
@@ -975,16 +976,20 @@ const checksLayer = Layer.effect(
                     message: "The schedule project changed before rebinding.",
                     taskId: current.id,
                   });
+                const projectId = fields.projectId ?? current.projectId;
                 if (
                   fields.projectId !== undefined &&
                   (existing.projectId !== current.projectId ||
-                    (fields.projectId !== current.projectId && current.threadId !== null))
+                    (projectId !== current.projectId &&
+                      (current.threadId !== null ||
+                        scheduledTaskThreadMode(existing) !== scheduledTaskThreadMode(current) ||
+                        requestDigest(existing.workspaceStrategy) !==
+                          requestDigest(current.workspaceStrategy))))
                 )
                   return yield* new ScheduledTaskError({
-                    message: "The schedule project or thread binding changed before the move.",
+                    message: "The schedule destination changed before the move. Read it and retry.",
                     taskId: current.id,
                   });
-                const projectId = fields.projectId ?? current.projectId;
                 const boundThread =
                   fields.bindToCurrentThread === undefined ? current.threadId : threadId;
                 const updated: ScheduledTaskUpsertInput = {

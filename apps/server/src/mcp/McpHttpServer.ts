@@ -56,6 +56,7 @@ import {
   AuthSessionId,
   DeviceToolError,
   OrchestratorMcpFailure,
+  OrchestratorMcpUpdateScheduledTaskInput,
   PreviewAutomationError,
   ProviderInteractionMode,
   type RunId,
@@ -814,12 +815,17 @@ const saveScreenshot = Effect.fn("McpHttpServer.saveScreenshot")(function* (
   return screenshotPath;
 });
 
+const decodeScheduleEdit = Schema.decodeUnknownResult(
+  Schema.toCodecJson(OrchestratorMcpUpdateScheduledTaskInput.fields.schedule),
+  { onExcessProperty: "error", reportInput: false },
+);
+
 const MAX_NAMED_ARGUMENTS = 5;
 const MAX_ARGUMENT_NAME_CHARS = 64;
 
 /**
- * Rejects top-level arguments the advertised schema does not list, naming them. Nested objects stay lenient:
- * the advertised schema merges tagged unions, so strict decoding would reject keys agents were shown.
+ * Rejects unknown top-level arguments by name. Schedule edits also check the selected trigger's
+ * fields before a permissive decode can drop them and let the scheduler confirm the edit.
  */
 const advertisedArgumentsOnly = (tool: Tool.Any) => {
   const { properties } = advertisedJsonSchema(tool);
@@ -828,7 +834,18 @@ const advertisedArgumentsOnly = (tool: Tool.Any) => {
   return Schema.Record(Schema.String, Schema.Unknown).check(
     Schema.makeFilter((input) => {
       const unknown = Object.keys(input).filter((key) => !accepted.has(key));
-      if (unknown.length === 0) return undefined;
+      if (unknown.length === 0) {
+        if (
+          input.schedule != null &&
+          (tool.name === "update_scheduled_task" ||
+            (tool.name === "schedule_task" && input.scheduledTaskId != null))
+        ) {
+          const decoded = decodeScheduleEdit(input.schedule);
+          if (decoded._tag === "Failure")
+            return { path: ["schedule"], issue: decoded.failure.issue };
+        }
+        return;
+      }
       const named = unknown
         .slice(0, MAX_NAMED_ARGUMENTS)
         .map((key) => JSON.stringify(cutText(key, MAX_ARGUMENT_NAME_CHARS)));

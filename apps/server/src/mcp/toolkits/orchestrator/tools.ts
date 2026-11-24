@@ -194,7 +194,7 @@ const ListScheduledTasksTool = Tool.make("list_scheduled_tasks", {
 
 const UpdateScheduledTaskTool = Tool.make("update_scheduled_task", {
   description:
-    "Update one scheduled task by `scheduledTaskId`. Only given fields change. `enabled=false` pauses it. `filters:[]` clears filters. Negotiated keyed calls return only the historical receipt; read current state with `list_scheduled_tasks`.",
+    "Update by `scheduledTaskId`. Move an unbound task with `projectId`, pause with `enabled=false`, clear filters with `filters:[]`. Keyed calls return a receipt. Read current state with `list_scheduled_tasks`.",
   parameters: McpRouting.parameters(OrchestratorMcpUpdateScheduledTaskInput),
   success: OrchestratorMcpScheduleTaskResult,
   failure: OrchestratorMcpFailure,

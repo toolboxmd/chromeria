@@ -2258,6 +2258,58 @@ it.effect(
     }).pipe(Effect.scoped),
 );
 
+it.effect(
+  "a project move cannot overwrite a thread mode changed since the caller read the task",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* Effect.gen(function* () {
+        const checks = yield* ScheduledTaskChecks.ScheduledTaskChecks;
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const sql = yield* SqlClient.SqlClient;
+        const destination = ProjectId.make("project:other");
+        yield* sql`
+        INSERT INTO projection_projects
+          (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES (${destination}, 'Destination', '/projects/other', '[]', ${CANONICAL}, ${CANONICAL})
+      `;
+        const base = {
+          title: "Concurrent edit",
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+          prompt: "Review",
+          enabled: false,
+          projectId,
+          threadId: null,
+          threadMode: "new_thread",
+          workspaceStrategy: { type: "root" },
+          modelSelection: selection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          schedule: { type: "interval", everyMs: 3_600_000 },
+        } as const;
+        const { task: stale } = yield* service.upsert(base);
+        const { task: current } = yield* service.upsert({
+          ...base,
+          id: stale.id,
+          threadMode: "fresh_session",
+        });
+        const result = yield* Effect.result(
+          checks.update(
+            {
+              input: { scheduledTaskId: stale.id, projectId: destination },
+              existing: stale,
+              threadId: null,
+              parent: undefined,
+            },
+            service.upsert,
+          )({ ...base, id: stale.id, projectId: destination }),
+        );
+        assert.equal(result._tag, "Failure");
+        assert.deepEqual((yield* service.list()).tasks, [current]);
+      }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
+
 it.effect("the live list shows a save and a delete as soon as each returns", () =>
   Effect.gen(function* () {
     const database = yield* tempDatabase;
