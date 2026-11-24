@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { isAddableRelayEnvironment } from "@t3tools/client-runtime/relay";
 import {
   RelayConnectionRegistration,
   RelayConnectionTarget,
@@ -66,7 +67,12 @@ export function useConnectionController() {
     [discovery.environments, messages],
   );
   const availableRelayEnvironments = useMemo(
-    () => relayEnvironments.filter((entry) => !registeredIds.has(entry.environment.environmentId)),
+    () =>
+      relayEnvironments.filter(
+        (entry) =>
+          isAddableRelayEnvironment(entry.environment) &&
+          !registeredIds.has(entry.environment.environmentId),
+      ),
     [registeredIds, relayEnvironments],
   );
 
