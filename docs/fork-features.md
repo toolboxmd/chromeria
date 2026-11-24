@@ -337,6 +337,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "docs/user/browser.md"
   ],
   "upstreamFiles": [
+    "apps/web/package.json",
+    "apps/mobile/package.json",
     "apps/web/src/i18n/translations/de.json",
     "apps/web/src/i18n/translations/en.json",
     "apps/web/src/i18n/translations/es.json",
