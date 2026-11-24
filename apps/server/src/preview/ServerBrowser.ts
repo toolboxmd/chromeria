@@ -1178,7 +1178,6 @@ const make = Effect.gen(function* () {
       tab.cdp,
       { width: size.width, height: size.height },
       previewViewportZoom(tab.page),
-      authorize,
     );
     await broadcastViewport(tab);
   };
@@ -1212,7 +1211,6 @@ const make = Effect.gen(function* () {
         tab.cdp,
         previewViewportSize(tab.page) ?? UNATTACHED_FILL_VIEWPORT,
         zoomFactor,
-        authorize,
       );
       await broadcastViewport(tab);
     }
@@ -1486,7 +1484,6 @@ const make = Effect.gen(function* () {
           cdp,
           fixedViewportSize(tab.setting) ?? UNATTACHED_FILL_VIEWPORT,
           1,
-          authorize,
         );
       }
       await applyRendering(tab, snapshot, authorize);
@@ -3959,12 +3956,6 @@ const make = Effect.gen(function* () {
     await authorize();
     const message = asRecord(raw);
     if (!message) return;
-    if (
-      (message.type === "mouse" || message.type === "wheel") &&
-      !tab.desktop &&
-      !previewViewportSize(tab.page)
-    )
-      return;
     const modifiers = modifiersOf(message);
     switch (message.type) {
       case "mouse": {
@@ -4063,7 +4054,6 @@ const make = Effect.gen(function* () {
           tab.cdp,
           { width, height },
           previewViewportZoom(tab.page),
-          authorize,
         );
         await broadcastViewport(tab);
         return;

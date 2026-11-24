@@ -18,13 +18,11 @@ export const RENDER_SCALE = 2;
 type ViewportSize = { readonly width: number; readonly height: number };
 const agentViewports = new WeakMap<
   Page,
-  { readonly size: ViewportSize; readonly zoom: number } | null
+  { readonly size: ViewportSize; readonly zoom: number; readonly emulated: boolean }
 >();
 
-export const previewViewportSize = (page: Page) => {
-  const viewport = agentViewports.get(page);
-  return viewport === undefined ? page.viewportSize() : (viewport?.size ?? null);
-};
+export const previewViewportSize = (page: Page) =>
+  agentViewports.get(page)?.size ?? page.viewportSize();
 
 export const previewViewportZoom = (page: Page) => agentViewports.get(page)?.zoom ?? 1;
 
@@ -38,27 +36,20 @@ export const resizeAgentViewport = async (
   cdp: CDPSession,
   size: ViewportSize,
   zoom: number,
-  authorize: () => Promise<void>,
 ) => {
-  if (zoom === 1) {
-    if (previewViewportZoom(page) !== 1) {
-      await cdp.send("Emulation.clearDeviceMetricsOverride");
-      // Stills and screencast frames can lag the clear. Only an authorized resize
-      // can establish the viewport again, so pointer input stays suspended until then.
-      agentViewports.set(page, null);
-      await authorize();
-    }
-    // Playwright's viewport setter replaces the screen. Device metrics emulation
-    // also removes the work area inset, so use it only when zoom changes the DPR.
-    await cdp.send("Emulation.setVisibleSize", size);
-  } else {
+  // Keep the override once zoom needs it. Clearing it would restore the window
+  // viewport before a second command could reapply the requested size.
+  const emulated = zoom !== 1 || agentViewports.get(page)?.emulated === true;
+  if (emulated) {
     await cdp.send("Emulation.setDeviceMetricsOverride", {
       ...viewportAtZoom(size, zoom),
       deviceScaleFactor: RENDER_SCALE * zoom,
       mobile: false,
     });
+  } else {
+    await cdp.send("Emulation.setVisibleSize", size);
   }
-  agentViewports.set(page, { size, zoom });
+  agentViewports.set(page, { size, zoom, emulated });
 };
 
 export const agentColorScheme = (localHour: number) =>

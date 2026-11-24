@@ -1754,7 +1754,7 @@ it.effect("a first still that never returns does not stall the tab's later captu
   ).pipe(Effect.provide(layer)),
 );
 
-it.effect("keeps zoom during viewer resize and recovers if a zoom reset is interrupted", () =>
+it.effect("keeps the fixed viewport when zoom returns to 100%", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const browser = yield* ServerBrowser.ServerBrowser;
@@ -1762,64 +1762,31 @@ it.effect("keeps zoom during viewer resize and recovers if a zoom reset is inter
       const { tabId } = yield* manager.open({
         threadId: scope.thread.threadId,
         runtime: "server",
+        viewport: { _tag: "freeform", width: 390, height: 844 },
         zoomFactor: 1.5,
       });
       const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
       yield* viewer.input({ type: "takeControl" });
       const cdp = contexts[0]!.sessions[0]!;
-      cdp.send.mockClear();
-      yield* viewer.input({ type: "resize", width: 390, height: 844 });
       expect(cdp.send).toHaveBeenCalledWith(
         "Emulation.setDeviceMetricsOverride",
-        expect.objectContaining({ deviceScaleFactor: 3 }),
+        expect.objectContaining({ width: 260, height: 563, deviceScaleFactor: 3 }),
       );
-      let authorized = true;
-      const send = cdp.send.getMockImplementation()!;
-      cdp.send.mockImplementation(async (method, input) => {
-        if (method === "Emulation.clearDeviceMetricsOverride") authorized = false;
-        return send(method, input);
-      });
       cdp.send.mockClear();
-      yield* Queue.clear(viewer.output);
-      const revoked = Promise.withResolvers<void>();
-      yield* manager.adjust({ threadId: scope.thread.threadId, tabId, zoomFactor: 1 }, async () => {
-        if (!authorized) {
-          revoked.resolve();
-          throw new Error("grant revoked");
-        }
-      });
-      yield* Effect.promise(() => revoked.promise);
-      const streamSession = contexts[0]!.sessions.at(-1)!;
-      const emitFrame = (sessionId: number, width: number, height: number, timestamp: number) =>
-        streamSession.emit("Page.screencastFrame", {
-          data: "ZnJhbWU=",
-          sessionId,
-          metadata: { deviceWidth: width, deviceHeight: height, timestamp },
-        });
-      emitFrame(1, 260, 563, 9);
-      yield* viewer.input({ type: "mouse", action: "down", x: 50, y: 50, button: "left" });
-      expect(streamSession.send).not.toHaveBeenCalledWith(
-        "Input.dispatchMouseEvent",
-        expect.anything(),
+      const resetViewport = Stream.fromQueue(viewer.output).pipe(
+        Stream.filter(
+          (item) => item._tag === "viewport" && item.width === 390 && item.height === 844,
+        ),
+        Stream.runHead,
       );
-      emitFrame(2, 1280, 813, 12);
-      emitFrame(3, 260, 563, 9.5);
-      emitFrame(4, 390, 844, 11);
-      yield* viewer.input({ type: "mouse", action: "down", x: 51, y: 50, button: "left" });
-      expect(streamSession.send).not.toHaveBeenCalledWith(
-        "Input.dispatchMouseEvent",
-        expect.anything(),
-      );
-      yield* viewer.input({ type: "resize", width: 390, height: 844 });
-      expect(viewportSizes(yield* Queue.takeAll(viewer.output))).toEqual(["390x844"]);
-      yield* viewer.input({ type: "mouse", action: "down", x: 52, y: 50, button: "left" });
-      expect(streamSession.send).toHaveBeenCalledWith(
-        "Input.dispatchMouseEvent",
-        expect.objectContaining({ x: 52, y: 50 }),
-      );
-      expect(
-        cdp.send.mock.calls.filter(([method]) => method === "Emulation.setVisibleSize"),
-      ).toEqual([["Emulation.setVisibleSize", { width: 390, height: 844 }]]);
+      yield* manager.adjust({ threadId: scope.thread.threadId, tabId, zoomFactor: 1 });
+      expect(Option.isSome(yield* resetViewport)).toBe(true);
+      expect(cdp.send.mock.calls.filter(([method]) => method.startsWith("Emulation."))).toEqual([
+        [
+          "Emulation.setDeviceMetricsOverride",
+          { width: 390, height: 844, deviceScaleFactor: 2, mobile: false },
+        ],
+      ]);
     }),
   ).pipe(Effect.provide(layer)),
 );
