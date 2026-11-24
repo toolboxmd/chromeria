@@ -5,6 +5,7 @@ import {
   FeatureMapRpcs,
   PromachosHomeRpcGroup,
   IssueLinksRpcGroup,
+  ScheduledTaskRunsRpcGroup,
   SpectrumRpcGroup,
   RpcScopeAuthorization,
 } from "@t3tools/contracts";
@@ -15,6 +16,7 @@ export const group = RpcGroup.make(...IssueRpcs, ...FeatureMapRpcs)
   .merge(
     PromachosHomeRpcGroup,
     IssueLinksRpcGroup,
+    ScheduledTaskRunsRpcGroup,
     SpectrumRpcGroup,
     DeviceViewerClientRpcGroup,
     PreviewViewerClientRpcGroup,

@@ -63,6 +63,7 @@ vi.mock("../layout/workspace/useSelectWorkspaceDetail", () => ({
   useSelectWorkspaceDetail: () => vi.fn(),
 }));
 vi.mock("../../state/threads", () => ({ threadFamilies: {} }));
+vi.mock("./ScheduledTaskRuns", () => ({ ScheduledTaskRuns: () => null }));
 vi.mock("../../lib/copyTextWithHaptic", () => ({ tryCopyTextWithHaptic: vi.fn() }));
 vi.mock("../voice-input/useVoiceInputController", () => ({
   useVoiceInputController: () => ({ blocksSubmission: false }),

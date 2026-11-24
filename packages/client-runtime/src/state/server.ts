@@ -21,6 +21,7 @@ import {
   type ServerSelfUpdateResult,
   shouldRecommendDatabaseCompaction,
   type UsageSummary,
+  SCHEDULED_TASK_RUNS_WS_METHODS,
   WS_METHODS,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -1466,6 +1467,10 @@ export function createServerEnvironmentAtoms<R, E>(
     label: "environment-data:server:workflows:live",
     tag: WS_METHODS.workflowsSubscribe,
   });
+  const scheduledTasksLive = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+    label: "environment-data:server:scheduled-tasks:live",
+    tag: WS_METHODS.scheduledTasksSubscribe,
+  });
   const liveWorkflowSnapshot = (environmentId: EnvironmentId) => {
     const live = workflowsLive({ environmentId, input: {} });
     return (get: Atom.AtomContext) => Option.getOrUndefined(AsyncResult.value(get(live)));
@@ -1683,9 +1688,24 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.scheduledTasksList,
     }),
     /** Live scheduled-task list: snapshot on subscribe, fresh list after every server-side change. */
-    scheduledTasksLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
-      label: "environment-data:server:scheduled-tasks:live",
-      tag: WS_METHODS.scheduledTasksSubscribe,
+    scheduledTasksLive,
+    // Fork: a task's kept runs (toolboxmd/chromeria#951), read again when its last run changes.
+    scheduledTaskRuns: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:scheduled-task:runs",
+      tag: SCHEDULED_TASK_RUNS_WS_METHODS.list,
+      // Never served from cache on a return to the page: a run may have ended meanwhile, and
+      // nothing on the client says so for a thread it has not been watching.
+      staleTimeMs: 0,
+      idleTtlMs: 0,
+      refreshTrigger: ({ environmentId, input }) => {
+        const live = scheduledTasksLive({ environmentId, input: {} });
+        return Atom.make((get) => {
+          const task = Option.getOrUndefined(AsyncResult.value(get(live)))?.tasks.find(
+            (entry) => entry.id === input.id,
+          );
+          return `${task?.lastRunAt}:${task?.lastRunStatus}:${task?.runCount}`;
+        });
+      },
     }),
     // A cold transcript scan is measured in seconds, so keep the result around
     // long enough that switching windows or re-rendering does not rescan. With

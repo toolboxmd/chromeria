@@ -10,7 +10,7 @@ import { SPECTRUM_WS_METHODS } from "@t3tools/contracts";
 import type * as PromachosLaunch from "./promachos/PromachosLaunch.ts";
 import * as PromachosRpc from "./promachos/PromachosRpc.ts";
 import { withoutPromachosClaims } from "./promachos/PromachosClientCommands.ts";
-import { PROMACHOS_HOME_WS_METHODS } from "@t3tools/contracts";
+import { PROMACHOS_HOME_WS_METHODS, SCHEDULED_TASK_RUNS_WS_METHODS } from "@t3tools/contracts";
 import { GitCommandError, OrchestrationDispatchCommandError } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
 import * as NodeCrypto from "node:crypto";
@@ -132,6 +132,7 @@ import { RpcSerialization, RpcServer } from "effect/rpc";
 import * as Struct from "effect/Struct";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as ForkWsRpc from "./forkWsRpc.ts";
+import * as ScheduledTaskRuns from "./scheduledTaskChecks/runs.ts";
 
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as NativeChildWorkQuery from "./orchestration-v2/NativeChildWorkQuery.ts";
@@ -2529,6 +2530,10 @@ export const layerWsRpc = (
         [WS_METHODS.scheduledTasksGetWebhookDelivery]: (input) =>
           Effect.annotateCurrentSpan({ "scheduled_task.id": input.id }).pipe(
             Effect.andThen(scheduledTasks.getWebhookDelivery(input)),
+          ),
+        [SCHEDULED_TASK_RUNS_WS_METHODS.list]: (input) =>
+          ScheduledTaskRuns.listTaskRuns(input.id).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
           ),
         [WS_METHODS.serverProbe]: (_input) =>
           Effect.map(DateTime.now, (now) => ({ serverTime: DateTime.formatIso(now) })),

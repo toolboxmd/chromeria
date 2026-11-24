@@ -5951,5 +5951,13 @@
   "8ab3b8f1696c6065": "Wight mode waiting on this thread",
   "5f25b3f70e83f8be": "Wight mode on",
   "c5c3528c7b652195": "While idle: off",
-  "f1bdbeb0516919a8": "You: {text}"
+  "f1bdbeb0516919a8": "You: {text}",
+  "64c260007bd546f1": "Runs ({count})",
+  "e2fdd7336f980905": "{count} open",
+  "7652438fbefdbc56": "Running",
+  "bb720fd1f97c6330": "Failed",
+  "418a0a04968c6299": "Open · needs you",
+  "86ec6235858128b4": "Settled",
+  "f421866ce3ce0c82": "{count, plural, one {{count} run} other {{count} runs}}, {open} open",
+  "a1d07632a6ae9706": "Opens this run's thread"
 }

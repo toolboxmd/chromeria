@@ -837,7 +837,7 @@
   "a8cb0a2b46270859": "Impossible de synchroniser les données de l’environnement.",
   "4731d4616735186c": "{count, plural, one {{count} sous-agent lancé} other {{count} sous-agents lancés}}",
   "885110d4e416d2cd": "{count, plural, one {{count} sous-agent exécuté} other {{count} sous-agents exécutés}}",
-  "6b785358f5d62f75": "{count} en cours",
+  "6b785358f5d62f75": "{count} à traiter",
   "5af3bd99008c10b8": "{count} terminé(s)",
   "3098c20a7dc58f99": "{count} en échec",
   "dfae80f38f7a8705": "{count} arrêté(s)",
@@ -13181,7 +13181,7 @@
   "156ec271d49ddd70": "Ce qui s’est passé",
   "34f59bbbead0b97f": "{names} et {count} de plus",
   "ac1556f6ce89a5ea": "{count} en parallèle",
-  "e197c4963bacc746": "{count} en cours",
+  "e197c4963bacc746": "{count} à traiter",
   "f5319ed9e18c0df1": "Vous pose une question",
   "882a25e9084ae1b2": "En pause",
   "9a03d8a9afc60387": "Étapes jusqu’ici",
@@ -13549,5 +13549,10 @@
     },
     "."
   ],
-  "f1bdbeb0516919a8": "Vous : {text}"
+  "f1bdbeb0516919a8": "Vous : {text}",
+  "e2fdd7336f980905": "{count} à traiter",
+  "64c260007bd546f1": "Exécutions ({count})",
+  "418a0a04968c6299": "Ouvert · à traiter",
+  "86ec6235858128b4": "Clos",
+  "f421866ce3ce0c82": "{count, plural, one {{count} exécution} other {{count} exécutions}}, {open} à traiter"
 }

@@ -79,6 +79,7 @@ export * from "./scheduledTask.ts";
 export * from "./milestones.ts";
 export * from "./workflow.ts";
 export * from "./scheduledTaskChecks.ts";
+export * from "./scheduledTaskRuns.ts";
 export * from "./spectrum.ts";
 export * from "./spectrumRpc.ts";
 export * from "./worktreeMcp.ts";

@@ -1,6 +1,7 @@
 import {
   ORCHESTRATION_V2_WS_METHODS,
   PROMACHOS_HOME_WS_METHODS,
+  SCHEDULED_TASK_RUNS_WS_METHODS,
   SPECTRUM_WS_METHODS,
   WS_METHODS,
   type WsRpcGroup,
@@ -22,6 +23,7 @@ const RPC_AGGREGATES = {
   [SPECTRUM_WS_METHODS.abandonReport]: "spectrum",
   [SPECTRUM_WS_METHODS.stop]: "spectrum",
   [PROMACHOS_HOME_WS_METHODS.create]: "promachos",
+  [SCHEDULED_TASK_RUNS_WS_METHODS.list]: "scheduledTasks",
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.getNativeChildWork]: "orchestration",

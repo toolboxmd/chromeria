@@ -13549,5 +13549,10 @@
     },
     "."
   ],
-  "f1bdbeb0516919a8": "Du: {text}"
+  "f1bdbeb0516919a8": "Du: {text}",
+  "e2fdd7336f980905": "{count} offen",
+  "64c260007bd546f1": "Ausführungen ({count})",
+  "418a0a04968c6299": "Offen · wartet auf dich",
+  "86ec6235858128b4": "Erledigt",
+  "f421866ce3ce0c82": "{count, plural, one {{count} Ausführung} other {{count} Ausführungen}}, {open} offen"
 }

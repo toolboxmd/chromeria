@@ -30,6 +30,7 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import * as ScheduledTaskFork from "./scheduledTaskFork";
+import { ScheduledTaskOpenRunsBadge, ScheduledTaskRuns } from "./ScheduledTaskRuns";
 import { fixedTimeForkDraft, fixedTimeZone } from "./scheduledTaskFork.logic";
 import {
   DEFAULT_WEBHOOK_PROMPT,
@@ -597,6 +598,7 @@ function ScheduledTaskRow({
   };
   return (
     <SettingsRow
+      className="pb-3"
       title={task.title}
       description={<span className="line-clamp-2">{task.prompt}</span>}
       status={
@@ -631,6 +633,7 @@ function ScheduledTaskRow({
               {messages(RUN_STATUS_LABELS[task.lastRunStatus])}
             </Badge>
           ) : null}
+          <ScheduledTaskOpenRunsBadge environmentId={environmentId} task={task} />
           {task.threadId !== null && scheduledTaskThreadMode(task) !== "new_thread" ? (
             <ScheduledTaskThreadLink environmentId={environmentId} threadId={task.threadId} />
           ) : null}
@@ -691,7 +694,9 @@ function ScheduledTaskRow({
           ) : null}
         </div>
       }
-    />
+    >
+      <ScheduledTaskRuns environmentId={environmentId} task={task} />
+    </SettingsRow>
   );
 }
 

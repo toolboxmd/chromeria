@@ -27,6 +27,7 @@ import type { EnvironmentPresentation } from "../../state/environments";
 import { formatEnvironmentQueryError } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
 import { SettingsSection } from "./components/SettingsSection";
+import { ScheduledTaskRuns } from "./ScheduledTaskRuns";
 
 /**
  * Fork: the mobile scheduled task screens' view of
@@ -212,6 +213,7 @@ export function ScheduledTaskList({
             />
           ),
         })}
+        <ScheduledTaskRuns environmentId={entry.environmentId} task={entry.task} />
       </Fragment>
     ));
 
