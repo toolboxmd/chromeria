@@ -300,7 +300,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/issues/724",
     "https://github.com/toolboxmd/chromeria/issues/876",
     "https://github.com/toolboxmd/chromeria/issues/956",
-    "https://github.com/toolboxmd/chromeria/issues/963"
+    "https://github.com/toolboxmd/chromeria/issues/963",
+    "https://github.com/toolboxmd/chromeria/issues/965"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/9",
@@ -320,6 +321,9 @@ only when that file set changes; this is not an exhaustive history of follow-ups
   ],
   "newFiles": [
     ".github/workflows/fork.yml",
+    ".github/workflows/merge-reviewed.yml",
+    ".github/scripts/merge-reviewed.cjs",
+    ".github/scripts/merge-reviewed.test.cjs",
     "docs/fork-features.md",
     "docs/fork.md",
     "scripts/fork-check.sh",
