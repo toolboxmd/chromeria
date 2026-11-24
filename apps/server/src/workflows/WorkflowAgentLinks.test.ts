@@ -24,22 +24,19 @@ const peer = (answers: Record<string, ReadonlyArray<unknown>>, enabled = true) =
   const calls: Array<Call> = [];
   const left = new Map(Object.entries(answers).map(([tool, list]) => [tool, [...list]]));
   const layer = Layer.merge(
-    Layer.succeed(
-      PeerMcpClient.PeerMcpClient,
-      PeerMcpClient.PeerMcpClient.of({
-        call: (input) =>
-          Effect.suspend(() => {
-            calls.push({
-              environmentId: input.environmentId,
-              tool: input.tool,
-              arguments: input.arguments,
-              runtimeMode: input.limits.runtimeMode,
-            });
-            const answer = left.get(input.tool)?.shift();
-            return isFailure(answer) ? Effect.fail(answer) : Effect.succeed(answer as never);
-          }),
-      }),
-    ),
+    Layer.mock(PeerMcpClient.PeerMcpClient)({
+      call: (input) =>
+        Effect.suspend(() => {
+          calls.push({
+            environmentId: input.environmentId,
+            tool: input.tool,
+            arguments: input.arguments,
+            runtimeMode: input.limits.runtimeMode,
+          });
+          const answer = left.get(input.tool)?.shift();
+          return isFailure(answer) ? Effect.fail(answer) : Effect.succeed(answer as never);
+        }),
+    }),
     Layer.mock(PeerLinks.PeerLinks)({ enabled: Effect.succeed(enabled) }),
   );
   return { calls, layer };

@@ -15,11 +15,18 @@ import { REASONING_EFFORT_OPTION_IDS } from "@t3tools/client-runtime/state/threa
 import type {
   EnvironmentId,
   OrchestrationV2Subagent,
+  OrchestrationV2ThreadShell,
   ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import { resolveSelectableModel } from "@t3tools/shared/model";
 import { msg } from "gt-react-native";
+
+import {
+  threadRelationshipLiveStatus,
+  threadRelationshipLiveStatusLabel,
+  subagentChildTarget,
+} from "@t3tools/client-runtime/state/thread-relationships";
 
 import { m, type MessageResolver } from "../../i18n/messages";
 
@@ -60,7 +67,8 @@ export function subagentThreadTarget(
     return { environmentId, threadId: subagent.childThreadId };
   }
   const remote = subagent.remoteChild;
-  if (remote === undefined) return null;
+  // A pending remote launch has no thread to open yet.
+  if (remote === undefined || remote.threadId === undefined) return null;
   const target = { environmentId: remote.environmentId, threadId: remote.threadId };
   const open = resolveLinkedThreadOpen({
     environmentId: remote.environmentId,
@@ -119,18 +127,37 @@ export function resolveSubagentRowPresentation(
     OrchestrationV2Subagent,
     "title" | "prompt" | "status" | "progress" | "result" | "childThreadId" | "remoteChild"
   >,
-  canOpenRemote = false,
+  _canOpenRemote = false,
+  child?: OrchestrationV2ThreadShell | null,
   resolve: MessageResolver = m,
 ): SubagentRowPresentation {
-  const live = isActiveSubagentStatus(subagent.status);
+  const liveStatus = threadRelationshipLiveStatus(child, subagent.remoteChild);
+  const shellStatus = child?.activityRunStatus ?? child?.status;
+  const status =
+    subagent.remoteChild !== undefined && shellStatus != null
+      ? shellStatus === "queued" || shellStatus === "preparing" || shellStatus === "starting"
+        ? "pending"
+        : shellStatus === "rolled_back"
+          ? "interrupted"
+          : shellStatus
+      : subagent.remoteChild?.snapshot !== undefined &&
+          subagent.remoteChild.snapshot.workState !== "result_available"
+        ? "running"
+        : (subagent.remoteChild?.latestResult?.status ?? subagent.status);
+  const live = liveStatus !== null || isActiveSubagentStatus(status);
   return {
     title: rowTitle(subagent, resolve),
     detail: subagentDetailPreview(subagent),
-    statusLabel: rowStatusLabel(subagent.status, resolve),
-    tone: rowTone(subagent.status),
+    statusLabel:
+      subagent.remoteChild?.availability === "stale"
+        ? resolve(msg("Last known state"))
+        : subagent.remoteChild?.stop && !live
+          ? resolve(msg("Stop {state}"), { state: subagent.remoteChild.stop.state })
+          : (threadRelationshipLiveStatusLabel(liveStatus, resolve) ??
+            rowStatusLabel(status, resolve)),
+    tone: liveStatus === null ? rowTone(status) : "working",
     live,
-    canOpenThread:
-      subagent.childThreadId !== null || (subagent.remoteChild !== undefined && canOpenRemote),
+    canOpenThread: subagentChildTarget(subagent) !== null,
     runsOn: subagent.remoteChild?.label ?? null,
   };
 }
