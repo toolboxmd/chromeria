@@ -12,9 +12,13 @@ import {
   secretRequestDisplay,
   secretRequestFailureMessage,
   secretRequestLink,
-  secretRequestPrivacyNote,
   secretRequestSources,
 } from "./secretRequest.ts";
+
+const item = {
+  id: TurnItemId.make("turn-item:secret-request:1"),
+  threadId: ThreadId.make("thread-1"),
+};
 
 describe("secretRequestDisplay", () => {
   it("never offers the form for a request inherited from another thread", () => {
@@ -29,49 +33,73 @@ describe("secretRequestDisplay", () => {
 });
 
 describe("secretRequestAnswerInput", () => {
-  const single = { id: "item", threadId: "thread", label: "Token" } as const;
-  const login = {
-    ...single,
-    delivery: "file",
-    fields: [
-      { name: "email", label: "Email", secret: false },
-      { name: "password", label: "Password" },
-    ],
-  } as const;
-  const ids = { threadId: "thread", turnItemId: "item" };
-
-  it("answers a single request with its trimmed secret", () => {
+  const single = { ...item, label: "Webhook secret" };
+  it("refuses a blank save and sends the value exactly as typed", () => {
     expect(
-      secretRequestAnswerInput(single as never, { type: "save", values: { "": " t " } }),
-    ).toEqual({ ...ids, answer: { type: "save", secret: "t" } });
-    expect(secretRequestAnswerInput(single as never, { type: "save", values: { "": " " } })).toBe(
-      null,
-    );
-  });
-
-  it("answers a fields request only once every field has a value, keyed by name", () => {
+      secretRequestAnswerInput(single, { type: "save", values: new Map([["secret", "   "]]) }),
+    ).toBeNull();
     expect(
-      secretRequestAnswerInput(login as never, {
+      secretRequestAnswerInput(single, {
         type: "save",
-        values: { email: "a@acme.dev ", password: "pw" },
+        values: new Map([["secret", " whsec_1 "]]),
       }),
     ).toEqual({
-      ...ids,
-      answer: { type: "save", values: { email: "a@acme.dev", password: "pw" } },
+      threadId: item.threadId,
+      turnItemId: item.id,
+      answer: { type: "save", secret: " whsec_1 " },
     });
-    expect(
-      secretRequestAnswerInput(login as never, { type: "save", values: { email: "a@acme.dev" } }),
-    ).toBe(null);
-    // An unset field named like an Object.prototype member is empty, not that member.
-    const named = { ...single, fields: [{ name: "constructor", label: "Key" }] } as const;
-    expect(secretRequestAnswerInput(named as never, { type: "save", values: {} })).toBe(null);
+    expect(secretRequestAnswerInput(single, { type: "decline" })).toEqual({
+      threadId: item.threadId,
+      turnItemId: item.id,
+      answer: { type: "decline" },
+    });
   });
-});
 
-describe("secretRequestPrivacyNote", () => {
-  it("does not promise to hide a value that the agent's commands can read", () => {
-    expect(secretRequestPrivacyNote({})).toBe("Stored securely, never shown to the agent");
-    expect(secretRequestPrivacyNote({ delivery: "file" })).not.toContain("never shown");
+  it("saves every field of a multi-field card together, or not at all", () => {
+    const card = {
+      ...single,
+      fields: [
+        { name: "client_id", label: "Client ID" },
+        { name: "client_secret", label: "Client secret" },
+      ],
+    };
+    expect(
+      secretRequestAnswerInput(card, { type: "save", values: new Map([["client_id", "id-1"]]) }),
+    ).toBeNull();
+    expect(
+      secretRequestAnswerInput(card, {
+        type: "save",
+        values: new Map([
+          ["client_id", " id-1 "],
+          ["client_secret", "cs-2"],
+          ["stray", "x"],
+        ]),
+      }),
+    ).toEqual({
+      threadId: item.threadId,
+      turnItemId: item.id,
+      answer: { type: "save", secrets: { client_id: " id-1 ", client_secret: "cs-2" } },
+    });
+  });
+
+  it("reads fields named like Object properties from their own values", () => {
+    const card = {
+      ...single,
+      fields: [
+        { name: "constructor", label: "Constructor" },
+        { name: "tostring", label: "To string" },
+      ],
+    };
+    expect(secretRequestAnswerInput(card, { type: "save", values: new Map() })).toBeNull();
+    expect(
+      secretRequestAnswerInput(card, {
+        type: "save",
+        values: new Map([
+          ["constructor", "c-1"],
+          ["tostring", "t-2"],
+        ]),
+      })?.answer,
+    ).toEqual({ type: "save", secrets: { constructor: "c-1", tostring: "t-2" } });
   });
 });
 
@@ -155,11 +183,7 @@ describe("secretRequestSources", () => {
   it("answers with a reference only in the provider's syntax", () => {
     const [source] = secretRequestSources({ secretRequestReferences: true }, providers);
     if (source === undefined) throw new Error("expected a source");
-    const item = {
-      id: TurnItemId.make("item-1"),
-      threadId: ThreadId.make("thread-1"),
-      label: "Deploy token",
-    };
+    const item = { id: TurnItemId.make("item-1"), threadId: ThreadId.make("thread-1") };
     expect(
       secretRequestAnswerInput(item, {
         type: "reference",
@@ -173,13 +197,23 @@ describe("secretRequestSources", () => {
     expect(
       secretRequestAnswerInput(item, { type: "reference", source, reference: "vault/item" }),
     ).toBeNull();
-    // A reference answers one value, never a card with fields.
-    const fields = [{ name: "password", label: "Password" }];
-    expect(
-      secretRequestAnswerInput(
-        { ...item, fields },
-        { type: "reference", source, reference: "op://vault/item/field" },
-      ),
-    ).toBeNull();
+    for (const fields of [
+      [{ name: "token", label: "Token" }],
+      [
+        { name: "id", label: "ID" },
+        { name: "token", label: "Token" },
+      ],
+    ]) {
+      expect(
+        secretRequestAnswerInput(
+          { ...item, fields },
+          {
+            type: "reference",
+            source,
+            reference: "op://vault/item/field",
+          },
+        ),
+      ).toBeNull();
+    }
   });
 });
