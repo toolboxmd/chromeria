@@ -911,6 +911,8 @@ describe("thread outbox recovery rollback", () => {
           workspaceMode: "local",
           branch: null,
           worktreePath: null,
+          bare: true,
+          promachos: true,
         },
       };
       yield* Effect.promise(() => harness.manager.enqueue(message));
@@ -923,6 +925,8 @@ describe("thread outbox recovery rollback", () => {
         text: message.text,
         attachments: message.attachments,
         modelSelection: message.modelSelection,
+        bare: true,
+        promachos: true,
         project: {
           environmentId: message.environmentId,
           projectId: message.creation!.projectId,

@@ -5,6 +5,7 @@ import { EnvironmentId, ProjectId, ProviderInstanceId } from "@t3tools/contracts
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as ProviderAdapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Launch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
@@ -41,6 +42,7 @@ const dependencies = Layer.mergeAll(
   Layer.mock(Secrets.SecretRequests)({}),
   Layer.mock(RemoteDelegation.RemoteDelegation)({}),
   Layer.mock(Scheduler.Scheduler)({ register: () => Effect.void }),
+  Layer.mock(BareLaunch.BareLaunch)({}),
 );
 
 const client: McpInvocationScope = {
@@ -55,6 +57,7 @@ const client: McpInvocationScope = {
 const fixture = Effect.gen(function* () {
   const schedules = yield* Schedules.ScheduledTaskService;
   const { task } = yield* schedules.upsert({
+    purposeIntent: { version: 1, intent: { type: "unscoped" } },
     title: "Scheduled review",
     prompt: "Review",
     projectId: ProjectId.make("project"),

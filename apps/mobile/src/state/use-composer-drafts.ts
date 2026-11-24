@@ -450,6 +450,10 @@ export interface ComposerDraft {
   readonly interactionMode?: ProviderInteractionMode;
   /** `/clear` armed this draft: its next message starts a fresh provider session. */
   readonly freshContext?: boolean;
+  /** Fork (toolboxmd/chromeria#319): this new task starts bare. */
+  readonly bare?: boolean;
+  /** Fork (toolboxmd/chromeria#898): the Promachos tab's compose button started this new task. */
+  readonly promachos?: boolean;
   readonly workspaceSelection?: ComposerDraftWorkspaceSelection;
   readonly project?: ComposerDraftProject;
 }
@@ -492,6 +496,8 @@ export type ComposerDraftSettingsUpdate = Pick<
   | "runtimeMode"
   | "interactionMode"
   | "freshContext"
+  | "bare"
+  | "promachos"
   | "workspaceSelection"
   | "project"
 >;
@@ -527,6 +533,8 @@ const ComposerDraftSchema = Schema.Struct({
   runtimeMode: Schema.optional(RuntimeModeSchema),
   interactionMode: Schema.optional(ProviderInteractionModeSchema),
   freshContext: Schema.optional(Schema.Boolean),
+  bare: Schema.optional(Schema.Boolean),
+  promachos: Schema.optional(Schema.Boolean),
   workspaceSelection: Schema.optional(ComposerDraftWorkspaceSelectionSchema),
   project: Schema.optional(ComposerDraftProjectSchema),
 });
@@ -707,6 +715,7 @@ function isEmptyDraft(draft: ComposerDraft): boolean {
     draft.runtimeMode === undefined &&
     draft.interactionMode === undefined &&
     draft.freshContext !== true &&
+    draft.bare !== true &&
     draft.workspaceSelection === undefined
   );
 }
@@ -1726,6 +1735,9 @@ export function clearComposerDraftContentState(
     modelSelection,
     workspaceSelection,
     project: _project,
+    // A sent task's Bare intent never carries into the next new task.
+    bare: _bare,
+    promachos: _promachos,
     ...retained
   } = existing;
   const draft = {
@@ -1891,6 +1903,8 @@ export function sameComposerDraftState(a: ComposerDraft, b: ComposerDraft): bool
     a.runtimeMode === b.runtimeMode &&
     a.interactionMode === b.interactionMode &&
     a.freshContext === b.freshContext &&
+    a.bare === b.bare &&
+    a.promachos === b.promachos &&
     a.workspaceSelection === b.workspaceSelection
   );
 }
@@ -1921,6 +1935,8 @@ export function undoComposerDraftMergeState(
       | "runtimeMode"
       | "interactionMode"
       | "freshContext"
+      | "bare"
+      | "promachos"
       | "workspaceSelection",
   >(
     key: K,
@@ -1942,6 +1958,8 @@ export function undoComposerDraftMergeState(
     runtimeMode: undoSetting("runtimeMode"),
     interactionMode: undoSetting("interactionMode"),
     freshContext: undoSetting("freshContext"),
+    bare: undoSetting("bare"),
+    promachos: undoSetting("promachos"),
     workspaceSelection: undoSetting("workspaceSelection"),
   };
   return withComposerDraft(current, draftKey, draft);
@@ -2022,10 +2040,13 @@ export function removeComposerDraftsForEnvironment(
   );
 }
 
-export function createNewTaskDraft(project: {
-  readonly environmentId: EnvironmentId;
-  readonly projectId: ProjectId;
-}): string {
+export function createNewTaskDraft(
+  project: {
+    readonly environmentId: EnvironmentId;
+    readonly projectId: ProjectId;
+  },
+  options?: { readonly promachos?: boolean },
+): string {
   const draftKey = newTaskDraftKey(newDraftId());
   const stamp: ComposerDraftProject = {
     environmentId: project.environmentId,
@@ -2034,7 +2055,11 @@ export function createNewTaskDraft(project: {
   };
   updateComposerDrafts((current) => ({
     ...current,
-    [draftKey]: { ...EMPTY_DRAFT, project: stamp },
+    [draftKey]: {
+      ...EMPTY_DRAFT,
+      project: stamp,
+      ...(options?.promachos ? { promachos: true } : {}),
+    },
   }));
   return draftKey;
 }
