@@ -1,6 +1,8 @@
 import { T, useGT, useMessages, Var } from "gt-react-native";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { DraftEnvironmentControl } from "./DraftEnvironmentControl";
+import { promachosPicksModel } from "@t3tools/client-runtime/promachos/start";
+import { usePromachosDraftModels } from "../promachos/promachosHome";
 import { NativeScrollEdgeEffectsContext } from "../../native/NativeScrollViewMarker";
 import { DraftThreadHeader } from "./DraftThreadHeader";
 import { useComposerAttachmentActions } from "../../state/use-composer-attachment-actions";
@@ -16,6 +18,7 @@ import { AppBar } from "../../components/ui/AppBar";
 import { ThreadId } from "@t3tools/contracts";
 
 import * as Dialog from "../../components/ui/Dialog";
+import { savedPurposeIntentForScope } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -175,6 +178,13 @@ export function NewTaskDraftScreen(props: {
   const flowKey = newTaskFlowKey(currentRoute);
   const { getShare, isLoading: isIncomingShareInboxLoading } = useIncomingShare();
   const { projectScopes, selectedProject, selectedProjectKey, setProject } = flow;
+  // Fork: a new Promachos conversation shows no project, machine or branch choices.
+  const promachosModels = usePromachosDraftModels(
+    selectedProject
+      ? { environmentId: selectedProject.environmentId, projectId: selectedProject.id }
+      : null,
+  );
+  const promachos = promachosModels !== null;
   // selectedProject falls back to the environment's first project; remember only a chosen one.
   useRememberThreadProject(
     selectedProject &&
@@ -413,6 +423,10 @@ export function NewTaskDraftScreen(props: {
     props.incomingShareId,
     requestedInitialProjectAvailable,
   ]);
+  const supportsExecutionPurpose =
+    selectedEnvironmentServerConfig?.environment.capabilities.executionPurposeVersions?.includes(
+      1,
+    ) === true;
 
   const lastInitialProjectRefRef = useRef(props.initialProjectRef);
   const initialPickerRef = useRef<"open" | "dismissed" | null>(null);
@@ -624,6 +638,8 @@ export function NewTaskDraftScreen(props: {
     }
     if (
       environmentConnected &&
+      // Prism replaces the placeholder of a Promachos first send.
+      !promachosPicksModel(promachosModels) &&
       isModelSelectionUnavailable(
         selectedEnvironmentServerConfig,
         modelSelection,
@@ -687,7 +703,16 @@ export function NewTaskDraftScreen(props: {
     }
     // Persist locally before clearing or leaving the draft; server setup runs on the thread.
     flow.setSubmitting(true);
-    const queued = await settlePromise(() => enqueueThreadOutboxMessage(message));
+    const queued = await settlePromise(() =>
+      enqueueThreadOutboxMessage({
+        ...message,
+        ...(supportsExecutionPurpose
+          ? {
+              purposeIntent: savedPurposeIntentForScope({ type: "unscoped", reason: "deliberate" }),
+            }
+          : {}),
+      }),
+    );
     flow.setSubmitting(false);
     if (AsyncResult.isFailure(queued)) {
       const error = squashAtomCommandFailure(queued);
@@ -1006,8 +1031,8 @@ export function NewTaskDraftScreen(props: {
           />
         </View>
       ) : null}
-      {viewportHeight < SHORT_DRAFT_VIEWPORT_HEIGHT ? contextControls : null}
-      {flow.canChooseWorkspace ? workspaceControls : null}
+      {promachos || viewportHeight >= SHORT_DRAFT_VIEWPORT_HEIGHT ? null : contextControls}
+      {flow.canChooseWorkspace && !promachos ? workspaceControls : null}
     </View>
   );
 
@@ -1063,7 +1088,7 @@ export function NewTaskDraftScreen(props: {
           <DraftThreadHeader thread={thread} project={selectedProject} cwd={flow.workspaceCwd} />
         }
         draftMode={{
-          content: heroViewport,
+          content: promachos ? () => null : heroViewport,
           controls: draftControls,
           editorRef: promptInputRef,
           sendBlockedReason: setupBlockReason,
