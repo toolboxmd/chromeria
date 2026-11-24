@@ -16,37 +16,17 @@ const loadPlaywright = () =>
 
 export const RENDER_SCALE = 2;
 type ViewportSize = { readonly width: number; readonly height: number };
-type AgentViewport =
-  | { readonly kind: "set"; readonly size: ViewportSize; readonly zoom: number }
-  | { readonly kind: "native"; readonly size: ViewportSize | null };
-const agentViewports = new WeakMap<Page, AgentViewport>();
+const agentViewports = new WeakMap<
+  Page,
+  { readonly size: ViewportSize; readonly zoom: number } | null
+>();
 
 export const previewViewportSize = (page: Page) => {
   const viewport = agentViewports.get(page);
-  return viewport ? viewport.size : page.viewportSize();
+  return viewport === undefined ? page.viewportSize() : (viewport?.size ?? null);
 };
 
-export const previewViewportZoom = (page: Page) => {
-  const viewport = agentViewports.get(page);
-  return viewport?.kind === "set" ? viewport.zoom : 1;
-};
-
-export const hasPreviewViewportSize = (page: Page, size: ViewportSize) => {
-  const viewport = agentViewports.get(page);
-  return (
-    viewport?.kind === "set" &&
-    viewport.size.width === size.width &&
-    viewport.size.height === size.height
-  );
-};
-
-export const observePreviewViewport = (page: Page, size: ViewportSize) => {
-  const viewport = agentViewports.get(page);
-  if (viewport?.kind !== "native" || !(size.width > 0 && size.height > 0)) return false;
-  if (viewport.size?.width === size.width && viewport.size.height === size.height) return false;
-  agentViewports.set(page, { kind: "native", size });
-  return true;
-};
+export const previewViewportZoom = (page: Page) => agentViewports.get(page)?.zoom ?? 1;
 
 export const viewportAtZoom = ({ width, height }: ViewportSize, zoom: number) => ({
   width: Math.max(1, Math.round(width / zoom)),
@@ -63,9 +43,9 @@ export const resizeAgentViewport = async (
   if (zoom === 1) {
     if (previewViewportZoom(page) !== 1) {
       await cdp.send("Emulation.clearDeviceMetricsOverride");
-      // Restoring the window viewport takes a paint. A frame can report its size
-      // if authorization expires before the requested size is applied.
-      agentViewports.set(page, { kind: "native", size: null });
+      // Stills and screencast frames can lag the clear. Only an authorized resize
+      // can establish the viewport again, so pointer input stays suspended until then.
+      agentViewports.set(page, null);
       await authorize();
     }
     // Playwright's viewport setter replaces the screen. Device metrics emulation
@@ -78,7 +58,7 @@ export const resizeAgentViewport = async (
       mobile: false,
     });
   }
-  agentViewports.set(page, { kind: "set", size, zoom });
+  agentViewports.set(page, { size, zoom });
 };
 
 export const agentColorScheme = (localHour: number) =>

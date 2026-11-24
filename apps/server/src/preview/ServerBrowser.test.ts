@@ -1790,18 +1790,33 @@ it.effect("keeps zoom during viewer resize and recovers if a zoom reset is inter
       });
       yield* Effect.promise(() => revoked.promise);
       const streamSession = contexts[0]!.sessions.at(-1)!;
+      const emitFrame = (sessionId: number, width: number, height: number, timestamp: number) =>
+        streamSession.emit("Page.screencastFrame", {
+          data: "ZnJhbWU=",
+          sessionId,
+          metadata: { deviceWidth: width, deviceHeight: height, timestamp },
+        });
+      emitFrame(1, 260, 563, 9);
       yield* viewer.input({ type: "mouse", action: "down", x: 50, y: 50, button: "left" });
       expect(streamSession.send).not.toHaveBeenCalledWith(
         "Input.dispatchMouseEvent",
         expect.anything(),
       );
-      streamSession.emit("Page.screencastFrame", {
-        data: "ZnJhbWU=",
-        sessionId: 1,
-        metadata: { deviceWidth: 1280, deviceHeight: 813 },
-      });
+      emitFrame(2, 1280, 813, 12);
+      emitFrame(3, 260, 563, 9.5);
+      emitFrame(4, 390, 844, 11);
+      yield* viewer.input({ type: "mouse", action: "down", x: 51, y: 50, button: "left" });
+      expect(streamSession.send).not.toHaveBeenCalledWith(
+        "Input.dispatchMouseEvent",
+        expect.anything(),
+      );
       yield* viewer.input({ type: "resize", width: 390, height: 844 });
-      expect(viewportSizes(yield* Queue.takeAll(viewer.output))).toEqual(["1280x813", "390x844"]);
+      expect(viewportSizes(yield* Queue.takeAll(viewer.output))).toEqual(["390x844"]);
+      yield* viewer.input({ type: "mouse", action: "down", x: 52, y: 50, button: "left" });
+      expect(streamSession.send).toHaveBeenCalledWith(
+        "Input.dispatchMouseEvent",
+        expect.objectContaining({ x: 52, y: 50 }),
+      );
       expect(
         cdp.send.mock.calls.filter(([method]) => method === "Emulation.setVisibleSize"),
       ).toEqual([["Emulation.setVisibleSize", { width: 390, height: 844 }]]);

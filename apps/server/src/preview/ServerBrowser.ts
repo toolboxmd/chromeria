@@ -122,8 +122,6 @@ import { ServerCookieMirror } from "./ServerCookieMirror.ts";
 import { ServerLoginCookies } from "./ServerLoginCookies.ts";
 import {
   agentColorScheme,
-  hasPreviewViewportSize,
-  observePreviewViewport,
   presentAsChrome,
   previewViewportSize,
   previewViewportZoom,
@@ -4058,7 +4056,8 @@ const make = Effect.gen(function* () {
         if (width < 100 || height < 100) return;
         viewer.requestedSize = { width, height, order: ++viewerResizeOrder };
         if (tab.setting._tag !== "fill" || tab.desktop) return;
-        if (hasPreviewViewportSize(tab.page, { width, height })) return;
+        const current = previewViewportSize(tab.page);
+        if (current?.width === width && current.height === height) return;
         await resizeAgentViewport(
           tab.page,
           tab.cdp,
@@ -4293,10 +4292,6 @@ const make = Effect.gen(function* () {
     );
     let screencastStarted = false;
     session.on("Page.screencastFrame", (frame) => {
-      const { deviceWidth: width, deviceHeight: height } = frame.metadata;
-      if (observePreviewViewport(tab.page, { width, height })) {
-        for (const viewer of tab.viewers) viewer.push({ _tag: "viewport", width, height });
-      }
       screencastStarted = true;
       if (framesInFlight > 0) mayHaveDropped = true;
       framesInFlight += 1;
