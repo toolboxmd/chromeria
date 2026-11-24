@@ -1770,6 +1770,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/scheduledTaskChecks/handoff.integration.test.ts",
     "apps/server/src/scheduledTaskChecks/handoff.test.ts",
     "apps/server/src/scheduledTaskChecks/handoff.ts",
+    "apps/server/src/scheduledTaskChecks/runPrompt.ts",
     "apps/server/src/scheduledTaskChecks/schedules.test.ts",
     "apps/server/src/scheduledTaskChecks/schedules.ts",
     "apps/server/src/scheduledTaskChecks/spectra.testkit.ts",

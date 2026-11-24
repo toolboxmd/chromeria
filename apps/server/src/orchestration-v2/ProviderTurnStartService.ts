@@ -3,7 +3,7 @@ import { BareLaunchError } from "@t3tools/provider-core/server/bareLaunch";
 import * as BareLaunch from "./BareLaunch.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
-import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
+import { providerPromptExceedsInputLimit } from "../scheduledTaskChecks/runPrompt.ts";
 import {
   CommandId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
@@ -747,10 +747,7 @@ export const layer: Layer.Layer<
           });
         },
       );
-      if (
-        expandAssistantCitationsForProvider(providerMessage.text).length >
-        PROVIDER_SEND_TURN_MAX_INPUT_CHARS
-      ) {
+      if (providerPromptExceedsInputLimit(providerMessage)) {
         yield* settleRunBeforeStart({
           run,
           rootNode,

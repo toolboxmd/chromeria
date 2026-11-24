@@ -65,7 +65,13 @@ import {
   type CheckedRun,
   type RunSend,
 } from "./state.ts";
-import { ensureCheckSchema, listCheckStates, bindCheckAutomation } from "./store.ts";
+import {
+  ensureCheckSchema,
+  listCheckStates,
+  bindCheckAutomation,
+  readCheckState,
+} from "./store.ts";
+import { ownedCheckedRunThreadId, ownsScheduledThread } from "./runPrompt.ts";
 
 /** The fork summaries an agent sees on a listed task. */
 export const forkSummaryFields = (task: ScheduledTask) => ({
@@ -609,6 +615,54 @@ const decoratedLayer = Layer.effect(
     const { runs, changes, sql } = yield* Engine;
     const withSql = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
       Effect.provideService(effect, SqlClient.SqlClient, sql);
+    const awaitCheckedRunPass = Effect.fn("ScheduledTaskChecks.awaitCheckedRunPass")(function* (
+      threadId: ThreadId,
+    ) {
+      return yield* Effect.scoped(
+        Effect.gen(function* () {
+          const changesSubscription = yield* PubSub.subscribe(changes);
+          // A report or other wake may run in the same thread without a checked-send message ID.
+          const candidates = yield* sql<{ task_id: ScheduledTaskId }>`
+            SELECT DISTINCT state.task_id
+            FROM fork_scheduled_task_checks AS state, json_each(state.state_json, '$.runs') AS run
+            WHERE json_extract(state.state_json, '$.kind') = 'agent'
+              AND json_extract(run.value, '$.threadId') = ${threadId}
+              AND json_extract(run.value, '$.stage') != 'done'
+          `;
+          for (const { task_id: taskId } of candidates) {
+            const read = withSql(readCheckState(taskId));
+            const state = yield* read;
+            const run = state === null ? undefined : unfinishedRun(state);
+            if (run?.threadId !== threadId) continue;
+            if (
+              threadId !== ownedCheckedRunThreadId(run.id) &&
+              !(yield* withSql(ownsScheduledThread({ id: taskId, threadId })))
+            )
+              continue;
+            const send = run.sends.at(-1);
+            return yield* Stream.concat(
+              Stream.succeed(undefined),
+              Stream.fromSubscription(changesSubscription),
+            ).pipe(
+              Stream.mapEffect(() =>
+                Effect.map(read, (currentState) => {
+                  const current = currentState?.runs.find((candidate) => candidate.id === run.id);
+                  if (current === undefined || current.sends.at(-1)?.messageId !== send?.messageId)
+                    return false;
+                  if (current.stage === "running" || current.stage === "usage-limit")
+                    return undefined;
+                  return current.stage === "done";
+                }),
+              ),
+              Stream.filter((passed): passed is boolean => passed !== undefined),
+              Stream.runHead,
+              Effect.map(Option.getOrElse(() => false)),
+            );
+          }
+          return true;
+        }),
+      ).pipe(Effect.orElseSucceed(() => false));
+    });
     const states = withSql(listCheckStates()).pipe(
       Effect.map((all) => new Map(all.map((state) => [state.taskId, state] as const))),
     );
@@ -659,6 +713,7 @@ const decoratedLayer = Layer.effect(
 
     return ScheduledTaskService.ScheduledTaskService.of({
       ...inner,
+      awaitCheckedRunPass,
       list: Effect.fn("ScheduledTaskService.ScheduledTaskService.list")(() =>
         inner.list().pipe(Effect.flatMap(attachList)),
       ),

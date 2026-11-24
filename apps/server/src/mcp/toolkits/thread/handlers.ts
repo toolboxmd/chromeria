@@ -484,8 +484,13 @@ export const layer = McpToolAccess.toLayer(
           const { threads, projection, caller } = yield* readThread(input.threadId);
           const common = { commandId: yield* newCommandId(), threadId: projection.thread.id };
           if (input.action === "settle") {
+            const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
             return yield* threads
-              .settleThread({ ...common, byOwnAgent: caller?.id === projection.thread.id })
+              .settleThread({
+                ...common,
+                byOwnAgent: caller?.id === projection.thread.id,
+                allowSettlement: scheduledTasks.awaitCheckedRunPass?.(projection.thread.id),
+              })
               .pipe(Effect.mapError(dispatchFailure));
           }
           let command: OrchestrationV2Command;

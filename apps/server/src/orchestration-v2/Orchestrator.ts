@@ -121,7 +121,7 @@ import {
 } from "@t3tools/contracts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
-import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
+import { providerPromptExceedsInputLimit } from "../scheduledTaskChecks/runPrompt.ts";
 import { modelSwitchSince } from "./modelSwitch.ts";
 import { contextBoundaryOrdinal, isScheduledFreshRun } from "./contextBoundary.ts";
 import { isPlaceholderThreadTitle } from "./placeholderThreadTitle.ts";
@@ -7316,11 +7316,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       OrchestrationV2Command,
       { readonly type: "message.dispatch" | "queued-message.promote-to-steer" }
     >,
-    message: Pick<OrchestrationV2ConversationMessage, "text" | "attachments" | "context">,
+    message: Pick<
+      OrchestrationV2ConversationMessage,
+      "text" | "attachments" | "context" | "scheduledTaskId"
+    >,
   ) {
-    if (
-      expandAssistantCitationsForProvider(message.text).length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS
-    ) {
+    if (providerPromptExceedsInputLimit(message)) {
       return yield* new OrchestratorCommandRejectedError({
         commandId: command.commandId,
         commandType: command.type,

@@ -492,14 +492,19 @@ it.effect.each(
       assert.equal(result.threadId, thread!.id);
       const projection = yield* threads.getThreadProjection(thread!.id);
       const wire = yield* encodeThreadProjection(projection);
-      assert.equal(wire.messages[0]?.text, task.prompt);
+      const deliveredPrompt = wire.messages[0]?.text;
+      if (target === "existing") assert.equal(deliveredPrompt, task.prompt);
+      else {
+        assert.include(deliveredPrompt, task.prompt + "\n\n");
+        assert.include(deliveredPrompt, "t3_thread_organize");
+      }
       assert.equal(wire.messages[0]?.scheduledTaskId, task.id);
       assert.equal(wire.messages[0]?.createdBy, createdBy);
       const turnItem = wire.turnItems.find(
         (item): item is Extract<typeof item, { type: "user_message" }> =>
           item.type === "user_message",
       );
-      assert.equal(turnItem?.text, task.prompt);
+      assert.equal(turnItem?.text, deliveredPrompt);
       assert.equal(turnItem?.scheduledTaskId, task.id);
     }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerScheduledTasks)));
   },

@@ -685,7 +685,12 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
     const scratch = ProjectId.make("project:scratch");
     const promoted = ProjectId.make("project:promoted");
     const sends = yield* Ref.make<
-      Array<{ projectId: ProjectId; commandId: string; messageId: string | undefined }>
+      Array<{
+        projectId: ProjectId;
+        commandId: string;
+        messageId: string | undefined;
+        text: string;
+      }>
     >([]);
     // Saving reads it first. Then the rebind lands, and the promotion commits between the shell
     // read and the retry.
@@ -704,6 +709,7 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
                   projectId: input.projectId,
                   commandId: input.commandId,
                   messageId: input.messageId,
+                  text: input.text,
                 },
               ]).pipe(
                 Effect.flatMap((all) =>
@@ -758,6 +764,10 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
       );
       assert.equal(new Set(attempts.map((attempt) => attempt.commandId)).size, 1);
       assert.equal(new Set(attempts.map((attempt) => attempt.messageId)).size, 1);
+      assert.deepEqual(
+        attempts.map((attempt) => attempt.text),
+        Array(3).fill(task.prompt),
+      );
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
@@ -765,7 +775,12 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
 it.effect("a fresh-session task launches one thread, then starts each later run fresh in it", () =>
   Effect.gen(function* () {
     const launches = yield* Ref.make(0);
-    const sends = yield* Ref.make<Array<{ threadId: ThreadId; freshContext?: boolean }>>([]);
+    const sends = yield* Ref.make<
+      Array<{ threadId: ThreadId; freshContext?: boolean; text: string }>
+    >([]);
+    const initialLaunch = yield* Ref.make<ThreadLaunchService.ThreadLaunchInput | undefined>(
+      undefined,
+    );
     const messageIds = yield* Ref.make<Array<string>>([]);
     const launched = ThreadId.make("thread:fresh-session-task");
     const layer = ScheduledTaskService.layer.pipe(
@@ -775,7 +790,8 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
           ManagedPolicy.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({
             launch: (input) =>
-              Ref.update(launches, (n) => n + 1).pipe(
+              Ref.set(initialLaunch, input).pipe(
+                Effect.andThen(Ref.update(launches, (n) => n + 1)),
                 Effect.andThen(
                   Ref.update(messageIds, (all) => [
                     ...all,
@@ -797,6 +813,7 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
                 ...all,
                 {
                   threadId: input.threadId,
+                  text: input.text,
                   ...(input.freshContext === undefined ? {} : { freshContext: input.freshContext }),
                 },
               ]).pipe(
@@ -832,9 +849,28 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
       yield* service.upsert({ ...input, threadMode: "fresh_session" });
 
       assert.equal((yield* service.runNow({ id: input.id })).threadId, launched);
+      const { commandId, initialMessage } = (yield* Ref.get(initialLaunch))!;
+      const delivered = initialMessage!.text;
+      assert.isTrue(delivered.startsWith(input.prompt + "\n\n"));
+      assert.include(delivered, "t3_thread_organize");
       // Outcome writes are fenced by the start time, so a second start at that instant is refused.
       // A keyed run can hold the instant without the local reservation; the refusal leaves it alone.
       const sql = yield* SqlClient.SqlClient;
+      // Keep only the provenance that survives event log compaction.
+      yield* sql`
+        INSERT INTO orchestration_events
+          (event_id, command_id, stream_id, event_type, occurred_at, payload_json,
+            stream_version, aggregate_kind, actor_kind, metadata_json, application_event_version)
+        VALUES ('thread-created', ${commandId}, ${launched}, 'thread.created',
+          '1970-01-01T00:00:00Z', '{}', 1, 'thread', 'server', '{}', 2)
+      `;
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_messages
+          (message_id, thread_id, role, streaming, created_at, updated_at, payload_json)
+        VALUES (${initialMessage!.messageId}, ${launched}, 'user', 0,
+          '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z',
+          ${JSON.stringify({ scheduledTaskId: input.id })})
+      `;
       yield* sql`UPDATE scheduled_tasks SET last_run_status = 'running' WHERE task_id = ${input.id}`;
       const sameInstant = yield* Effect.flip(service.runNow({ id: input.id }));
       assert.include(sameInstant.message, "already started a run at this instant");
@@ -850,6 +886,7 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
       });
       assert.equal(task.threadId, launched);
       assert.equal(task.threadMode, "fresh_session");
+      assert.equal(task.prompt, input.prompt);
       // A client that predates thread modes sends neither; both stay.
       const legacy = yield* service.upsert({ ...input, threadId: null });
       assert.equal(legacy.task.threadId, launched);
@@ -857,11 +894,19 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
       yield* service.runNow({ id: input.id });
 
       assert.equal(yield* Ref.get(launches), 1);
-      assert.deepEqual(yield* Ref.get(sends), [{ threadId: launched, freshContext: true }]);
+      assert.deepEqual(yield* Ref.get(sends), [
+        { threadId: launched, freshContext: true, text: delivered },
+      ]);
       // After the clock steps back to the first run's instant, a Run Now still sends its own message.
       yield* TestClock.setTime(0);
       yield* service.runNow({ id: input.id });
       assert.equal(new Set(yield* Ref.get(messageIds)).size, 3);
+      for (const prompt of ["/goal pause", "/compact"]) {
+        yield* service.upsert({ ...input, prompt, threadMode: "fresh_session" });
+        yield* TestClock.adjust(5);
+        yield* service.runNow({ id: input.id });
+        assert.equal((yield* Ref.get(sends)).at(-1)?.text, prompt);
+      }
       // Its thread stays in the old project, so moving the task leaves it for a new one.
       const moved = yield* service.upsert({
         ...input,

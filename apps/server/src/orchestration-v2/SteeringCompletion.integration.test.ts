@@ -1,4 +1,5 @@
 import { ProviderTurnAnalytics } from "../telemetry/ProviderUsageAnalytics.ts";
+import { appendScheduledRunSettlement } from "../scheduledTaskChecks/runPrompt.ts";
 import { assert, it } from "@effect/vitest";
 import {
   ChatAttachmentId,
@@ -3478,56 +3479,62 @@ it.effect("steers a promoted queued message with the selection it was queued wit
   ),
 );
 
-it.effect("steers a promoted scheduled delivery with the thread's current selection", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
-        "promote-scheduled-selection",
-      );
-      yield* Effect.gen(function* () {
-        const orchestrator = yield* Orchestrator.OrchestratorV2;
-        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        const threadId = yield* startFirstTurn;
-        // Bound scheduled tasks send like ScheduledTaskService: no model of their own.
-        yield* orchestrator.dispatch({
-          type: "message.dispatch",
-          commandId: CommandId.make("scheduled"),
-          threadId,
-          messageId: MessageId.make("message:scheduled"),
-          scheduledTaskId: ScheduledTaskId.make("task:scheduled"),
-          text: "scheduled",
-          attachments: [],
-          dispatchMode: { type: "queue_after_active" },
-          createdBy: "user",
-          creationSource: "web",
-        });
-        const queuedRun = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
-          (run) => run.status === "queued",
-        )!;
-        assert.deepEqual(queuedRun.modelSelection, runSelection);
-        yield* orchestrator.dispatch({
-          type: "thread.model-selection.set",
-          commandId: CommandId.make("select-composer"),
-          threadId,
-          modelSelection: composerSelection,
-        });
-        yield* orchestrator.dispatch({
-          type: "queued-message.promote-to-steer",
-          commandId: CommandId.make("promote"),
-          threadId,
-          queuedRunId: queuedRun.id,
-          targetRunId: started[0]!.runId,
-        });
-        yield* worker.drain();
+it.effect.each([false, true])(
+  "steers a promoted scheduled delivery with the thread's current selection (settlement guidance: %s)",
+  (withGuidance) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+          "promote-scheduled-selection",
+        );
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threadId = yield* startFirstTurn;
+          const text = withGuidance
+            ? appendScheduledRunSettlement("x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS))
+            : "scheduled";
+          // Scheduled follow-ups send like ScheduledTaskService: no model of their own.
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("scheduled"),
+            threadId,
+            messageId: MessageId.make("message:scheduled"),
+            scheduledTaskId: ScheduledTaskId.make("task:scheduled"),
+            text,
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+          const queuedRun = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (run) => run.status === "queued",
+          )!;
+          assert.deepEqual(queuedRun.modelSelection, runSelection);
+          yield* orchestrator.dispatch({
+            type: "thread.model-selection.set",
+            commandId: CommandId.make("select-composer"),
+            threadId,
+            modelSelection: composerSelection,
+          });
+          yield* orchestrator.dispatch({
+            type: "queued-message.promote-to-steer",
+            commandId: CommandId.make("promote"),
+            threadId,
+            queuedRunId: queuedRun.id,
+            targetRunId: started[0]!.runId,
+          });
+          yield* worker.drain();
 
-        const projection = yield* orchestrator.getThreadProjection(threadId);
-        assert.deepEqual(steered, [
-          '[T3 Code: scheduled task "task:scheduled" sent this prompt, not the user typing in this chat.]\n\nscheduled',
-        ]);
-        assert.deepEqual(projection.thread.modelSelection, composerSelection);
-      }).pipe(Effect.provide(layer));
-    }),
-  ),
+          const projection = yield* orchestrator.getThreadProjection(threadId);
+          assert.deepEqual(steered, [
+            '[T3 Code: scheduled task "task:scheduled" sent this prompt, not the user typing in this chat.]\n\n' +
+              text,
+          ]);
+          assert.deepEqual(projection.thread.modelSelection, composerSelection);
+        }).pipe(Effect.provide(layer));
+      }),
+    ),
 );
 
 it.effect("steers a deferred agent message on a pick made while it waited", () =>

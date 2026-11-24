@@ -91,6 +91,7 @@ import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 import * as ContextmdServing from "../contextmd/ContextmdServing.ts";
 import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import { appendScheduledRunSettlement } from "../scheduledTaskChecks/runPrompt.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -3710,6 +3711,28 @@ effectIt.effect("rejects citation expansion before opening a provider session", 
     ]);
     expect(harness.projection().messages[0]?.text).toBe(text);
   }),
+);
+
+effectIt.effect.each([0, 1])(
+  "counts authored scheduled prompt length with %i characters over the limit",
+  (over) =>
+    Effect.gen(function* () {
+      const text = appendScheduledRunSettlement(
+        "x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS + over),
+      );
+      const harness = makeLocalCommandHarness({
+        text,
+        scheduledTaskId: ScheduledTaskId.make("task"),
+        previousTurn: { runStatus: "completed", turnStatus: "completed" },
+      });
+      yield* harness.start;
+      if (over === 0) {
+        expect(harness.startRootRun.mock.calls[0]?.[0].message.text.endsWith(text)).toBe(true);
+      } else {
+        expect(harness.startRootRun).not.toHaveBeenCalled();
+        expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      }
+    }),
 );
 
 effectIt.effect("cancellation-exhausted restart settles request analytics exactly once", () =>
