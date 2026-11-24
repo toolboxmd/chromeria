@@ -40,3 +40,4 @@ jobs:
         run: |
           bash scripts/fork-check.sh --upstream upstream
           node scripts/browser-doc-check.mjs --numbers
+          node --test .github/scripts/merge-reviewed.test.cjs
