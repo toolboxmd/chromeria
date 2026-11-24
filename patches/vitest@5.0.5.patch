@@ -1,0 +1,38 @@
+diff --git a/dist/chunks/cli-api.De07GUeT.js b/dist/chunks/cli-api.De07GUeT.js
+index ff6e630..1b5dcae 100644
+--- a/dist/chunks/cli-api.De07GUeT.js
++++ b/dist/chunks/cli-api.De07GUeT.js
+@@ -12250,7 +12250,7 @@ class Vitest {
+ 	/** @internal */ _testRun;
+ 	/** @internal */ _resolver;
+ 	/** @internal */ _transformService;
+-	/** @internal */ _tmpDir = join(tmpdir(), nanoid());
++	/** @internal */ _tmpDir;
+ 	/** @internal */ _traces;
+ 	/** @internal */ _harness;
+ 	/** @internal */ _exitTimeout;
+@@ -12320,7 +12320,8 @@ class Vitest {
+ 		this.snapshot = new SnapshotManager({ ...resolved.snapshotOptions });
+ 		this._resolver = new VitestResolver(this.viteConfig.cacheDir, resolved);
+ 		// a closed run removes the temp dir, so a restart must allocate a new one
+-		const tmpDir = this._tmpDir ??= join(tmpdir(), nanoid());
++		// Fork: keep transform copies under the project, off the shared system tmpfs.
++		const tmpDir = this._tmpDir ??= join(this.viteConfig.root, "node_modules", ".cache", "vitest", `vitest-${process.pid}-${nanoid()}`);
+ 		this._transformService = new ModuleTransformService(this._resolver, resolved, this.cache._modules, this._traces, tmpDir);
+ 	}
+ 	_restartPromise;
+diff --git a/dist/chunks/index.1TqnEahn.js b/dist/chunks/index.1TqnEahn.js
+index 50dd001..1428754 100644
+--- a/dist/chunks/index.1TqnEahn.js
++++ b/dist/chunks/index.1TqnEahn.js
+@@ -6467,7 +6467,9 @@ class TestProject {
+ 	constructor(vitest, server, viteConfig, projectConfig) {
+ 		this.vitest = vitest;
+ 		this.globalConfig = vitest.config;
+-		this.tmpDir = join(tmpdir(), nanoid());
++		// Fork: transform copies are disposable, not the persistent fsModuleCache. SIGKILL
++		// cannot run close(), so keep leftovers off the shared system tmpfs.
++		this.tmpDir = join(vitest.viteConfig.root, "node_modules", ".cache", "vitest", `vitest-${process.pid}-${nanoid()}`);
+ 		this.vite = server;
+ 		this.viteConfig = viteConfig;
+ 		this.config = projectConfig;
