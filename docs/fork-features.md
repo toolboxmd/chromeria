@@ -298,7 +298,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/issues/589",
     "https://github.com/toolboxmd/chromeria/issues/633",
     "https://github.com/toolboxmd/chromeria/issues/724",
-    "https://github.com/toolboxmd/chromeria/issues/876"
+    "https://github.com/toolboxmd/chromeria/issues/876",
+    "https://github.com/toolboxmd/chromeria/issues/956"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/9",
@@ -312,7 +313,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/pull/603",
     "https://github.com/toolboxmd/chromeria/pull/632",
     "https://github.com/toolboxmd/chromeria/pull/725",
-    "https://github.com/toolboxmd/chromeria/pull/804"
+    "https://github.com/toolboxmd/chromeria/pull/804",
+    "https://github.com/toolboxmd/chromeria/compare/main...fix/956-html-render-dialog-test-hang"
   ],
   "newFiles": [
     ".github/workflows/fork.yml",
@@ -384,7 +386,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/storageCleanup.test.ts",
     "apps/server/src/orchestration-v2/ProjectionMaintenance.test.ts",
     "scripts/setup-worktree.ts",
-    "apps/web/src/browserHistoryStore.browser.test.ts"
+    "apps/web/src/browserHistoryStore.browser.test.ts",
+    "apps/web/src/components/chat/HtmlRenderDialog.browser.test.tsx"
   ],
   "sharedFiles": [],
   "keywords": [

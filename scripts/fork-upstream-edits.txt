@@ -855,6 +855,9 @@ packages/contracts/src/composerContext.ts
 # Browser history test simulates tabs with store instances, not iframes (#876).
 apps/web/src/browserHistoryStore.browser.test.ts
 
+# HTML render dialog test uses a local frame and the default viewport (#956).
+apps/web/src/components/chat/HtmlRenderDialog.browser.test.tsx
+
 # Steered wake recovery (#875)
 apps/server/src/orchestration-v2/ProviderEventIngestor.ts
 
