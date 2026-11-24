@@ -445,14 +445,15 @@ export interface ScheduledTaskRunViews {
 }
 
 /**
- * Whether the client's own copy of each run's thread is settled, as one letter per thread, so a
- * task row re-renders only when one of its threads is settled or reopened. `key` is
+ * The client's own copy of each run's thread as one letter per thread (settled, busy, open, or
+ * not held), so a task row re-renders only when one of its threads is settled, reopened, or
+ * starts or ends a run. `key` is
  * `scheduledTaskRunThreadsKey`; `shellAtom` is the app's quiet thread shell atom.
  */
 export const createScheduledTaskRunThreadStatesAtom = (
   shellAtom: (
     ref: ScopedThreadRef,
-  ) => Atom.Atom<Pick<EnvironmentThreadShell, "settledOverride"> | null>,
+  ) => Atom.Atom<Pick<EnvironmentThreadShell, "settledOverride" | "latestRun"> | null>,
 ) =>
   Atom.family((key: string) => {
     const [environmentId, ...threadIds] = JSON.parse(key) as [EnvironmentId, ...ThreadId[]];
@@ -461,11 +462,31 @@ export const createScheduledTaskRunThreadStatesAtom = (
       shells
         .map((shell) => {
           const thread = get(shell);
-          return thread === null ? "?" : thread.settledOverride === "settled" ? "s" : "o";
+          if (thread === null) return "?";
+          if (thread.settledOverride === "settled") return "s";
+          return thread.latestRun !== null && LIVE_RUN_STATUSES.has(thread.latestRun.status)
+            ? "b"
+            : "o";
         })
         .join(""),
     );
   });
+
+const LIVE_RUN_STATUSES: ReadonlySet<string> = new Set([
+  "queued",
+  "preparing",
+  "starting",
+  "running",
+  "waiting",
+]);
+
+/**
+ * Whether the runs should be read again: the same threads, one of them now in another state.
+ * A plain task's row on the live task list does not change when its run ends, so the thread
+ * ending its run is what says the run's status and summary are stale.
+ */
+export const scheduledTaskRunThreadsChanged = (previous: string, next: string) =>
+  previous.length === next.length && previous !== next;
 
 const runThreadIds = (runs: ReadonlyArray<ScheduledTaskRunRecord>) => [
   ...new Set(runs.flatMap((run) => (run.thread === null ? [] : [run.thread.id]))),
@@ -489,7 +510,7 @@ export function scheduledTaskRunViews(
   const threadIds = runThreadIds(runs);
   const liveSettled = (threadId: ThreadId) => {
     const state = liveStates[threadIds.indexOf(threadId)];
-    return state === "s" ? true : state === "o" ? false : undefined;
+    return state === "s" ? true : state === "o" || state === "b" ? false : undefined;
   };
   const seen = new Set<ThreadId>();
   let open = 0;

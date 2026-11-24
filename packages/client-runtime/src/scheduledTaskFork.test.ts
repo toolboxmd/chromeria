@@ -14,6 +14,7 @@ import {
   outcomeCheckLabel,
   scheduledTaskFrequency,
   scheduledTaskFrequencyGroups,
+  scheduledTaskRunThreadsChanged,
   scheduledTaskRunViews,
   scheduledTaskSections,
   uniqueMachineLabels,
@@ -524,7 +525,7 @@ describe("scheduled task run views", () => {
       ],
       // One letter per distinct thread, in run order: the client's own thread wins over what
       // the server read, and "?" is a thread the client does not hold.
-      "??os?",
+      "?bos?",
     );
     expect(
       views.runs.map((view) => [view.run.id, view.mark, view.thread?.needsUser ?? null]),
@@ -540,6 +541,10 @@ describe("scheduled task run views", () => {
       ["command", "succeeded", null],
     ]);
     expect(views.open).toBe(2);
+    // Only a thread changing state says the runs are stale, never a new set of threads.
+    expect(scheduledTaskRunThreadsChanged("bo", "oo")).toBe(true);
+    expect(scheduledTaskRunThreadsChanged("oo", "oo")).toBe(false);
+    expect(scheduledTaskRunThreadsChanged("", "bo")).toBe(false);
     expect(views.runs[0]!.durationMs).toBeNull();
     expect(views.runs[1]!.durationMs).toBe(150_000);
   });

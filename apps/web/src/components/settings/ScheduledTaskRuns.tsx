@@ -5,6 +5,7 @@ import {
   type ScheduledTaskRunMark,
   type ScheduledTaskRunView,
   type ScheduledTaskRunViews,
+  scheduledTaskRunThreadsChanged,
   scheduledTaskRunThreadsKey,
   scheduledTaskRunViews,
 } from "@t3tools/client-runtime/scheduled-task-fork";
@@ -13,7 +14,7 @@ import { formatDuration } from "@t3tools/shared/orchestrationTimingCopy";
 import { Link } from "@tanstack/react-router";
 import { useGT, useMessages } from "gt-react";
 import { ArrowUpRightIcon, ChevronDownIcon, ChevronRightIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { useClientSettings } from "../../hooks/useSettings";
@@ -51,7 +52,7 @@ function useScheduledTaskRuns(environmentId: EnvironmentId, task: ScheduledTask)
   );
   const runs = query.data?.runs ?? NO_RUNS;
   const states = useAtomValue(runThreadStatesAtom(scheduledTaskRunThreadsKey(environmentId, runs)));
-  return scheduledTaskRunViews(runs, states);
+  return { views: scheduledTaskRunViews(runs, states), states, refresh: query.refresh };
 }
 
 /** On the task's status line: how many of its runs still wait for the user. */
@@ -60,7 +61,7 @@ export function ScheduledTaskOpenRunsBadge(props: {
   readonly task: ScheduledTask;
 }) {
   const gt = useGT();
-  const { open } = useScheduledTaskRuns(props.environmentId, props.task);
+  const { open } = useScheduledTaskRuns(props.environmentId, props.task).views;
   return open === 0 ? null : (
     <Badge variant="warning">
       {gt("{count} open", {
@@ -78,7 +79,13 @@ export function ScheduledTaskRuns(props: {
 }) {
   const gt = useGT();
   const [expanded, setExpanded] = useState(false);
-  const views = useScheduledTaskRuns(props.environmentId, props.task);
+  const { views, states, refresh } = useScheduledTaskRuns(props.environmentId, props.task);
+  const previousStates = useRef(states);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Read the runs again when one of their threads starts or ends a run.
+  useEffect(() => {
+    if (scheduledTaskRunThreadsChanged(previousStates.current, states)) refresh();
+    previousStates.current = states;
+  }, [states, refresh]);
   if (views.runs.length === 0) return null;
   return (
     <div className="mt-2 space-y-1.5">
@@ -147,7 +154,7 @@ function RunRow({
           : `${started} · ${formatDuration(view.durationMs, messages)}`}
       </span>
       <span className="min-w-0 flex-1 basis-40 truncate text-foreground">{run.summary}</span>
-      <span className="flex shrink-0 items-center gap-2">
+      <span className="ml-auto flex shrink-0 items-center gap-2">
         {run.status === "running" ? (
           <Badge variant="info">{gt("Running", { $context: "scheduled task run status" })}</Badge>
         ) : null}

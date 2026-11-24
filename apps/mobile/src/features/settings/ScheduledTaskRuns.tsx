@@ -3,13 +3,14 @@ import {
   createScheduledTaskRunThreadStatesAtom,
   type ScheduledTaskRunMark,
   type ScheduledTaskRunView,
+  scheduledTaskRunThreadsChanged,
   scheduledTaskRunThreadsKey,
   scheduledTaskRunViews,
 } from "@t3tools/client-runtime/scheduled-task-fork";
 import type { EnvironmentId, ScheduledTask, ScheduledTaskRunRecord } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTimingCopy";
 import { useGT, useMessages } from "gt-react-native";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { SymbolView } from "../../components/ui/AppSymbol";
@@ -63,6 +64,13 @@ export function ScheduledTaskRuns({
   const runs = query.data?.runs ?? NO_RUNS;
   const states = useAtomValue(runThreadStatesAtom(scheduledTaskRunThreadsKey(environmentId, runs)));
   const views = scheduledTaskRunViews(runs, states);
+  const { refresh } = query;
+  const previousStates = useRef(states);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Read the runs again when one of their threads starts or ends a run.
+  useEffect(() => {
+    if (scheduledTaskRunThreadsChanged(previousStates.current, states)) refresh();
+    previousStates.current = states;
+  }, [states, refresh]);
   if (views.runs.length === 0) return null;
   return (
     <View className="-mt-1 gap-2 px-4 pb-3">
