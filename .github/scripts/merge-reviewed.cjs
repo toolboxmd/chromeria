@@ -25,12 +25,23 @@ function gateBlock(pr, runs, checks, statuses) {
       return "waiting for " + path;
   }
   if (runs.length >= 1000 || checks.length >= 1000) return "too many results to verify";
-  if (
-    runs.some(
-      (run) => run.status !== "completed" || !["success", "skipped"].includes(run.conclusion),
-    )
-  )
-    return "non-green workflow";
+  for (const run of runs) {
+    if (run.status !== "completed") return "workflow still running";
+    if (["success", "skipped"].includes(run.conclusion)) continue;
+    // A new run on the same head can replace a failed run. Every check GitHub
+    // still reports as current must independently pass below.
+    const replaced = runs.some(
+      (other) =>
+        other.workflow_id === run.workflow_id &&
+        other.event === run.event &&
+        other.head_repository?.id === run.head_repository?.id &&
+        other.head_branch === run.head_branch &&
+        other.run_number > run.run_number &&
+        other.status === "completed" &&
+        other.conclusion === "success",
+    );
+    if (!replaced) return "non-green workflow";
+  }
   if (
     !checks.length ||
     checks.some(
@@ -72,18 +83,20 @@ async function squashMerge(number, sha, token = process.env.MERGE_TOKEN) {
 }
 
 async function reconcile({ github, context, core }, merge = squashMerge) {
-  const sha =
+  const eventSha =
     context.payload.workflow_run?.head_sha ??
     context.payload.check_run?.head_sha ??
     context.payload.sha;
-  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("Missing event head SHA");
+  const sweep = context.eventName === "schedule";
+  if (!sweep && !/^[0-9a-f]{40}$/.test(eventSha)) throw new Error("Missing event head SHA");
   const { repos, actions, checks, pulls } = github.rest;
   const page = (method, args) =>
     github.paginate(method, { ...context.repo, per_page: 100, ...args });
   // Commit-to-PR associations can be empty for commits from a fork.
   const open = await page(pulls.list, { state: "open", base: "main" });
-  const candidates = open.filter((pr) => pr.head.sha === sha);
-  for (const candidate of candidates) {
+  const candidates = sweep ? open : open.filter((pr) => pr.head.sha === eventSha);
+  async function evaluate(candidate) {
+    const sha = candidate.head.sha;
     const args = { ...context.repo, pull_number: candidate.number };
     const read = async () => (await pulls.get(args)).data;
     const pr = await read();
@@ -98,13 +111,20 @@ async function reconcile({ github, context, core }, merge = squashMerge) {
     }
     if (reason) {
       core.info(`Skip #${pr.number} at ${sha}: ${reason}`);
-      continue;
+      return;
     }
     const data = await merge(pr.number, sha);
     if (!data.merged) throw new Error(`GitHub declined to merge #${pr.number}`);
     core.info(`Merged #${pr.number} at ${sha} as ${data.sha}`);
   }
-  if (!candidates.length) core.info(`No open PR to main at ${sha}`);
+  for (const candidate of candidates) {
+    try {
+      await evaluate(candidate);
+    } catch (error) {
+      core.setFailed(`PR #${candidate.number}: ${error.message}`);
+    }
+  }
+  if (!candidates.length) core.info("No matching open PR to main");
 }
 
 module.exports = { reconcile, gateBlock, prBlock, squashMerge };

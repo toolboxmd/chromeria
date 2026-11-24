@@ -13,7 +13,9 @@ const pr = {
   head: { ref: "fix/tests", sha, repo: { id: 1 } },
 };
 const green = { status: "completed", conclusion: "success" };
-const runs = ["ci", "fork"].map((name) => ({
+const runs = ["ci", "fork"].map((name, index) => ({
+  workflow_id: index + 1,
+  run_number: 2,
   ...green,
   path: `.github/workflows/${name}.yml`,
   event: "pull_request",
@@ -63,7 +65,17 @@ test("requires both PR workflows and completed green checks", () => {
   );
 });
 
+test("a fresh successful run replaces only a finished failure of the same workflow", () => {
+  const failed = { ...runs[0], run_number: 1, conclusion: "failure" };
+  assert.equal(gateBlock(pr, [failed, ...runs], [green], [review]), undefined);
+  for (const change of [{ run_number: 3 }, { workflow_id: 99 }, { status: "queued" }]) {
+    assert.ok(gateBlock(pr, [{ ...failed, ...change }, ...runs], [green], [review]));
+  }
+  assert.ok(gateBlock(pr, [failed, ...runs], [{ ...green, conclusion: "failure" }], [review]));
+});
+
 for (const [name, payload] of Object.entries({
+  schedule: {},
   status: { sha },
   workflow: { workflow_run: { head_sha: sha } },
   rerun: { workflow_run: { head_sha: sha, run_attempt: 2 } },
@@ -82,8 +94,14 @@ for (const [name, payload] of Object.entries({
       runs,
       checks: [green],
       statuses: [review],
-      candidates: [{ ...pr, head: { ...pr.head, sha: "b".repeat(40) } }, pr],
+      candidates: [
+        { ...pr, number: 43, draft: true, head: { ...pr.head, sha: "b".repeat(40) } },
+        pr,
+      ],
     };
+    rest.pulls.get = async ({ pull_number }) => ({
+      data: pages.candidates.find((pr) => pr.number === pull_number),
+    });
     const github = {
       rest,
       paginate(method, args) {
@@ -96,7 +114,7 @@ for (const [name, payload] of Object.entries({
     };
     const inputs = {
       github,
-      context: { payload, repo: { owner: "toolboxmd", repo: "chromeria" } },
+      context: { eventName: name, payload, repo: { owner: "toolboxmd", repo: "chromeria" } },
       core: { info() {} },
     };
     const writes = [];
@@ -104,6 +122,19 @@ for (const [name, payload] of Object.entries({
       writes.push(args);
       return { merged: true };
     };
+    // A hold or draft can clear after the last CI/review event. The scheduled
+    // pass then observes the new eligibility even without another webhook.
+    if (name === "schedule") {
+      for (const held of [
+        { ...pr, draft: true },
+        { ...pr, labels: [{ name: "do-not-merge" }] },
+      ]) {
+        pages.candidates = [held];
+        await reconcile(inputs, merge);
+        assert.equal(writes.length, 0);
+      }
+      pages.candidates = [pr];
+    }
     await reconcile(inputs, merge);
     assert.deepEqual(writes, [[pr.number, sha]]);
     let reads = 0;
