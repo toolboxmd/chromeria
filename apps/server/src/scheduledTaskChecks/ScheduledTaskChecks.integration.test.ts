@@ -2358,7 +2358,7 @@ it.effect.each(["runAt", "at"] as const)(
           modelSelection: selection,
           runtimeMode: "full-access",
           interactionMode: "default",
-          schedule: field === "runAt" ? { type: "once", runAt } : { type: "once", at: runAt },
+          schedule: { type: "once", ...(field === "runAt" ? { runAt } : { at: runAt }) },
         } as const;
         const { task: original } = yield* service.upsert(input);
         yield* TestClock.adjust(2);
