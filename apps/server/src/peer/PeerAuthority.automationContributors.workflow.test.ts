@@ -1345,6 +1345,18 @@ it.live("moves a disabled schedule through both MCP update tools", () =>
           expect(yield* getTask(node.project.id)).toEqual(original);
         }
 
+        for (const tool of ["schedule_task", "update_scheduled_task"] as const) {
+          const rejected = yield* nativeInvalidParams(node, parent, tool, {
+            scheduledTaskId,
+            projectId: destination,
+            bare: { additions: [{ type: "mcp", server: "t3-code", path: "/expected" }] },
+            clientRequestId: `reject-bare-mcp-path-${tool}`,
+          });
+          expect(json(rejected)).toContain("path");
+          expect(yield* getTask(node.project.id)).toEqual(original);
+          expect(yield* getTask(destination)).toBeUndefined();
+        }
+
         const bound = yield* nativeCall(node, parent, "update_scheduled_task", {
           scheduledTaskId,
           bindToCurrentThread: true,

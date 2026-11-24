@@ -2306,6 +2306,25 @@ it.effect(
         );
         assert.equal(result._tag, "Failure");
         assert.deepEqual((yield* service.list()).tasks, [current]);
+
+        yield* service.upsert({
+          ...base,
+          id: stale.id,
+          projectId: destination,
+          threadMode: "fresh_session",
+        });
+        const { task: edited } = yield* checks.update(
+          {
+            input: { scheduledTaskId: stale.id, title: "Edited concurrently" },
+            existing: stale,
+            threadId: null,
+            parent: undefined,
+          },
+          service.upsert,
+        )({ ...base, id: stale.id, title: "Edited concurrently" });
+        assert.equal(edited.title, "Edited concurrently");
+        assert.equal(edited.projectId, destination);
+        assert.equal(edited.threadMode, "fresh_session");
       }).pipe(Effect.provide(runtime(database)), Effect.scoped);
     }).pipe(Effect.scoped),
 );

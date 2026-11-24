@@ -56,7 +56,6 @@ import {
   AuthSessionId,
   DeviceToolError,
   OrchestratorMcpFailure,
-  OrchestratorMcpUpdateScheduledTaskInput,
   PreviewAutomationError,
   ProviderInteractionMode,
   type RunId,
@@ -815,36 +814,33 @@ const saveScreenshot = Effect.fn("McpHttpServer.saveScreenshot")(function* (
   return screenshotPath;
 });
 
-const decodeScheduleEdit = Schema.decodeUnknownResult(
-  Schema.toCodecJson(OrchestratorMcpUpdateScheduledTaskInput.fields.schedule),
-  { onExcessProperty: "error", reportInput: false },
-);
-
 const MAX_NAMED_ARGUMENTS = 5;
 const MAX_ARGUMENT_NAME_CHARS = 64;
 
 /**
- * Rejects unknown top-level arguments by name. Schedule edits also check the selected trigger's
- * fields before a permissive decode can drop them and let the scheduler confirm the edit.
+ * Rejects unknown top-level arguments by name. Schedule edits also reject unknown nested
+ * fields before decoding can discard them and let the scheduler confirm a partial edit.
  */
 const advertisedArgumentsOnly = (tool: Tool.Any) => {
   const { properties } = advertisedJsonSchema(tool);
   const accepted = new Set(Predicate.isObject(properties) ? Object.keys(properties) : []);
   const acceptedText = [...accepted].join(", ") || "none";
+  const decodeScheduleEdit =
+    tool.name === "schedule_task" || tool.name === "update_scheduled_task"
+      ? Schema.decodeUnknownResult(Schema.toCodecJson(tool.parametersSchema), {
+          onExcessProperty: "error",
+          reportInput: false,
+        })
+      : undefined;
   return Schema.Record(Schema.String, Schema.Unknown).check(
     Schema.makeFilter((input) => {
       const unknown = Object.keys(input).filter((key) => !accepted.has(key));
       if (unknown.length === 0) {
-        if (
-          input.schedule != null &&
-          (tool.name === "update_scheduled_task" ||
-            (tool.name === "schedule_task" && input.scheduledTaskId != null))
-        ) {
-          const decoded = decodeScheduleEdit(input.schedule);
-          if (decoded._tag === "Failure")
-            return { path: ["schedule"], issue: decoded.failure.issue };
-        }
-        return;
+        const decoded =
+          tool.name === "update_scheduled_task" || input.scheduledTaskId != null
+            ? decodeScheduleEdit?.(input)
+            : undefined;
+        return decoded?._tag === "Failure" ? decoded.failure.issue : undefined;
       }
       const named = unknown
         .slice(0, MAX_NAMED_ARGUMENTS)

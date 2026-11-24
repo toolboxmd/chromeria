@@ -971,25 +971,21 @@ const checksLayer = Layer.effect(
                     message: "Scheduled task not found.",
                     taskId: existing.id,
                   });
-                if (fields.bindToCurrentThread === true && existing.projectId !== current.projectId)
+                if (
+                  (fields.projectId !== undefined ||
+                    fields.bindToCurrentThread !== undefined ||
+                    fields.freshSession !== undefined) &&
+                  (existing.projectId !== current.projectId ||
+                    existing.threadId !== current.threadId ||
+                    scheduledTaskThreadMode(existing) !== scheduledTaskThreadMode(current) ||
+                    requestDigest(existing.workspaceStrategy) !==
+                      requestDigest(current.workspaceStrategy))
+                )
                   return yield* new ScheduledTaskError({
-                    message: "The schedule project changed before rebinding.",
+                    message: "The schedule destination changed before the edit. Read it and retry.",
                     taskId: current.id,
                   });
                 const projectId = fields.projectId ?? current.projectId;
-                if (
-                  fields.projectId !== undefined &&
-                  (existing.projectId !== current.projectId ||
-                    (projectId !== current.projectId &&
-                      (current.threadId !== null ||
-                        scheduledTaskThreadMode(existing) !== scheduledTaskThreadMode(current) ||
-                        requestDigest(existing.workspaceStrategy) !==
-                          requestDigest(current.workspaceStrategy))))
-                )
-                  return yield* new ScheduledTaskError({
-                    message: "The schedule destination changed before the move. Read it and retry.",
-                    taskId: current.id,
-                  });
                 const boundThread =
                   fields.bindToCurrentThread === undefined ? current.threadId : threadId;
                 const updated: ScheduledTaskUpsertInput = {
@@ -1002,6 +998,10 @@ const checksLayer = Layer.effect(
                   schedule: fields.schedule ?? current.schedule,
                   projectId,
                   threadId: boundThread,
+                  threadMode:
+                    fields.freshSession === undefined && fields.bindToCurrentThread === undefined
+                      ? scheduledTaskThreadMode(current)
+                      : input.threadMode,
                   workspaceStrategy:
                     fields.bindToCurrentThread !== undefined || projectId !== current.projectId
                       ? input.workspaceStrategy
