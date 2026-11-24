@@ -80,7 +80,9 @@ async function reconcile({ github, context, core }, merge = squashMerge) {
   const { repos, actions, checks, pulls } = github.rest;
   const page = (method, args) =>
     github.paginate(method, { ...context.repo, per_page: 100, ...args });
-  const candidates = await page(repos.listPullRequestsAssociatedWithCommit, { commit_sha: sha });
+  // Commit-to-PR associations can be empty for commits from a fork.
+  const open = await page(pulls.list, { state: "open", base: "main" });
+  const candidates = open.filter((pr) => pr.head.sha === sha);
   for (const candidate of candidates) {
     const args = { ...context.repo, pull_number: candidate.number };
     const read = async () => (await pulls.get(args)).data;
@@ -102,7 +104,7 @@ async function reconcile({ github, context, core }, merge = squashMerge) {
     if (!data.merged) throw new Error(`GitHub declined to merge #${pr.number}`);
     core.info(`Merged #${pr.number} at ${sha} as ${data.sha}`);
   }
-  if (!candidates.length) core.info(`No PR associated with ${sha}`);
+  if (!candidates.length) core.info(`No open PR to main at ${sha}`);
 }
 
 module.exports = { reconcile, gateBlock, prBlock, squashMerge };

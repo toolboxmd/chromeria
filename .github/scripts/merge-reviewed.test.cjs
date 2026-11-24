@@ -75,15 +75,22 @@ for (const [name, payload] of Object.entries({
       checks: { listForRef: "checks" },
       repos: {
         listCommitStatusesForRef: "statuses",
-        listPullRequestsAssociatedWithCommit: "candidates",
       },
-      pulls: { get: async () => ({ data: pr }) },
+      pulls: { list: "candidates", get: async () => ({ data: pr }) },
     };
-    const pages = { runs, checks: [green], statuses: [review], candidates: [pr] };
+    const pages = {
+      runs,
+      checks: [green],
+      statuses: [review],
+      candidates: [{ ...pr, head: { ...pr.head, sha: "b".repeat(40) } }, pr],
+    };
     const github = {
       rest,
       paginate(method, args) {
-        assert.equal(args.commit_sha ?? args.head_sha ?? args.ref, sha);
+        if (method === "candidates") {
+          assert.equal(args.state, "open");
+          assert.equal(args.base, "main");
+        } else assert.equal(args.head_sha ?? args.ref, sha);
         return pages[method];
       },
     };
