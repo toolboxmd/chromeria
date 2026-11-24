@@ -14,6 +14,44 @@ const requirePlaywright = NodeModule.createRequire(import.meta.url);
 const loadPlaywright = () =>
   requirePlaywright("playwright-core") as typeof import("playwright-core");
 
+export const RENDER_SCALE = 2;
+type ViewportSize = { readonly width: number; readonly height: number };
+const agentViewports = new WeakMap<Page, { readonly size: ViewportSize; readonly zoom: number }>();
+
+export const previewViewportSize = (page: Page) =>
+  agentViewports.get(page)?.size ?? page.viewportSize();
+
+export const viewportAtZoom = ({ width, height }: ViewportSize, zoom: number) => ({
+  width: Math.max(1, Math.round(width / zoom)),
+  height: Math.max(1, Math.round(height / zoom)),
+});
+
+export const resizeAgentViewport = async (
+  page: Page,
+  cdp: CDPSession,
+  size: ViewportSize,
+  zoom: number,
+) => {
+  if (zoom === 1) {
+    if ((agentViewports.get(page)?.zoom ?? 1) !== 1) {
+      await cdp.send("Emulation.clearDeviceMetricsOverride");
+    }
+    // Playwright's viewport setter replaces the screen. Device metrics emulation
+    // also removes the work area inset, so use it only when zoom changes the DPR.
+    await cdp.send("Emulation.setVisibleSize", size);
+  } else {
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      ...viewportAtZoom(size, zoom),
+      deviceScaleFactor: RENDER_SCALE * zoom,
+      mobile: false,
+    });
+  }
+  agentViewports.set(page, { size, zoom });
+};
+
+export const agentColorScheme = (localHour: number) =>
+  localHour < 6 || localHour >= 20 ? "dark" : "light";
+
 const BADGE_STUB = `if (typeof WorkerNavigator === "function") for (const name of ["setAppBadge", "clearAppBadge"]) WorkerNavigator.prototype[name] = () => Promise.resolve();`;
 
 interface CdpSession {
@@ -208,7 +246,10 @@ export class ServerBrowserContexts {
       env,
       args: [
         `--user-agent=${this.identity.userAgent}`,
-        "--force-device-scale-factor=2",
+        `--force-device-scale-factor=${RENDER_SCALE}`,
+        "--window-size=1280,900",
+        // Chrome divides screen geometry by the device scale, so use physical pixels.
+        `--screen-info={${1920 * RENDER_SCALE}x${1080 * RENDER_SCALE} workAreaBottom=${48 * RENDER_SCALE}}`,
         "--disable-blink-features=AutomationControlled",
         // New headless picks a hardware GL backend on its own on macOS; Linux needs Vulkan named.
         ...(this.options.host.platform === "linux" ? ["--use-angle=vulkan"] : []),
@@ -352,7 +393,7 @@ export class ServerBrowserContexts {
   }
 
   private async createContext(profileId: string, isolationKey?: string) {
-    const contextOptions = { viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 };
+    const contextOptions = { viewport: null };
     if (isolationKey !== undefined || profileId === INCOGNITO_BROWSER_PROFILE_ID) {
       return this.sharedContext(contextOptions);
     }

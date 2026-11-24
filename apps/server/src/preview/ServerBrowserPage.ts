@@ -26,6 +26,7 @@ import { constVoid } from "effect/Function";
 import type { CDPSession, ConsoleMessage, Frame, Locator, Page } from "playwright-core";
 import * as NodeCrypto from "node:crypto";
 import * as NodeUtil from "node:util";
+import { previewViewportSize } from "./ServerBrowserContexts.ts";
 import { BrowserControlInterrupted } from "./SessionControl.ts";
 
 const isBrowserControlInterrupted = Schema.is(BrowserControlInterrupted);
@@ -202,7 +203,7 @@ const targetPoint = async (
   await authorize();
   const box = await locator.boundingBox({ timeout: timeout() });
   if (box) return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-  const viewport = page.viewportSize();
+  const viewport = previewViewportSize(page);
   return { x: (viewport?.width ?? 0) / 2, y: (viewport?.height ?? 0) / 2 };
 };
 
@@ -675,7 +676,7 @@ type SnapshotInput = {
 /** The scale a page renders at and its viewport in device-independent pixels. */
 const renderingOf = async (input: SnapshotInput) => {
   if (input.renderScale !== "display") {
-    const viewport = input.page.viewportSize() ?? { width: 1280, height: 800 };
+    const viewport = previewViewportSize(input.page) ?? { width: 1280, height: 800 };
     return { renderScale: input.renderScale, viewport };
   }
   // The display ratio a desktop page reports includes its page zoom, and its sizes are CSS pixels.

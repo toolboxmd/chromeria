@@ -15,7 +15,12 @@ import {
   testHeadlessShell,
   testHost,
 } from "./ChromeForTesting.testkit.ts";
-import { presentAsChrome, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
+import {
+  presentAsChrome,
+  resizeAgentViewport,
+  ServerBrowserContexts,
+} from "./ServerBrowserContexts.ts";
+import { captureViewport } from "./ServerBrowserPage.ts";
 import { ServerCookieMirror } from "./ServerCookieMirror.ts";
 
 const PAGE = `<!doctype html><script src="/app.js"></script><script>
@@ -95,6 +100,52 @@ const sessionCookies = async (context: BrowserContext) =>
   (await context.cookies(origin)).map((cookie) => `${cookie.name}=${cookie.value}`);
 
 describe.skipIf(!testChromium)("ServerBrowserContexts on Chrome for Testing", () => {
+  it.each(["default", INCOGNITO_BROWSER_PROFILE_ID])(
+    "keeps the monitor work area while rendering the %s tab's viewport",
+    async (profile) => {
+      await withPool(`screen-${profile}`, async (pool) => {
+        const context = await pool.contextFor(profile);
+        const page = await context.newPage();
+        const cdp = await context.newCDPSession(page);
+        const metrics = () =>
+          page.evaluate(`({
+            screen: [screen.width, screen.height],
+            workArea: [screen.availWidth, screen.availHeight],
+            viewport: [innerWidth, innerHeight],
+            dpr: devicePixelRatio
+          })`);
+        const monitor = { screen: [1920, 1080], workArea: [1920, 1032] };
+        await resizeAgentViewport(page, cdp, { width: 1280, height: 800 }, 1);
+        expect(await metrics()).toEqual({ ...monitor, viewport: [1280, 800], dpr: 2 });
+        await resizeAgentViewport(page, cdp, { width: 1400, height: 900 }, 1);
+        await page.goto(origin);
+        expect(await metrics()).toEqual({ ...monitor, viewport: [1400, 900], dpr: 2 });
+
+        const pngDimensions = (data: string) => {
+          const png = Buffer.from(data, "base64");
+          return [png.readUInt32BE(16), png.readUInt32BE(20)];
+        };
+        expect(pngDimensions(await captureViewport(cdp, { format: "png" }))).toEqual([2800, 1800]);
+        const frame = new Promise<string>((resolve) =>
+          cdp.once("Page.screencastFrame", ({ data }) => resolve(data)),
+        );
+        await cdp.send("Page.startScreencast", { format: "png" });
+        expect(pngDimensions(await frame)).toEqual([2800, 1800]);
+        await cdp.send("Page.stopScreencast");
+
+        await resizeAgentViewport(page, cdp, { width: 1200, height: 900 }, 1.5);
+        expect(await metrics()).toMatchObject({
+          screen: monitor.screen,
+          viewport: [800, 600],
+          dpr: 3,
+        });
+        await resizeAgentViewport(page, cdp, { width: 1200, height: 900 }, 1);
+        expect(pngDimensions(await captureViewport(cdp, { format: "png" }))).toEqual([2400, 1800]);
+        expect(await metrics()).toEqual({ ...monitor, viewport: [1200, 900], dpr: 2 });
+      });
+    },
+  );
+
   it.each([
     { name: "persistent", profile: "default" },
     { name: "incognito", profile: INCOGNITO_BROWSER_PROFILE_ID },

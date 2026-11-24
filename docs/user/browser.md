@@ -11,6 +11,10 @@ opens use the environment's agent browser and appear in the panel as a live
 stream. The agent browser runs pinned Chrome for Testing 158 in new headless
 mode with hardware GPU rendering.
 
+With System appearance, streamed tabs use dark mode from 8 PM to 6 AM in the
+host's local time. The tab checks the time when it opens or applies an
+appearance change.
+
 In a thread on another environment, such as a server, tabs stream from that
 environment by default. A web or mobile client also streams tabs. In a streamed
 tab, `localhost` reaches the environment's machine. On desktop, **Open on this

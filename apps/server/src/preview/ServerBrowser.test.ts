@@ -49,7 +49,8 @@ import * as ServerBrowser from "./ServerBrowser.ts";
 import { settlementLayer, settleThread } from "./BrowserSettlement.testkit.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 
-vi.mock("./ServerBrowserContexts.ts", () => ({
+vi.mock("./ServerBrowserContexts.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./ServerBrowserContexts.ts")>()),
   presentAsChrome: async () => {},
   ServerBrowserContexts: class {
     private readonly onClose: ((context: BrowserContext) => void) | undefined;
@@ -77,7 +78,6 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
     }
     async connectDesktopPage(endpoint: string) {
       const context = makeContext(undefined, desktopPageUrl);
-      context.page.viewportSize.mockReturnValue(null);
       const browser = { close: vi.fn(async () => {}) };
       desktopConnections.push({ endpoint, context, browser });
       desktopConnectionStarted?.resolve();
@@ -186,7 +186,6 @@ function makeContext(onClose?: (context: BrowserContext) => void, initialUrl = "
   const setChooserFiles = vi.fn(async (_files: unknown) => {});
   const sessions: ReturnType<typeof makeSession>[] = [];
   let url = initialUrl;
-  let viewport: ReturnType<Page["viewportSize"]> = { width: 1280, height: 800 };
   const cssViewport = { width: 1920, height: 1080 };
   let closed = false;
   let contextClosed = false;
@@ -220,10 +219,7 @@ function makeContext(onClose?: (context: BrowserContext) => void, initialUrl = "
       url = next;
     },
     title: vi.fn(async () => "test page"),
-    viewportSize: vi.fn(() => viewport),
-    setViewportSize: vi.fn(async (size: typeof viewport) => {
-      viewport = size;
-    }),
+    viewportSize: vi.fn((): ReturnType<Page["viewportSize"]> => null),
     goto: vi.fn(async (next: string, _options?: { timeout?: number; waitUntil?: string }) => {
       const pending = initialNavigation;
       initialNavigation = null;
@@ -1228,6 +1224,30 @@ it.effect("a desktop tab left on the system appearance clears Playwright's light
   ).pipe(Effect.provide(layer)),
 );
 
+it.effect(
+  "an agent tab uses the host's time for system appearance and honors an explicit choice",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const hour = vi.spyOn(Date.prototype, "getHours").mockReturnValue(23);
+        yield* Effect.addFinalizer(() => Effect.sync(() => hour.mockRestore()));
+        const { broker, tabId } = yield* ready;
+        const { page } = contexts[0]!;
+        expect(page.emulateMedia).toHaveBeenLastCalledWith({ colorScheme: "dark" });
+
+        const setAppearance = (colorScheme: "light" | "dark" | "system") =>
+          broker.invoke({ scope, tabId, operation: "setColorScheme", input: { colorScheme } });
+        yield* setAppearance("light");
+        expect(page.emulateMedia).toHaveBeenLastCalledWith({ colorScheme: "light" });
+        hour.mockReturnValue(12);
+        yield* setAppearance("dark");
+        expect(page.emulateMedia).toHaveBeenLastCalledWith({ colorScheme: "dark" });
+        yield* setAppearance("system");
+        expect(page.emulateMedia).toHaveBeenLastCalledWith({ colorScheme: "light" });
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
 it.effect("a desktop page that loaded before the server attached reports its loaded title", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1748,7 +1768,6 @@ it.effect("keeps a tab's zoom when its viewer resizes", () =>
       yield* viewer.input({ type: "takeControl" });
       const cdp = contexts[0]!.sessions[0]!;
       cdp.send.mockClear();
-      // Resizing the page resets Chromium's device metrics, so zoom must be applied again.
       yield* viewer.input({ type: "resize", width: 390, height: 844 });
       expect(cdp.send).toHaveBeenCalledWith(
         "Emulation.setDeviceMetricsOverride",
@@ -1802,8 +1821,8 @@ it.effect(
       Effect.gen(function* () {
         const { browser, tabId } = yield* ready;
         const viewer = yield* browser.attachViewer(viewerInput(tabId, false));
-        const page = contexts[0]!.page;
-        page.setViewportSize.mockClear();
+        const pageSession = contexts[0]!.sessions[0]!;
+        pageSession.send.mockClear();
         const session = contexts[0]!.sessions.at(-1)!;
         session.send.mockClear();
         for (const message of [
@@ -1813,7 +1832,10 @@ it.effect(
           { type: "viewport", setting: { _tag: "freeform", width: 390, height: 844 } },
         ])
           yield* viewer.input(message);
-        expect(page.setViewportSize).not.toHaveBeenCalled();
+        expect(pageSession.send).not.toHaveBeenCalledWith(
+          "Emulation.setVisibleSize",
+          expect.anything(),
+        );
         expect(session.send.mock.calls.some(([method]) => method.startsWith("Input."))).toBe(false);
         const outputs = yield* Stream.fromQueue(viewer.output).pipe(
           Stream.takeUntil((output) => output._tag === "frame"),
@@ -1833,7 +1855,10 @@ it.effect(
         expect(contexts[0]!.sessions.at(-1)!.send).toHaveBeenCalledWith("Input.insertText", {
           text: "typed",
         });
-        expect(page.setViewportSize).toHaveBeenCalledWith({ width: 390, height: 844 });
+        expect(pageSession.send).toHaveBeenCalledWith("Emulation.setVisibleSize", {
+          width: 390,
+          height: 844,
+        });
         yield* operator.input({ type: "releaseControl" });
       }),
     ).pipe(Effect.provide(layer)),
@@ -4566,15 +4591,18 @@ it.effect.each([
       yield* Effect.promise(() => sessionStarted.promise);
       const popup = makeContext();
       const resized = Promise.withResolvers<void>();
-      const setViewportSize = popup.page.setViewportSize;
-      popup.page.setViewportSize = vi.fn(async (size) => {
-        await setViewportSize(size);
-        if (size?.width === 900) resized.resolve();
-      });
       const newCDPSession = popup.newCDPSession;
       popup.newCDPSession = async (target) => {
         await launchGate.promise;
-        return newCDPSession(target);
+        const session = await newCDPSession(target);
+        const send = session.send;
+        session.send = vi.fn(async (method, input) => {
+          if (method === "Emulation.setVisibleSize" && (input as { width: number }).width === 900) {
+            resized.resolve();
+          }
+          return send(method, input);
+        });
+        return session;
       };
       contexts[0]!.page.emit("popup", popup.page);
       const last = yield* open().pipe(Effect.result, Effect.forkScoped);

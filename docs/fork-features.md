@@ -3676,8 +3676,11 @@ sources and reasons.
 ```json
 {
   "id": "preview-chrome-for-testing",
-  "purpose": "Run preview, research and HTML render browsers on pinned full Chrome for Testing instead of chrome-headless-shell, unpacked with checked symlinks so the macOS bundle installs. Agent tabs launch with one reduced Chrome identity (launch flag plus matching client hints) checked against the pin, the GPU on, and a reserved keep-alive page per persistent profile that the cookie mirror borrows. Agent tabs stream from the server browser; only a person's tab is hosted natively by the desktop. Drop when upstream installs full Chrome for Testing safely with an equivalent identity and keep-alive.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/572"],
+  "purpose": "Run preview, research and HTML render browsers on pinned full Chrome for Testing instead of chrome-headless-shell, unpacked with checked symlinks so the macOS bundle installs. Agent tabs launch with one reduced Chrome identity (launch flag plus matching client hints) checked against the pin, the GPU on, and a reserved keep-alive page per persistent profile that the cookie mirror borrows. The server browser gives agent tabs a monitor work area at default zoom and follows the host's day and night in System appearance. Agent tabs stream from the server browser; only a person's tab is hosted natively by the desktop. Drop when upstream installs full Chrome for Testing safely with an equivalent identity and keep-alive.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/572",
+    "https://github.com/toolboxmd/chromeria/issues/943"
+  ],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/585"],
   "newFiles": [
     "apps/server/src/preview/ChromeForTesting.testkit.ts",
@@ -3704,11 +3707,13 @@ sources and reasons.
     "apps/server/src/preview/ServerBrowser.ts",
     "apps/server/src/preview/ServerBrowserContexts.ts",
     "apps/server/src/preview/ServerBrowserPage.test.ts",
+    "apps/server/src/preview/ServerBrowserPage.ts",
     "apps/server/src/preview/ServerCookieMirror.integration.test.ts",
     "apps/server/src/preview/ServerCookieMirror.ts",
     "apps/server/src/webResearch/PublicRender.test.ts",
     "apps/server/src/webResearch/ResearchHost.test.ts",
     "docs/map.md",
+    "docs/user/browser.md",
     "docs/user/remote-access.md",
     "packages/contracts/src/preview.ts"
   ],

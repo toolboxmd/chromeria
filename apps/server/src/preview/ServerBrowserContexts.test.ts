@@ -202,10 +202,6 @@ describe("ServerBrowserContexts", () => {
       expect.objectContaining({ executablePath: "/test/chromium-launcher" }),
     );
     expect(launches.persistent).not.toHaveBeenCalled();
-    expect(browser.newContext).toHaveBeenCalledWith({
-      viewport: { width: 1280, height: 800 },
-      deviceScaleFactor: 2,
-    });
     await pool.close();
     expect(browser.close).toHaveBeenCalledTimes(1);
     for (const context of browser.created) expect(context.close).toHaveBeenCalled();
