@@ -2384,7 +2384,8 @@ sources and reasons.
     "apps/server/src/mcp/toolkits/environment/handlers.test.ts",
     "packages/client-runtime/src/load-balancing.ts",
     "apps/web/src/components/settings/LoadBalancingSettings.tsx",
-    "apps/web/src/appInit.tsx"
+    "apps/web/src/appInit.tsx",
+    "docs/internals/05_remote.md"
   ],
   "sharedFiles": [
     "vite.config.ts",
