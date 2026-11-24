@@ -553,6 +553,8 @@ describe("scheduled task run views", () => {
     expect(scheduledTaskRunsStale({ key: "[]", states: "" }, { key, states: "o" }, runs)).toBe(
       true,
     );
+    // A remount over a cached read starts with nothing seen, so it is caught the same way.
+    expect(scheduledTaskRunsStale({ key: "", states: "" }, { key, states: "o" }, runs)).toBe(true);
     // First seen and still busy, or already read as finished: nothing to read again.
     expect(scheduledTaskRunsStale({ key: "[]", states: "" }, { key, states: "b" }, runs)).toBe(
       false,

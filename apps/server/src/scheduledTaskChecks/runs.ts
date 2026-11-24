@@ -19,7 +19,8 @@ interface RunDraft extends Omit<ScheduledTaskRunRecord, "thread" | "summary"> {
   readonly threadId: ThreadId | null;
   /** The message whose provider run wrote the summary. */
   readonly messageId: MessageId | null;
-  readonly summary: string | null;
+  /** Shown when that run left no reply: a command's report, or a run's error. */
+  readonly fallback: string | null;
 }
 
 const lastLine = (text: string | undefined) => text?.trimEnd().split("\n").at(-1)?.trim() || null;
@@ -49,7 +50,7 @@ function checkedRunDrafts(state: CheckState): ReadonlyArray<RunDraft> {
         status,
         threadId: run.threadId,
         messageId: run.sends.at(-1)?.messageId ?? null,
-        summary:
+        fallback:
           state.kind === "command" ? (run.error ?? lastLine(run.commandResult?.output)) : run.error,
       };
     });
@@ -73,10 +74,12 @@ const messageRunDrafts = Effect.fn("ScheduledTaskRuns.messageRunDrafts")(functio
     readonly message_id: string;
     readonly thread_id: string;
     readonly status: string;
-    readonly requested_at: string;
+    readonly started_at: string;
     readonly completed_at: string | null;
   }>`
-    SELECT message.message_id, message.thread_id, run.status, run.requested_at, run.completed_at
+    SELECT message.message_id, message.thread_id, run.status, run.completed_at,
+      -- A prompt queued behind a busy thread waits before it starts; the wait is not run time.
+      coalesce(json_extract(run.payload_json, '$.startedAt'), run.requested_at) AS started_at
     FROM orchestration_v2_projection_messages message
     JOIN orchestration_v2_projection_runs run ON run.run_id = message.run_id
     WHERE (
@@ -96,7 +99,7 @@ const messageRunDrafts = Effect.fn("ScheduledTaskRuns.messageRunDrafts")(functio
   `;
   return rows.map((row): RunDraft => ({
     id: row.message_id,
-    startedAt: row.requested_at,
+    startedAt: row.started_at,
     endedAt: row.completed_at,
     status: LIVE_RUN_STATUSES.has(row.status)
       ? "running"
@@ -105,7 +108,7 @@ const messageRunDrafts = Effect.fn("ScheduledTaskRuns.messageRunDrafts")(functio
         : "failed",
     threadId: ThreadId.make(row.thread_id),
     messageId: row.message_id as MessageId,
-    summary: null,
+    fallback: null,
   }));
 });
 
@@ -156,9 +159,7 @@ export const listTaskRuns = Effect.fn("ScheduledTaskRuns.list")(
             : ("open" as const),
       ]),
     );
-    const messageIds = drafts.flatMap((run) =>
-      run.summary === null && run.messageId !== null ? [run.messageId] : [],
-    );
+    const messageIds = drafts.flatMap((run) => run.messageId ?? []);
     // The newest finished assistant message of the provider run each message started.
     const replies =
       messageIds.length === 0
@@ -181,13 +182,13 @@ export const listTaskRuns = Effect.fn("ScheduledTaskRuns.list")(
       ]),
     );
     const result: ScheduledTaskListRunsResult = {
-      runs: drafts.map(({ threadId, messageId, summary, ...run }) => ({
+      runs: drafts.map(({ threadId, messageId, fallback, ...run }) => ({
         ...run,
         thread:
           threadId === null
             ? null
             : { id: threadId, state: threadStates.get(threadId) ?? "missing" },
-        summary: summary ?? (messageId === null ? null : (summaries.get(messageId) ?? null)),
+        summary: (messageId === null ? null : (summaries.get(messageId) ?? null)) ?? fallback,
       })),
     };
     return result;

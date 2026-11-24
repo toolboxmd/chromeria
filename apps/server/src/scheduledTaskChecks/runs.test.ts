@@ -53,6 +53,7 @@ const insertSend = (input: {
   readonly task: string;
   readonly status: string;
   readonly requestedAt: string;
+  readonly startedAt?: string;
   readonly completedAt: string | null;
   readonly replies?: ReadonlyArray<string>;
 }) =>
@@ -65,7 +66,8 @@ const insertSend = (input: {
         run_id, thread_id, ordinal, provider, status, requested_at, completed_at, payload_json
       ) VALUES (
         ${runId}, ${input.threadId}, ${ordinal}, 'codex', ${input.status}, ${input.requestedAt},
-        ${input.completedAt}, '{}'
+        ${input.completedAt},
+        ${JSON.stringify(input.startedAt === undefined ? {} : { startedAt: input.startedAt })}
       )
     `;
     const message = (id: string, role: string, at: string, payload: object) => sql`
@@ -114,7 +116,9 @@ it.effect("lists a plain task's runs from the messages the scheduler sent for it
       threadId: "thread:settled",
       task: taskId,
       status: "completed",
+      // Queued behind a busy thread for a minute: the wait is not run time.
       requestedAt: "2026-11-22T08:00:00.000Z",
+      startedAt: "2026-11-22T08:01:00.000Z",
       completedAt: "2026-11-22T08:02:00.000Z",
       replies: ["Looking.", "## Done\n\nNothing **new** upstream."],
     });
@@ -148,7 +152,7 @@ it.effect("lists a plain task's runs from the messages the scheduler sent for it
       },
       {
         id: `scheduled-task-message:${taskId}:2:scheduled`,
-        startedAt: "2026-11-22T08:00:00.000Z",
+        startedAt: "2026-11-22T08:01:00.000Z",
         endedAt: "2026-11-22T08:02:00.000Z",
         status: "succeeded",
         thread: { id: ThreadId.make("thread:settled"), state: "settled" },
@@ -237,6 +241,8 @@ it.effect("lists a checked task's kept runs with the thread and reply of each", 
                 createdAt: "2026-11-22T08:05:00.000Z",
               },
             ],
+            // A reply outranks an error as the summary: the badge already says it failed.
+            error: "An earlier check failed.",
             check: { version: 1, passed: true, output: "", checkedAt: "2026-11-22T08:06:10.000Z" },
           }),
           run({

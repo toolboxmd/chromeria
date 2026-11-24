@@ -84,7 +84,8 @@ export function ScheduledTaskRuns(props: {
     props.environmentId,
     props.task,
   );
-  const previousSeen = useRef({ key, states });
+  // Starts as nothing seen, so a remount over a cached read checks it against the threads too.
+  const previousSeen = useRef({ key: "", states: "" });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Read the runs again when one of their threads starts or ends a run.
   useEffect(() => {
     const seen = { key, states };
