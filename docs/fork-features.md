@@ -392,7 +392,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "scripts/setup-worktree.ts",
     "apps/web/src/browserHistoryStore.browser.test.ts",
     "apps/web/src/components/chat/HtmlRenderDialog.browser.test.tsx",
-    "apps/desktop/src/app/DesktopCliShim.ts"
+    "apps/desktop/src/app/DesktopCliShim.ts",
+    "apps/desktop/src/app/DesktopCliShim.test.ts"
   ],
   "sharedFiles": [],
   "keywords": [

@@ -125,11 +125,13 @@ export const renderCliShim = (input: {
     "stop=",
     `trap 'if [ -n "$cli" ]; then kill -TERM "$cli" 2>/dev/null; else stop=TERM; fi' TERM`,
     `trap 'if [ -n "$cli" ]; then kill -HUP "$cli" 2>/dev/null; else stop=HUP; fi' HUP`,
-    // Ctrl-C goes to the CLI directly; the launcher stays to unmount after it exits.
+    // A Ctrl-C during launch must leave the launcher alive to wait for the CLI.
     "trap ':' INT",
     `${run("$mount")} <&9 9<&- &`,
     "cli=$!",
     "exec 9<&-",
+    // The terminal also signals the CLI. Ignore INT here so it cannot interrupt wait.
+    "trap '' INT",
     '[ -z "$stop" ] || kill -"$stop" "$cli" 2>/dev/null',
     "status=0",
     'wait "$cli" || status=$?',
