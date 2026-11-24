@@ -26,12 +26,26 @@ Promachos view shows the conversations of all of them. While the sidebar groups
 projects by repository, every project that is the same repository as any machine's
 home counts as part of the home, even on a machine that names another home or none.
 
+## Settle and snooze
+
+Right-click a conversation in the list for the thread actions of the standard view,
+such as **Settle thread** and **Snooze**. A settled or snoozed conversation leaves the
+list for a collapsed **Snoozed** or **Settled** group at the bottom. Open the group and
+right-click the conversation to wake or un-settle it; a snoozed one also returns when
+its time comes.
+
+In the standard view, the home's conversations sit in a collapsed **Promachos**
+section of the thread list, so they do not mix with your other threads. Pinned,
+snoozed and settled ones stay in those sections.
+
 ## On the phone
 
 The mobile app has a **Promachos** tab first in the bottom bar. It lists the home's
 conversations, and the button at the bottom starts one. Chats look and behave as on
 desktop; files, git and terminal are in the round **…** menu. **Settings → Promachos**
-on the phone changes the same machine setting as on desktop.
+on the phone changes the same machine setting as on desktop. Swipe a conversation
+left to settle or snooze it, and swipe one in the **Snoozed** or **Settled** group to
+bring it back.
 
 Opening the app without a link or notification returns to the tab you used last. On
 the Promachos tab that is the conversation you had open, or the list if you had left

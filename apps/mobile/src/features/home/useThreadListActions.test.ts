@@ -1,5 +1,4 @@
 import { makeThreadShellFixture } from "../../test-fixtures";
-import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   AuthOrchestrationOperateScope,
@@ -8,6 +7,7 @@ import {
   ProviderInstanceId,
   RunId,
   ThreadId,
+  type ScopedProjectRef,
   type ThreadTitleRegenerationOutcome,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -25,7 +25,7 @@ const state = vi.hoisted(() => ({
   onArchivedRefresh: undefined as (() => void) | undefined,
   scopes: new Map<string, Set<string>>(),
   shells: [] as EnvironmentThreadShell[],
-  projects: [] as EnvironmentProject[],
+  promachosHomeRefs: [] as ScopedProjectRef[],
   requests: [] as {
     action: string;
     environmentId: string;
@@ -72,8 +72,8 @@ vi.mock("../../state/session", () => ({
 vi.mock("../../state/presentation", () => ({
   connectedEnvironmentIdsAtom: "connected-environments",
 }));
-vi.mock("../../state/projects", () => ({
-  environmentProjects: { projectsAtom: "projects" },
+vi.mock("../../state/promachos-home", () => ({
+  promachosHomeRefsAtom: "promachos-home-refs",
 }));
 vi.mock("../../state/server", () => ({
   environmentServerConfigsAtom: "server-configs",
@@ -93,8 +93,8 @@ vi.mock("../../state/atom-registry", async () => {
             ? state.holdingRows
             : atom === "thread-shells"
               ? state.shells
-              : atom === "projects"
-                ? state.projects
+              : atom === "promachos-home-refs"
+                ? state.promachosHomeRefs
                 : atom === "queued-thread-keys"
                   ? new Set<string>()
                   : new Map(
@@ -207,21 +207,6 @@ function makeThread(input: Partial<EnvironmentThreadShell> = {}): EnvironmentThr
   });
 }
 
-function makeProject(input: Partial<EnvironmentProject> = {}): EnvironmentProject {
-  return {
-    id: ProjectId.make("project"),
-    environmentId: primaryEnvironmentId,
-    title: "Project",
-    workspaceRoot: "/workspaces/project",
-    repositoryIdentity: null,
-    defaultModelSelection: null,
-    scripts: [],
-    createdAt: "2026-06-01T00:00:00.000Z",
-    updatedAt: "2026-06-01T00:00:00.000Z",
-    ...input,
-  };
-}
-
 const mutationCases = [
   ["archiveThread", "archive"],
   ["settleThread", "settle"],
@@ -248,7 +233,7 @@ beforeEach(() => {
   ]);
   state.requests = [];
   state.shells = [];
-  state.projects = [];
+  state.promachosHomeRefs = [];
   state.dialogs = [];
   state.alerts = [];
   state.afterRequest = undefined;
@@ -687,16 +672,17 @@ describe("thread archive guard", () => {
   });
 });
 
-describe("No project arrangement actions", () => {
+describe("Promachos shelf arrangement actions", () => {
+  const home = { environmentId: primaryEnvironmentId, projectId: ProjectId.make("project") };
   it.each([
     { state: { pinnedAt: "2026-09-02T00:00:00.000Z" }, action: "unpin" },
     { state: { settledOverride: "settled" as const }, action: "unsettle" },
     { state: { snoozedUntil: "2099-01-01T00:00:00.000Z" }, action: "unsnooze" },
   ])(
-    "returns a scratch thread with $action without writing positional keys",
+    "returns a Promachos thread with $action without writing positional keys",
     async ({ state: parked, action }) => {
       const moved = makeThread(parked);
-      state.projects = [makeProject({ isScratch: true })];
+      state.promachosHomeRefs = [home];
       state.shells = [
         moved,
         makeThread({ id: ThreadId.make("active"), projectId: ProjectId.make("regular") }),
@@ -724,12 +710,9 @@ describe("No project arrangement actions", () => {
     },
   );
 
-  it("preserves Active ordering when only another environment marks the same project ID scratch", async () => {
+  it("preserves Active ordering when only another environment has the same project ID as its Promachos home", async () => {
     const moved = makeThread({ pinnedAt: "2026-09-02T00:00:00.000Z" });
-    state.projects = [
-      makeProject(),
-      makeProject({ environmentId: otherEnvironmentId, isScratch: true }),
-    ];
+    state.promachosHomeRefs = [{ ...home, environmentId: otherEnvironmentId }];
     state.shells = [moved, makeThread({ id: ThreadId.make("active"), activeOrderKey: "m" })];
 
     expect(

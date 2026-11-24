@@ -229,6 +229,10 @@ vi.mock("../../state/threads", async () => {
   };
 });
 vi.mock("../../state/entities", () => ({ useProjects: () => [] }));
+vi.mock("../../state/promachos-home", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return { promachosHomeRefsAtom: Atom.make([]) };
+});
 vi.mock("../../state/workspace", () => ({
   useWorkspaceState: () => ({ environments: [], state: { hasConnections: true } }),
 }));
@@ -285,7 +289,7 @@ vi.mock("../threads/use-thread-list-v2-shelf-preferences", () => ({
     workingShelfEnabled: false,
     settledShelfExpanded: true,
     snoozedShelfExpanded: true,
-    noProjectShelfExpanded: true,
+    promachosShelfExpanded: true,
   }),
 }));
 vi.mock("../keyboard/threadKeyboardShortcuts", () => ({ useThreadJumpShortcuts: () => undefined }));
@@ -308,7 +312,7 @@ vi.mock("../threads/thread-list-v2-items", () => ({
   ThreadListV2SettledShelfHeader: () => null,
   ThreadListV2ShowMoreRow: () => null,
   ThreadListV2SnoozedShelfHeader: () => null,
-  ThreadListV2NoProjectShelfHeader: () => null,
+  ThreadListV2PromachosShelfHeader: () => null,
   ThreadListV2WorkingShelfHeader: () => null,
 }));
 

@@ -8,8 +8,8 @@ export function useThreadListV2ShelfPreferences() {
   const preferencesResult = useAtomValue(mobilePreferencesAtom);
   const savePreferences = useAtomCommand(saveMobilePreferences);
   const loaded = AsyncResult.isSuccess(preferencesResult);
-  const noProjectShelfExpanded =
-    loaded && preferencesResult.value.threadListNoProjectShelfExpanded === true;
+  const promachosShelfExpanded =
+    loaded && preferencesResult.value.threadListPromachosShelfExpanded === true;
   const snoozedShelfExpanded =
     loaded && preferencesResult.value.threadListSnoozedShelfExpanded === true;
   const settledShelfExpanded =
@@ -19,11 +19,11 @@ export function useThreadListV2ShelfPreferences() {
     loaded && preferencesResult.value.threadListWorkingShelfExpanded === true;
 
   // Transforms read optimistic state so same-frame presses toggle twice.
-  const toggleNoProjectShelf = () => {
+  const togglePromachosShelf = () => {
     if (!loaded) return;
     savePreferences({
       transform: (current) => ({
-        threadListNoProjectShelfExpanded: current.threadListNoProjectShelfExpanded !== true,
+        threadListPromachosShelfExpanded: current.threadListPromachosShelfExpanded !== true,
       }),
     });
   };
@@ -54,12 +54,12 @@ export function useThreadListV2ShelfPreferences() {
 
   return {
     loaded,
-    noProjectShelfExpanded,
+    promachosShelfExpanded,
     settledShelfExpanded,
     snoozedShelfExpanded,
     workingShelfEnabled,
     workingShelfExpanded,
-    toggleNoProjectShelf,
+    togglePromachosShelf,
     toggleSettledShelf,
     toggleSnoozedShelf,
     toggleWorkingShelf,

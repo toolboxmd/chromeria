@@ -5,7 +5,10 @@ import { Button } from "../../components/ui/Button";
 import { openSettings } from "../settings/settings-navigation";
 import { useAtomValue } from "@effect/atom-react";
 import { useIsFocused } from "@react-navigation/native";
-import { promachosConversations } from "@t3tools/client-runtime/promachos/conversations";
+import {
+  promachosConversationGroups,
+  promachosConversations,
+} from "@t3tools/client-runtime/promachos/conversations";
 import {
   createEnvironmentRpcCommand,
   isAtomCommandInterrupted,
@@ -21,7 +24,7 @@ import {
 } from "@t3tools/contracts";
 import { useGT } from "gt-react-native";
 import { AsyncResult } from "effect/reactivity";
-import { use, useEffect } from "react";
+import { use, useEffect, useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -30,18 +33,26 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListSection } from "../../components/ui/ListSection";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { connectionAtomRuntime } from "../../connection/runtime";
-import { useNowMinuteMs } from "../../lib/clock";
+import { useNowAfter, useNowMinuteMs } from "../../lib/clock";
 import { useProjects, useServerConfigs, useVisibleThreadShells } from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
+import { threadListEnvironmentsAtom } from "../../state/presentation";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { savedConnectionsByIdAtom } from "../../state/use-remote-environment-registry";
 import { useAdaptiveWorkspaceLayout } from "../layout/adaptive-workspace-context";
+import { useThreadListActions } from "../home/useThreadListActions";
+import {
+  ThreadListV2SettledShelfHeader,
+  ThreadListV2SnoozedShelfHeader,
+} from "../threads/thread-list-v2-items";
+import { nextSnoozeWakeAfter } from "../threads/threadListV2";
 import { useSelectWorkspaceDetail } from "../layout/workspace/useSelectWorkspaceDetail";
 import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
 import { NativeWorkspaceTabActivityContext } from "../../native/v5-workspace-context";
 import { PromachosConversationRow } from "./PromachosConversationRow";
+import { PromachosConversationSwipe } from "./PromachosConversationSwipe";
 import { usePromachosHome } from "./promachosHome";
 
 const createHome = createEnvironmentRpcCommand(connectionAtomRuntime, {
@@ -85,23 +96,69 @@ function PromachosConversationList(props: { readonly homeRefs: ReadonlyArray<Sco
   const conversations = promachosConversations(useVisibleThreadShells(), props.homeRefs);
   const selectDetail = useSelectWorkspaceDetail();
   const nowMs = useNowMinuteMs();
+  // A snooze ends between minute ticks; re-partition then.
+  const wakeMs = useNowAfter(nextSnoozeWakeAfter(conversations, nowMs));
+  const { settlementEnvironmentIds, snoozePresetsByEnvironmentId } = useAtomValue(
+    threadListEnvironmentsAtom,
+  );
+  const groups = promachosConversationGroups(conversations, {
+    now: new Date(Math.max(nowMs, wakeMs)).toISOString(),
+    supports: (environmentId) => settlementEnvironmentIds.has(environmentId),
+  });
+  const actions = useThreadListActions();
+  const [expanded, setExpanded] = useState({ snoozed: false, settled: false });
   useForgetConversationOnList();
-  return conversations.length === 0 ? (
-    <Text className="px-4 py-3 text-foreground-secondary">{gt("No conversations yet.")}</Text>
-  ) : (
-    conversations.map((thread) => (
-      <PromachosConversationRow
+  const rows = (group: "active" | "snoozed" | "settled") =>
+    groups[group].map((thread) => (
+      <PromachosConversationSwipe
         key={`${thread.environmentId}:${thread.id}`}
         thread={thread}
+        group={group}
+        supported={settlementEnvironmentIds.has(thread.environmentId)}
+        snoozePresets={snoozePresetsByEnvironmentId.get(thread.environmentId)}
         nowMs={nowMs}
-        onPress={() =>
-          selectDetail({
-            name: "Thread",
-            params: { environmentId: thread.environmentId, threadId: thread.id },
-          })
-        }
-      />
-    ))
+        actions={actions}
+      >
+        <PromachosConversationRow
+          thread={thread}
+          nowMs={nowMs}
+          onPress={() =>
+            selectDetail({
+              name: "Thread",
+              params: { environmentId: thread.environmentId, threadId: thread.id },
+            })
+          }
+        />
+      </PromachosConversationSwipe>
+    ));
+  return (
+    <>
+      {groups.active.length === 0 ? (
+        <Text className="px-4 py-3 text-foreground-secondary">{gt("No conversations yet.")}</Text>
+      ) : (
+        rows("active")
+      )}
+      {(["snoozed", "settled"] as const).map((group) =>
+        groups[group].length === 0 ? null : (
+          <View key={group}>
+            {group === "snoozed" ? (
+              <ThreadListV2SnoozedShelfHeader
+                count={groups.snoozed.length}
+                expanded={expanded.snoozed}
+                onToggle={() => setExpanded({ ...expanded, snoozed: !expanded.snoozed })}
+              />
+            ) : (
+              <ThreadListV2SettledShelfHeader
+                count={groups.settled.length}
+                expanded={expanded.settled}
+                onToggle={() => setExpanded({ ...expanded, settled: !expanded.settled })}
+              />
+            )}
+            {expanded[group] ? rows(group) : null}
+          </View>
+        ),
+      )}
+    </>
   );
 }
 

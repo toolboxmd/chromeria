@@ -9,6 +9,7 @@ import {
   deriveLogicalProjectKeyFromSettings,
   type ProjectGroupingSettings,
 } from "../state/projectGrouping.ts";
+import { effectiveSnoozed, type ThreadSnoozeShell } from "../state/threadSettled.ts";
 
 type HomeProject = Pick<
   EnvironmentProject,
@@ -128,6 +129,33 @@ export function promachosConversations<
   return threads
     .filter((thread) => isInPromachosHome(thread, homeRefs) && isThreadVisibleInNavigation(thread))
     .sort((left, right) => lastActivityMs(right) - lastActivityMs(left));
+}
+
+/**
+ * Promachos mode's list: a conversation the user snoozed or settled leaves it for its own group,
+ * as in the thread list, and returns when it wakes or is un-settled. `supports` is false for an
+ * environment whose server has not answered yet; its conversations stay listed.
+ */
+export function promachosConversationGroups<
+  T extends ThreadSnoozeShell & Pick<EnvironmentThreadShell, "environmentId" | "settledOverride">,
+>(
+  conversations: ReadonlyArray<T>,
+  options: {
+    readonly now: string;
+    readonly supports: (environmentId: EnvironmentId) => boolean;
+  },
+): { readonly active: T[]; readonly snoozed: T[]; readonly settled: T[] } {
+  const groups = { active: [] as T[], snoozed: [] as T[], settled: [] as T[] };
+  for (const conversation of conversations) {
+    const supported = options.supports(conversation.environmentId);
+    (supported && effectiveSnoozed(conversation, options)
+      ? groups.snoozed
+      : supported && conversation.settledOverride === "settled"
+        ? groups.settled
+        : groups.active
+    ).push(conversation);
+  }
+  return groups;
 }
 
 function lastActivityMs(thread: {

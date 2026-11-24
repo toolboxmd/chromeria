@@ -50,8 +50,8 @@ export function useThreadListV2(input: {
   readonly threads: LayoutInput["threads"];
   /** The threads navigation tracks: inbox returns and move availability read these. */
   readonly navigationThreads: LayoutInput["threads"];
-  /** Scratch projects group their threads in the No project shelf. */
-  readonly projects: LayoutInput["projects"];
+  /** The Promachos home's projects, whose threads sit in his shelf. */
+  readonly promachosHomeRefs: LayoutInput["promachosHomeRefs"];
   readonly pendingTasks: ReadonlyArray<PendingNewTask>;
   readonly environmentId: EnvironmentId | null;
   readonly projectRefs: LayoutInput["projectRefs"];
@@ -69,7 +69,7 @@ export function useThreadListV2(input: {
   readonly shelfPreferencesLoaded: boolean;
   readonly workingShelfEnabled: boolean;
   readonly workingShelfExpanded: boolean;
-  readonly noProjectShelfExpanded: boolean;
+  readonly promachosShelfExpanded: boolean;
   readonly snoozedShelfExpanded: boolean;
   readonly settledShelfExpanded: boolean;
   readonly selectedThreadKey: string | null;
@@ -99,7 +99,7 @@ export function useThreadListV2(input: {
           section === "pinned" ? input.pinReorderEnvironmentIds : input.activeReorderEnvironmentIds,
         ordered: getThreadListV2OrderedSection({
           threads,
-          projects: input.projects,
+          promachosHomeRefs: input.promachosHomeRefs,
           section,
           pendingOrder: input.pendingOrder,
           now: layoutTime,
@@ -115,7 +115,7 @@ export function useThreadListV2(input: {
   }, [
     threads,
     navigationThreads,
-    input.projects,
+    input.promachosHomeRefs,
     input.pendingOrder,
     input.pinReorderEnvironmentIds,
     input.activeReorderEnvironmentIds,
@@ -146,8 +146,8 @@ export function useThreadListV2(input: {
     () =>
       buildThreadListV2Items({
         pendingOrder: input.pendingOrder,
-        projects: input.projects,
-        noProjectShelfExpanded: input.noProjectShelfExpanded,
+        promachosHomeRefs: input.promachosHomeRefs,
+        promachosShelfExpanded: input.promachosShelfExpanded,
         threads:
           input.searchQuery.trim().length === 0
             ? navigationThreads
@@ -182,8 +182,8 @@ export function useThreadListV2(input: {
         ),
       }),
     [
-      input.noProjectShelfExpanded,
-      input.projects,
+      input.promachosShelfExpanded,
+      input.promachosHomeRefs,
       input.pendingOrder,
       threads,
       navigationThreads,
@@ -232,9 +232,9 @@ export function useThreadListV2(input: {
     () =>
       buildThreadListV2ListItems({
         items: layout.items,
-        noProjectCount: layout.noProjectCount,
-        noProjectShelfExpanded: input.noProjectShelfExpanded || input.searchQuery.trim().length > 0,
-        noProjectShelfHeaderIndex: layout.noProjectShelfHeaderIndex,
+        promachosCount: layout.promachosCount,
+        promachosShelfExpanded: input.promachosShelfExpanded || input.searchQuery.trim().length > 0,
+        promachosShelfHeaderIndex: layout.promachosShelfHeaderIndex,
         pendingTasks,
         workingCount: layout.workingCount,
         workingShelfExpanded: input.workingShelfExpanded,
@@ -255,7 +255,7 @@ export function useThreadListV2(input: {
     [
       layout,
       pendingTasks,
-      input.noProjectShelfExpanded,
+      input.promachosShelfExpanded,
       input.searchQuery,
       input.workingShelfExpanded,
       input.snoozedShelfExpanded,

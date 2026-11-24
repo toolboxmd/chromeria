@@ -878,3 +878,5 @@ apps/server/src/orchestration-v2/CheckpointCaptureService.ts
 apps/server/src/vcs/VcsProcess.test.ts
 apps/server/src/vcs/VcsProcess.ts
 packages/provider-muse/src/server/adapter.test.ts
+apps/web/src/hooks/useThreadActionMenu.ts
+apps/web/src/components/Sidebar.browser.test.tsx

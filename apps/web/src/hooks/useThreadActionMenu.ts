@@ -64,13 +64,15 @@ function failureToast(title: string, error: unknown) {
 }
 
 export function useThreadActionMenu(input: {
+  /** The thread `openMenu` acts on; a list passes null and names its row to `openMenu`. */
   readonly threadRef: ScopedThreadRef | null;
   readonly projectCwd: string | null;
-  readonly onStartRename: () => void;
+  /** Omitted where no inline title editor is rendered. */
+  readonly onStartRename?: (() => void) | undefined;
   readonly onFind?: ((threadRef: ScopedThreadRef) => void) | undefined;
   readonly canShareWithGuest: boolean;
 }) {
-  const { threadRef, projectCwd, onStartRename, onFind, canShareWithGuest } = input;
+  const { projectCwd, onStartRename, onFind, canShareWithGuest } = input;
   const router = useRouter();
   const projects = useProjects();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -115,7 +117,12 @@ export function useThreadActionMenu(input: {
     onError: (error) => failureToast(m(msg("Failed to copy thread ID")), error),
   });
 
-  const openMenu = (position: { x: number; y: number }, source?: ContextMenuSource) => {
+  const openMenu = (
+    position: { x: number; y: number },
+    source?: ContextMenuSource,
+    target?: ScopedThreadRef,
+  ) => {
+    const threadRef = target ?? input.threadRef;
     if (threadRef === null) return;
     void (async () => {
       const api = readLocalApi();
@@ -142,6 +149,7 @@ export function useThreadActionMenu(input: {
       const items = buildThreadActionMenuItems({
         canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
         canFind: onFind !== undefined,
+        canRename: onStartRename !== undefined,
         branch: thread.branch ?? null,
         projectFilter: null,
         isPinned: thread.pinnedAt != null,
@@ -256,7 +264,7 @@ export function useThreadActionMenu(input: {
           );
           return;
         case "rename":
-          onStartRename();
+          onStartRename?.();
           return;
         case "regenerate-title": {
           if (isRegeneratingTitle) return;
@@ -292,7 +300,14 @@ export function useThreadActionMenu(input: {
           return;
         }
         case "copy-path": {
-          const workspacePath = thread.worktreePath ?? projectCwd;
+          const workspacePath =
+            thread.worktreePath ??
+            projectCwd ??
+            projects.find(
+              (candidate) =>
+                candidate.environmentId === thread.environmentId &&
+                candidate.id === thread.projectId,
+            )?.workspaceRoot;
           if (!workspacePath) {
             toastManager.add(
               stackedThreadToast({
