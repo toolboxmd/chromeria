@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import { CommandId, MessageId, ScheduledTaskId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { listTaskRuns } from "./runs.ts";
@@ -144,7 +145,24 @@ it.effect("lists a plain task's runs from the messages the scheduler sent for it
       completedAt: "2026-11-24T08:01:00.000Z",
     });
 
-    assert.deepStrictEqual((yield* listTaskRuns(taskId)).runs, [
+    yield* insertSend({
+      messageId: "scheduled-task-message:manual:other",
+      threadId: "thread:open",
+      task: `${taskId}:other`,
+      status: "completed",
+      requestedAt: "2026-11-24T08:00:00.000Z",
+      completedAt: "2026-11-24T08:01:00.000Z",
+    });
+
+    const statements: Array<ReturnType<Statement.Statement<unknown>["compile"]>> = [];
+    const observe: Statement.Transformer = (statement) => {
+      statements.push(statement.compile());
+      return Effect.succeed(statement);
+    };
+    const result = yield* listTaskRuns(taskId).pipe(
+      Effect.provideService(Statement.CurrentTransformer, observe),
+    );
+    assert.deepStrictEqual(result.runs, [
       {
         id: "scheduled-task-message:manual:abc",
         startedAt: "2026-11-23T08:00:00.000Z",
@@ -170,6 +188,19 @@ it.effect("lists a plain task's runs from the messages the scheduler sent for it
         summary: null,
       },
     ]);
+    const runLookup = statements.find(([query]) =>
+      query.includes("FROM orchestration_v2_projection_messages message"),
+    );
+    assert.isDefined(runLookup);
+    const [query, params] = runLookup;
+    const sql = yield* SqlClient.SqlClient;
+    const plan = (yield* sql.unsafe<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, params))
+      .map(({ detail }) => detail)
+      .join("\n");
+    assert.include(
+      plan,
+      "SEARCH message USING INDEX fork_scheduled_task_messages_task_idx (<expr>=?",
+    );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
