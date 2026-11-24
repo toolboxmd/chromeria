@@ -237,8 +237,31 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
    * reaches the new run. A recovered step needs none; `launched` marks a dispatched command.
    */
   const admissions = new Map<string, { launched: boolean }>();
-  const store = (previous: CheckState, next: CheckState) =>
-    writeCheckState(previous, compact(next)).pipe(Effect.tap(() => deps.changed));
+  const store = (
+    previous: CheckState,
+    next: CheckState,
+    destination?: Pick<ScheduledTask, "projectId" | "createdAt">,
+  ) => {
+    const write = writeCheckState(previous, compact(next));
+    // New work and a project move exclude each other at the write. The earlier
+    // snapshot check can race certificate capture or Prism's role selection.
+    const recorded =
+      destination === undefined
+        ? write
+        : sql.withTransaction(
+            Effect.gen(function* () {
+              const current = yield* sql`
+                SELECT 1 FROM scheduled_tasks
+                WHERE task_id = ${next.taskId} AND project_id = ${destination.projectId}
+                  AND created_at = ${destination.createdAt}
+              `;
+              if (current.length === 0)
+                return yield* fail("The task moved or was replaced while the run was starting.");
+              return yield* write;
+            }),
+          );
+    return recorded.pipe(Effect.tap(() => deps.changed));
+  };
 
   /** A bound report needs the user, so the run does (D40); its check is not run until it releases. */
   const reportNeedsYou = (state: CheckState, run: CheckedRun, reason: string) => {
@@ -255,19 +278,29 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
     });
   };
 
-  const retry = (state: CheckState, run: CheckedRun, error: string, now: number) => {
+  const retry = (
+    state: CheckState,
+    run: CheckedRun,
+    error: string,
+    now: number,
+    destination?: Pick<ScheduledTask, "projectId" | "createdAt">,
+  ) => {
     const delay = RECOVERY_DELAYS_MS[run.attempt];
-    return store(state, {
-      ...replaceRun(state, {
-        ...run,
-        error,
-        stage: delay === undefined ? "needs-you" : "retry",
-        attempt: run.attempt + 1,
-        retryAt: delay === undefined ? null : iso(now + delay),
-      }),
-      failureStreak: state.failureStreak + 1,
-      lastError: error,
-    });
+    return store(
+      state,
+      {
+        ...replaceRun(state, {
+          ...run,
+          error,
+          stage: delay === undefined ? "needs-you" : "retry",
+          attempt: run.attempt + 1,
+          retryAt: delay === undefined ? null : iso(now + delay),
+        }),
+        failureStreak: state.failureStreak + 1,
+        lastError: error,
+      },
+      destination,
+    );
   };
 
   /** Sends exactly the recorded send; a failure turns into a delayed retry. */
@@ -299,7 +332,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
     const launching = task.threadId === null && (index === 0 || threadMissing);
     const picked = yield* deps.role(state, task, launching).pipe(Effect.result);
     if (picked._tag === "Failure") {
-      const failed = yield* retry(state, run, picked.failure.message, now);
+      const failed = yield* retry(state, run, picked.failure.message, now, task);
       return { _tag: "refused", state: failed, error: picked.failure } as const;
     }
     const role = picked.success;
@@ -361,7 +394,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
       retryAt: null,
       sends: [...run.sends, send],
     };
-    const stored = yield* store(state, replaceRun(state, next));
+    const stored = yield* store(state, replaceRun(state, next), task);
     return { _tag: "recorded", state: stored, run: next, send } as const;
   });
 
@@ -692,7 +725,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
             const withRun: CheckState = { ...state, runs: [...state.runs, run] };
             if (state.kind === "command") {
               // Stored as running before anything is spawned: a restart never runs it twice.
-              yield* store(state, withRun);
+              yield* store(state, withRun, task);
               return fork(launchCommand(task, run, state.command!, admit(run.id)), run);
             }
             const started = yield* startSend(task, withRun, run, now);

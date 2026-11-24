@@ -41,6 +41,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+import { CurrentTransformer } from "effect/sql/Statement";
 import * as TestClock from "effect/testing/TestClock";
 
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -2372,6 +2373,65 @@ it.effect("a checked run must settle before its task can move to a different pro
       assert.equal(moved.task.projectId, destination);
       assert.equal(moved.task.id, task.id);
       assert.deepEqual(yield* readCheckState(task.id), settled);
+    }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("a page move wins over a command admission that still has the old project", () =>
+  Effect.gen(function* () {
+    const database = yield* tempDatabase;
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const sql = yield* SqlClient.SqlClient;
+      const destination = ProjectId.make("project:moved-during-admission");
+      yield* sql`
+        INSERT INTO projection_projects
+          (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES (${destination}, 'Destination', '/projects/moved', '[]', ${CANONICAL}, ${CANONICAL})
+      `;
+      const input = {
+        title: "Checked command",
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
+        prompt: "Review",
+        enabled: true,
+        projectId,
+        threadId: null,
+        workspaceStrategy: { type: "root" },
+        modelSelection: selection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        schedule: { type: "interval", everyMs: 3_600_000 },
+      } as const;
+      const { task } = yield* service.upsert(input);
+      const state = yield* writeCheckState(null, {
+        ...checkState(task.id),
+        kind: "command",
+        command: "true",
+        checks: [],
+      });
+      const checkedSnapshot = yield* Deferred.make<void>();
+      const continueAdmission = yield* Deferred.make<void>();
+      const starting = yield* service.runNow({ id: task.id }).pipe(
+        Effect.provideService(CurrentTransformer, (statement, _sql, _fiber, span) =>
+          Option.isSome(span.parent) &&
+          span.parent.value._tag === "Span" &&
+          span.parent.value.name === "DestinationAutomationAuthority.currentAutomationCertificate"
+            ? Deferred.succeed(checkedSnapshot, undefined).pipe(
+                Effect.andThen(Deferred.await(continueAdmission)),
+                Effect.as(statement),
+              )
+            : Effect.succeed(statement),
+        ),
+        Effect.result,
+        Effect.forkScoped,
+      );
+      yield* Deferred.await(checkedSnapshot);
+      const moved = yield* service.upsert({ ...input, id: task.id, projectId: destination });
+      assert.equal(moved.task.projectId, destination);
+      yield* Deferred.succeed(continueAdmission, undefined);
+      const result = yield* Fiber.join(starting);
+      assert.equal(result._tag, "Failure");
+      assert.deepEqual(yield* readCheckState(task.id), state);
     }).pipe(Effect.provide(runtime(database)), Effect.scoped);
   }).pipe(Effect.scoped),
 );
