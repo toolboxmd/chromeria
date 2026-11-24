@@ -4031,3 +4031,18 @@ sources and reasons.
   "keywords": ["legacyWaiting", "stoppedNow", "settlesRun"]
 }
 ```
+
+## checkpoint-restore-lock-retry
+
+```json
+{
+  "id": "checkpoint-restore-lock-retry",
+  "purpose": "Checkpoint restore retries a Git command that found index.lock held, as capture does. Upstream #41634 swaps a new worktree's refreshed index in the background and holds index.lock for the swap, so a rewind that recreates a task folder can fail its restore. Drop when upstream retries restore or the swap stops contending with it.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/940"],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...fix/940-task-folder-rewind-lock"],
+  "newFiles": [],
+  "upstreamFiles": ["apps/server/src/vcs/VcsProcess.ts", "apps/server/src/vcs/VcsProcess.test.ts"],
+  "sharedFiles": [],
+  "keywords": ["RETRIED_GIT_OPERATIONS", "restoreCheckpoint", "index.lock"]
+}
+```

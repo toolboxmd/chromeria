@@ -874,3 +874,5 @@ apps/server/src/workflows/WorkflowAgentLinks.test.ts
 apps/server/src/workflows/WorkflowAgentLinks.ts
 apps/server/src/workflows/WorkflowAgentThreads.ts
 apps/server/src/orchestration-v2/CheckpointCaptureService.ts
+apps/server/src/vcs/VcsProcess.test.ts
+apps/server/src/vcs/VcsProcess.ts
