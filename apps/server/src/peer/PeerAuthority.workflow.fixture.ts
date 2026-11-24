@@ -3629,7 +3629,8 @@ export const credentialFills = () =>
     .flatMap((context) => context.effects)
     .filter((e) => e === "credential-fill").length;
 
-vi.mock("../preview/ServerBrowserContexts.ts", () => ({
+vi.mock("../preview/ServerBrowserContexts.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../preview/ServerBrowserContexts.ts")>()),
   presentAsChrome: async () => {},
   ServerBrowserContexts: class {
     private readonly options: {

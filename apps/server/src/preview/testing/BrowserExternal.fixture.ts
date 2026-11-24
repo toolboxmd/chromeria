@@ -77,6 +77,14 @@ export function makeExternalBrowserContext(onClose?: (context: BrowserContext) =
       method: string,
       params?: Record<string, unknown>,
     ): Promise<Record<string, unknown>> => {
+      if (
+        (method === "Emulation.setVisibleSize" ||
+          method === "Emulation.setDeviceMetricsOverride") &&
+        typeof params?.width === "number" &&
+        typeof params.height === "number"
+      ) {
+        await page.setViewportSize({ width: params.width, height: params.height });
+      }
       if (method.startsWith("Input.")) {
         inputs.push({ method, params });
         await controls.afterInput(method);

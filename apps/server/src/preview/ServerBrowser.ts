@@ -120,7 +120,16 @@ import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import { ServerCookieMirrorProfiles } from "./ServerCookieMirrorProfiles.ts";
 import { ServerCookieMirror } from "./ServerCookieMirror.ts";
 import { ServerLoginCookies } from "./ServerLoginCookies.ts";
-import { presentAsChrome, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
+import {
+  agentColorScheme,
+  presentAsChrome,
+  previewViewportSize,
+  previewViewportZoom,
+  RENDER_SCALE,
+  resizeAgentViewport,
+  ServerBrowserContexts,
+  viewportAtZoom,
+} from "./ServerBrowserContexts.ts";
 import { PageWatchStore } from "./PageWatchStore.ts";
 import { installPageWatch } from "./ServerBrowserWatch.ts";
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
@@ -133,7 +142,6 @@ const SavedProfilesJson = Schema.fromJsonString(
 );
 const decodeSavedProfiles = Schema.decodeUnknownEffect(SavedProfilesJson);
 const encodeSavedProfiles = Schema.encodeSync(SavedProfilesJson);
-const RENDER_SCALE = 2;
 // Chromium allows three unacked frames, so 100 ms pacing caps viewers near 30 fps.
 const SCREENCAST_ACK_PACE_MS = 100;
 const SCREENCAST_SETTLE_MS = 200;
@@ -475,7 +483,7 @@ interface ServerTab {
   dialog: Dialog | null;
   setting: PreviewViewportSetting;
   colorScheme: PreviewAppearancePreference;
-  zoomFactor: number;
+  appliedColorScheme: "light" | "dark" | null | undefined;
   /** Last usable CSS size measured on the desktop. */
   desktopViewport: { readonly width: number; readonly height: number } | null;
   desktopViewportRead: Promise<ServerTab["desktopViewport"]>;
@@ -1130,12 +1138,8 @@ const make = Effect.gen(function* () {
         ? tab.desktopViewport
         : ((await measureDesktopViewport(tab)) ?? tab.desktopViewport);
     }
-    const size = tab.page.viewportSize();
-    if (!size) return size;
-    return {
-      width: Math.max(1, Math.round(size.width / tab.zoomFactor)),
-      height: Math.max(1, Math.round(size.height / tab.zoomFactor)),
-    };
+    const size = previewViewportSize(tab.page);
+    return size && viewportAtZoom(size, previewViewportZoom(tab.page));
   };
 
   // Page resizes and loads mark the size stale; only then does status read the page. One
@@ -1145,23 +1149,6 @@ const make = Effect.gen(function* () {
     await (tab.desktopViewportStale || tab.dialog ? layoutSize(tab) : tab.desktopViewportRead);
     if (tab.desktopViewportChanges !== changes) await layoutSize(tab);
     return tab.desktopViewport;
-  };
-
-  const applyZoom = async (tab: ServerTab) => {
-    if (tab.desktop) return;
-    const size = tab.page.viewportSize();
-    if (!size) return;
-    if (tab.zoomFactor === 1) {
-      await tab.page.setViewportSize(size);
-      return;
-    }
-    const layout = (await layoutSize(tab))!;
-    await tab.cdp.send("Emulation.setDeviceMetricsOverride", {
-      width: layout.width,
-      height: layout.height,
-      deviceScaleFactor: RENDER_SCALE * tab.zoomFactor,
-      mobile: false,
-    });
   };
 
   const broadcastViewport = async (tab: ServerTab) => {
@@ -1186,9 +1173,12 @@ const make = Effect.gen(function* () {
         .filter((requested) => requested !== null)
         .sort((left, right) => right.order - left.order)[0] ??
       UNATTACHED_FILL_VIEWPORT;
-    await tab.page.setViewportSize({ width: size.width, height: size.height });
-    await authorize();
-    await applyZoom(tab);
+    await resizeAgentViewport(
+      tab.page,
+      tab.cdp,
+      { width: size.width, height: size.height },
+      previewViewportZoom(tab.page),
+    );
     await broadcastViewport(tab);
   };
 
@@ -1200,15 +1190,28 @@ const make = Effect.gen(function* () {
   ) => {
     await authorize();
     const colorScheme = snapshot.colorScheme ?? "system";
-    if (colorScheme !== tab.colorScheme) {
-      tab.colorScheme = colorScheme;
-      await tab.page.emulateMedia({ colorScheme: colorScheme === "system" ? null : colorScheme });
+    // Playwright starts in light mode. Native tabs on System follow the desktop's scheme.
+    const appliedColorScheme =
+      colorScheme === "system"
+        ? tab.desktop
+          ? null
+          : agentColorScheme(new Date().getHours())
+        : colorScheme;
+    if (appliedColorScheme !== tab.appliedColorScheme) {
+      await tab.page.emulateMedia({ colorScheme: appliedColorScheme });
+      tab.appliedColorScheme = appliedColorScheme;
     }
+    tab.colorScheme = colorScheme;
     const zoomFactor = snapshot.zoomFactor ?? 1;
-    if (zoomFactor !== tab.zoomFactor && !tab.desktop) {
+    const previousZoom = previewViewportZoom(tab.page);
+    if (zoomFactor !== previousZoom && !tab.desktop) {
       await authorize();
-      tab.zoomFactor = zoomFactor;
-      await applyZoom(tab);
+      await resizeAgentViewport(
+        tab.page,
+        tab.cdp,
+        previewViewportSize(tab.page) ?? UNATTACHED_FILL_VIEWPORT,
+        zoomFactor,
+      );
       await broadcastViewport(tab);
     }
   };
@@ -1364,8 +1367,6 @@ const make = Effect.gen(function* () {
         adopted === undefined && (await desktopRenders(snapshot))
           ? await connectDesktop(snapshot)
           : null;
-      // Attaching over CDP emulates a light scheme; a tab on System follows the desktop's.
-      if (desktop) await desktop.page.emulateMedia({ colorScheme: null });
       // Otherwise a desktop that attaches late, or has no channel to draw it, shows its own page.
       if (!desktop) {
         await runPromise(
@@ -1443,7 +1444,7 @@ const make = Effect.gen(function* () {
         dialog: null,
         setting: snapshot.viewport ?? FILL_PREVIEW_VIEWPORT,
         colorScheme: "system",
-        zoomFactor: 1,
+        appliedColorScheme: undefined,
         desktopViewport: null,
         desktopViewportRead: Promise.resolve(null),
         desktopViewportNext: null,
@@ -1478,7 +1479,12 @@ const make = Effect.gen(function* () {
       });
       if (!desktop) {
         await authorize();
-        await page.setViewportSize(fixedViewportSize(tab.setting) ?? UNATTACHED_FILL_VIEWPORT);
+        await resizeAgentViewport(
+          page,
+          cdp,
+          fixedViewportSize(tab.setting) ?? UNATTACHED_FILL_VIEWPORT,
+          1,
+        );
       }
       await applyRendering(tab, snapshot, authorize);
       if (desktop) {
@@ -2689,7 +2695,7 @@ const make = Effect.gen(function* () {
       // A late measurement still lands in desktopViewport for the next status.
       tab.desktop
         ? withinStatusDeadline(desktopStatusViewport(tab), () => tab.desktopViewport)
-        : tab.page.viewportSize(),
+        : previewViewportSize(tab.page),
       statusUrl === null || tab.dialog
         ? null
         : withinStatusDeadline(
@@ -2843,7 +2849,10 @@ const make = Effect.gen(function* () {
         await encoder.evaluate(
           ([data, width]) =>
             (globalThis as unknown as EncoderWindow).__t3Recorder.frame(data, width),
-          [firstFrame, tab.page.viewportSize()?.width ?? UNATTACHED_FILL_VIEWPORT.width] as const,
+          [
+            firstFrame,
+            previewViewportSize(tab.page)?.width ?? UNATTACHED_FILL_VIEWPORT.width,
+          ] as const,
         );
         await authorize();
         const opened = await tab.page.context().newCDPSession(tab.page);
@@ -2876,7 +2885,7 @@ const make = Effect.gen(function* () {
           void opened
             .send("Page.screencastFrameAck", { sessionId: frame.sessionId })
             .catch(constVoid);
-          const cssWidth = tab.page.viewportSize()?.width ?? frame.metadata.deviceWidth;
+          const cssWidth = previewViewportSize(tab.page)?.width ?? frame.metadata.deviceWidth;
           const delivering = framesInFlight.size > 0;
           pendingFrame = [frame.data, cssWidth];
           if (delivering) return;
@@ -2965,7 +2974,7 @@ const make = Effect.gen(function* () {
                   (globalThis as unknown as EncoderWindow).__t3Recorder.frame(data, width),
                 [
                   finalFrame,
-                  tab.page.viewportSize()?.width ?? UNATTACHED_FILL_VIEWPORT.width,
+                  previewViewportSize(tab.page)?.width ?? UNATTACHED_FILL_VIEWPORT.width,
                 ] as const,
               )
               .catch(constVoid);
@@ -3536,7 +3545,7 @@ const make = Effect.gen(function* () {
           return {
             tabId: tab.tabId,
             setting,
-            viewport: tab.page.viewportSize() ?? UNATTACHED_FILL_VIEWPORT,
+            viewport: previewViewportSize(tab.page) ?? UNATTACHED_FILL_VIEWPORT,
           };
         }
         const changed =
@@ -4038,10 +4047,14 @@ const make = Effect.gen(function* () {
         if (width < 100 || height < 100) return;
         viewer.requestedSize = { width, height, order: ++viewerResizeOrder };
         if (tab.setting._tag !== "fill" || tab.desktop) return;
-        const current = tab.page.viewportSize();
+        const current = previewViewportSize(tab.page);
         if (current?.width === width && current.height === height) return;
-        await tab.page.setViewportSize({ width, height });
-        await applyZoom(tab);
+        await resizeAgentViewport(
+          tab.page,
+          tab.cdp,
+          { width, height },
+          previewViewportZoom(tab.page),
+        );
         await broadcastViewport(tab);
         return;
       }
