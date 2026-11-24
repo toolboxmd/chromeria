@@ -10,7 +10,7 @@ import { contextMenuSourceOf } from "../../contextMenuSource";
 import { isElectron } from "../../env";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { useThreadActionMenu } from "../../hooks/useThreadActionMenu";
-import { useServerConfigs, useVisibleThreadShells } from "../../state/entities";
+import { useServerConfigs, useThreadShells, useVisibleThreadShells } from "../../state/entities";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../../state/olderSettledShelf";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../../threadRoutes";
 import {
@@ -72,6 +72,7 @@ function PromachosConversationList({
   const gt = useGT();
   const resolve = useMessages();
   const locale = useLocale();
+  const allThreads = useThreadShells();
   const threads = useVisibleThreadShells();
   const personThreads = usePersonViewThreads(threads);
   const conversations = promachosConversations(personThreads, homeRefs);
@@ -101,8 +102,17 @@ function PromachosConversationList({
   });
   const listedSettled = groups.settled.filter(olderSettled.isListed);
   useOlderSettledShelfGrowth(olderSettled, listedSettled);
-  const settledCount = groups.settled.length + olderSettled.unloadedCount(personThreads);
-  const shownSettled = listedSettled.slice(0, settledVisibleCount);
+  // Counted against every loaded shell: a row the person or tag filter hides is still loaded.
+  const settledCount = groups.settled.length + olderSettled.unloadedCount(allThreads);
+  const pagedSettled = listedSettled.slice(0, settledVisibleCount);
+  // The open conversation stays reachable when it sorts below the page.
+  const openSettled = groups.settled.find(
+    (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === routeThreadKey,
+  );
+  const shownSettled =
+    openSettled === undefined || pagedSettled.includes(openSettled)
+      ? pagedSettled
+      : [...pagedSettled, openSettled];
   // The open conversation's header owns renaming and guest sharing.
   const { openMenu } = useThreadActionMenu({
     threadRef: null,
@@ -181,7 +191,7 @@ function PromachosConversationList({
           <PlusIcon />
         </PromachosRoundButton>
       </div>
-      {conversations.length === 0 ? (
+      {conversations.length === 0 && settledCount === 0 ? (
         <p className="px-3 py-1 text-muted-foreground text-sm">
           <T>No conversations yet.</T>
         </p>

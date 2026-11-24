@@ -35,7 +35,12 @@ import { ListSection } from "../../components/ui/ListSection";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { useNowMinuteMs } from "../../lib/clock";
-import { useProjects, useServerConfigs, useVisibleThreadShells } from "../../state/entities";
+import {
+  useProjects,
+  useServerConfigs,
+  useThreadShells,
+  useVisibleThreadShells,
+} from "../../state/entities";
 import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
@@ -97,8 +102,8 @@ export function PromachosTabScreen() {
 
 function PromachosConversationList(props: { readonly homeRefs: ReadonlyArray<ScopedProjectRef> }) {
   const gt = useGT();
-  const threads = useVisibleThreadShells();
-  const conversations = promachosConversations(threads, props.homeRefs);
+  const allThreads = useThreadShells();
+  const conversations = promachosConversations(useVisibleThreadShells(), props.homeRefs);
   const selectDetail = useSelectWorkspaceDetail();
   const nowMs = useNowMinuteMs();
   // Advances at each snooze wake as well as each minute, so a woken conversation returns on time.
@@ -122,7 +127,8 @@ function PromachosConversationList(props: { readonly homeRefs: ReadonlyArray<Sco
   });
   const listedSettled = groups.settled.filter(olderSettled.isListed);
   useOlderSettledShelfGrowth(olderSettled, listedSettled);
-  const settledCount = groups.settled.length + olderSettled.unloadedCount(threads);
+  // Counted against every loaded shell: a row the tag filter hides is still loaded.
+  const settledCount = groups.settled.length + olderSettled.unloadedCount(allThreads);
   const shownSettled = listedSettled.slice(0, settledVisibleCount);
   useForgetConversationOnList();
   const rows = (
