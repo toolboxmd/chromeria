@@ -6078,14 +6078,18 @@ describe("OpenCodeAdapterV2", () => {
         },
       } as unknown as OpencodeClient;
       const unused = (operation: string) => () => Effect.die(`${operation} is not used`);
+      let launchEnvironment: NodeJS.ProcessEnv | undefined;
       const runtime: OpenCodeRuntime.OpenCodeRuntime["Service"] = {
         startOpenCodeServerProcess: unused("startOpenCodeServerProcess"),
-        connectToOpenCodeServer: () =>
-          Effect.succeed({
-            url: "test://opencode",
-            version: "test",
-            exitCode: null,
-            external: true,
+        connectToOpenCodeServer: ({ environment }) =>
+          Effect.sync(() => {
+            launchEnvironment = environment;
+            return {
+              url: "test://opencode",
+              version: "test",
+              exitCode: Effect.never,
+              external: false,
+            };
           }),
         runOpenCodeCommand: unused("runOpenCodeCommand"),
         createOpenCodeSdkClient: () => fakeClient,
@@ -6098,7 +6102,7 @@ describe("OpenCodeAdapterV2", () => {
       const adapter = yield* makeOpenCodeAdapterV2({
         instanceId,
         settings: OPENCODE_TEST_SETTINGS,
-        environment: {},
+        environment: { PATH: "/fake/bin", T3CODE_THREAD_ID: "stale-parent-thread" },
       }).pipe(Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime));
       const session = yield* adapter.openSession({
         threadId,
@@ -6106,6 +6110,8 @@ describe("OpenCodeAdapterV2", () => {
         modelSelection,
         runtimePolicy: runtimePolicy("full-access"),
       });
+      assert.equal(launchEnvironment?.T3CODE_THREAD_ID, threadId);
+      assert.equal(launchEnvironment?.PATH, "/fake/bin");
       const now = yield* DateTime.now;
       const placeholder: OrchestrationV2ProviderThread = {
         id: ProviderThreadId.make("thread:provider:opencode:native-thread:pending:run:adopt:1"),

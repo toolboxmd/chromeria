@@ -175,7 +175,12 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
     const owner = yield* OpenCodeServerOwner.make({
       binaryPath: input.binaryPath,
       directory: input.directory,
-      environment: serverEnvironment(input.environment, password),
+      environment: serverEnvironment(
+        threadId === undefined
+          ? input.environment
+          : { ...input.environment, T3CODE_THREAD_ID: threadId },
+        password,
+      ),
       verify: (url) =>
         connectTo(url, password, false).pipe(
           Effect.map((connection) => {

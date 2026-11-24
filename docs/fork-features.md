@@ -4052,3 +4052,29 @@ sources and reasons.
   "keywords": ["RETRIED_GIT_OPERATIONS", "restoreCheckpoint", "index.lock"]
 }
 ```
+
+## provider-thread-environment
+
+```json
+{
+  "id": "provider-thread-environment",
+  "purpose": "Give Grok, locally spawned per-thread OpenCode sessions, and Muse the owning T3 thread ID. Drop each carried edit when upstream covers that launch path.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/947"],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/950",
+    "https://github.com/pingdotgg/t3code/pull/38855"
+  ],
+  "newFiles": [],
+  "upstreamFiles": ["packages/provider-muse/src/server/adapter.test.ts"],
+  "sharedFiles": [
+    "apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.test.ts",
+    "packages/provider-grok/src/server/adapter.ts",
+    "packages/provider-muse/src/server/adapter.ts",
+    "packages/provider-opencode/src/server/adapter.test.ts",
+    "packages/provider-opencode/src/server/adapter.ts",
+    "packages/provider-opencode/src/server/v2/OpenCode2Server.test.ts",
+    "packages/provider-opencode/src/server/v2/OpenCode2Server.ts"
+  ],
+  "keywords": ["T3CODE_THREAD_ID", "38855", "34032"]
+}
+```

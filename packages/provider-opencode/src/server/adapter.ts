@@ -1219,7 +1219,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           ...(settingsSecretLiteral(options.settings.serverPassword)
             ? { serverPassword: settingsSecretLiteral(options.settings.serverPassword) }
             : {}),
-          environment,
+          environment: { ...environment, T3CODE_THREAD_ID: input.threadId },
           ...(bare === undefined ? {} : { pure: true }),
         });
         const broken = brokenVersionDetail({

@@ -259,7 +259,11 @@ const writeFakeOpenCode = (script: string) =>
   });
 
 const layerSpawning = (
-  wrapped?: Array<{ readonly threadId?: string; readonly shared?: boolean }>,
+  wrapped?: Array<{
+    readonly threadId?: string;
+    readonly shared?: boolean;
+    readonly shellThreadId?: string;
+  }>,
   stopped?: Array<string>,
 ) =>
   Layer.mergeAll(
@@ -271,11 +275,14 @@ const layerSpawning = (
           ? Layer.empty
           : Layer.succeed(AgentScope, {
               ...AgentScope.defaultValue(),
-              wrap: ({ command, args, threadId, shared }) =>
+              wrap: ({ command, args, threadId, shared, env }) =>
                 Effect.sync(() => {
                   wrapped.push({
                     ...(threadId === undefined ? {} : { threadId }),
                     ...(shared === undefined ? {} : { shared }),
+                    ...(typeof env?.T3CODE_THREAD_ID === "string"
+                      ? { shellThreadId: env.T3CODE_THREAD_ID }
+                      : {}),
                   });
                   return { command, args, unit: `unit:${threadId ?? "instance"}` };
                 }),
@@ -328,7 +335,11 @@ describe("OpenCode2Server spawned server", () => {
   );
 
   it.live("runs each session on its own process until its session or the instance closes", () => {
-    const wrapped: Array<{ readonly threadId?: string; readonly shared?: boolean }> = [];
+    const wrapped: Array<{
+      readonly threadId?: string;
+      readonly shared?: boolean;
+      readonly shellThreadId?: string;
+    }> = [];
     const stopped: Array<string> = [];
     return Effect.gen(function* () {
       const { binaryPath, directory } = yield* writeFakeOpenCode(FAKE_SERVER);
@@ -338,7 +349,10 @@ describe("OpenCode2Server spawned server", () => {
         serverUrl: "",
         serverPassword: "",
         directory,
-        environment: yield* HostProcess.Environment,
+        environment: {
+          ...(yield* HostProcess.Environment),
+          T3CODE_THREAD_ID: "stale-parent-thread",
+        },
       }).pipe(Effect.provideService(Scope.Scope, instance));
       const forSession = server.forSession;
       if (forSession === undefined) return yield* Effect.die("Sessions share the server");
@@ -359,8 +373,8 @@ describe("OpenCode2Server spawned server", () => {
       assert.strictEqual((yield* connect(first)).url, one.url);
       // Each process runs in its thread's scope, so Force stop can reach it.
       assert.deepStrictEqual(wrapped, [
-        { threadId: "thread:first" },
-        { threadId: "thread:second" },
+        { threadId: "thread:first", shellThreadId: "thread:first" },
+        { threadId: "thread:second", shellThreadId: "thread:second" },
       ]);
       if (one.processExit === undefined || two.processExit === undefined)
         return yield* Effect.die("Missing owned process lifetime");
