@@ -193,14 +193,14 @@ describe("mobile connection storage", () => {
     });
   });
 
-  it("keeps No project expansion independent and persists collapse", async () => {
+  it("keeps Promachos shelf expansion independent and persists collapse", async () => {
     await savePreferencesPatch({
-      threadListNoProjectShelfExpanded: true,
+      threadListPromachosShelfExpanded: true,
       threadListSnoozedShelfExpanded: true,
     });
-    await savePreferencesPatch({ threadListNoProjectShelfExpanded: false });
+    await savePreferencesPatch({ threadListPromachosShelfExpanded: false });
     await expect(loadPreferences()).resolves.toEqual({
-      threadListNoProjectShelfExpanded: false,
+      threadListPromachosShelfExpanded: false,
       threadListSnoozedShelfExpanded: true,
     });
   });

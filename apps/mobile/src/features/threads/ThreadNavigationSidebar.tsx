@@ -15,6 +15,7 @@ import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-searc
 import { AnimatedLegendList } from "@legendapp/list/reanimated";
 import { THREAD_LIST_ROW_LAYOUT } from "./threadListAnimations";
 import { useAtomValue } from "@effect/atom-react";
+import { promachosHomeRefsAtom } from "../../state/promachos-home";
 import { useMemo, useRef, useState } from "react";
 import { Platform, StyleSheet, View } from "react-native";
 import { GestureDetector, useNativeGesture } from "react-native-gesture-handler";
@@ -67,7 +68,7 @@ import {
   ThreadListV2SettledShelfHeader,
   ThreadListV2ShowMoreRow,
   ThreadListV2SnoozedShelfHeader,
-  ThreadListV2NoProjectShelfHeader,
+  ThreadListV2PromachosShelfHeader,
   ThreadListV2WorkingShelfHeader,
 } from "./thread-list-v2-items";
 import { useThreadRowProviderInstanceResolver } from "./thread-provider-instance";
@@ -254,8 +255,8 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     setSettledVisibleCount((count) => count + THREAD_LIST_V2_SETTLED_PAGE_COUNT);
   const {
     loaded: shelfPreferencesLoaded,
-    noProjectShelfExpanded,
-    toggleNoProjectShelf,
+    promachosShelfExpanded,
+    togglePromachosShelf,
     settledShelfExpanded,
     snoozedShelfExpanded,
     workingShelfEnabled,
@@ -264,6 +265,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     toggleSnoozedShelf,
     toggleWorkingShelf,
   } = useThreadListV2ShelfPreferences();
+  const promachosHomeRefs = useAtomValue(promachosHomeRefsAtom);
   const now = useThreadListNow(threads);
   const listEnvironments = useAtomValue(threadListEnvironmentsAtom);
   const {
@@ -288,7 +290,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
   } = useThreadListV2({
     threads: launchingThreads,
     navigationThreads: launchingNavigationThreads,
-    projects,
+    promachosHomeRefs,
     pendingTasks,
     environmentId: options.selectedEnvironmentId,
     projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
@@ -305,7 +307,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     shelfPreferencesLoaded,
     workingShelfEnabled,
     workingShelfExpanded,
-    noProjectShelfExpanded,
+    promachosShelfExpanded,
     snoozedShelfExpanded,
     settledShelfExpanded,
     selectedThreadKey,
@@ -502,13 +504,13 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
           />
         );
       }
-      case "v2-no-project-shelf":
+      case "v2-promachos-shelf":
         return (
-          <ThreadListV2NoProjectShelfHeader
+          <ThreadListV2PromachosShelfHeader
             count={item.count}
             disabled={item.disabled}
             expanded={item.expanded}
-            onToggle={toggleNoProjectShelf}
+            onToggle={togglePromachosShelf}
             pane="sidebar"
           />
         );

@@ -42,8 +42,8 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   const input: Parameters<typeof useThreadListV2>[0] = {
     threads,
     navigationThreads: threads,
-    projects: [],
-    noProjectShelfExpanded: false,
+    promachosHomeRefs: [],
+    promachosShelfExpanded: false,
     pendingTasks: [],
     environmentId: null,
     projectRefs: null,
@@ -265,12 +265,12 @@ it("reuses a large thread list across tab renders and updates when its inputs ch
   expect(loaded.olderSettledShelf.isListed(threads[150]!)).toBe(true);
   expect(loaded.items).not.toBe(loading.items);
 
-  const scratchInput = {
+  const homeInput = {
     ...input,
-    projects: [{ id: threads[0]!.projectId, environmentId, isScratch: true as const }],
+    promachosHomeRefs: [{ projectId: threads[0]!.projectId, environmentId }],
   };
-  await act(async () => root.render(<Probe input={scratchInput} tab="chats" />));
-  expect(seen.at(-1)!.layout.noProjectCount).toBe(75);
+  await act(async () => root.render(<Probe input={homeInput} tab="chats" />));
+  expect(seen.at(-1)!.layout.promachosCount).toBe(75);
   await act(async () => root.render(<Probe input={input} tab="chats" />));
-  expect(seen.at(-1)!.layout.noProjectCount).toBe(0);
+  expect(seen.at(-1)!.layout.promachosCount).toBe(0);
 });

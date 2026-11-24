@@ -1,4 +1,3 @@
-import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   generateSpreadPinOrderKeys,
@@ -6,7 +5,7 @@ import {
   planPinnedReorder,
 } from "@t3tools/client-runtime/state/thread-sort";
 import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ScopedProjectRef } from "@t3tools/contracts";
 import { msg } from "gt-react-native";
 
 import { m, type MessageResolver } from "../../i18n/messages";
@@ -83,21 +82,18 @@ function rowOrder(row: OrderRow, section: PendingThreadOrder["section"]) {
 export function createThreadMovePlanner(input: {
   readonly ordered: readonly OrderRow[];
   readonly allThreads?: readonly (OrderRow & Partial<Pick<EnvironmentThreadShell, "projectId">>)[];
-  readonly projects?: ReadonlyArray<Pick<EnvironmentProject, "id" | "environmentId" | "isScratch">>;
+  readonly promachosHomeRefs?: ReadonlyArray<ScopedProjectRef>;
   readonly section: PendingThreadOrder["section"];
   readonly reorderableEnvironmentIds: ReadonlySet<EnvironmentId>;
 }) {
-  const scratchProjectKeys = new Set(
-    input.projects
-      ?.filter((project) => project.isScratch === true)
-      .map((project) => `${project.environmentId}:${project.id}`),
+  const promachosKeys = new Set(
+    input.promachosHomeRefs?.map((ref) => `${ref.environmentId}:${ref.projectId}`),
   );
-  const noProjectIds = new Set(
+  const promachosIds = new Set(
     input.allThreads
       ?.filter(
         (row) =>
-          row.projectId !== undefined &&
-          scratchProjectKeys.has(`${row.environmentId}:${row.projectId}`),
+          row.projectId !== undefined && promachosKeys.has(`${row.environmentId}:${row.projectId}`),
       )
       .map(rowId),
   );
@@ -117,7 +113,7 @@ export function createThreadMovePlanner(input: {
     if (!writableIds.has(movedId)) return null;
     const nextIds = threadOrderAfterMove(orderedIds, movedId, direction);
     if (nextIds === null) return null;
-    if (input.section === "active" && noProjectIds.has(movedId)) return [];
+    if (input.section === "active" && promachosIds.has(movedId)) return [];
     const assignments = planPinnedReorder({ orderedIds: nextIds, keysById, movedId });
     return assignments === null ||
       assignments.length === 0 ||

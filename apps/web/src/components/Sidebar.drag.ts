@@ -16,7 +16,7 @@ type Layout = Parameters<SortingStrategy>[0];
 const isShelfHeader = (item: SidebarListItem | undefined) =>
   item?.kind === "marker" &&
   (item.marker === "working-header" ||
-    item.marker === "no-project-header" ||
+    item.marker === "promachos-header" ||
     item.marker === "snoozed-header" ||
     item.marker === "settled-header");
 
@@ -58,7 +58,7 @@ export function createSidebarCollisionDetection(
         if (pointer.y < previousY && pointer.y <= boundary.bottom) boundarySection = "pinned";
         else if (pointer.y > previousY && pointer.y >= boundary.top) boundarySection = "active";
         const nextHeader = (
-          ["working-header", "no-project-header", "snoozed-header", "settled-header"] as const
+          ["working-header", "promachos-header", "snoozed-header", "settled-header"] as const
         )
           .map((marker) =>
             args.droppableContainers.find((container) => container.id === sidebarMarkerId(marker)),
@@ -97,9 +97,9 @@ export function createSidebarSortingStrategy(input: {
   enabled?: boolean;
   settledOrder: readonly string[];
   activeOrder?: readonly string[];
-  /** Scratch lifecycle drops return to this shelf instead of the Active order. */
-  noProjectOrder?: readonly string[];
-  noProjectExpanded?: boolean;
+  /** Promachos lifecycle drops return to his shelf instead of the Active order. */
+  promachosOrder?: readonly string[];
+  promachosExpanded?: boolean;
   settledExpanded: boolean;
   settledVisibleCount?: number;
   routeThreadKey?: string | null;
@@ -124,7 +124,7 @@ export function createSidebarSortingStrategy(input: {
       pinned: [],
       active: [],
       working: [],
-      "no-project": [],
+      promachos: [],
       snoozed: [],
       settled: [],
     };
@@ -143,7 +143,7 @@ export function createSidebarSortingStrategy(input: {
         item.section === "pinned" ||
         item.section === "active" ||
         item.section === "working" ||
-        item.section === "no-project"
+        item.section === "promachos"
       )
         cardHeight ??= rects[index]?.height;
       else slimHeight ??= rects[index]?.height;
@@ -154,12 +154,12 @@ export function createSidebarSortingStrategy(input: {
     cardHeight ??= 82 * scale;
     slimHeight ??= 36 * scale;
     const labelHeight = (input.boundaryLabelHeight ?? 0) * scale;
-    const scratchReturn =
-      target.section === "active" && input.noProjectOrder?.includes(active.key) === true;
-    const destination = scratchReturn ? "no-project" : target.section;
+    const promachosReturn =
+      target.section === "active" && input.promachosOrder?.includes(active.key) === true;
+    const destination = promachosReturn ? "promachos" : target.section;
     const group = groups[destination];
-    const order = scratchReturn
-      ? (input.noProjectOrder ?? [])
+    const order = promachosReturn
+      ? (input.promachosOrder ?? [])
       : target.section === "pinned"
         ? target.pinnedOrder
         : target.section === "settled"
@@ -171,10 +171,8 @@ export function createSidebarSortingStrategy(input: {
       (item) => (ranks.get(item.key) ?? Number.POSITIVE_INFINITY) > rank,
     );
     group.splice(index < 0 ? group.length : index, 0, { ...active, section: destination });
-    if (scratchReturn && input.noProjectExpanded !== true) {
-      groups["no-project"] = groups["no-project"].filter(
-        (item) => item.key === input.routeThreadKey,
-      );
+    if (promachosReturn && input.promachosExpanded !== true) {
+      groups["promachos"] = groups["promachos"].filter((item) => item.key === input.routeThreadKey);
     }
     const settledOrder = (
       input.settledOrder.length > 0 ? input.settledOrder : groups.settled.map((item) => item.key)
@@ -201,9 +199,9 @@ export function createSidebarSortingStrategy(input: {
       marker("working-header");
       projected.push(...groups.working);
     }
-    if (items.some((item) => item.kind === "marker" && item.marker === "no-project-header")) {
-      marker("no-project-header");
-      projected.push(...groups["no-project"]);
+    if (items.some((item) => item.kind === "marker" && item.marker === "promachos-header")) {
+      marker("promachos-header");
+      projected.push(...groups["promachos"]);
     }
     if (
       groups.snoozed.length > 0 ||
@@ -223,7 +221,7 @@ export function createSidebarSortingStrategy(input: {
         (item.section === "pinned" ||
           item.section === "active" ||
           item.section === "working" ||
-          item.section === "no-project")
+          item.section === "promachos")
           ? cardHeight
           : slimHeight;
       const moved = item.kind === "thread" && item.key === active.key;

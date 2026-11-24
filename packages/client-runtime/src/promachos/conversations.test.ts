@@ -2,10 +2,12 @@ import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  promachosConversationGroups,
   promachosConversations,
   promachosHomeRefs,
   promachosHomes,
   promachosMembership,
+  promachosOlderSettledScopes,
 } from "./conversations.ts";
 
 const home = { environmentId: EnvironmentId.make("env-a"), projectId: ProjectId.make("home") };
@@ -270,5 +272,67 @@ describe("promachosMembership", () => {
         environments: [live, live],
       }),
     ).toBe("unknown");
+  });
+});
+
+describe("promachosConversationGroups", () => {
+  const now = "2026-10-01T12:00:00.000Z";
+  const conversation = (
+    id: string,
+    state: {
+      snoozedUntil?: string;
+      settledOverride?: "settled";
+      settledAt?: string;
+      environmentId?: string;
+    } = {},
+  ) => ({
+    id: ThreadId.make(id),
+    environmentId: EnvironmentId.make(state.environmentId ?? "env-a"),
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    snoozedUntil: state.snoozedUntil ?? null,
+    settledOverride: state.settledOverride ?? null,
+    settledAt: state.settledAt ?? null,
+    latestUserMessageAt: null,
+    latestRun: null,
+    updatedAt: "2026-10-01T08:00:00.000Z",
+  });
+
+  it("takes snoozed and settled conversations out of the list until they wake or their server is unknown", () => {
+    const later = "2026-10-01T13:00:00.000Z";
+    const rows = [
+      conversation("open"),
+      conversation("snoozed", { snoozedUntil: later }),
+      conversation("woken", { snoozedUntil: "2026-10-01T11:00:00.000Z" }),
+      conversation("settled-first", {
+        settledOverride: "settled",
+        settledAt: "2026-10-01T09:00:00.000Z",
+      }),
+      conversation("settled-last", {
+        settledOverride: "settled",
+        settledAt: "2026-10-01T10:00:00.000Z",
+      }),
+      conversation("both", { snoozedUntil: later, settledOverride: "settled" }),
+      conversation("unknown-server", { settledOverride: "settled", environmentId: "env-b" }),
+    ];
+    const groups = promachosConversationGroups(rows, {
+      now,
+      supports: (environmentId) => environmentId === "env-a",
+    });
+    const ids = (group: ReadonlyArray<{ readonly id: string }>) => group.map((row) => row.id);
+    expect(ids(groups.active)).toEqual(["open", "woken", "unknown-server"]);
+    expect(ids(groups.snoozed)).toEqual(["snoozed", "both"]);
+    // Newest settle first, the order older settled conversations page in.
+    expect(ids(groups.settled)).toEqual(["settled-last", "settled-first"]);
+  });
+});
+
+describe("promachosOlderSettledScopes", () => {
+  it("scopes older settled paging to the home's projects on each environment", () => {
+    const merged = { environmentId: home.environmentId, projectId: ProjectId.make("home-copy") };
+    expect(promachosOlderSettledScopes([home, homeOnB, merged])).toEqual([
+      { environmentId: home.environmentId, projectIds: [home.projectId, merged.projectId] },
+      { environmentId: homeOnB.environmentId, projectIds: [homeOnB.projectId] },
+    ]);
   });
 });

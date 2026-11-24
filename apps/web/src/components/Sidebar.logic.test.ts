@@ -69,20 +69,20 @@ import {
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
 
-describe("No project shelf", () => {
+describe("Promachos shelf", () => {
   it.each([
-    [{ snoozed: false, settled: false, pinned: false }, "no-project"],
+    [{ snoozed: false, settled: false, pinned: false }, "promachos"],
     [{ snoozed: false, settled: false, pinned: true }, "pinned"],
     [{ snoozed: false, settled: true, pinned: true }, "settled"],
     [{ snoozed: true, settled: true, pinned: true }, "snoozed"],
   ] as const)(
-    "preserves explicit lifecycle placement for scratch threads: %j",
+    "preserves explicit lifecycle placement for promachos threads: %j",
     (state, expected) => {
-      expect(resolveSidebarThreadSection({ ...state, noProject: true })).toBe(expected);
+      expect(resolveSidebarThreadSection({ ...state, promachos: true })).toBe(expected);
     },
   );
 
-  it("keeps regular projects and unknown scratch identity in the active list", () => {
+  it("keeps regular projects and unknown Promachos home in the active list", () => {
     expect(resolveSidebarThreadSection({ snoozed: false, settled: false, pinned: false })).toBe(
       "active",
     );
@@ -91,7 +91,7 @@ describe("No project shelf", () => {
         snoozed: false,
         settled: false,
         pinned: false,
-        noProject: false,
+        promachos: false,
       }),
     ).toBe("active");
   });
@@ -107,7 +107,7 @@ describe("No project shelf", () => {
     expect(visibleSidebarShelfThreads(threads, true, null)).toEqual(threads);
   });
 
-  it("can search every projectless thread even when no shelf rows are rendered", () => {
+  it("can search every Promachos thread even when no shelf rows are rendered", () => {
     const searchable = threads.map((thread) => ({
       ...thread,
       environmentId: EnvironmentId.make(thread.environmentId),
@@ -129,12 +129,12 @@ describe("No project shelf", () => {
       { kind: "thread", key: "pin", section: "pinned" },
       { kind: "marker", marker: "pinned-divider" },
       { kind: "thread", key: "active", section: "active" },
-      { kind: "marker", marker: "no-project-header" },
-      { kind: "thread", key: "scratch", section: "no-project" },
+      { kind: "marker", marker: "promachos-header" },
+      { kind: "thread", key: "promachos", section: "promachos" },
       { kind: "marker", marker: "settled-header" },
     ];
-    expect(resolveSidebarDropTarget(items, "active", "scratch")).toBeNull();
-    expect(resolveSidebarDropVerb("active", "no-project")).toBeNull();
+    expect(resolveSidebarDropTarget(items, "active", "promachos")).toBeNull();
+    expect(resolveSidebarDropVerb("active", "promachos")).toBeNull();
     expect(resolveSidebarDropTarget(items, "pin", "active")).toEqual({
       section: "active",
       pinnedOrder: [],

@@ -535,6 +535,7 @@ describe("sidebar settled pagination", () => {
           {
             scratchWorkspaceRoot: null,
             shellThreadFamilies: false,
+            settings: { promachosHome: null },
           } as unknown as EnvironmentServerConfig,
         ],
       ]),

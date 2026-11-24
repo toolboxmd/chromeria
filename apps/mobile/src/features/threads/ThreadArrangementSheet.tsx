@@ -1,6 +1,6 @@
 import { LegendList, type LegendListRef } from "@legendapp/list/react-native";
 import { SheetHeader } from "../../components/ui/SheetHeader";
-import { environmentProjects } from "../../state/projects";
+import { promachosHomeRefsAtom } from "../../state/promachos-home";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
@@ -187,7 +187,7 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
   const threads = useAtomValue(steadyNavigationThreadShellsAtom);
   const configs = useAtomValue(environmentServerConfigsAtom);
   const listEnvironments = useAtomValue(threadListEnvironmentsAtom);
-  const projects = useAtomValue(environmentProjects.projectsAtom);
+  const promachosHomeRefs = useAtomValue(promachosHomeRefsAtom);
   const queuedThreadKeys = useAtomValue(queuedThreadKeysAtom);
   const pendingOrder = useAtomValue(pendingThreadOrderAtom);
   const dropBusy = useAtomValue(threadDropBusyAtom);
@@ -208,7 +208,7 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
   const sections = useMemo(() => {
     const shared = {
       threads,
-      projects,
+      promachosHomeRefs,
       now,
       queuedThreadKeys,
       pendingOrder,
@@ -237,7 +237,15 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
       snoozed: parked.filter((thread) => effectiveSnoozed(thread, { now })),
       settled: sortSettledThreads(parked.filter((thread) => !effectiveSnoozed(thread, { now }))),
     };
-  }, [threads, projects, configs, now, queuedThreadKeys, pendingOrder, workingShelfEnabled]);
+  }, [
+    threads,
+    promachosHomeRefs,
+    configs,
+    now,
+    queuedThreadKeys,
+    pendingOrder,
+    workingShelfEnabled,
+  ]);
   const listedSettled = sections.settled.filter(olderSettledShelf.isListed);
   useOlderSettledShelfGrowth(olderSettledShelf, listedSettled);
   const visibleSettled = listedSettled.slice(0, settledVisibleCount);
@@ -245,7 +253,7 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
   const planners = useMemo(() => {
     const planner = (section: "pinned" | "active") =>
       createThreadMovePlanner({
-        projects,
+        promachosHomeRefs,
         ordered: sections[section],
         allThreads: threads,
         section,
@@ -257,7 +265,7 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
               : listEnvironments.activeReorderEnvironmentIds,
       });
     return { pinned: planner("pinned"), active: planner("active") };
-  }, [sections, threads, projects, listEnvironments, workingShelfEnabled]);
+  }, [sections, threads, promachosHomeRefs, listEnvironments, workingShelfEnabled]);
   const rows = useMemo(() => {
     const result: Row[] = [];
     let offset = 0;
@@ -395,12 +403,12 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
     ? rows.find((row) => row.key === keyOf(visiblePreview.thread))
     : undefined;
   const destination = visiblePreview?.destination;
-  const noProjectDrop =
+  const promachosDrop =
     destination?.section === "active" &&
     visiblePreview !== null &&
     planners.active(keyOf(visiblePreview.thread), destination)?.length === 0;
   const targetRow =
-    destination && !noProjectDrop
+    destination && !promachosDrop
       ? rows.find(
           (row) =>
             row.section === destination.section &&
@@ -410,7 +418,7 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
   const insertionOffset = targetRow
     ? targetRow.offset +
       (!targetRow.thread || destination?.placement === "after" ? targetRow.height : 0)
-    : noProjectDrop
+    : promachosDrop
       ? undefined
       : sourceRow?.offset;
   return (
@@ -626,7 +634,7 @@ function ThreadArrangementSheet(props: { onClose: () => void }) {
                           visiblePreview.destination.section,
                           m,
                         )}
-                        {noProjectDrop ? ` · ${gt("No project")}` : ""}
+                        {promachosDrop ? ` · ${gt("Promachos")}` : ""}
                       </Text>
                     ) : null}
                   </Animated.View>

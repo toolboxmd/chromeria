@@ -181,6 +181,7 @@ import {
   buildThreadActionMenuItems,
   threadActionRequiresOperate,
 } from "./threadActionMenu.logic";
+import { usePromachosHome } from "./promachos/promachosMode";
 import {
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
@@ -350,7 +351,7 @@ const EMPTY_DRAFT_IDS: readonly DraftId[] = [];
 const SETTLED_TAIL_INITIAL_COUNT = 10;
 const SETTLED_TAIL_PAGE_COUNT = 25;
 const SETTLED_SHELF_EXPANDED_KEY = "t3code:sidebar:settled-expanded";
-const NO_PROJECT_SHELF_EXPANDED_KEY = "t3code:sidebar:no-project-expanded";
+const PROMACHOS_SHELF_EXPANDED_KEY = "t3code:sidebar:promachos-expanded";
 const SNOOZED_SHELF_EXPANDED_KEY = "t3code:sidebar:snoozed-expanded";
 const WORKING_SHELF_EXPANDED_KEY = "t3code:sidebar:working-expanded";
 
@@ -378,13 +379,13 @@ interface SidebarThreadPartitionInput {
   readonly workingShelfEnabled: boolean;
   /** Boring mode: folders list active threads by the user's latest message. */
   readonly sortActiveBySend: boolean;
-  /** Orders Active and No-project threads the user has not dragged. */
+  /** Orders Active and Promachos shelf threads the user has not dragged. */
   readonly threadSortOrder: SidebarThreadSortOrder;
   // Snooze wakes, the queued-turn grace and the Working shelf's exit grace depend
   // on the clock, so the minute tick, the precise snooze-wake tick and the inbox
   // tracker's expiry version are inputs: a new key repartitions.
   readonly clockKey: string;
-  readonly noProjectKeys: ReadonlySet<string>;
+  readonly promachosKeys: ReadonlySet<string>;
 }
 
 function scrollSidebarToTop(content: HTMLElement | null) {
@@ -472,14 +473,11 @@ function useSidebarThreads(input: {
   // Folders already separate the work, so boring mode has no Working shelf.
   const workingShelfEnabled =
     useClientSettings((s) => s.sidebarWorkingShelfEnabled) && folderGroups === null;
-  const projects = useProjects();
-  const noProjectKeys = new Set(
-    projects
-      .filter((project) => project.isScratch)
-      .map((project) => `${project.environmentId}:${project.id}`),
+  const promachosKeys = new Set(
+    usePromachosHome().refs.map((ref) => `${ref.environmentId}:${ref.projectId}`),
   );
-  const [noProjectShelfExpanded, setNoProjectShelfExpanded] = useLocalStorage(
-    NO_PROJECT_SHELF_EXPANDED_KEY,
+  const [promachosShelfExpanded, setPromachosShelfExpanded] = useLocalStorage(
+    PROMACHOS_SHELF_EXPANDED_KEY,
     false,
     Schema.Boolean,
   );
@@ -529,14 +527,14 @@ function useSidebarThreads(input: {
     sortActiveBySend: folderGroups !== null,
     threadSortOrder,
     clockKey: `${nowMinute}:${snoozeWakeClock}:${inboxReturnsVersion}`,
-    noProjectKeys,
+    promachosKeys,
   });
 
   const {
     pinnedThreads,
     activeThreads,
     workingThreads,
-    noProjectThreads,
+    promachosThreads,
     snoozedThreads,
     settledThreads,
   } = partition;
@@ -592,9 +590,9 @@ function useSidebarThreads(input: {
               : EMPTY_THREADS,
           };
         });
-  const visibleNoProjectThreads = visibleSidebarShelfThreads(
-    noProjectThreads,
-    noProjectShelfExpanded,
+  const visiblePromachosThreads = visibleSidebarShelfThreads(
+    promachosThreads,
+    promachosShelfExpanded,
     routeRowThreadKey,
   );
   const orderedThreads = [
@@ -603,7 +601,7 @@ function useSidebarThreads(input: {
       ? activeThreads
       : projectFolders.flatMap((folder) => folder.threads)),
     ...visibleWorkingThreads,
-    ...visibleNoProjectThreads,
+    ...visiblePromachosThreads,
     ...visibleSnoozedThreads,
     ...renderedSettledThreads,
   ];
@@ -612,7 +610,7 @@ function useSidebarThreads(input: {
     [pinnedThreads, "pinned"],
     [activeThreads, "active"],
     [workingThreads, "working"],
-    [noProjectThreads, "no-project"],
+    [promachosThreads, "promachos"],
     [snoozedThreads, "snoozed"],
     [settledThreads, "settled"],
   ] as const) {
@@ -622,15 +620,15 @@ function useSidebarThreads(input: {
     ...partition,
     threads,
     workingShelfEnabled,
-    noProjectKeys,
-    noProjectShelfExpanded,
-    toggleNoProjectShelf: () => setNoProjectShelfExpanded((value) => !value),
-    visibleNoProjectThreads,
+    promachosKeys,
+    promachosShelfExpanded,
+    togglePromachosShelf: () => setPromachosShelfExpanded((value) => !value),
+    visiblePromachosThreads,
     searchableThreads: [
       ...pinnedThreads,
       ...activeThreads,
       ...workingThreads,
-      ...noProjectThreads,
+      ...promachosThreads,
       ...snoozedThreads,
       ...settledThreads,
       ...filterSidebarV2VisibleThreads(
@@ -689,7 +687,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     workingShelfEnabled,
     sortActiveBySend,
     threadSortOrder,
-    noProjectKeys,
+    promachosKeys,
   } = input;
   const preciseNow = new Date().toISOString();
   const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent);
@@ -697,10 +695,10 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
   const working: EnvironmentThreadShell[] = [];
-  const noProject: EnvironmentThreadShell[] = [];
+  const promachos: EnvironmentThreadShell[] = [];
   const inbox = (thread: EnvironmentThreadShell, manuallyMoved = false) =>
-    noProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)
-      ? noProject
+    promachosKeys.has(`${thread.environmentId}:${thread.projectId}`)
+      ? promachos
       : workingShelfEnabled &&
           (manuallyMoved ? isThreadWorking(thread) : inboxObservation.isWorking(thread))
         ? working
@@ -737,7 +735,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
         snoozed: configLoaded && effectiveSnoozed(thread, { now: preciseNow }),
         settled: configLoaded && thread.settledOverride === "settled",
         pinned: thread.pinnedAt != null,
-        noProject: noProjectKeys.has(`${thread.environmentId}:${thread.projectId}`),
+        promachos: promachosKeys.has(`${thread.environmentId}:${thread.projectId}`),
       });
       (section === "snoozed"
         ? snoozed
@@ -745,8 +743,8 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
           ? settled
           : section === "pinned"
             ? pinned
-            : section === "no-project"
-              ? noProject
+            : section === "promachos"
+              ? promachos
               : inbox(thread)
       ).push(thread);
     }
@@ -778,7 +776,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
             getId: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
           }),
     workingThreads: sortWorkingThreadsBySend(working),
-    noProjectThreads: sortThreadsForSidebar(noProject, threadSortOrder),
+    promachosThreads: sortThreadsForSidebar(promachos, threadSortOrder),
     snoozedThreads: snoozed.toSorted(
       (left, right) =>
         firstValidTimestampMs(left.snoozedUntil ?? null) -
@@ -1392,11 +1390,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     activeReorderableThreadKeys,
     activeThreads,
     workingThreads,
-    noProjectThreads,
-    noProjectKeys,
-    noProjectShelfExpanded,
-    toggleNoProjectShelf,
-    visibleNoProjectThreads,
+    promachosThreads,
+    promachosKeys,
+    promachosShelfExpanded,
+    togglePromachosShelf,
+    visiblePromachosThreads,
     snoozedThreads,
     settledThreads,
     snoozeNow,
@@ -2049,14 +2047,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     });
   };
   const hasProjectFolders = projectFolders !== null && projectFolders.length > 0;
-  const draggedScratchThread =
+  const draggedPromachosThread =
     dragState === null ? undefined : threadByKey.get(dragState.activeKey);
-  const draggingScratch =
-    draggedScratchThread !== undefined &&
-    noProjectKeys.has(`${draggedScratchThread.environmentId}:${draggedScratchThread.projectId}`);
-  // Mount the destination header when a lifecycle drop creates the first scratch row.
-  const noProjectShelfCount =
-    noProjectThreads.length + (draggingScratch && dragState?.targetSection === "active" ? 1 : 0);
+  const draggingPromachos =
+    draggedPromachosThread !== undefined &&
+    promachosKeys.has(
+      `${draggedPromachosThread.environmentId}:${draggedPromachosThread.projectId}`,
+    );
+  // Mount the destination header when a lifecycle drop creates the first Promachos row.
+  const promachosShelfCount =
+    promachosThreads.length + (draggingPromachos && dragState?.targetSection === "active" ? 1 : 0);
   const sidebarListItemsFresh = ((): readonly SidebarListItem[] => {
     const rowsOf = (
       list: readonly EnvironmentThreadShell[],
@@ -2072,7 +2072,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       pinnedThreads.length +
         activeThreads.length +
         workingThreads.length +
-        noProjectThreads.length +
+        promachosThreads.length +
         snoozedThreads.length +
         settledCount ===
         0
@@ -2090,9 +2090,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       items.push({ kind: "marker", marker: "working-header" });
       items.push(...rowsOf(visibleWorkingThreads, "working"));
     }
-    if (noProjectShelfCount > 0) {
-      items.push({ kind: "marker", marker: "no-project-header" });
-      items.push(...rowsOf(visibleNoProjectThreads, "no-project"));
+    if (promachosShelfCount > 0) {
+      items.push({ kind: "marker", marker: "promachos-header" });
+      items.push(...rowsOf(visiblePromachosThreads, "promachos"));
     }
     if (snoozedThreads.length > 0) {
       items.push({ kind: "marker", marker: "snoozed-header" });
@@ -2173,12 +2173,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           activeThreads,
           workingShelfEnabled,
         });
-  const draggedNoProjectOrder =
-    draggingScratch && dragState !== null && draggedScratchThread !== undefined
+  const draggedPromachosOrder =
+    draggingPromachos && dragState !== null && draggedPromachosThread !== undefined
       ? sortThreadsForSidebar(
           [
-            ...noProjectThreads,
-            applySidebarThreadDrop(draggedScratchThread, "active", dragState.occurredAt),
+            ...promachosThreads,
+            applySidebarThreadDrop(draggedPromachosThread, "active", dragState.occurredAt),
           ],
           threadSortOrder,
         ).map(threadShellKey)
@@ -2188,8 +2188,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     enabled: !isContextDrag,
     boundaryLabelHeight: SIDEBAR_DRAG_LABEL_HEIGHT,
     settledOrder: draggedSettledOrder,
-    ...(draggedNoProjectOrder === undefined ? {} : { noProjectOrder: draggedNoProjectOrder }),
-    noProjectExpanded: noProjectShelfExpanded,
+    ...(draggedPromachosOrder === undefined ? {} : { promachosOrder: draggedPromachosOrder }),
+    promachosExpanded: promachosShelfExpanded,
     ...(draggedActiveOrder === undefined ? {} : { activeOrder: draggedActiveOrder }),
     settledExpanded: settledShelfExpanded,
     settledVisibleCount,
@@ -2224,7 +2224,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             activeReorderableKeys: activeReorderableThreadKeys,
             activeTimeOrdered:
               workingShelfEnabled ||
-              noProjectKeys.has(`${source.environmentId}:${source.projectId}`),
+              promachosKeys.has(`${source.environmentId}:${source.projectId}`),
           }).kind !== "none"
         );
       },
@@ -2260,7 +2260,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       activeReorderableKeys: activeReorderableThreadKeys,
       activeTimeOrdered:
         workingShelfEnabled ||
-        noProjectKeys.has(`${activeThread.environmentId}:${activeThread.projectId}`),
+        promachosKeys.has(`${activeThread.environmentId}:${activeThread.projectId}`),
     });
     if (plan.kind === "none") return;
     if (plan.kind === "settle" && settlingThreadKeysRef.current.has(activeKey)) return;
@@ -3507,7 +3507,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           pinnedThreads.length +
             activeThreads.length +
             workingThreads.length +
-            noProjectThreads.length +
+            promachosThreads.length +
             snoozedThreads.length ===
             0 &&
           (settledCount === 0 || scopedProjectGroups.length > 0) ? (
@@ -3600,7 +3600,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           section === "active" ||
                           section === "pinned" ||
                           section === "working" ||
-                          section === "no-project";
+                          section === "promachos";
                         const rowVariant = folderRow
                           ? folderRowsMultiline
                             ? "folder-multiline"
@@ -3812,17 +3812,17 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               />,
                             );
                             break;
-                          case "no-project-header":
+                          case "promachos-header":
                             items.push(
                               <SidebarSectionHeader
-                                key="no-project-shelf-header"
-                                marker="no-project-header"
+                                key="promachos-shelf-header"
+                                marker="promachos-header"
                                 className={cn(workingThreads.length === 0 && "mt-auto")}
-                                label={gt("No project")}
-                                count={noProjectShelfCount}
+                                label={gt("Promachos")}
+                                count={promachosShelfCount}
                                 toggle={{
-                                  expanded: noProjectShelfExpanded,
-                                  onToggle: toggleNoProjectShelf,
+                                  expanded: promachosShelfExpanded,
+                                  onToggle: togglePromachosShelf,
                                 }}
                               />,
                             );
@@ -3833,7 +3833,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 key="snoozed-shelf-header"
                                 marker="snoozed-header"
                                 className={cn(
-                                  workingThreads.length + noProjectShelfCount === 0 && "mt-auto",
+                                  workingThreads.length + promachosShelfCount === 0 && "mt-auto",
                                 )}
                                 label={gt("Snoozed", { $context: "sidebar section" })}
                                 count={snoozedThreads.length}
@@ -3851,7 +3851,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 marker="settled-header"
                                 className={cn(
                                   workingThreads.length +
-                                    noProjectShelfCount +
+                                    promachosShelfCount +
                                     snoozedThreads.length ===
                                     0 && "mt-auto",
                                 )}

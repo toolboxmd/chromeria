@@ -198,18 +198,18 @@ export const animateSidebarLayoutChanges: AnimateLayoutChanges = (args) =>
 
 // Snoozed rows cannot accept drops without a wake time. Working rows only drag out as chat context.
 
-export type SidebarSection = "pinned" | "active" | "working" | "no-project" | "snoozed" | "settled";
+export type SidebarSection = "pinned" | "active" | "working" | "promachos" | "snoozed" | "settled";
 
 export function resolveSidebarThreadSection(input: {
   readonly snoozed: boolean;
   readonly settled: boolean;
   readonly pinned: boolean;
-  readonly noProject?: boolean;
+  readonly promachos?: boolean;
 }): SidebarSection {
   if (input.snoozed) return "snoozed";
   if (input.settled) return "settled";
   if (input.pinned) return "pinned";
-  if (input.noProject) return "no-project";
+  if (input.promachos) return "promachos";
   return "active";
 }
 
@@ -232,7 +232,7 @@ export type SidebarListMarker =
   | "settled-placeholder"
   | "pinned-divider"
   | "working-header"
-  | "no-project-header"
+  | "promachos-header"
   | "snoozed-header"
   | "settled-header";
 
@@ -255,7 +255,7 @@ function sectionAtSidebarSlot(items: readonly SidebarListItem[], index: number):
     if (item.kind !== "marker") continue;
     if (item.marker === "pinned-divider") section = "active";
     else if (item.marker === "working-header") section = "working";
-    else if (item.marker === "no-project-header") section = "no-project";
+    else if (item.marker === "promachos-header") section = "promachos";
     else if (item.marker === "snoozed-header") section = "snoozed";
     else if (item.marker === "settled-header") section = "settled";
   }
@@ -279,7 +279,7 @@ export function resolveSidebarDropTarget(
   const moved = items.filter((_, index) => index !== activeIndex);
   moved.splice(overIndex, 0, items[activeIndex]!);
   const section = sectionAtSidebarSlot(moved, overIndex);
-  if (section === "working" || section === "no-project" || section === "snoozed") return null;
+  if (section === "working" || section === "promachos" || section === "snoozed") return null;
   const pinnedOrder: string[] = [];
   const activeOrder: string[] = [];
   let currentSection: SidebarSection = "pinned";
@@ -288,7 +288,7 @@ export function resolveSidebarDropTarget(
       if (item.marker === "pinned-divider") currentSection = "active";
       else if (
         item.marker === "working-header" ||
-        item.marker === "no-project-header" ||
+        item.marker === "promachos-header" ||
         item.marker === "snoozed-header" ||
         item.marker === "settled-header"
       )
@@ -328,7 +328,7 @@ export function resolveSidebarDropVerb(
   from: SidebarSection,
   to: SidebarSection | null,
 ): SidebarDropVerb | null {
-  if (to === null || to === from || to === "working" || to === "no-project" || to === "snoozed")
+  if (to === null || to === from || to === "working" || to === "promachos" || to === "snoozed")
     return null;
   if (to === "pinned") return "pin";
   if (to === "settled") return "settle";

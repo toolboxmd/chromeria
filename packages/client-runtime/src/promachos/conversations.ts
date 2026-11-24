@@ -5,10 +5,13 @@ import {
   type EnvironmentProject,
   type EnvironmentThreadShell,
 } from "../state/models.ts";
+import type { OlderSettledScope } from "../state/olderSettledThreads.ts";
 import {
   deriveLogicalProjectKeyFromSettings,
   type ProjectGroupingSettings,
 } from "../state/projectGrouping.ts";
+import { effectiveSnoozed, type ThreadSnoozeShell } from "../state/threadSettled.ts";
+import { sortSettledThreads, type SettledThreadTimestampInput } from "../state/threadSort.ts";
 
 type HomeProject = Pick<
   EnvironmentProject,
@@ -128,6 +131,47 @@ export function promachosConversations<
   return threads
     .filter((thread) => isInPromachosHome(thread, homeRefs) && isThreadVisibleInNavigation(thread))
     .sort((left, right) => lastActivityMs(right) - lastActivityMs(left));
+}
+
+/**
+ * Promachos mode's list: a conversation the user snoozed or settled leaves it for its own group,
+ * as in the thread list, and returns when it wakes or is un-settled. `supports` is false for an
+ * environment whose server has not answered yet; its conversations stay listed.
+ */
+export function promachosConversationGroups<
+  T extends ThreadSnoozeShell &
+    SettledThreadTimestampInput &
+    Pick<EnvironmentThreadShell, "id" | "environmentId" | "settledOverride">,
+>(
+  conversations: ReadonlyArray<T>,
+  options: {
+    readonly now: string;
+    readonly supports: (environmentId: EnvironmentId) => boolean;
+  },
+): { readonly active: T[]; readonly snoozed: T[]; readonly settled: T[] } {
+  const groups = { active: [] as T[], snoozed: [] as T[], settled: [] as T[] };
+  for (const conversation of conversations) {
+    const supported = options.supports(conversation.environmentId);
+    (supported && effectiveSnoozed(conversation, options)
+      ? groups.snoozed
+      : supported && conversation.settledOverride === "settled"
+        ? groups.settled
+        : groups.active
+    ).push(conversation);
+  }
+  // Settled rows run newest settle first, the order the server pages older ones in.
+  return { ...groups, settled: sortSettledThreads(groups.settled) };
+}
+
+/** The home's projects per environment: the scope its older settled conversations page in. */
+export function promachosOlderSettledScopes(
+  homeRefs: ReadonlyArray<ScopedProjectRef>,
+): OlderSettledScope[] {
+  const scopes = new Map<EnvironmentId, ScopedProjectRef["projectId"][]>();
+  for (const ref of homeRefs) {
+    scopes.set(ref.environmentId, [...(scopes.get(ref.environmentId) ?? []), ref.projectId]);
+  }
+  return [...scopes].map(([environmentId, projectIds]) => ({ environmentId, projectIds }));
 }
 
 function lastActivityMs(thread: {

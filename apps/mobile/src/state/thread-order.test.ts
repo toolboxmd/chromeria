@@ -1,6 +1,5 @@
-import type { EnvironmentProject } from "@t3tools/client-runtime/state/models";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId, type ScopedProjectRef } from "@t3tools/contracts";
 import type { Atom } from "effect/reactivity";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -14,7 +13,7 @@ import {
 } from "./thread-order";
 import { environmentServerConfigsAtom } from "./server";
 import { steadyNavigationThreadShellsAtom } from "./threads";
-import { environmentProjects } from "./projects";
+import { promachosHomeRefsAtom } from "./promachos-home";
 
 vi.mock("./atom-registry", async () => {
   const { AtomRegistry } = await import("effect/reactivity");
@@ -26,9 +25,9 @@ vi.mock("./threads", async () => {
     steadyNavigationThreadShellsAtom: Atom.make([]).pipe(Atom.keepAlive),
   };
 });
-vi.mock("./projects", async () => {
+vi.mock("./promachos-home", async () => {
   const { Atom } = await import("effect/reactivity");
-  return { environmentProjects: { projectsAtom: Atom.make([]).pipe(Atom.keepAlive) } };
+  return { promachosHomeRefsAtom: Atom.make([]).pipe(Atom.keepAlive) };
 });
 vi.mock("./server", async () => {
   const { Atom } = await import("effect/reactivity");
@@ -47,25 +46,14 @@ const shellsAtom = steadyNavigationThreadShellsAtom as Atom.Writable<
   readonly EnvironmentThreadShell[]
 >;
 
-const projectsAtom = environmentProjects.projectsAtom as Atom.Writable<
-  readonly EnvironmentProject[],
-  readonly EnvironmentProject[]
+const homeRefsAtom = promachosHomeRefsAtom as unknown as Atom.Writable<
+  readonly ScopedProjectRef[],
+  readonly ScopedProjectRef[]
 >;
-
-function makeProject(input: Partial<EnvironmentProject> = {}): EnvironmentProject {
-  return {
-    id: ProjectId.make("project-test"),
-    environmentId: EnvironmentId.make("env"),
-    title: "Project",
-    workspaceRoot: "/workspaces/project-test",
-    repositoryIdentity: null,
-    defaultModelSelection: null,
-    scripts: [],
-    createdAt: "2026-06-01T00:00:00.000Z",
-    updatedAt: "2026-06-01T00:00:00.000Z",
-    ...input,
-  };
-}
+const home = {
+  environmentId: EnvironmentId.make("env"),
+  projectId: ProjectId.make("project-test"),
+};
 
 function fixture() {
   const rows = ["a", "b"].map((id, index) =>
@@ -136,22 +124,19 @@ describe("shared mobile pending move", () => {
     next.cancel();
   });
 
-  it("keeps an Active move for a colliding remote project, then cancels when its own project becomes scratch", () => {
+  it("keeps an Active move for a colliding remote project, then cancels when its own project becomes the Promachos home", () => {
     const { start } = fixture();
-    appAtomRegistry.set(projectsAtom, [makeProject()]);
+    appAtomRegistry.set(homeRefsAtom, []);
     const move = start();
-    appAtomRegistry.set(projectsAtom, [
-      makeProject(),
-      makeProject({ environmentId: EnvironmentId.make("other"), isScratch: true }),
-    ]);
+    appAtomRegistry.set(homeRefsAtom, [{ ...home, environmentId: EnvironmentId.make("other") }]);
     expect(move.isPending()).toBe(true);
     expect(appAtomRegistry.get(pendingThreadOrderAtom)).not.toBeNull();
 
-    appAtomRegistry.set(projectsAtom, [makeProject({ isScratch: true })]);
+    appAtomRegistry.set(homeRefsAtom, [home]);
     expect(appAtomRegistry.get(pendingThreadOrderAtom)).toBeNull();
     expect(move.isPending()).toBe(false);
     move.complete();
-    appAtomRegistry.set(projectsAtom, [makeProject()]);
+    appAtomRegistry.set(homeRefsAtom, []);
     expect(getPendingThreadOrder()).toBeNull();
   });
 

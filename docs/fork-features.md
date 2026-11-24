@@ -2852,18 +2852,21 @@ sources and reasons.
 }
 ```
 
-## no-project-sidebar
+## promachos-shelf
 
 ```json
 {
-  "id": "no-project-sidebar",
-  "purpose": "Keep temporary projectless threads in a collapsed sidebar section across web, desktop and native mobile.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/356"],
+  "id": "promachos-shelf",
+  "purpose": "Keep Promachos home threads in a collapsed shelf of the main thread list across web, desktop and native mobile, and let Promachos mode settle and snooze conversations. Threads without a project stay in the normal sections.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/356",
+    "https://github.com/toolboxmd/chromeria/issues/946"
+  ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/357",
     "https://github.com/toolboxmd/chromeria/pull/632"
   ],
-  "newFiles": [],
+  "newFiles": ["apps/mobile/src/state/promachos-home.ts"],
   "upstreamFiles": [
     "apps/mobile/src/features/home/HomeScreen.tsx",
     "apps/mobile/src/features/home/useThreadListActions.ts",
@@ -2885,10 +2888,17 @@ sources and reasons.
     "apps/web/src/components/Sidebar.logic.ts",
     "apps/mobile/src/features/threads/useThreadListV2.ts",
     "apps/web/src/components/sidebar/SidebarListMarkers.tsx",
-    "apps/mobile/src/features/threads/useThreadListV2.test.tsx"
+    "apps/mobile/src/features/threads/useThreadListV2.test.tsx",
+    "apps/web/src/hooks/useThreadActionMenu.ts",
+    "apps/web/src/components/Sidebar.browser.test.tsx"
   ],
-  "sharedFiles": ["apps/web/src/components/Sidebar.tsx"],
-  "keywords": ["noProjectShelfExpanded", "no-project-header", "No project"]
+  "sharedFiles": [
+    "apps/web/src/components/Sidebar.tsx",
+    "apps/web/src/components/promachos/PromachosSidebar.tsx",
+    "apps/mobile/src/features/promachos/*",
+    "packages/client-runtime/src/promachos/*"
+  ],
+  "keywords": ["promachosShelfExpanded", "promachos-header", "promachosConversationGroups"]
 }
 ```
 
@@ -3880,7 +3890,7 @@ sources and reasons.
 ```json
 {
   "id": "sidebar-thread-sort-order",
-  "purpose": "The web sidebar orders undragged Active and No-project threads by the Thread sort order setting instead of creation. Drop when upstream sorts the Active section by sidebarThreadSortOrder.",
+  "purpose": "The web sidebar orders undragged Active and Promachos shelf threads by the Thread sort order setting instead of creation. Drop when upstream sorts the Active section by sidebarThreadSortOrder.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/733"],
   "prs": ["https://github.com/toolboxmd/chromeria/pull/735"],
   "newFiles": [],

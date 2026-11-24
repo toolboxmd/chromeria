@@ -1991,19 +1991,19 @@ describe("queued messages keep a settled thread active", () => {
   });
 });
 
-describe("No project shelf", () => {
-  const scratchId = ProjectId.make("scratch");
+describe("Promachos shelf", () => {
+  const homeId = ProjectId.make("home");
   const otherEnvironmentId = EnvironmentId.make("environment-2");
-  const projects = [{ id: scratchId, environmentId, isScratch: true as const }];
-  const scratch = (id: string, fields: Partial<EnvironmentThreadShell> = {}) =>
-    makeThread({ id: ThreadId.make(id), title: id, projectId: scratchId, ...fields });
+  const promachosHomeRefs = [{ projectId: homeId, environmentId }];
+  const conversation = (id: string, fields: Partial<EnvironmentThreadShell> = {}) =>
+    makeThread({ id: ThreadId.make(id), title: id, projectId: homeId, ...fields });
   const layout = (
     threads: EnvironmentThreadShell[],
     options: Partial<Parameters<typeof buildThreadListV2Items>[0]> = {},
   ) =>
     buildThreadListV2Items({
       threads,
-      projects,
+      promachosHomeRefs,
       environmentId: null,
       searchQuery: "",
       now: NOW,
@@ -2011,35 +2011,38 @@ describe("No project shelf", () => {
     });
   const ids = (value: ReturnType<typeof layout>) => value.items.map((item) => item.thread.id);
 
-  it("collapses only known environment-scoped scratch identity", () => {
-    const hidden = scratch("hidden");
-    const other = scratch("other", { environmentId: otherEnvironmentId });
-    const unknown = scratch("unknown", { projectId: ProjectId.make("unknown") });
-    const normal = scratch("normal", { projectId: ProjectId.make("normal"), title: "No project" });
+  it("collapses only threads in a known Promachos home project", () => {
+    const hidden = conversation("hidden");
+    const other = conversation("other", { environmentId: otherEnvironmentId });
+    const unknown = conversation("unknown", { projectId: ProjectId.make("unknown") });
+    const normal = conversation("normal", {
+      projectId: ProjectId.make("normal"),
+      title: "Promachos",
+    });
     const result = layout([hidden, other, unknown, normal]);
-    expect(result.noProjectCount).toBe(1);
+    expect(result.promachosCount).toBe(1);
     expect(new Set(ids(result))).toEqual(new Set([other.id, unknown.id, normal.id]));
-    expect(ids(layout([hidden], { projects: [] }))).toEqual([hidden.id]);
+    expect(ids(layout([hidden], { promachosHomeRefs: [] }))).toEqual([hidden.id]);
   });
 
-  it("keeps lifecycle and pins ahead of scratch working and input threads", () => {
-    const pinned = scratch("pin", { pinnedAt: NOW });
-    const snoozed = scratch("snooze", {
+  it("keeps lifecycle and pins ahead of Promachos working and input threads", () => {
+    const pinned = conversation("pin", { pinnedAt: NOW });
+    const snoozed = conversation("snooze", {
       pinnedAt: NOW,
       settledOverride: "settled",
       snoozedUntil: "2026-06-03T00:00:00.000Z",
     });
-    const settled = scratch("settle", { pinnedAt: NOW, settledOverride: "settled" });
-    const busy = scratch("busy", {
+    const settled = conversation("settle", { pinnedAt: NOW, settledOverride: "settled" });
+    const busy = conversation("busy", {
       runtime: runningRuntime(),
     });
-    const input = scratch("input", { hasPendingUserInput: true });
+    const input = conversation("input", { hasPendingUserInput: true });
     const result = layout([pinned, snoozed, settled, busy, input], {
       workingShelfEnabled: true,
-      noProjectShelfExpanded: true,
+      promachosShelfExpanded: true,
       snoozedShelfExpanded: true,
     });
-    expect(result.noProjectCount).toBe(2);
+    expect(result.promachosCount).toBe(2);
     expect(result.workingCount).toBe(0);
     expect(result.snoozedCount).toBe(1);
     expect(result.settledCount).toBe(1);
@@ -2052,9 +2055,9 @@ describe("No project shelf", () => {
     ).toBe(true);
   });
 
-  it("retains the selected scratch row and reveals search matches without expansion", () => {
-    const selected = scratch("selected");
-    const hidden = scratch("hidden");
+  it("retains the selected Promachos row and reveals search matches without expansion", () => {
+    const selected = conversation("selected");
+    const hidden = conversation("hidden");
     expect(
       ids(layout([selected, hidden], { selectedThreadKey: `${environmentId}:selected` })),
     ).toEqual([selected.id]);
@@ -2073,44 +2076,40 @@ describe("No project shelf", () => {
   });
 
   it("honors scope, archived and child exclusions", () => {
-    const active = scratch("active");
-    const archived = scratch("archive", { archivedAt: NOW });
-    const child = scratch("child", {
+    const active = conversation("active");
+    const archived = conversation("archive", { archivedAt: NOW });
+    const child = conversation("child", {
       lineage: { ...active.lineage, relationshipToParent: "subagent" },
     });
-    expect(layout([active, archived, child]).noProjectCount).toBe(1);
-    expect(layout([active], { environmentId: otherEnvironmentId }).noProjectCount).toBe(0);
+    expect(layout([active, archived, child]).promachosCount).toBe(1);
+    expect(layout([active], { environmentId: otherEnvironmentId }).promachosCount).toBe(0);
     expect(
       layout([active], { projectRefs: [{ environmentId, projectId: ProjectId.make("normal") }] })
-        .noProjectCount,
+        .promachosCount,
     ).toBe(0);
   });
 
   it("uses active order for full cards and excludes collapsed rows from shortcuts", () => {
     const rows = [
-      scratch("later", { activeOrderKey: "c" }),
-      scratch("first", { activeOrderKey: "a" }),
+      conversation("later", { activeOrderKey: "c" }),
+      conversation("first", { activeOrderKey: "a" }),
     ];
-    const result = layout(rows, { noProjectShelfExpanded: true });
+    const result = layout(rows, { promachosShelfExpanded: true });
     expect(ids(result)).toEqual([ThreadId.make("first"), ThreadId.make("later")]);
     const list = buildThreadListV2ListItems({
       ...result,
       pendingTasks: [],
-      noProjectShelfExpanded: true,
+      promachosShelfExpanded: true,
     });
-    expect(list.map((item) => item.type)).toEqual([
-      "v2-no-project-shelf",
-      "v2-thread",
-      "v2-thread",
-    ]);
+    expect(list.map((item) => item.type)).toEqual(["v2-promachos-shelf", "v2-thread", "v2-thread"]);
     expect(threadJumpTarget(list, "thread.jump.1")).toMatchObject({
       item: { thread: { id: "first" } },
     });
     const collapsed = buildThreadListV2ListItems({ ...layout(rows), pendingTasks: [] });
     expect(collapsed).toEqual([
       {
-        type: "v2-no-project-shelf",
-        key: "v2-no-project-shelf",
+        type: "v2-promachos-shelf",
+        key: "v2-promachos-shelf",
         count: 2,
         expanded: false,
         disabled: false,
@@ -2119,27 +2118,27 @@ describe("No project shelf", () => {
     expect(threadJumpTarget(collapsed, "thread.jump.1")).toBeNull();
   });
 
-  it("places No project after Working and before Snoozed and Settled, including collapsed shelves", () => {
+  it("places Promachos after Working and before Snoozed and Settled, including collapsed shelves", () => {
     const normalId = ProjectId.make("normal");
     const threads = [
-      scratch("inbox", { projectId: normalId }),
-      scratch("working", { projectId: normalId, runtime: runningRuntime() }),
-      scratch("scratch"),
-      scratch("snoozed", { snoozedUntil: "2026-06-03T00:00:00.000Z" }),
-      scratch("settled", { settledOverride: "settled" }),
+      conversation("inbox", { projectId: normalId }),
+      conversation("working", { projectId: normalId, runtime: runningRuntime() }),
+      conversation("scratch"),
+      conversation("snoozed", { snoozedUntil: "2026-06-03T00:00:00.000Z" }),
+      conversation("settled", { settledOverride: "settled" }),
     ];
     for (const expanded of [false, true]) {
       const result = layout(threads, {
         workingShelfEnabled: true,
         workingShelfExpanded: expanded,
-        noProjectShelfExpanded: expanded,
+        promachosShelfExpanded: expanded,
         snoozedShelfExpanded: expanded,
         settledShelfExpanded: expanded,
       });
       const list = buildThreadListV2ListItems({
         ...result,
         pendingTasks: [makePendingTask("pending")],
-        noProjectShelfExpanded: expanded,
+        promachosShelfExpanded: expanded,
         workingShelfExpanded: expanded,
         snoozedShelfExpanded: expanded,
         settledShelfExpanded: expanded,
@@ -2153,7 +2152,7 @@ describe("No project shelf", () => {
               "inbox",
               "v2-working-shelf",
               "working",
-              "v2-no-project-shelf",
+              "v2-promachos-shelf",
               "scratch",
               "v2-snoozed-shelf",
               "snoozed",
@@ -2164,7 +2163,7 @@ describe("No project shelf", () => {
               "v2-pending",
               "inbox",
               "v2-working-shelf",
-              "v2-no-project-shelf",
+              "v2-promachos-shelf",
               "v2-snoozed-shelf",
               "v2-settled-shelf",
             ],
@@ -2173,29 +2172,32 @@ describe("No project shelf", () => {
     expect(buildThreadListV2ListItems({ ...layout([]), pendingTasks: [] })).toEqual([]);
   });
 
-  it("preserves queued settlement override and capability gating within scratch identity", () => {
-    const settled = scratch("settled", { settledOverride: "settled" });
-    const snoozed = scratch("snoozed", { snoozedUntil: "2026-06-03T00:00:00.000Z" });
+  it("preserves queued settlement override and capability gating within the Promachos home", () => {
+    const settled = conversation("settled", { settledOverride: "settled" });
+    const snoozed = conversation("snoozed", { snoozedUntil: "2026-06-03T00:00:00.000Z" });
     const result = layout([settled, snoozed], {
       settlementEnvironmentIds: new Set(),
       snoozeEnvironmentIds: new Set(),
     });
-    expect(result.noProjectCount).toBe(2);
+    expect(result.promachosCount).toBe(2);
     expect(result.settledCount).toBe(0);
     expect(result.snoozedCount).toBe(0);
     const queued = layout([settled], { queuedThreadKeys: new Set([`${environmentId}:settled`]) });
-    expect(queued.noProjectCount).toBe(1);
+    expect(queued.promachosCount).toBe(1);
     expect(queued.settledCount).toBe(0);
   });
 
-  it("keeps scratch rows out of move neighbors while retaining pinned arrangement", () => {
-    const hidden = scratch("hidden", { activeOrderKey: "b" });
-    const pinned = scratch("pinned", { pinnedAt: NOW });
-    const normal = scratch("normal", { projectId: ProjectId.make("real"), activeOrderKey: "a" });
+  it("keeps Promachos rows out of move neighbors while retaining pinned arrangement", () => {
+    const hidden = conversation("hidden", { activeOrderKey: "b" });
+    const pinned = conversation("pinned", { pinnedAt: NOW });
+    const normal = conversation("normal", {
+      projectId: ProjectId.make("real"),
+      activeOrderKey: "a",
+    });
     const threads = [normal, hidden, pinned];
     const ordered = getThreadListV2OrderedSection({
       threads,
-      projects,
+      promachosHomeRefs,
       section: "active",
       now: NOW,
     });
@@ -2209,9 +2211,12 @@ describe("No project shelf", () => {
     expect(planner(`${environmentId}:normal`, "down")).toBeNull();
     expect(planner(`${environmentId}:hidden`, "up")).toBeNull();
     expect(
-      getThreadListV2OrderedSection({ threads, projects, section: "pinned", now: NOW }).map(
-        (thread) => thread.id,
-      ),
+      getThreadListV2OrderedSection({
+        threads,
+        promachosHomeRefs,
+        section: "pinned",
+        now: NOW,
+      }).map((thread) => thread.id),
     ).toEqual([pinned.id]);
   });
 
@@ -2219,23 +2224,26 @@ describe("No project shelf", () => {
     ["pinned", { pinnedAt: NOW }],
     ["snoozed", { snoozedUntil: "2026-06-03T00:00:00.000Z" }],
     ["settled", { settledOverride: "settled" as const }],
-  ])("returns %s scratch threads without an Active position or key writes", (_, state) => {
-    const source = scratch("source", state);
-    const normal = scratch("normal", { projectId: ProjectId.make("real"), activeOrderKey: null });
-    const shelf = scratch("existing", { activeOrderKey: "a" });
+  ])("returns %s Promachos threads without an Active position or key writes", (_, state) => {
+    const source = conversation("source", state);
+    const normal = conversation("normal", {
+      projectId: ProjectId.make("real"),
+      activeOrderKey: null,
+    });
+    const shelf = conversation("existing", { activeOrderKey: "a" });
     for (const existing of [[], [shelf]]) {
-      for (const noProjectShelfExpanded of [false, true]) {
+      for (const promachosShelfExpanded of [false, true]) {
         const threads = [source, normal, ...existing];
         const ordered = getThreadListV2OrderedSection({
           threads,
-          projects,
+          promachosHomeRefs,
           section: "active",
           now: NOW,
         });
         const planner = createThreadMovePlanner({
           ordered,
           allThreads: threads,
-          projects,
+          promachosHomeRefs,
           section: "active",
           reorderableEnvironmentIds: new Set([environmentId]),
         });
@@ -2255,13 +2263,13 @@ describe("No project shelf", () => {
         const lifecycle = threadDropLifecycle(source, "active", NOW);
         expect(lifecycle.unpin || lifecycle.unsettle || lifecycle.unsnooze).toBe(true);
         const returned = { ...source, pinnedAt: null, settledOverride: null, snoozedUntil: null };
-        const result = layout([returned, normal, ...existing], { noProjectShelfExpanded });
-        expect(result.noProjectCount).toBe(existing.length + 1);
-        expect(ids(result).includes(source.id)).toBe(noProjectShelfExpanded);
+        const result = layout([returned, normal, ...existing], { promachosShelfExpanded });
+        expect(result.promachosCount).toBe(existing.length + 1);
+        expect(ids(result).includes(source.id)).toBe(promachosShelfExpanded);
         expect(
           getThreadListV2OrderedSection({
             threads: [returned, normal, ...existing],
-            projects,
+            promachosHomeRefs,
             section: "active",
             now: NOW,
           }).map((thread) => thread.id),
@@ -2270,9 +2278,14 @@ describe("No project shelf", () => {
     }
   });
 
-  it("accepts scratch returns to an empty Active header but still respects reorder capability", () => {
-    const source = scratch("source", { pinnedAt: NOW });
-    const input = { ordered: [], allThreads: [source], projects, section: "active" as const };
+  it("accepts Promachos returns to an empty Active header but still respects reorder capability", () => {
+    const source = conversation("source", { pinnedAt: NOW });
+    const input = {
+      ordered: [],
+      allThreads: [source],
+      promachosHomeRefs,
+      section: "active" as const,
+    };
     const destination = {
       section: "active" as const,
       targetId: null,
@@ -2292,22 +2305,22 @@ describe("No project shelf", () => {
     ).toBeNull();
   });
 
-  it("keeps positional planning for pins and unrecognized or other-environment projects", () => {
-    const source = scratch("source", { pinnedAt: NOW });
+  it("keeps positional planning for pins and unrecognized or other-environment homes", () => {
+    const source = conversation("source", { pinnedAt: NOW });
     for (const section of ["pinned", "active"] as const) {
-      for (const knownProjects of [
-        projects,
+      for (const knownHomes of [
+        promachosHomeRefs,
         [],
-        [{ ...projects[0]!, environmentId: otherEnvironmentId }],
+        [{ ...promachosHomeRefs[0]!, environmentId: otherEnvironmentId }],
       ]) {
         const plan = createThreadMovePlanner({
           ordered: [],
           allThreads: [source],
-          projects: knownProjects,
+          promachosHomeRefs: knownHomes,
           section,
           reorderableEnvironmentIds: new Set([environmentId]),
         })(`${environmentId}:source`, { section, targetId: null, placement: "before" });
-        if (section === "active" && knownProjects === projects) expect(plan).toEqual([]);
+        if (section === "active" && knownHomes === promachosHomeRefs) expect(plan).toEqual([]);
         else {
           expect(plan).toHaveLength(1);
           expect(plan![0]!.id).toBe(`${environmentId}:source`);
@@ -2318,8 +2331,8 @@ describe("No project shelf", () => {
 
   it("invalidates recycled headers when expansion, count or load state changes", () => {
     const header = {
-      type: "v2-no-project-shelf",
-      key: "v2-no-project-shelf",
+      type: "v2-promachos-shelf",
+      key: "v2-promachos-shelf",
       count: 2,
       expanded: false,
       disabled: false,

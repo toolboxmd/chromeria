@@ -325,13 +325,11 @@ type ThreadListV2ShelfHeaderProps = {
 };
 
 const SHELF_COPY = {
-  "no-project": {
-    label: msg("No project", { $context: "thread list section" }),
-    count: msg(
-      "{count, plural, one {{count} no project thread} other {{count} no project threads}}",
-    ),
-    collapse: msg("Collapses the no project threads."),
-    expand: msg("Expands the no project threads."),
+  promachos: {
+    label: msg("Promachos", { $context: "thread list section" }),
+    count: msg("{count, plural, one {{count} Promachos thread} other {{count} Promachos threads}}"),
+    collapse: msg("Collapses the Promachos threads."),
+    expand: msg("Expands the Promachos threads."),
   },
   working: {
     label: msg("Working", { $context: "thread list section" }),
@@ -376,10 +374,10 @@ function ThreadListV2ShelfHeader(
   );
 }
 
-export const ThreadListV2NoProjectShelfHeader = memo(function ThreadListV2NoProjectShelfHeader(
+export const ThreadListV2PromachosShelfHeader = memo(function ThreadListV2PromachosShelfHeader(
   props: ThreadListV2ShelfHeaderProps,
 ) {
-  return <ThreadListV2ShelfHeader {...props} kind="no-project" />;
+  return <ThreadListV2ShelfHeader {...props} kind="promachos" />;
 });
 
 export const ThreadListV2WorkingShelfHeader = memo(function ThreadListV2WorkingShelfHeader(
