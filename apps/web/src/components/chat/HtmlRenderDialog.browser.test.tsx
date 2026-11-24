@@ -16,7 +16,7 @@ import { HtmlRenderDialog } from "./HtmlRenderDialog";
 
 const dialog = (
   <HtmlRenderDialog
-    src="https://environment.test/page.html"
+    src="about:blank"
     htmlRender={{ attachmentId: "html", title: "Diagram", height: 400 }}
     onClose={() => {}}
   />
@@ -41,7 +41,6 @@ async function reportHeight(frame: HTMLIFrameElement, height: number) {
 }
 
 it("fits the frame to the page's height and scrolls only the card", async () => {
-  await page.viewport(1280, 800);
   await using _screen = await render(dialog);
   const { frame, card } = frameAndCard();
   await reportHeight(frame, 300);
@@ -49,12 +48,11 @@ it("fits the frame to the page's height and scrolls only the card", async () => 
   expect(card.scrollHeight).toBe(card.clientHeight);
   await reportHeight(frame, 5000);
   expect(frame.getBoundingClientRect().height).toBe(5000);
-  expect(card.clientHeight).toBeLessThan(800);
+  expect(card.clientHeight).toBeLessThan(window.innerHeight);
   expect(card.scrollHeight).toBeGreaterThan(card.clientHeight);
 });
 
 it("zooms by reflowing the page to the card's width instead of overflowing it", async () => {
-  await page.viewport(1280, 800);
   await using _screen = await render(dialog);
   const { frame, card } = frameAndCard();
   await reportHeight(frame, 300);
