@@ -92,6 +92,7 @@ export default defineConfig({
       entry: [
         "src/backend/DesktopBackendRecoveryWorker.ts",
         "src/electron/WindowsForegroundFocusWorker.ts",
+        "src/preview/BrowserImport/ChromiumKeychainWorker.ts",
         "src/snapShot/GlobalShiftShortcutWorker.ts",
         "src/snapShot/RegionSnapShotWorker.ts",
         "src/snapShot/SnapShotAccessibilityWorker.ts",
