@@ -73,7 +73,7 @@ it.layer(base, { excludeTestServices: true })("Promachos home", (it) => {
           encoding: "utf8",
         }).trim(),
       ).toBe("true");
-      expect(yield* fs.readFileString(path.join(root, "AGENTS.md"))).toContain("## Who you are");
+      expect(yield* fs.readFileString(path.join(root, "AGENTS.md"))).toContain("## Who I am");
       expect(yield* fs.readFileString(path.join(root, "CLAUDE.md"))).toBe("@AGENTS.md\n");
     }),
   );

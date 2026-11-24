@@ -26,9 +26,9 @@ const STARTER_AGENTS_MD = `# Promachos home
 
 This folder is the Promachos home. Every Promachos conversation runs here and reads this file.
 
-## Who you are
+## Who I am
 
-<!-- Write the Promachos persona here: his name, how he speaks, and how he works with you. -->
+<!-- Write the Promachos persona here in first person, including my name, how I speak, and how I work with the user. -->
 `;
 
 const STARTER_CLAUDE_MD = "@AGENTS.md\n";
