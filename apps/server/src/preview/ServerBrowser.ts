@@ -122,8 +122,11 @@ import { ServerCookieMirror } from "./ServerCookieMirror.ts";
 import { ServerLoginCookies } from "./ServerLoginCookies.ts";
 import {
   agentColorScheme,
+  hasPreviewViewportSize,
+  observePreviewViewport,
   presentAsChrome,
   previewViewportSize,
+  previewViewportZoom,
   RENDER_SCALE,
   resizeAgentViewport,
   ServerBrowserContexts,
@@ -483,7 +486,6 @@ interface ServerTab {
   setting: PreviewViewportSetting;
   colorScheme: PreviewAppearancePreference;
   appliedColorScheme: "light" | "dark" | null | undefined;
-  zoomFactor: number;
   /** Last usable CSS size measured on the desktop. */
   desktopViewport: { readonly width: number; readonly height: number } | null;
   desktopViewportRead: Promise<ServerTab["desktopViewport"]>;
@@ -1138,10 +1140,8 @@ const make = Effect.gen(function* () {
         ? tab.desktopViewport
         : ((await measureDesktopViewport(tab)) ?? tab.desktopViewport);
     }
-    return viewportAtZoom(
-      previewViewportSize(tab.page) ?? UNATTACHED_FILL_VIEWPORT,
-      tab.zoomFactor,
-    );
+    const size = previewViewportSize(tab.page);
+    return size && viewportAtZoom(size, previewViewportZoom(tab.page));
   };
 
   // Page resizes and loads mark the size stale; only then does status read the page. One
@@ -1179,7 +1179,7 @@ const make = Effect.gen(function* () {
       tab.page,
       tab.cdp,
       { width: size.width, height: size.height },
-      tab.zoomFactor,
+      previewViewportZoom(tab.page),
       authorize,
     );
     await broadcastViewport(tab);
@@ -1206,7 +1206,8 @@ const make = Effect.gen(function* () {
     }
     tab.colorScheme = colorScheme;
     const zoomFactor = snapshot.zoomFactor ?? 1;
-    if (zoomFactor !== tab.zoomFactor && !tab.desktop) {
+    const previousZoom = previewViewportZoom(tab.page);
+    if (zoomFactor !== previousZoom && !tab.desktop) {
       await authorize();
       await resizeAgentViewport(
         tab.page,
@@ -1215,7 +1216,6 @@ const make = Effect.gen(function* () {
         zoomFactor,
         authorize,
       );
-      tab.zoomFactor = zoomFactor;
       await broadcastViewport(tab);
     }
   };
@@ -1449,7 +1449,6 @@ const make = Effect.gen(function* () {
         setting: snapshot.viewport ?? FILL_PREVIEW_VIEWPORT,
         colorScheme: "system",
         appliedColorScheme: undefined,
-        zoomFactor: 1,
         desktopViewport: null,
         desktopViewportRead: Promise.resolve(null),
         desktopViewportNext: null,
@@ -1488,7 +1487,7 @@ const make = Effect.gen(function* () {
           page,
           cdp,
           fixedViewportSize(tab.setting) ?? UNATTACHED_FILL_VIEWPORT,
-          tab.zoomFactor,
+          1,
           authorize,
         );
       }
@@ -3962,6 +3961,12 @@ const make = Effect.gen(function* () {
     await authorize();
     const message = asRecord(raw);
     if (!message) return;
+    if (
+      (message.type === "mouse" || message.type === "wheel") &&
+      !tab.desktop &&
+      !previewViewportSize(tab.page)
+    )
+      return;
     const modifiers = modifiersOf(message);
     switch (message.type) {
       case "mouse": {
@@ -4053,9 +4058,14 @@ const make = Effect.gen(function* () {
         if (width < 100 || height < 100) return;
         viewer.requestedSize = { width, height, order: ++viewerResizeOrder };
         if (tab.setting._tag !== "fill" || tab.desktop) return;
-        const current = previewViewportSize(tab.page);
-        if (current?.width === width && current.height === height) return;
-        await resizeAgentViewport(tab.page, tab.cdp, { width, height }, tab.zoomFactor, authorize);
+        if (hasPreviewViewportSize(tab.page, { width, height })) return;
+        await resizeAgentViewport(
+          tab.page,
+          tab.cdp,
+          { width, height },
+          previewViewportZoom(tab.page),
+          authorize,
+        );
         await broadcastViewport(tab);
         return;
       }
@@ -4283,6 +4293,10 @@ const make = Effect.gen(function* () {
     );
     let screencastStarted = false;
     session.on("Page.screencastFrame", (frame) => {
+      const { deviceWidth: width, deviceHeight: height } = frame.metadata;
+      if (observePreviewViewport(tab.page, { width, height })) {
+        for (const viewer of tab.viewers) viewer.push({ _tag: "viewport", width, height });
+      }
       screencastStarted = true;
       if (framesInFlight > 0) mayHaveDropped = true;
       framesInFlight += 1;

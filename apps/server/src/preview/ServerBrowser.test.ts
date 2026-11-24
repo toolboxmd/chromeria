@@ -1754,7 +1754,7 @@ it.effect("a first still that never returns does not stall the tab's later captu
   ).pipe(Effect.provide(layer)),
 );
 
-it.effect("keeps a tab's zoom when its viewer resizes", () =>
+it.effect("keeps zoom during viewer resize and recovers if a zoom reset is interrupted", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const browser = yield* ServerBrowser.ServerBrowser;
@@ -1773,6 +1773,38 @@ it.effect("keeps a tab's zoom when its viewer resizes", () =>
         "Emulation.setDeviceMetricsOverride",
         expect.objectContaining({ deviceScaleFactor: 3 }),
       );
+      let authorized = true;
+      const send = cdp.send.getMockImplementation()!;
+      cdp.send.mockImplementation(async (method, input) => {
+        if (method === "Emulation.clearDeviceMetricsOverride") authorized = false;
+        return send(method, input);
+      });
+      cdp.send.mockClear();
+      yield* Queue.clear(viewer.output);
+      const revoked = Promise.withResolvers<void>();
+      yield* manager.adjust({ threadId: scope.thread.threadId, tabId, zoomFactor: 1 }, async () => {
+        if (!authorized) {
+          revoked.resolve();
+          throw new Error("grant revoked");
+        }
+      });
+      yield* Effect.promise(() => revoked.promise);
+      const streamSession = contexts[0]!.sessions.at(-1)!;
+      yield* viewer.input({ type: "mouse", action: "down", x: 50, y: 50, button: "left" });
+      expect(streamSession.send).not.toHaveBeenCalledWith(
+        "Input.dispatchMouseEvent",
+        expect.anything(),
+      );
+      streamSession.emit("Page.screencastFrame", {
+        data: "ZnJhbWU=",
+        sessionId: 1,
+        metadata: { deviceWidth: 1280, deviceHeight: 813 },
+      });
+      yield* viewer.input({ type: "resize", width: 390, height: 844 });
+      expect(viewportSizes(yield* Queue.takeAll(viewer.output))).toEqual(["1280x813", "390x844"]);
+      expect(
+        cdp.send.mock.calls.filter(([method]) => method === "Emulation.setVisibleSize"),
+      ).toEqual([["Emulation.setVisibleSize", { width: 390, height: 844 }]]);
     }),
   ).pipe(Effect.provide(layer)),
 );
