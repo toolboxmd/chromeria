@@ -5941,5 +5941,13 @@
   "8ab3b8f1696c6065": "Mode Wight en attente sur ce fil",
   "5f25b3f70e83f8be": "Mode Wight activé",
   "c5c3528c7b652195": "Au repos : désactivé",
-  "f1bdbeb0516919a8": "Vous : {text}"
+  "f1bdbeb0516919a8": "Vous : {text}",
+  "73eccde58090af65": "{count} exécutions, {open} en cours",
+  "64c260007bd546f1": "Exécutions ({count})",
+  "e2fdd7336f980905": "{count} en cours",
+  "7652438fbefdbc56": "En cours",
+  "bb720fd1f97c6330": "Échec",
+  "418a0a04968c6299": "En cours · à vous de jouer",
+  "86ec6235858128b4": "Clos",
+  "bade26d0f293b308": "Ouvrir le fil de l’exécution du {when}"
 }

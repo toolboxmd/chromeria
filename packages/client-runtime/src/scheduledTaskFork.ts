@@ -3,12 +3,20 @@ import {
   type ScheduledTask,
   type ScheduledTaskCommand,
   type ScheduledTaskForkSchedule,
+  type EnvironmentId,
   type ScheduledTaskOutcomeCheck,
+  type ScheduledTaskRunRecord,
+  type ScopedThreadRef,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import { Atom } from "effect/reactivity";
 import * as Option from "effect/Option";
 import { mFallback, msg } from "gt-i18n";
 import type { MFunctionType } from "gt-i18n/types";
+
+import { scopeThreadRef } from "./environment/scoped.ts";
+import type { EnvironmentThreadShell } from "./state/models.ts";
 
 /**
  * Fork: what web and mobile show for the fork's
@@ -412,4 +420,97 @@ export function uniqueMachineLabels(
       ];
     }),
   );
+}
+
+/** What a run's strip mark shows: a failure outranks an open thread, which outranks success. */
+export type ScheduledTaskRunMark = "running" | "failed" | "open" | "succeeded";
+
+export interface ScheduledTaskRunView {
+  readonly run: ScheduledTaskRunRecord;
+  readonly mark: ScheduledTaskRunMark;
+  /** Null when the run has no thread or its thread is gone. */
+  readonly thread: {
+    readonly id: ThreadId;
+    readonly settled: boolean;
+    /** Open, finished, and the newest run in its thread: the user has not settled it yet. */
+    readonly needsUser: boolean;
+  } | null;
+  readonly durationMs: number | null;
+}
+
+export interface ScheduledTaskRunViews {
+  /** Newest first, as the list shows them; the strip reads them in reverse. */
+  readonly runs: ReadonlyArray<ScheduledTaskRunView>;
+  readonly open: number;
+}
+
+/**
+ * Whether the client's own copy of each run's thread is settled, as one letter per thread, so a
+ * task row re-renders only when one of its threads is settled or reopened. `key` is
+ * `scheduledTaskRunThreadsKey`; `shellAtom` is the app's quiet thread shell atom.
+ */
+export const createScheduledTaskRunThreadStatesAtom = (
+  shellAtom: (
+    ref: ScopedThreadRef,
+  ) => Atom.Atom<Pick<EnvironmentThreadShell, "settledOverride"> | null>,
+) =>
+  Atom.family((key: string) => {
+    const [environmentId, ...threadIds] = JSON.parse(key) as [EnvironmentId, ...ThreadId[]];
+    const shells = threadIds.map((threadId) => shellAtom(scopeThreadRef(environmentId, threadId)));
+    return Atom.make((get) =>
+      shells
+        .map((shell) => {
+          const thread = get(shell);
+          return thread === null ? "?" : thread.settledOverride === "settled" ? "s" : "o";
+        })
+        .join(""),
+    );
+  });
+
+const runThreadIds = (runs: ReadonlyArray<ScheduledTaskRunRecord>) => [
+  ...new Set(runs.flatMap((run) => (run.thread === null ? [] : [run.thread.id]))),
+];
+
+export const scheduledTaskRunThreadsKey = (
+  environmentId: EnvironmentId,
+  runs: ReadonlyArray<ScheduledTaskRunRecord>,
+) => JSON.stringify([environmentId, ...runThreadIds(runs)]);
+
+/**
+ * A task's runs with each thread's state. `liveStates` is the thread states atom's value for
+ * these runs: the client's own copy of a thread follows the user settling or reopening it, and a
+ * thread the client does not hold falls back to what the server read. Runs that share a thread
+ * count it once, at its newest run.
+ */
+export function scheduledTaskRunViews(
+  runs: ReadonlyArray<ScheduledTaskRunRecord>,
+  liveStates: string,
+): ScheduledTaskRunViews {
+  const threadIds = runThreadIds(runs);
+  const liveSettled = (threadId: ThreadId) => {
+    const state = liveStates[threadIds.indexOf(threadId)];
+    return state === "s" ? true : state === "o" ? false : undefined;
+  };
+  const seen = new Set<ThreadId>();
+  let open = 0;
+  const views = runs.map((run): ScheduledTaskRunView => {
+    const started = Date.parse(run.startedAt);
+    const ended = run.endedAt === null ? Number.NaN : Date.parse(run.endedAt);
+    const durationMs = Number.isFinite(ended - started) ? Math.max(0, ended - started) : null;
+    const live = run.thread === null ? undefined : liveSettled(run.thread.id);
+    if (run.thread === null || (live === undefined && run.thread.state === "missing"))
+      return { run, mark: run.status, thread: null, durationMs };
+    const settled = live ?? run.thread.state === "settled";
+    const newest = !seen.has(run.thread.id);
+    seen.add(run.thread.id);
+    const needsUser = !settled && newest && run.status !== "running";
+    if (needsUser) open += 1;
+    return {
+      run,
+      mark: run.status === "succeeded" ? (needsUser ? "open" : "succeeded") : run.status,
+      thread: { id: run.thread.id, settled, needsUser },
+      durationMs,
+    };
+  });
+  return { runs: views, open };
 }

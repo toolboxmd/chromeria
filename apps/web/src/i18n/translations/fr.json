@@ -13549,5 +13549,10 @@
     },
     "."
   ],
-  "f1bdbeb0516919a8": "Vous : {text}"
+  "f1bdbeb0516919a8": "Vous : {text}",
+  "e2fdd7336f980905": "{count} en cours",
+  "64c260007bd546f1": "Exécutions ({count})",
+  "73eccde58090af65": "{count} exécutions, {open} en cours",
+  "418a0a04968c6299": "En cours · à vous de jouer",
+  "86ec6235858128b4": "Clos"
 }

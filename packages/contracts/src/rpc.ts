@@ -5,6 +5,7 @@ import { OrchestratorMcpTaskCancelResult } from "./orchestratorMcp.ts";
 import { PeerGrant, PeerGrantSummary, PeerGrantUpdate } from "./peerAuthority.ts";
 import { OrchestratorMcpFailure } from "./orchestratorMcp.ts";
 import { PromachosHomeRpcGroup } from "./promachosHome.ts";
+import { ScheduledTaskRunsRpcGroup } from "./scheduledTaskRuns.ts";
 import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
@@ -2850,6 +2851,8 @@ export const WsRpcGroup = RpcGroup.make(
   .merge(DeviceViewerClientRpcGroup)
   .merge(PreviewViewerClientRpcGroup)
   .merge(PromachosHomeRpcGroup)
+  // Fork: scheduled task runs (toolboxmd/chromeria#951).
+  .merge(ScheduledTaskRunsRpcGroup)
   .merge(IssueLinksRpcGroup)
   // Fork: Spectrum report abandonment (toolboxmd/chromeria#176).
   .merge(SpectrumRpcGroup)

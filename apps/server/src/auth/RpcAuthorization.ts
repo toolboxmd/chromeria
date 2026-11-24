@@ -26,6 +26,7 @@ import {
   AuthTerminalOperateScope,
   FEATURE_MAP_WS_METHODS,
   ISSUE_WS_METHODS,
+  SCHEDULED_TASK_RUNS_WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
   type OrchestrationV2Command,
   type OrchestrationV2ThreadLaunchInput,
@@ -265,6 +266,8 @@ export const RPC_REQUIRED_SCOPES = {
   [FEATURE_MAP_WS_METHODS.read]: AuthOrchestrationReadScope,
   // Fork: Issue links (toolboxmd/t3code#28).
   ...ISSUE_LINK_RPC_SCOPES,
+  // Fork: scheduled task runs (toolboxmd/chromeria#951).
+  [SCHEDULED_TASK_RUNS_WS_METHODS.list]: AuthOrchestrationReadScope,
 } as const satisfies Readonly<Record<WsRpcMethod, AuthEnvironmentScope>>;
 
 export function requiredScopeForRpcMethod(method: string): AuthEnvironmentScope {

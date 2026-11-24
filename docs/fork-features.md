@@ -1747,15 +1747,17 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "scheduled-tasks",
-  "purpose": "Extend upstream's single scheduler with outcome checks that keep one thread working until a pinned check passes, a one-shot trigger, fixed_time time zones, extra times, month days and minute spreading with catch-up after downtime (stored weekly and monthly triggers migrate to fixed_time before recovery), Prism roles, shell command tasks with failure alerts, the Spectrum report completion fence, and the Chromeria v1 task import. Upstream PR pingdotgg/t3code#35192 shares monthDays and its last-day rule but forbids any weekdays with it and clears omitted month days; absorbing it needs reconciliation and equivalence proof, and its ten-minute missed-run skip cannot replace the fork's catch-up. On web and desktop the list is its own page, opened from a sidebar icon; old Settings links redirect there.",
+  "purpose": "Extend upstream's single scheduler with outcome checks that keep one thread working until a pinned check passes, a one-shot trigger, fixed_time time zones, extra times, month days and minute spreading with catch-up after downtime (stored weekly and monthly triggers migrate to fixed_time before recovery), Prism roles, shell command tasks with failure alerts, each task's kept runs with their threads' state on its row, the Spectrum report completion fence, and the Chromeria v1 task import. Upstream PR pingdotgg/t3code#35192 shares monthDays and its last-day rule but forbids any weekdays with it and clears omitted month days; absorbing it needs reconciliation and equivalence proof, and its ten-minute missed-run skip cannot replace the fork's catch-up. On web and desktop the list is its own page, opened from a sidebar icon; old Settings links redirect there.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/174",
     "https://github.com/toolboxmd/chromeria/issues/707",
     "https://github.com/toolboxmd/chromeria/issues/719",
-    "https://github.com/toolboxmd/chromeria/issues/920"
+    "https://github.com/toolboxmd/chromeria/issues/920",
+    "https://github.com/toolboxmd/chromeria/issues/951"
   ],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/174-scheduled-tasks-v2"],
   "newFiles": [
+    "apps/mobile/src/features/settings/ScheduledTaskRuns.tsx",
     "apps/mobile/src/features/settings/scheduledTaskDraftFork.test.ts",
     "apps/mobile/src/features/settings/scheduledTaskFork.tsx",
     "apps/server/src/scheduledTaskChecks/DispatchPolicy.ts",
@@ -1771,6 +1773,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/scheduledTaskChecks/handoff.test.ts",
     "apps/server/src/scheduledTaskChecks/handoff.ts",
     "apps/server/src/scheduledTaskChecks/runPrompt.ts",
+    "apps/server/src/scheduledTaskChecks/runs.test.ts",
+    "apps/server/src/scheduledTaskChecks/runs.ts",
     "apps/server/src/scheduledTaskChecks/schedules.test.ts",
     "apps/server/src/scheduledTaskChecks/schedules.ts",
     "apps/server/src/scheduledTaskChecks/spectra.testkit.ts",
@@ -1783,6 +1787,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/scheduledTaskChecks/v1Import.ts",
     "apps/web/src/components/ScheduledCommandNotifications.browser.test.tsx",
     "apps/web/src/components/ScheduledCommandNotifications.tsx",
+    "apps/web/src/components/settings/ScheduledTaskRuns.tsx",
     "apps/web/src/components/settings/scheduledTaskFork.logic.test.ts",
     "apps/web/src/components/settings/scheduledTaskFork.logic.ts",
     "apps/web/src/components/settings/scheduledTaskFork.tsx",
@@ -1792,7 +1797,8 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "packages/client-runtime/src/scheduledTaskFork.test.ts",
     "packages/client-runtime/src/scheduledTaskFork.ts",
     "packages/contracts/src/scheduledTaskChecks.test.ts",
-    "packages/contracts/src/scheduledTaskChecks.ts"
+    "packages/contracts/src/scheduledTaskChecks.ts",
+    "packages/contracts/src/scheduledTaskRuns.ts"
   ],
   "upstreamFiles": [
     "apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.tsx",

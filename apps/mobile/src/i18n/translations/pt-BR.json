@@ -5941,5 +5941,13 @@
   "8ab3b8f1696c6065": "Modo Wight aguardando esta thread",
   "5f25b3f70e83f8be": "Modo Wight ativado",
   "c5c3528c7b652195": "Em espera: desligado",
-  "f1bdbeb0516919a8": "Você: {text}"
+  "f1bdbeb0516919a8": "Você: {text}",
+  "73eccde58090af65": "{count} execuções, {open} em aberto",
+  "64c260007bd546f1": "Execuções ({count})",
+  "e2fdd7336f980905": "{count} em aberto",
+  "7652438fbefdbc56": "Em execução",
+  "bb720fd1f97c6330": "Falhou",
+  "418a0a04968c6299": "Em aberto · precisa de você",
+  "86ec6235858128b4": "Concluída",
+  "bade26d0f293b308": "Abrir a thread da execução de {when}"
 }

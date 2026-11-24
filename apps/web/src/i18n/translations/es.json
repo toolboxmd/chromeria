@@ -13544,5 +13544,10 @@
     },
     "."
   ],
-  "f1bdbeb0516919a8": "Tú: {text}"
+  "f1bdbeb0516919a8": "Tú: {text}",
+  "e2fdd7336f980905": "{count} sin resolver",
+  "64c260007bd546f1": "Ejecuciones ({count})",
+  "73eccde58090af65": "{count} ejecuciones, {open} sin resolver",
+  "418a0a04968c6299": "Sin resolver · te necesita",
+  "86ec6235858128b4": "Resuelto"
 }

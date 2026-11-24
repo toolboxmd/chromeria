@@ -13566,5 +13566,10 @@
     },
     "."
   ],
-  "f1bdbeb0516919a8": "You: {text}"
+  "f1bdbeb0516919a8": "You: {text}",
+  "e2fdd7336f980905": "{count} open",
+  "64c260007bd546f1": "Runs ({count})",
+  "73eccde58090af65": "{count} runs, {open} open",
+  "418a0a04968c6299": "Open · needs you",
+  "86ec6235858128b4": "Settled"
 }

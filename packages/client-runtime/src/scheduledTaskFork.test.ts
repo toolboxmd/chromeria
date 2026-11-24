@@ -1,4 +1,9 @@
-import type { ScheduledTask, ScheduledTaskOutcomeCheck } from "@t3tools/contracts";
+import {
+  ThreadId,
+  type ScheduledTask,
+  type ScheduledTaskOutcomeCheck,
+  type ScheduledTaskRunRecord,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -9,6 +14,7 @@ import {
   outcomeCheckLabel,
   scheduledTaskFrequency,
   scheduledTaskFrequencyGroups,
+  scheduledTaskRunViews,
   scheduledTaskSections,
   uniqueMachineLabels,
 } from "./scheduledTaskFork.ts";
@@ -487,5 +493,54 @@ describe("machine labels", () => {
       "Lab · https://lab · d",
       "rocky",
     ]);
+  });
+});
+
+describe("scheduled task run views", () => {
+  const run = (
+    id: string,
+    status: ScheduledTaskRunRecord["status"],
+    thread: readonly [string, "open" | "settled" | "missing"] | null,
+  ): ScheduledTaskRunRecord => ({
+    id,
+    startedAt: "2026-11-22T08:00:00.000Z",
+    endedAt: status === "running" ? null : "2026-11-22T08:02:30.000Z",
+    status,
+    thread: thread === null ? null : { id: ThreadId.make(thread[0]), state: thread[1] },
+    summary: null,
+  });
+
+  it("mark each run and count the threads that still need the user", () => {
+    const views = scheduledTaskRunViews(
+      [
+        run("running", "running", ["shared", "open"]),
+        run("newest-in-shared", "succeeded", ["shared", "open"]),
+        run("older-in-shared", "succeeded", ["shared", "open"]),
+        run("failed-open", "failed", ["failed", "open"]),
+        run("reopened", "succeeded", ["reopened", "settled"]),
+        run("settled-here", "succeeded", ["settled-here", "open"]),
+        run("deleted", "succeeded", ["deleted", "missing"]),
+        run("command", "succeeded", null),
+      ],
+      // One letter per distinct thread, in run order: the client's own thread wins over what
+      // the server read, and "?" is a thread the client does not hold.
+      "??os?",
+    );
+    expect(
+      views.runs.map((view) => [view.run.id, view.mark, view.thread?.needsUser ?? null]),
+    ).toEqual([
+      // A thread counts once, at its newest run, and never while that run is running.
+      ["running", "running", false],
+      ["newest-in-shared", "succeeded", false],
+      ["older-in-shared", "succeeded", false],
+      ["failed-open", "failed", true],
+      ["reopened", "open", true],
+      ["settled-here", "succeeded", false],
+      ["deleted", "succeeded", null],
+      ["command", "succeeded", null],
+    ]);
+    expect(views.open).toBe(2);
+    expect(views.runs[0]!.durationMs).toBeNull();
+    expect(views.runs[1]!.durationMs).toBe(150_000);
   });
 });

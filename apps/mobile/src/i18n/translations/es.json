@@ -5941,5 +5941,13 @@
   "8ab3b8f1696c6065": "Modo Wight esperando en este hilo",
   "5f25b3f70e83f8be": "Modo Wight activado",
   "c5c3528c7b652195": "En reposo: desactivado",
-  "f1bdbeb0516919a8": "Tú: {text}"
+  "f1bdbeb0516919a8": "Tú: {text}",
+  "73eccde58090af65": "{count} ejecuciones, {open} sin resolver",
+  "64c260007bd546f1": "Ejecuciones ({count})",
+  "e2fdd7336f980905": "{count} sin resolver",
+  "7652438fbefdbc56": "En ejecución",
+  "bb720fd1f97c6330": "Falló",
+  "418a0a04968c6299": "Sin resolver · te necesita",
+  "86ec6235858128b4": "Resuelto",
+  "bade26d0f293b308": "Abrir el hilo de la ejecución del {when}"
 }

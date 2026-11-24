@@ -5947,5 +5947,13 @@
   "8ab3b8f1696c6065": "Wight-Modus wartet auf diesen Thread",
   "5f25b3f70e83f8be": "Wight-Modus an",
   "c5c3528c7b652195": "Im Leerlauf: aus",
-  "f1bdbeb0516919a8": "Du: {text}"
+  "f1bdbeb0516919a8": "Du: {text}",
+  "73eccde58090af65": "{count} Ausführungen, {open} offen",
+  "64c260007bd546f1": "Ausführungen ({count})",
+  "e2fdd7336f980905": "{count} offen",
+  "7652438fbefdbc56": "Läuft",
+  "bb720fd1f97c6330": "Fehlgeschlagen",
+  "418a0a04968c6299": "Offen · wartet auf dich",
+  "86ec6235858128b4": "Erledigt",
+  "bade26d0f293b308": "Thread der Ausführung vom {when} öffnen"
 }
