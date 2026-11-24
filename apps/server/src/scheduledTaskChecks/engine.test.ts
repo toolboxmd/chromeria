@@ -497,7 +497,9 @@ it.effect("waits for upstream usage-limit recovery and resumes itself only when 
     h.set({ usageLimit: null, runError: null });
     h.pass(true);
     yield* h.runs.drive(task());
-    assert.equal((yield* h.state()).runs[0]?.stage, "done");
+    const recovered = yield* h.state();
+    assert.equal(recovered.runs[0]?.stage, "done");
+    assert.deepEqual(checkedRunStatus(recovered), { status: "succeeded", error: null });
     assert.deepEqual(h.checks, ["check@/worktree"]);
 
     // Without upstream recovery the run resumes its own thread at the reset.

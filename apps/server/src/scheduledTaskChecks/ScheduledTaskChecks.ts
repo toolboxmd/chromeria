@@ -563,7 +563,9 @@ const policyLayer = Layer.effect(
                 compact({
                   ...state,
                   runs: state.runs.map((entry) =>
-                    entry.id === run.id ? { ...entry, stage: "done", error, retryAt: null } : entry,
+                    entry.id === run.id
+                      ? { ...entry, stage: "done", retiredAuthority: true, error, retryAt: null }
+                      : entry,
                   ),
                   failureStreak: state.failureStreak + 1,
                   lastError: error,

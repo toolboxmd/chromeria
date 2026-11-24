@@ -1557,6 +1557,7 @@ it.live("preserves active checked authority and resumes after an explicit pause"
           {
             ...active.runs[0],
             stage: "done",
+            retiredAuthority: true,
             error: "The run stopped when its automation authority was retired.",
           },
         ]);
