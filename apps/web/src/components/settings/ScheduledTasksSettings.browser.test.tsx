@@ -1,6 +1,6 @@
-import { RegistryContext } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
-import { Atom, AtomRegistry } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import {
   DEFAULT_UNIFIED_SETTINGS,
   EnvironmentId,
@@ -63,6 +63,7 @@ const state = vi.hoisted(() => ({
 }));
 const secondaryId = EnvironmentId.make("secondary");
 const permissions = new Map<string, Atom.Writable<boolean>>();
+const tasksFailed = Atom.make(false);
 
 function setup() {
   state.connected = true;
@@ -107,6 +108,7 @@ vi.mock(import("./SettingsScopeContext"), async (original) => {
           : [entry]
         : [],
       environment: entry,
+      groups: [],
       target: null,
       targets: [],
     };
@@ -123,6 +125,8 @@ vi.mock(import("../../state/server"), async (original) => {
     ...actual,
     serverEnvironment: {
       ...actual.serverEnvironment,
+      // The list reads every environment's live tasks through atoms, not the query hook.
+      scheduledTasksLive: (() => Atom.make(AsyncResult.success({ tasks: [task] }))) as never,
       deleteScheduledTask: {
         ...actual.serverEnvironment.deleteScheduledTask,
         run: state.remove,
@@ -141,18 +145,23 @@ vi.mock(import("../../state/threads"), async (original) => {
     threadFamilies: { ...actual.threadFamilies, familyAtom: (() => threadFamilyRead) as never },
   };
 });
-// Mirrors the real query: a null request (disconnected environment) has no data.
+// Mirrors the real query: a null request (disconnected environment) has no data, and a failed
+// stream keeps its last list beside the error.
 vi.mock(import("../../state/query"), async (original) => ({
   ...(await original()),
-  useEnvironmentQuery: ((request: unknown) => ({
-    data:
-      request === null || request === threadFamilyRead
-        ? request
-        : { tasks: state.tasksLoaded ? [task] : [] },
-    error: null,
-    isPending: false,
-    refresh: vi.fn(),
-  })) as never,
+  useEnvironmentQuery: ((request: unknown) => {
+    const failed = useAtomValue(tasksFailed) && request !== null && request !== threadFamilyRead;
+    return {
+      data:
+        request === null || request === threadFamilyRead
+          ? request
+          : { tasks: state.tasksLoaded ? [task] : [] },
+      error: failed ? "Connection lost" : null,
+      isPending: false,
+      isSuccess: request !== null && !failed,
+      refresh: vi.fn(),
+    };
+  }) as never,
 }));
 vi.mock(import("../../state/environments"), async (original) => ({
   ...(await original()),
@@ -177,16 +186,20 @@ describe("ScheduledTasksSettings", () => {
         <ConfirmDialogHost />
       </>,
     );
-    await userEvent.click(screen.getByRole("button", { name: "Actions for Review issues" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Actions for Review issues · Laptop" }),
+    );
     await userEvent.click(page.getByRole("menuitem", { name: "Delete", exact: true }));
     await expect.element(page.getByRole("alertdialog")).toBeVisible();
     expect(state.remove).not.toHaveBeenCalled();
     await userEvent.click(page.getByRole("button", { name: "Cancel", exact: true }));
     expect(state.remove).not.toHaveBeenCalled();
     await expect
-      .element(screen.getByRole("button", { name: "Actions for Review issues" }))
+      .element(screen.getByRole("button", { name: "Actions for Review issues · Laptop" }))
       .toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "Actions for Review issues" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Actions for Review issues · Laptop" }),
+    );
     await userEvent.click(page.getByRole("menuitem", { name: "Delete", exact: true }));
     await userEvent.click(page.getByRole("button", { name: "Confirm", exact: true }));
     await vi.waitFor(() =>
@@ -292,5 +305,44 @@ describe("ScheduledTasksSettings", () => {
 
     await expect.element(dialog).toHaveAttribute("data-open");
     await expect.element(name).toHaveValue("My draft");
+  });
+
+  it("does not open a linked task from a failed subscription's stale list", async () => {
+    setup();
+    const registry = AtomRegistry.make();
+    using _registry = { [Symbol.dispose]: () => registry.dispose() };
+    registry.set(tasksFailed, true);
+    await using screen = await render(
+      <RegistryContext.Provider value={registry}>
+        <ScheduledTasksSettings taskId={task.id} />
+      </RegistryContext.Provider>,
+    );
+    await expect.element(screen.getByText("Review issues", { exact: true })).toBeVisible();
+    await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("blocks saving while the task subscription is failed and keeps the draft", async () => {
+    setup();
+    const registry = AtomRegistry.make();
+    using _registry = { [Symbol.dispose]: () => registry.dispose() };
+    await using _screen = await render(
+      <RegistryContext.Provider value={registry}>
+        <ScheduledTasksSettings taskId={task.id} />
+      </RegistryContext.Provider>,
+    );
+    const dialog = page.getByRole("dialog");
+    const name = dialog.getByRole("textbox", { name: "Name" });
+    const save = dialog.getByRole("button", { name: "Save task" });
+    await expect.element(name).toHaveValue("Review issues");
+    await userEvent.fill(name, "Review stale issues");
+    await expect.element(save).toBeEnabled();
+
+    await act(() => registry.set(tasksFailed, true));
+    await expect.element(dialog.getByText("Connection lost")).toBeVisible();
+    await expect.element(save).toBeDisabled();
+    await expect.element(name).toHaveValue("Review stale issues");
+
+    await act(() => registry.set(tasksFailed, false));
+    await expect.element(save).toBeEnabled();
   });
 });

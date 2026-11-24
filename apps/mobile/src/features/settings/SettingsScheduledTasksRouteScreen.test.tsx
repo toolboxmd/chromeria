@@ -57,6 +57,8 @@ vi.mock("./components/SettingsEnvironmentFilterHeader", () => ({
   useSettingsEnvironmentMenu: () => null,
 }));
 vi.mock("./components/ScheduledTaskPromptField", () => ({ ScheduledTaskPromptField: () => null }));
+vi.mock("../threads/ExecutionPurposePicker", () => ({ ExecutionPurposePicker: () => null }));
+vi.mock("./spectrumReportAction", () => ({ useAbandonReport: () => ({}) }));
 vi.mock("../layout/workspace/useSelectWorkspaceDetail", () => ({
   useSelectWorkspaceDetail: () => vi.fn(),
 }));
@@ -128,6 +130,7 @@ vi.mock("../../state/server", () => ({
     upsertScheduledTask: { permissionAtom: () => Atom.make(true) },
   },
 }));
+vi.mock("../../state/environments", () => ({ useEnvironments: () => ({ environments: [] }) }));
 vi.mock("../../state/query", () => ({
   useEnvironmentQuery: () => ({ data: { tasks: mocks.tasks, threads: [] } }),
 }));
@@ -183,7 +186,12 @@ beforeEach(() => {
   startScheduledTaskEditor({
     environmentId: EnvironmentId.make("environment"),
     environmentLabel: "Environment",
-    draft: { ...draft, schedule: { ...draft.schedule, intervalMinutes: "60" } },
+    // The fork asks a legacy task for its purpose before saving; this task chose unscoped work.
+    draft: {
+      ...draft,
+      purposeScope: { type: "unscoped", reason: "deliberate" },
+      schedule: { ...draft.schedule, intervalMinutes: "60" },
+    },
   });
   act(() =>
     root.render(

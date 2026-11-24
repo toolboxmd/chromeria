@@ -162,7 +162,7 @@ export function ThreadAutomationsPanel(props: {
                 aria-label={gt("Manage scheduled tasks")}
                 onClick={() =>
                   void navigate({
-                    to: "/settings/scheduled-tasks",
+                    to: "/scheduled-tasks",
                     search: { environmentId: props.environmentId },
                   })
                 }
@@ -222,7 +222,7 @@ export function ThreadAutomationsPanel(props: {
                     aria-label={gt("Edit {title}", { title: task.title })}
                     onClick={() =>
                       void navigate({
-                        to: "/settings/scheduled-tasks",
+                        to: "/scheduled-tasks",
                         search: { environmentId: props.environmentId, taskId: task.id },
                       })
                     }

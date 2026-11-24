@@ -1499,12 +1499,31 @@ export function createServerEnvironmentAtoms<R, E>(
   const updateSettings = createEnvironmentRpcCommand(runtime, {
     label: "environment-data:server:update-settings",
     tag: WS_METHODS.serverUpdateSettings,
+    // This client stores partial Prism project overrides; the server drops
+    // empty Prism lists from project override writes that do not say so.
+    execute: (input) =>
+      requestGuarded(
+        WS_METHODS.serverUpdateSettings,
+        input.patch.projectSettingsOverrides === undefined
+          ? input
+          : { ...input, patch: { ...input.patch, prismRoleOverridesPartial: true } },
+      ),
     scheduler: configScheduler,
     concurrency: configConcurrency,
   });
 
+  // Fork: whether the config came from this session's server rather than the launch cache.
+  const configLiveAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make(
+      (get) =>
+        AsyncResult.getOrElse(get(configProjectionFamily(environmentId)), () => null)?.source ===
+        "live",
+    ).pipe(Atom.withLabel(`environment-data:server:config-live:${environmentId}`)),
+  );
+
   return {
     configValueAtom,
+    configLiveAtom,
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",
       tag: WS_METHODS.serverRunStorageCleanup,
@@ -1658,6 +1677,12 @@ export function createServerEnvironmentAtoms<R, E>(
         return Atom.make((get) => snapshot(get)?.definition?.revision);
       },
     }),
+    /** Full scheduled-task list, with command output the live list leaves out. */
+    scheduledTasksList: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:scheduled-tasks:list",
+      tag: WS_METHODS.scheduledTasksList,
+    }),
+    /** Live scheduled-task list: snapshot on subscribe, fresh list after every server-side change. */
     scheduledTasksLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:server:scheduled-tasks:live",
       tag: WS_METHODS.scheduledTasksSubscribe,
