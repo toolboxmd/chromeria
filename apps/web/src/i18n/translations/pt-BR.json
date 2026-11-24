@@ -13552,7 +13552,7 @@
   "f1bdbeb0516919a8": "Você: {text}",
   "e2fdd7336f980905": "{count} em aberto",
   "64c260007bd546f1": "Execuções ({count})",
-  "73eccde58090af65": "{count} execuções, {open} em aberto",
   "418a0a04968c6299": "Em aberto · precisa de você",
-  "86ec6235858128b4": "Concluída"
+  "86ec6235858128b4": "Concluída",
+  "f421866ce3ce0c82": "{count, plural, one {{count} execução} other {{count} execuções}}, {open} em aberto"
 }

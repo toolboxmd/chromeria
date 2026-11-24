@@ -480,14 +480,6 @@ const LIVE_RUN_STATUSES: ReadonlySet<string> = new Set([
   "waiting",
 ]);
 
-/**
- * Whether the runs should be read again: the same threads, one of them now in another state.
- * A plain task's row on the live task list does not change when its run ends, so the thread
- * ending its run is what says the run's status and summary are stale.
- */
-export const scheduledTaskRunThreadsChanged = (previous: string, next: string) =>
-  previous.length === next.length && previous !== next;
-
 const runThreadIds = (runs: ReadonlyArray<ScheduledTaskRunRecord>) => [
   ...new Set(runs.flatMap((run) => (run.thread === null ? [] : [run.thread.id]))),
 ];
@@ -496,6 +488,32 @@ export const scheduledTaskRunThreadsKey = (
   environmentId: EnvironmentId,
   runs: ReadonlyArray<ScheduledTaskRunRecord>,
 ) => JSON.stringify([environmentId, ...runThreadIds(runs)]);
+
+/** The thread states atom's key and value, as a run list was last seen with them. */
+export interface ScheduledTaskRunThreadsSeen {
+  readonly key: string;
+  readonly states: string;
+}
+
+/**
+ * Whether the runs should be read again. A plain task's row on the live task list does not
+ * change when its run ends, so its thread says so instead: a held thread changed state, or a
+ * thread first seen is already idle while the server still read its run as running (the run
+ * ended between the server's read and the client learning the thread).
+ */
+export function scheduledTaskRunsStale(
+  previous: ScheduledTaskRunThreadsSeen,
+  next: ScheduledTaskRunThreadsSeen,
+  runs: ReadonlyArray<ScheduledTaskRunRecord>,
+): boolean {
+  if (previous.key === next.key) return previous.states !== next.states;
+  const threadIds = runThreadIds(runs);
+  return runs.some((run) => {
+    if (run.status !== "running" || run.thread === null) return false;
+    const state = next.states[threadIds.indexOf(run.thread.id)];
+    return state === "o" || state === "s";
+  });
+}
 
 /**
  * A task's runs with each thread's state. `liveStates` is the thread states atom's value for

@@ -14,7 +14,7 @@ import {
   outcomeCheckLabel,
   scheduledTaskFrequency,
   scheduledTaskFrequencyGroups,
-  scheduledTaskRunThreadsChanged,
+  scheduledTaskRunsStale,
   scheduledTaskRunViews,
   scheduledTaskSections,
   uniqueMachineLabels,
@@ -541,11 +541,26 @@ describe("scheduled task run views", () => {
       ["command", "succeeded", null],
     ]);
     expect(views.open).toBe(2);
-    // Only a thread changing state says the runs are stale, never a new set of threads.
-    expect(scheduledTaskRunThreadsChanged("bo", "oo")).toBe(true);
-    expect(scheduledTaskRunThreadsChanged("oo", "oo")).toBe(false);
-    expect(scheduledTaskRunThreadsChanged("", "bo")).toBe(false);
-    expect(views.runs[0]!.durationMs).toBeNull();
-    expect(views.runs[1]!.durationMs).toBe(150_000);
+  });
+
+  it("say the runs are stale when a thread says a run ended", () => {
+    const runs = [run("r", "running", ["t", "open"])];
+    const key = '["env","t"]';
+    // A held thread ended its run.
+    expect(scheduledTaskRunsStale({ key, states: "b" }, { key, states: "o" }, runs)).toBe(true);
+    expect(scheduledTaskRunsStale({ key, states: "o" }, { key, states: "o" }, runs)).toBe(false);
+    // The run ended before the client learned its thread: first seen, already idle.
+    expect(scheduledTaskRunsStale({ key: "[]", states: "" }, { key, states: "o" }, runs)).toBe(
+      true,
+    );
+    // First seen and still busy, or already read as finished: nothing to read again.
+    expect(scheduledTaskRunsStale({ key: "[]", states: "" }, { key, states: "b" }, runs)).toBe(
+      false,
+    );
+    expect(
+      scheduledTaskRunsStale({ key: "[]", states: "" }, { key, states: "o" }, [
+        run("r", "succeeded", ["t", "open"]),
+      ]),
+    ).toBe(false);
   });
 });

@@ -10,17 +10,37 @@ import { ensureCheckSchema, writeCheckState } from "./store.ts";
 
 const taskId = ScheduledTaskId.make("scheduled-task:daily");
 
-const insertThread = (id: string, payload: object, deletedAt: string | null = null) =>
+const insertThread = (
+  id: string,
+  payload: { readonly settledOverride: string | null; readonly archived?: boolean },
+  deletedAt: string | null = null,
+) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`
       INSERT INTO orchestration_v2_projection_threads (
         thread_id, project_id, title, default_provider, runtime_mode, interaction_mode,
-        created_at, updated_at, deleted_at, payload_json
+        created_at, updated_at, archived_at, deleted_at, payload_json
       ) VALUES (
         ${id}, 'project', 'Thread', 'codex', 'full-access', 'default',
-        '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z', ${deletedAt},
+        '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z',
+        ${payload.archived ? "2026-11-23T00:00:00.000Z" : null}, ${deletedAt},
         ${JSON.stringify(payload)}
+      )
+    `;
+  });
+
+const insertTask = (createdAt: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO scheduled_tasks (
+        task_id, title, prompt, enabled, schedule_json, project_id, workspace_strategy_json,
+        model_selection_json, runtime_mode, interaction_mode, created_by, creation_source,
+        created_at, updated_at, last_run_status, run_count
+      ) VALUES (
+        ${taskId}, 'Daily', 'Do the work', 1, '{}', 'project', '{}', '{}', 'full-access',
+        'default', 'user', 'web', ${createdAt}, ${createdAt}, 'succeeded', 1
       )
     `;
   });
@@ -68,7 +88,17 @@ const insertSend = (input: {
 
 it.effect("lists a plain task's runs from the messages the scheduler sent for it", () =>
   Effect.gen(function* () {
+    yield* insertTask("2026-11-20T12:00:00.000Z");
     yield* insertThread("thread:open", { settledOverride: null });
+    // A task deleted and created again under the same id: the old one's run is not this one's.
+    yield* insertSend({
+      messageId: `scheduled-task-message:${taskId}:0:scheduled`,
+      threadId: "thread:open",
+      task: taskId,
+      status: "completed",
+      requestedAt: "2026-11-19T08:00:00.000Z",
+      completedAt: "2026-11-19T08:01:00.000Z",
+    });
     yield* insertThread("thread:settled", { settledOverride: "settled" });
     yield* insertThread("thread:deleted", { settledOverride: null }, "2026-11-20T00:00:00.000Z");
     yield* insertSend({
@@ -171,7 +201,9 @@ const state = (overrides: Partial<CheckState>): CheckState => ({
 it.effect("lists a checked task's kept runs with the thread and reply of each", () =>
   Effect.gen(function* () {
     yield* ensureCheckSchema;
-    yield* insertThread("thread:run", { settledOverride: "settled" });
+    yield* insertTask("2026-11-20T12:00:00.000Z");
+    // Archived without being settled: out of the user's way all the same.
+    yield* insertThread("thread:run", { settledOverride: null, archived: true });
     const messageId = "scheduled-task-message:checked:continue";
     yield* insertSend({
       messageId,
@@ -250,6 +282,7 @@ it.effect("lists a checked task's kept runs with the thread and reply of each", 
 it.effect("lists a command task's runs without a thread, with what each reported", () =>
   Effect.gen(function* () {
     yield* ensureCheckSchema;
+    yield* insertTask("2026-11-20T12:00:00.000Z");
     yield* writeCheckState(
       null,
       state({
@@ -280,7 +313,8 @@ it.effect("lists a command task's runs without a thread, with what each reported
       {
         id: "passed",
         startedAt: "2026-11-23T08:00:00.000Z",
-        endedAt: "2026-11-23T08:00:04.000Z",
+        // Only the slot is recorded, so a catch-up hours later must not read as run time.
+        endedAt: null,
         status: "succeeded",
         thread: null,
         summary: "all good",
@@ -288,7 +322,7 @@ it.effect("lists a command task's runs without a thread, with what each reported
       {
         id: "failed",
         startedAt: "2026-11-22T08:00:00.000Z",
-        endedAt: "2026-11-22T08:00:09.000Z",
+        endedAt: null,
         status: "failed",
         thread: null,
         summary: "exited with 2",

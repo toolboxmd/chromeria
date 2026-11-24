@@ -3,7 +3,7 @@ import {
   createScheduledTaskRunThreadStatesAtom,
   type ScheduledTaskRunMark,
   type ScheduledTaskRunView,
-  scheduledTaskRunThreadsChanged,
+  scheduledTaskRunsStale,
   scheduledTaskRunThreadsKey,
   scheduledTaskRunViews,
 } from "@t3tools/client-runtime/scheduled-task-fork";
@@ -62,27 +62,32 @@ export function ScheduledTaskRuns({
       : serverEnvironment.scheduledTaskRuns({ environmentId, input: { id: task.id } }),
   );
   const runs = query.data?.runs ?? NO_RUNS;
-  const states = useAtomValue(runThreadStatesAtom(scheduledTaskRunThreadsKey(environmentId, runs)));
+  const key = scheduledTaskRunThreadsKey(environmentId, runs);
+  const states = useAtomValue(runThreadStatesAtom(key));
   const views = scheduledTaskRunViews(runs, states);
   const { refresh } = query;
-  const previousStates = useRef(states);
+  const previousSeen = useRef({ key, states });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Read the runs again when one of their threads starts or ends a run.
   useEffect(() => {
-    if (scheduledTaskRunThreadsChanged(previousStates.current, states)) refresh();
-    previousStates.current = states;
-  }, [states, refresh]);
+    const seen = { key, states };
+    if (scheduledTaskRunsStale(previousSeen.current, seen, runs)) refresh();
+    previousSeen.current = seen;
+  }, [key, states, runs, refresh]);
   if (views.runs.length === 0) return null;
   return (
-    <View className="-mt-1 gap-2 px-4 pb-3">
+    <View className="-mt-2 gap-1 px-4 pb-2">
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded }}
-        accessibilityLabel={gt("{count} runs, {open} open", {
-          count: views.runs.length,
-          open: views.open,
-        })}
+        accessibilityLabel={gt(
+          "{count, plural, one {{count} run} other {{count} runs}}, {open} open",
+          {
+            count: views.runs.length,
+            open: views.open,
+          },
+        )}
         onPress={() => setExpanded((value) => !value)}
-        className="min-h-8 flex-row items-center gap-2 active:opacity-70"
+        className="min-h-11 flex-row items-center gap-2 active:opacity-70"
       >
         <View className="shrink flex-row items-center gap-0.5 overflow-hidden">
           {/* Hermes lacks Array#toReversed. */}
@@ -112,7 +117,7 @@ export function ScheduledTaskRuns({
         )}
       </Pressable>
       {expanded ? (
-        <View className="gap-2.5 border-l border-border pl-3">
+        <View className="gap-1 border-l border-border pl-3">
           {views.runs.map((view) => (
             <RunRow key={view.run.id} environmentId={environmentId} view={view} />
           ))}
@@ -202,14 +207,14 @@ function RunRow({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={gt("Open thread of the run from {when}", { when: started })}
+      accessibilityHint={gt("Opens this run's thread")}
       onPress={() =>
         selectDetail({
           name: "Thread",
           params: { environmentId: String(environmentId), threadId: String(thread.id) },
         })
       }
-      className="flex-row items-center gap-2 active:opacity-70"
+      className="min-h-11 flex-row items-center gap-2 active:opacity-70"
     >
       <View className="min-w-0 flex-1 gap-1">{body}</View>
       <SymbolView

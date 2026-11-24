@@ -13559,7 +13559,7 @@
   "f1bdbeb0516919a8": "Du: {text}",
   "e2fdd7336f980905": "{count} öppna",
   "64c260007bd546f1": "Körningar ({count})",
-  "73eccde58090af65": "{count} körningar, {open} öppna",
   "418a0a04968c6299": "Öppen · behöver dig",
-  "86ec6235858128b4": "Klar"
+  "86ec6235858128b4": "Klar",
+  "f421866ce3ce0c82": "{count, plural, one {{count} körning} other {{count} körningar}}, {open} öppna"
 }

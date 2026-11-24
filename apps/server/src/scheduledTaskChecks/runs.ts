@@ -42,10 +42,10 @@ function checkedRunDrafts(state: CheckState): ReadonlyArray<RunDraft> {
       return {
         id: run.id,
         startedAt: run.sends[0]?.createdAt ?? run.slot,
+        // A command run records its slot, not when a catch-up actually started it, so its
+        // end would turn scheduler downtime into run time.
         endedAt:
-          status === "running"
-            ? null
-            : (run.commandResult?.endedAt ?? run.check?.checkedAt ?? null),
+          status === "running" || run.sends.length === 0 ? null : (run.check?.checkedAt ?? null),
         status,
         threadId: run.threadId,
         messageId: run.sends.at(-1)?.messageId ?? null,
@@ -63,6 +63,7 @@ const LIVE_RUN_STATUSES = new Set(["queued", "preparing", "starting", "running",
  */
 const messageRunDrafts = Effect.fn("ScheduledTaskRuns.messageRunDrafts")(function* (
   taskId: ScheduledTaskId,
+  createdAt: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const prefix = `scheduled-task-message:${taskId}:`;
@@ -88,6 +89,8 @@ const messageRunDrafts = Effect.fn("ScheduledTaskRuns.messageRunDrafts")(functio
       )
       AND json_extract(message.payload_json, '$.scheduledTaskId') = ${taskId}
       AND run.status <> 'rolled_back'
+      -- A task deleted and created again under the same id starts without the old one's runs.
+      AND julianday(run.requested_at) >= julianday(${createdAt})
     ORDER BY run.requested_at DESC, message.message_id DESC
     LIMIT ${SCHEDULED_TASK_RUNS_LIMIT}
   `;
@@ -121,8 +124,13 @@ const hasCheckStates = Effect.gen(function* () {
 export const listTaskRuns = Effect.fn("ScheduledTaskRuns.list")(
   function* (taskId: ScheduledTaskId) {
     const sql = yield* SqlClient.SqlClient;
+    const [task] = yield* sql<{ readonly created_at: string }>`
+      SELECT created_at FROM scheduled_tasks WHERE task_id = ${taskId}
+    `;
+    if (task === undefined) return { runs: [] } satisfies ScheduledTaskListRunsResult;
     const state = (yield* hasCheckStates) ? yield* readCheckState(taskId) : null;
-    const drafts = state === null ? yield* messageRunDrafts(taskId) : checkedRunDrafts(state);
+    const drafts =
+      state === null ? yield* messageRunDrafts(taskId, task.created_at) : checkedRunDrafts(state);
     const threadIds = [...new Set(drafts.flatMap((run) => run.threadId ?? []))];
     const threads =
       threadIds.length === 0
@@ -130,9 +138,10 @@ export const listTaskRuns = Effect.fn("ScheduledTaskRuns.list")(
         : yield* sql<{
             readonly thread_id: string;
             readonly deleted_at: string | null;
+            readonly archived_at: string | null;
             readonly settled: string | null;
           }>`
-            SELECT thread_id, deleted_at, json_extract(payload_json, '$.settledOverride') AS settled
+            SELECT thread_id, deleted_at, archived_at, json_extract(payload_json, '$.settledOverride') AS settled
             FROM orchestration_v2_projection_threads
             WHERE thread_id IN ${sql.in(threadIds)}
           `;
@@ -141,7 +150,8 @@ export const listTaskRuns = Effect.fn("ScheduledTaskRuns.list")(
         row.thread_id,
         row.deleted_at !== null
           ? ("missing" as const)
-          : row.settled === "settled"
+          : // An archived thread is out of the user's way, like a settled one.
+            row.settled === "settled" || row.archived_at !== null
             ? ("settled" as const)
             : ("open" as const),
       ]),

@@ -5,7 +5,7 @@ import {
   type ScheduledTaskRunMark,
   type ScheduledTaskRunView,
   type ScheduledTaskRunViews,
-  scheduledTaskRunThreadsChanged,
+  scheduledTaskRunsStale,
   scheduledTaskRunThreadsKey,
   scheduledTaskRunViews,
 } from "@t3tools/client-runtime/scheduled-task-fork";
@@ -51,8 +51,9 @@ function useScheduledTaskRuns(environmentId: EnvironmentId, task: ScheduledTask)
       : serverEnvironment.scheduledTaskRuns({ environmentId, input: { id: task.id } }),
   );
   const runs = query.data?.runs ?? NO_RUNS;
-  const states = useAtomValue(runThreadStatesAtom(scheduledTaskRunThreadsKey(environmentId, runs)));
-  return { views: scheduledTaskRunViews(runs, states), states, refresh: query.refresh };
+  const key = scheduledTaskRunThreadsKey(environmentId, runs);
+  const states = useAtomValue(runThreadStatesAtom(key));
+  return { views: scheduledTaskRunViews(runs, states), runs, key, states, refresh: query.refresh };
 }
 
 /** On the task's status line: how many of its runs still wait for the user. */
@@ -79,13 +80,17 @@ export function ScheduledTaskRuns(props: {
 }) {
   const gt = useGT();
   const [expanded, setExpanded] = useState(false);
-  const { views, states, refresh } = useScheduledTaskRuns(props.environmentId, props.task);
-  const previousStates = useRef(states);
+  const { views, runs, key, states, refresh } = useScheduledTaskRuns(
+    props.environmentId,
+    props.task,
+  );
+  const previousSeen = useRef({ key, states });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Read the runs again when one of their threads starts or ends a run.
   useEffect(() => {
-    if (scheduledTaskRunThreadsChanged(previousStates.current, states)) refresh();
-    previousStates.current = states;
-  }, [states, refresh]);
+    const seen = { key, states };
+    if (scheduledTaskRunsStale(previousSeen.current, seen, runs)) refresh();
+    previousSeen.current = seen;
+  }, [key, states, runs, refresh]);
   if (views.runs.length === 0) return null;
   return (
     <div className="mt-2 space-y-1.5">
@@ -117,7 +122,10 @@ function RunStrip({ views }: { readonly views: ScheduledTaskRunViews }) {
   return (
     <span
       role="img"
-      aria-label={gt("{count} runs, {open} open", { count: views.runs.length, open: views.open })}
+      aria-label={gt("{count, plural, one {{count} run} other {{count} runs}}, {open} open", {
+        count: views.runs.length,
+        open: views.open,
+      })}
       className="flex items-center gap-0.5"
     >
       {views.runs.toReversed().map((view) => (

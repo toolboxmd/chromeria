@@ -5948,12 +5948,12 @@
   "5f25b3f70e83f8be": "Wight-läge på",
   "c5c3528c7b652195": "Vid inaktivitet: av",
   "f1bdbeb0516919a8": "Du: {text}",
-  "73eccde58090af65": "{count} körningar, {open} öppna",
   "64c260007bd546f1": "Körningar ({count})",
   "e2fdd7336f980905": "{count} öppna",
   "7652438fbefdbc56": "Körs",
   "bb720fd1f97c6330": "Misslyckades",
   "418a0a04968c6299": "Öppen · behöver dig",
   "86ec6235858128b4": "Klar",
-  "bade26d0f293b308": "Öppna tråden för körningen från {when}"
+  "f421866ce3ce0c82": "{count, plural, one {{count} körning} other {{count} körningar}}, {open} öppna",
+  "a1d07632a6ae9706": "Öppnar tråden för den här körningen"
 }
