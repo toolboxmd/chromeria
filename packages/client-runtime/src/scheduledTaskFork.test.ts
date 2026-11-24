@@ -525,7 +525,8 @@ describe("scheduled task run views", () => {
       ],
       // One letter per distinct thread, in run order: the client's own thread wins over what
       // the server read, and "?" is a thread the client does not hold.
-      "?bos?",
+      // The letters come first; each thread's latest run follows and is not read here.
+      "?bos?\n\nrun:1 running\n\n\n",
     );
     expect(
       views.runs.map((view) => [view.run.id, view.mark, view.thread?.needsUser ?? null]),
@@ -546,6 +547,14 @@ describe("scheduled task run views", () => {
   it("say the runs are stale when a thread says a run ended", () => {
     const runs = [run("r", "running", ["t", "open"])];
     const key = '["env","t"]';
+    // A held thread that stays busy started another run: the scheduled one ended.
+    expect(
+      scheduledTaskRunsStale(
+        { key, states: "b\nrun:1 running" },
+        { key, states: "b\nrun:2 running" },
+        runs,
+      ),
+    ).toBe(true);
     // A held thread ended its run.
     expect(scheduledTaskRunsStale({ key, states: "b" }, { key, states: "o" }, runs)).toBe(true);
     expect(scheduledTaskRunsStale({ key, states: "o" }, { key, states: "o" }, runs)).toBe(false);

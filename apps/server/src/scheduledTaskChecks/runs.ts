@@ -17,8 +17,8 @@ import { readCheckState } from "./store.ts";
 /** A run before its thread and summary are read. */
 interface RunDraft extends Omit<ScheduledTaskRunRecord, "thread" | "summary"> {
   readonly threadId: ThreadId | null;
-  /** The message whose provider run wrote the summary. */
-  readonly messageId: MessageId | null;
+  /** The messages the scheduler sent for the run, newest first: the newest reply is the summary. */
+  readonly messageIds: ReadonlyArray<MessageId>;
   /** Shown when that run left no reply: a command's report, or a run's error. */
   readonly fallback: string | null;
 }
@@ -49,7 +49,7 @@ function checkedRunDrafts(state: CheckState): ReadonlyArray<RunDraft> {
           status === "running" || run.sends.length === 0 ? null : (run.check?.checkedAt ?? null),
         status,
         threadId: run.threadId,
-        messageId: run.sends.at(-1)?.messageId ?? null,
+        messageIds: run.sends.map((send) => send.messageId).toReversed(),
         fallback:
           state.kind === "command" ? (run.error ?? lastLine(run.commandResult?.output)) : run.error,
       };
@@ -74,12 +74,12 @@ const messageRunDrafts = Effect.fn("ScheduledTaskRuns.messageRunDrafts")(functio
     readonly message_id: string;
     readonly thread_id: string;
     readonly status: string;
-    readonly started_at: string;
+    readonly requested_at: string;
+    readonly started_at: string | null;
     readonly completed_at: string | null;
   }>`
-    SELECT message.message_id, message.thread_id, run.status, run.completed_at,
-      -- A prompt queued behind a busy thread waits before it starts; the wait is not run time.
-      coalesce(json_extract(run.payload_json, '$.startedAt'), run.requested_at) AS started_at
+    SELECT message.message_id, message.thread_id, run.status, run.requested_at, run.completed_at,
+      json_extract(run.payload_json, '$.startedAt') AS started_at
     FROM orchestration_v2_projection_messages message
     JOIN orchestration_v2_projection_runs run ON run.run_id = message.run_id
     WHERE (
@@ -99,15 +99,17 @@ const messageRunDrafts = Effect.fn("ScheduledTaskRuns.messageRunDrafts")(functio
   `;
   return rows.map((row): RunDraft => ({
     id: row.message_id,
-    startedAt: row.started_at,
-    endedAt: row.completed_at,
+    // A prompt queued behind a busy thread waits before it starts, and the wait is not run
+    // time: a run that never started shows when it was asked for and no duration.
+    startedAt: row.started_at ?? row.requested_at,
+    endedAt: row.started_at === null ? null : row.completed_at,
     status: LIVE_RUN_STATUSES.has(row.status)
       ? "running"
       : row.status === "completed"
         ? "succeeded"
         : "failed",
     threadId: ThreadId.make(row.thread_id),
-    messageId: row.message_id as MessageId,
+    messageIds: [row.message_id as MessageId],
     fallback: null,
   }));
 });
@@ -159,7 +161,7 @@ export const listTaskRuns = Effect.fn("ScheduledTaskRuns.list")(
             : ("open" as const),
       ]),
     );
-    const messageIds = drafts.flatMap((run) => run.messageId ?? []);
+    const messageIds = drafts.flatMap((run) => run.messageIds);
     // The newest finished assistant message of the provider run each message started.
     const replies =
       messageIds.length === 0
@@ -182,13 +184,13 @@ export const listTaskRuns = Effect.fn("ScheduledTaskRuns.list")(
       ]),
     );
     const result: ScheduledTaskListRunsResult = {
-      runs: drafts.map(({ threadId, messageId, fallback, ...run }) => ({
+      runs: drafts.map(({ threadId, messageIds: sent, fallback, ...run }) => ({
         ...run,
         thread:
           threadId === null
             ? null
             : { id: threadId, state: threadStates.get(threadId) ?? "missing" },
-        summary: (messageId === null ? null : (summaries.get(messageId) ?? null)) ?? fallback,
+        summary: sent.flatMap((messageId) => summaries.get(messageId) ?? [])[0] ?? fallback,
       })),
     };
     return result;

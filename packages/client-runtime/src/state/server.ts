@@ -1693,6 +1693,10 @@ export function createServerEnvironmentAtoms<R, E>(
     scheduledTaskRuns: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:scheduled-task:runs",
       tag: SCHEDULED_TASK_RUNS_WS_METHODS.list,
+      // Never served from cache on a return to the page: a run may have ended meanwhile, and
+      // nothing on the client says so for a thread it has not been watching.
+      staleTimeMs: 0,
+      idleTtlMs: 0,
       refreshTrigger: ({ environmentId, input }) => {
         const live = scheduledTasksLive({ environmentId, input: {} });
         return Atom.make((get) => {

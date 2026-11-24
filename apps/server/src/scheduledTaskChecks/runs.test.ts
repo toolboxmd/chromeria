@@ -53,7 +53,8 @@ const insertSend = (input: {
   readonly task: string;
   readonly status: string;
   readonly requestedAt: string;
-  readonly startedAt?: string;
+  /** Defaults to `requestedAt`; null is a run that never started. */
+  readonly startedAt?: string | null;
   readonly completedAt: string | null;
   readonly replies?: ReadonlyArray<string>;
 }) =>
@@ -67,7 +68,7 @@ const insertSend = (input: {
       ) VALUES (
         ${runId}, ${input.threadId}, ${ordinal}, 'codex', ${input.status}, ${input.requestedAt},
         ${input.completedAt},
-        ${JSON.stringify(input.startedAt === undefined ? {} : { startedAt: input.startedAt })}
+        ${JSON.stringify({ startedAt: input.startedAt === undefined ? input.requestedAt : input.startedAt })}
       )
     `;
     const message = (id: string, role: string, at: string, payload: object) => sql`
@@ -108,7 +109,9 @@ it.effect("lists a plain task's runs from the messages the scheduler sent for it
       threadId: "thread:deleted",
       task: taskId,
       status: "failed",
+      // Failed while still queued: the wait is not a duration.
       requestedAt: "2026-11-21T08:00:00.000Z",
+      startedAt: null,
       completedAt: "2026-11-21T08:00:05.000Z",
     });
     yield* insertSend({
@@ -161,7 +164,7 @@ it.effect("lists a plain task's runs from the messages the scheduler sent for it
       {
         id: `scheduled-task-message:${taskId}:1:scheduled`,
         startedAt: "2026-11-21T08:00:00.000Z",
-        endedAt: "2026-11-21T08:00:05.000Z",
+        endedAt: null,
         status: "failed",
         thread: { id: ThreadId.make("thread:deleted"), state: "missing" },
         summary: null,
@@ -210,13 +213,22 @@ it.effect("lists a checked task's kept runs with the thread and reply of each", 
     yield* insertThread("thread:run", { settledOverride: null, archived: true });
     const messageId = "scheduled-task-message:checked:continue";
     yield* insertSend({
-      messageId,
+      messageId: "scheduled-task-message:checked:start",
       threadId: "thread:run",
       task: taskId,
       status: "completed",
+      requestedAt: "2026-11-22T08:00:03.000Z",
+      completedAt: "2026-11-22T08:01:00.000Z",
+      replies: ["The check passes now."],
+    });
+    // The last send got no reply: the run's newest reply is the earlier send's.
+    yield* insertSend({
+      messageId,
+      threadId: "thread:run",
+      task: taskId,
+      status: "failed",
       requestedAt: "2026-11-22T08:05:00.000Z",
       completedAt: "2026-11-22T08:06:00.000Z",
-      replies: ["The check passes now."],
     });
     yield* writeCheckState(
       null,

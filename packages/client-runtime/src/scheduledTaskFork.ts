@@ -445,9 +445,9 @@ export interface ScheduledTaskRunViews {
 }
 
 /**
- * The client's own copy of each run's thread as one letter per thread (settled, busy, open, or
- * not held), so a task row re-renders only when one of its threads is settled, reopened, or
- * starts or ends a run. `key` is
+ * The client's own copy of each run's thread: one letter per thread (settled, busy, open, or not
+ * held), then each thread's latest run. A string, so a task row re-renders only when one of its
+ * threads is settled, reopened, or starts or ends a run. `key` is
  * `scheduledTaskRunThreadsKey`; `shellAtom` is the app's quiet thread shell atom.
  */
 export const createScheduledTaskRunThreadStatesAtom = (
@@ -458,18 +458,22 @@ export const createScheduledTaskRunThreadStatesAtom = (
   Atom.family((key: string) => {
     const [environmentId, ...threadIds] = JSON.parse(key) as [EnvironmentId, ...ThreadId[]];
     const shells = threadIds.map((threadId) => shellAtom(scopeThreadRef(environmentId, threadId)));
-    return Atom.make((get) =>
-      shells
-        .map((shell) => {
-          const thread = get(shell);
-          if (thread === null) return "?";
-          if (thread.settledOverride === "settled") return "s";
-          return thread.latestRun !== null && LIVE_RUN_STATUSES.has(thread.latestRun.status)
-            ? "b"
-            : "o";
-        })
-        .join(""),
-    );
+    return Atom.make((get) => {
+      const threads = shells.map((shell) => get(shell));
+      const letters = threads.map((thread) => {
+        if (thread === null) return "?";
+        if (thread.settledOverride === "settled") return "s";
+        return thread.latestRun !== null && LIVE_RUN_STATUSES.has(thread.latestRun.status)
+          ? "b"
+          : "o";
+      });
+      // After the letters: each thread's latest run, so another run starting in a thread that
+      // stays busy still changes the value.
+      const latestRuns = threads.map((thread) =>
+        thread?.latestRun == null ? "" : `${thread.latestRun.runId} ${thread.latestRun.status}`,
+      );
+      return `${letters.join("")}\n${latestRuns.join("\n")}`;
+    });
   });
 
 const LIVE_RUN_STATUSES: ReadonlySet<string> = new Set([
@@ -496,10 +500,9 @@ export interface ScheduledTaskRunThreadsSeen {
 }
 
 /**
- * Whether the runs should be read again. A plain task's row on the live task list does not
- * change when its run ends, so its thread says so instead: a held thread changed state, or a
- * thread first seen is already idle while the server still read its run as running (the run
- * ended between the server's read and the client learning the thread).
+ * Whether the runs should be read again. A plain task's row on the live list does not change
+ * when its run ends, so its thread says so: a held thread changed state or run, or a thread
+ * first seen is already idle while the server still read its run as running.
  */
 export function scheduledTaskRunsStale(
   previous: ScheduledTaskRunThreadsSeen,
