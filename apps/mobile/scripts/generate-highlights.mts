@@ -13,8 +13,13 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
+import type { Theme } from "@pierre/highlights";
+
 const WASM2C_VERSION = "1.0.42";
 const THEMES = { light: "pierre-light", dark: "pierre-dark" } as const;
+// pierre-dark punctuation (#636363) is under 3:1 on the app's dark code fences.
+// pierre-dark's ANSI white clears 4.5:1 on each; punctuation.special keeps its accent.
+const DARK_PUNCTUATION = { from: "#636363", to: "#bcbcbc" } as const;
 
 const mobileRoot = NodePath.resolve(import.meta.dirname, "..");
 const moduleRoot = NodePath.join(mobileRoot, "modules/t3-highlights");
@@ -24,6 +29,19 @@ interface ThemeStyle {
   readonly color?: string;
   readonly italic?: boolean;
   readonly weight?: number;
+}
+
+export function withReadableDarkPunctuation(theme: Theme): Theme {
+  const syntax = Object.fromEntries(
+    Object.entries(theme.style.syntax ?? {}).map(([scope, setting]) =>
+      scope.split(".")[0] === "punctuation" &&
+      typeof setting === "object" &&
+      setting.color === DARK_PUNCTUATION.from
+        ? [scope, { ...setting, color: DARK_PUNCTUATION.to }]
+        : [scope, setting],
+    ),
+  );
+  return { ...theme, style: { ...theme.style, syntax } };
 }
 
 interface PreparedTheme {
@@ -65,11 +83,13 @@ export async function computeHighlightsData() {
 
   const themeStyles: Record<string, Array<readonly [string, number]>> = {};
   for (const [scheme, name] of Object.entries(THEMES)) {
-    const { default: theme } = await importDist<{ default: unknown }>(
+    const { default: theme } = await importDist<{ default: Theme }>(
       source.root,
       `themes/${name}.js`,
     );
-    const { fg, styles } = prepareTheme(theme);
+    const { fg, styles } = prepareTheme(
+      scheme === "dark" ? withReadableDarkPunctuation(theme) : theme,
+    );
     // Mirrors `lineRecordsToTokens`: unstyled tokens take the theme foreground.
     themeStyles[scheme] = styles.map((style, tokenId) => {
       const color = style?.color ?? fg;
