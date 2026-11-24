@@ -11,7 +11,7 @@ import {
 } from "./navigation-tabs";
 import { useWorkspaceTabs } from "./WorkspaceTabsContext";
 import { useSelectWorkspaceTab } from "./useSelectWorkspaceTab";
-import { useCompactWorkspaceTabs, useSidebarWorkspaceTabs } from "./useSystemWorkspaceTabBar";
+import { useFloatingWorkspaceTabs, useSidebarWorkspaceTabs } from "./useSystemWorkspaceTabBar";
 
 const PULL_REQUEST_ICON = require("../../../../assets/icons/pull-request.png");
 const ISSUE_ICON = require("../../../../assets/icons/issue.png");
@@ -68,11 +68,12 @@ export function WorkspaceSectionToolbar({
 }) {
   const gt = useGT();
   const sidebarTabs = useSidebarWorkspaceTabs();
-  const compactTabs = useCompactWorkspaceTabs();
+  // Fork: floating tabs carry compose beside them; otherwise, as before iOS 26, the toolbar does.
+  const floatingTabs = useFloatingWorkspaceTabs();
   const deviceType = useDeviceType();
   return (
     <>
-      {showCompose && sidebarTabs !== "picker" && deviceType !== "duo-unfolded" && !compactTabs ? (
+      {showCompose && sidebarTabs !== "picker" && deviceType !== "duo-unfolded" && !floatingTabs ? (
         <Toolbar placement="right">
           <Toolbar.Button
             accessibilityLabel={gt("New chat")}

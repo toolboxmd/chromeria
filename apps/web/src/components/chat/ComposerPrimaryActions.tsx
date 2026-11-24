@@ -67,6 +67,8 @@ interface ComposerPrimaryActionsProps {
   onInterrupt: () => void;
   compactBeforeSendTokens?: number | null;
   hideCompactToggle?: boolean;
+  /** Fork: a Promachos chat's send button takes the theme's ink, without the stage art. */
+  plainSend?: boolean;
   keepFullHistory?: boolean;
   onToggleKeepFullHistory?: () => void;
 }
@@ -254,6 +256,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   canResume = false,
   preserveComposerFocusOnPointerDown = false,
   isEditingQueuedMessage = false,
+  plainSend = false,
   onSubmitMessage,
   onResume,
   onPreviousPendingQuestion,
@@ -281,7 +284,8 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
     }) === "queue";
   const alternateAction = alternateComposerDispatchAction(followUpBehavior);
   const isSendDisabled = !canOperateThread || sendDisabledReason !== null;
-  const stageBackdropVariant = useSidebarStageBackdropVariant(environmentIdentificationMode);
+  const stageArt = useSidebarStageBackdropVariant(environmentIdentificationMode);
+  const stageBackdropVariant = plainSend ? null : stageArt;
 
   const renderStopGenerationButton = (insidePendingAction: boolean) => (
     <StopGenerationButton

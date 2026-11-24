@@ -248,7 +248,9 @@ vi.mock("expo-haptics", () => ({ selectionAsync: async () => {} }));
 vi.mock("expo-image", () => ({ Image: () => null }));
 vi.mock("expo/fetch", () => ({}));
 vi.mock("react-native-svg", () => ({}));
-vi.mock("uniwind", () => ({}));
+vi.mock("uniwind", () => ({
+  ScopedVariables: (props: { children: unknown }) => props.children,
+}));
 vi.mock("../components/ui/Dialog", () => ({}));
 vi.mock("../components/ui/Sheet", () => ({
   Sheet: ({ children }: { children?: ReactNode }) => children,

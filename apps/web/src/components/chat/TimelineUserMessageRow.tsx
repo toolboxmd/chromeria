@@ -81,8 +81,11 @@ import type { ChatMarkdownContextReference } from "../ChatMarkdown";
 import { cn } from "~/lib/utils";
 import { markdownProseDirection } from "~/textDirection";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
+import { PROMACHOS_OUTBOUND_BUBBLE_CLASS_NAME } from "../promachos/PromachosChat";
 import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../timestampFormat";
 import { WorkflowOpeningBlock } from "./WorkflowOpeningBlock";
+import { useChildRequestNotice } from "./useChildRequestNotice";
+import { SideThreadsOpenContext } from "~/hooks/useSideThreadTrigger";
 import { useTallEnoughToFold } from "./useTallEnoughToFold";
 import { TimelineRowCtx, TimelineRowActivityCtx, type TimelineRow } from "./timelineRowContext";
 import {
@@ -357,7 +360,7 @@ function AutomationMessageRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           <div className="flex shrink-0 items-center gap-2">
             {scheduledTaskId ? (
               <Link
-                to="/settings/scheduled-tasks"
+                to="/scheduled-tasks"
                 search={{ environmentId: ctx.activeThreadEnvironmentId, taskId: scheduledTaskId }}
                 className="rounded-sm text-xs text-muted-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring"
               >
@@ -408,8 +411,54 @@ export function FoldedMessageHeader(props: {
   summary: string;
   expanded: boolean;
   onToggle: () => void;
+  /** Fork: makes the label a link to the thread it names, beside the toggle. */
+  onOpenLabel?: (() => void) | undefined;
 }) {
   const Icon = props.icon;
+  const labelClassName = cn(
+    "shrink-0 text-muted-foreground",
+    props.fitLabel !== true && "max-w-1/2 truncate",
+  );
+  const toggleContent = (
+    <>
+      {/* Mentioned macOS paths can be NFD; compose them like the chips in the body. */}
+      <span className="min-w-0 flex-1 truncate">{props.summary.normalize("NFC")}</span>
+      <ChevronDownIcon
+        className={cn(
+          "size-3.5 shrink-0 text-muted-foreground transition-transform",
+          props.expanded && "rotate-180",
+        )}
+      />
+    </>
+  );
+  if (props.onOpenLabel !== undefined) {
+    const onOpenLabel = props.onOpenLabel;
+    return (
+      <div className="flex w-full min-w-0 items-center gap-1.5 px-3 py-2 text-sm">
+        <Icon className="size-4 shrink-0 stroke-2 text-muted-foreground" />
+        <button
+          type="button"
+          data-scroll-anchor-ignore
+          onClick={onOpenLabel}
+          className={cn(
+            labelClassName,
+            "rounded-sm font-medium hover:text-foreground hover:underline focus-visible:outline-2 focus-visible:outline-ring",
+          )}
+        >
+          {props.label}
+        </button>
+        <button
+          type="button"
+          aria-expanded={props.expanded}
+          data-scroll-anchor-ignore
+          onClick={props.onToggle}
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded-sm text-left focus-visible:outline-2 focus-visible:outline-ring"
+        >
+          {toggleContent}
+        </button>
+      </div>
+    );
+  }
   return (
     <button
       type="button"
@@ -419,22 +468,8 @@ export function FoldedMessageHeader(props: {
       className="flex w-full min-w-0 items-center gap-1.5 rounded-2xl px-3 py-2 text-left text-sm focus-visible:outline-2 focus-visible:outline-ring"
     >
       <Icon className="size-4 shrink-0 stroke-2 text-muted-foreground" />
-      <span
-        className={cn(
-          "shrink-0 text-muted-foreground",
-          props.fitLabel !== true && "max-w-1/2 truncate",
-        )}
-      >
-        {props.label}
-      </span>
-      {/* Mentioned macOS paths can be NFD; compose them like the chips in the body. */}
-      <span className="min-w-0 flex-1 truncate">{props.summary.normalize("NFC")}</span>
-      <ChevronDownIcon
-        className={cn(
-          "size-3.5 shrink-0 text-muted-foreground transition-transform",
-          props.expanded && "rotate-180",
-        )}
-      />
+      <span className={labelClassName}>{props.label}</span>
+      {toggleContent}
     </button>
   );
 }
@@ -464,7 +499,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   const { onImageExpand, onFileOpen } = ctx;
   const coarsePointer = useMediaQuery({ pointer: "coarse" });
   // A linked environment's agent sent it from a thread there.
-  const senderRef =
+  const messageSenderRef =
     row.message.linkedSender ??
     (row.message.senderThreadId === undefined
       ? null
@@ -494,14 +529,26 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
     (attachment) => !isImageAttachment(attachment) && !isFileAttachment(attachment),
   );
   const userMessage = resolveUserMessagePresentation(row.message);
+  // Fork: a descendant's relayed request folds to one line naming that child (toolboxmd/chromeria#906).
+  const childNotice = useChildRequestNotice(
+    ctx.activeThreadEnvironmentId,
+    userMessage.childRequest,
+  );
+  const senderRef = childNotice?.childRef ?? messageSenderRef;
+  // Read-only timelines (guest page, linked pane) cannot open another thread.
+  const canOpenThreads = use(SideThreadsOpenContext);
   // Messages from other agents fold to one line so the user's own messages stay easy to find.
-  const folded = userMessage.attribution === "agent";
+  const folded = userMessage.attribution === "agent" || childNotice !== null;
   const [expanded, setExpanded] = useState(false);
   const revealFoldRef = findRevealRef(() => setExpanded(true));
   const senderShell = useQuietThreadShell(folded ? senderRef : null);
-  const senderTitle = senderShell?.title.trim() || row.message.linkedSender?.title.trim();
+  const senderTitle =
+    senderShell?.title.trim() || row.message.linkedSender?.title.trim() || childNotice?.title;
   const senderLabel =
-    senderTitle || gt("Agent", { $context: "sender of a message from another agent" });
+    senderTitle ||
+    (childNotice === null
+      ? gt("Agent", { $context: "sender of a message from another agent" })
+      : gt("Child thread"));
   // Only an environment this client is connected to can open the sender's thread there.
   const linkedSenderEnvironment = useEnvironment(row.message.linkedSender?.environmentId ?? null);
   const canOpenSender =
@@ -597,10 +644,12 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   );
   const promptLink = promptLinkFor(plainText);
   const foldSummary =
+    childNotice?.summary ??
     plainText
       .split(/\r?\n/)
       .find((line) => line.trim().length > 0)
-      ?.trim() ?? "";
+      ?.trim() ??
+    "";
   const mediaCopyRecords = mediaOnly
     ? resolvedContext.records.flatMap((record) => {
         const known = asKnownContextRecord(record);
@@ -850,7 +899,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
         floatActions ? "flex-wrap" : "shrink-0",
       )}
     >
-      {folded && senderRef && canOpenSender ? (
+      {folded && senderRef && canOpenSender && canOpenThreads ? (
         <InlineButton
           onClick={() => ctx.onOpenThread(senderRef.threadId, senderRef.environmentId)}
           tone="muted"
@@ -900,6 +949,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       </div>
     </div>
   );
+  // Fork: a server wake attributed to T3 Code is not announced as the user's own message.
+  const ownAuthor =
+    userMessage.attribution === "t3code"
+      ? gt("Sent by T3 Code")
+      : gt("You", { $context: "author of the user's own message" });
   return (
     <div
       className="group @container flex flex-col items-end gap-1"
@@ -930,9 +984,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
       {mediaAboveText ? (
         <div className="flex max-w-[80%] justify-end">
           {/* The heading leads the media so screen readers reach it before the images. */}
-          <MessageAuthorHeading>
-            {gt("You", { $context: "author of the user's own message" })}
-          </MessageAuthorHeading>
+          <MessageAuthorHeading>{ownAuthor}</MessageAuthorHeading>
           {mediaBlock}
         </div>
       ) : null}
@@ -946,6 +998,7 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             ? guestBubbleClassName(false)
             : !mediaOnly && !fileCardsOnly && !audioOnly && "bg-message",
           !folded && !mediaOnly && !fileCardsOnly && !audioOnly && "p-3",
+          ctx.promachos && PROMACHOS_OUTBOUND_BUBBLE_CLASS_NAME,
           folded && expanded && "w-full",
         )}
         data-user-message-bubble=""
@@ -956,18 +1009,23 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
             {folded
               ? senderLabel
               : userMessage.guestName === undefined
-                ? gt("You", { $context: "author of the user's own message" })
+                ? ownAuthor
                 : gt("{name} (guest)", { name: userMessage.guestName })}
           </MessageAuthorHeading>
         )}
         {folded ? (
           <FoldedMessageHeader
-            icon={MessagesSquareIcon}
+            icon={childNotice?.icon ?? MessagesSquareIcon}
             label={senderLabel}
             fitLabel={!senderTitle}
             summary={foldSummary}
             expanded={expanded}
             onToggle={() => setExpanded((value) => !value)}
+            onOpenLabel={
+              childNotice === null || !canOpenThreads
+                ? undefined
+                : () => ctx.onOpenThread(childNotice.childRef.threadId)
+            }
           />
         ) : null}
         {/* Find reads the DOM, so a folded message stays mounted but hidden while find is open. */}

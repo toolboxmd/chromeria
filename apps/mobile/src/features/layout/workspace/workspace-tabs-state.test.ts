@@ -61,18 +61,24 @@ describe("workspace root navigation", () => {
     expect(workspaceUsesColumns("usage", true)).toBe(true);
     expect(workspaceUsesColumns("threads")).toBe(true);
     expect(workspaceUsesColumns("pullRequests")).toBe(true);
+    expect(workspaceUsesColumns("promachos")).toBe(true);
   });
 
-  it("keeps the registered defaults while customization is unavailable", () => {
+  it("follows the saved order, completed with the registered sections", () => {
     expect(resolveWorkspaceTabOrder(undefined)).toEqual([
+      "promachos",
       "threads",
       "pullRequests",
       "issues",
       "usage",
     ]);
-    expect(resolveWorkspaceTabOrder(["home", "usage", "issues", "threads"])).toEqual(
-      resolveWorkspaceTabOrder(undefined),
-    );
+    expect(resolveWorkspaceTabOrder(["home", "usage", "issues", "threads"])).toEqual([
+      "promachos",
+      "usage",
+      "issues",
+      "threads",
+      "pullRequests",
+    ]);
   });
 
   it("retains separate queries and positions across tabs, and cancels only the current search", () => {
@@ -267,6 +273,10 @@ vi.mock("../../pull-requests/PullRequestFilterMenuContext", () => ({
 }));
 vi.mock("../../pull-requests/PullRequestsScreen", () => ({ PullRequestsScreen: () => null }));
 vi.mock("../../issues/IssuesScreen", () => ({ IssuesScreen: () => null }));
+vi.mock("../../promachos/PromachosTabScreen", () => ({
+  PromachosTabScreen: () => null,
+  AndroidPromachosTab: () => null,
+}));
 vi.mock("./ListSearchToolbar.android", () => ({ ListSearchToolbar: () => null }));
 vi.mock("./AndroidWorkspaceNavigation", () => ({
   AndroidWorkspaceNavigation: () => null,

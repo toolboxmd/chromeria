@@ -31,15 +31,18 @@ import { WorkspaceConnectionTitle } from "../../home/WorkspaceConnectionTitle";
 import { useAdaptiveWorkspaceLayout } from "../AdaptiveWorkspaceLayout";
 import { PullRequestsScreen } from "../../pull-requests/PullRequestsScreen";
 import { IssuesScreen } from "../../issues/IssuesScreen";
+import { PromachosTabScreen } from "../../promachos/PromachosTabScreen";
 import {
   WorkspaceTabsContext,
   WorkspaceTabsProvider,
   useWorkspaceTabs,
 } from "./WorkspaceTabsContext";
 import { WorkspaceToolbar } from "./WorkspaceToolbar";
+import { useWorkspaceCompose } from "./useWorkspaceCompose";
 import {
   WORKSPACE_DOCK,
   workspaceDockBottomClearance,
+  workspaceTabSearches,
   workspaceUsesColumns,
 } from "./workspace-tabs-state";
 import { WorkspaceTabDock } from "./WorkspaceTabDock";
@@ -74,7 +77,10 @@ function WorkspaceRootTitle(props: {
             <SharedSlotTitle tab={state.selectedTab} />
           ) : (
             <CompactBrandTitle
-              accessibilityLabel={gt("{product}, {title}", { product: "T3 Code", title: tabTitle })}
+              accessibilityLabel={gt("{product}, {title}", {
+                product: "Chromeria",
+                title: tabTitle,
+              })}
               fit
             />
           )
@@ -100,6 +106,8 @@ function WorkspaceRootContent() {
   const compactTabs = useCompactWorkspaceTabs();
   const enabled = useEnabledNavigationTabs();
   const sidebarTabs = useSidebarWorkspaceTabs();
+  // Fork: the Promachos tab compose button where the floating dock does not carry it.
+  const compose = useWorkspaceCompose();
   const sidebarPicker = sidebarTabs === "picker" || (deviceType === "pad" && layout.usesSplitView);
   const sidebarNavigation =
     primaryColumn !== null &&
@@ -186,6 +194,11 @@ function WorkspaceRootContent() {
             <PullRequestsScreen />
           ) : state.selectedTab === "issues" ? (
             <IssuesScreen />
+          ) : state.selectedTab === "promachos" ? (
+            <>
+              <NativeStackScreenOptions options={{ headerSearchBarOptions: undefined }} />
+              <PromachosTabScreen />
+            </>
           ) : (
             <WorkspaceExtraTab tab={state.selectedTab} />
           )}
@@ -194,10 +207,13 @@ function WorkspaceRootContent() {
           <WorkspaceTabDock placement="column" />
         ) : null}
         {enabled.length === 0 && !settingsOpen ? null : settingsOpen ||
-          workspaceUsesColumns(state.selectedTab) ? (
+          workspaceTabSearches(state.selectedTab) ? (
           <WorkspaceToolbar sidebar={sidebarNavigation} onNewTask={startNewTask} />
         ) : (
-          <WorkspaceSectionToolbar onNewTask={startNewTask} showCompose={false} />
+          <WorkspaceSectionToolbar
+            onNewTask={compose?.onPress ?? startNewTask}
+            showCompose={state.selectedTab === "promachos" && compose !== null}
+          />
         )}
       </View>
     </WorkspaceTabsContext>
