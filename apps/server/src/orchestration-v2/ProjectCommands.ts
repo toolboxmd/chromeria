@@ -50,7 +50,18 @@ export interface ProjectDeleteCommand {
   readonly projectId: ProjectId;
 }
 
-export type ProjectCommand = ProjectCreateCommand | ProjectMetaUpdateCommand | ProjectDeleteCommand;
+export interface ProjectRestoreCommand {
+  readonly type: "project.restore";
+  readonly commandId: CommandId;
+  readonly projectId: ProjectId;
+  readonly workspaceRoot: string;
+}
+
+export type ProjectCommand =
+  | ProjectCreateCommand
+  | ProjectMetaUpdateCommand
+  | ProjectDeleteCommand
+  | ProjectRestoreCommand;
 
 export class ProjectCommandInvariantError extends Schema.TaggedError<ProjectCommandInvariantError>()(
   "ProjectCommandInvariantError",
@@ -238,6 +249,20 @@ export function planProjectCommand(input: {
         ...base,
         type: "project.deleted",
         payload: { projectId: command.projectId, deletedAt: occurredAt },
+      });
+    }
+
+    case "project.restore": {
+      if (state.project === undefined) return missingProject();
+      if (state.project.deletedAt === null) {
+        return invariant(`Project '${command.projectId}' is not deleted.`);
+      }
+      const conflict = requireWorkspaceAvailable(command.workspaceRoot);
+      if (conflict !== undefined) return Result.fail(conflict);
+      return Result.succeed({
+        ...base,
+        type: "project.restored",
+        payload: { projectId: command.projectId, restoredAt: occurredAt },
       });
     }
   }
