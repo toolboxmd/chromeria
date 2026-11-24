@@ -984,6 +984,12 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
       return yield* store(state, { ...state, command: fields.command! });
     }
     if (commandField) return yield* fail("A task's kind cannot change. Create a new task instead.");
+    if (
+      fields.checkReason !== undefined &&
+      fields.checkCommand === undefined &&
+      fields.revertCheckVersion === undefined
+    )
+      return yield* fail("checkReason requires a check edit or revert.");
     let checks = state.checks;
     if (fields.checkCommand !== undefined || fields.revertCheckVersion !== undefined) {
       if (fields.checkReason === undefined)

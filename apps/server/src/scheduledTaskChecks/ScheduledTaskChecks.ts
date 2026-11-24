@@ -975,6 +975,16 @@ const checksLayer = Layer.effect(
                     message: "The schedule project changed before rebinding.",
                     taskId: current.id,
                   });
+                if (
+                  fields.projectId !== undefined &&
+                  (existing.projectId !== current.projectId ||
+                    (fields.projectId !== current.projectId && current.threadId !== null))
+                )
+                  return yield* new ScheduledTaskError({
+                    message: "The schedule project or thread binding changed before the move.",
+                    taskId: current.id,
+                  });
+                const projectId = fields.projectId ?? current.projectId;
                 const boundThread =
                   fields.bindToCurrentThread === undefined ? current.threadId : threadId;
                 const updated: ScheduledTaskUpsertInput = {
@@ -985,12 +995,12 @@ const checksLayer = Layer.effect(
                   prompt: fields.prompt ?? current.prompt,
                   enabled: fields.enabled ?? current.enabled,
                   schedule: fields.schedule ?? current.schedule,
-                  projectId: current.projectId,
+                  projectId,
                   threadId: boundThread,
                   workspaceStrategy:
-                    fields.bindToCurrentThread === undefined
-                      ? current.workspaceStrategy
-                      : input.workspaceStrategy,
+                    fields.bindToCurrentThread !== undefined || projectId !== current.projectId
+                      ? input.workspaceStrategy
+                      : current.workspaceStrategy,
                   modelSelection: current.modelSelection,
                   runtimeMode: current.runtimeMode,
                   interactionMode: current.interactionMode,
@@ -1002,7 +1012,7 @@ const checksLayer = Layer.effect(
                   const commit = yield* withSql(
                     runs.prepareSave({
                       taskId: current.id,
-                      projectId: current.projectId,
+                      projectId,
                       threadId: boundThread,
                       schedule: updated.schedule,
                       fields,

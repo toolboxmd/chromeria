@@ -3157,6 +3157,7 @@ const make = Effect.gen(function* () {
   const scheduleRecheck = Effect.fn("OrchestratorMcpService.scheduleRecheck")(function* (
     scope: McpInvocationScope,
     taskId?: ScheduledTask["id"],
+    destinationProjectId?: ProjectId,
   ) {
     const caller = yield* loadCaller(scope, ["runs"]);
     if (Option.isSome(peerAuthority) && scope.thread !== undefined)
@@ -3166,6 +3167,8 @@ const make = Effect.gen(function* () {
       yield* assertSameLink({ scope, caller: caller.parent?.thread }, task);
       yield* assertLiveCallerForOtherProject(scope, caller.parent, task.projectId);
     }
+    if (destinationProjectId !== undefined)
+      yield* assertLiveCallerForOtherProject(scope, caller.parent, destinationProjectId);
   });
   const scheduleError = (error: ScheduledTaskError | OrchestratorMcpFailure) =>
     error._tag === "OrchestratorMcpFailure"
@@ -3345,6 +3348,8 @@ const make = Effect.gen(function* () {
     ),
     updateScheduledTask: Effect.fn("OrchestratorMcpService.updateScheduledTask")(
       function* (scope, input) {
+        if (input.schedule?.type === "fixed_time" && input.schedule.chosen !== undefined)
+          return yield* failure("invalid_request", "Omit chosen: the scheduler picks run times.");
         if (
           input.schedule?.type === "webhook" &&
           input.schedule.signature?.secretRequest !== undefined
@@ -3353,6 +3358,12 @@ const make = Effect.gen(function* () {
             "invalid_request",
             "Remote secret v1 supports schedule_task creation only.",
           );
+        if (
+          input.schedule?.type === "webhook" &&
+          input.schedule.signature?.secret !== undefined &&
+          input.schedule.signature.secretRef !== undefined
+        )
+          return yield* failure("invalid_request", "Choose either secret or secretRef.");
         const { parent, limits } = yield* loadCaller(scope, ["runs"]);
         const request = yield* scheduleRequest(scope);
         if (request !== undefined) {
@@ -3363,6 +3374,17 @@ const make = Effect.gen(function* () {
         yield* assertSameLink({ scope, caller: parent?.thread }, existing);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);
         const { enabled } = input;
+        const projectId = input.projectId ?? existing.projectId;
+        const moving = projectId !== existing.projectId;
+        if (moving) {
+          yield* assertLiveCallerForOtherProject(scope, parent, projectId);
+          yield* requireProject(projectId);
+          if (existing.threadId !== null)
+            return yield* failure(
+              "invalid_request",
+              "Unbind the scheduled task before moving it to another project.",
+            );
+        }
         // Routing fields such as clientRequestId also arrive on the input; only
         // definition fields make this more than a pause or resume.
         if (
@@ -3371,6 +3393,7 @@ const make = Effect.gen(function* () {
             (field) =>
               field === "scheduledTaskId" ||
               field === "enabled" ||
+              field === "environmentId" ||
               input[field as keyof typeof input] === undefined,
           )
         ) {
@@ -3402,7 +3425,7 @@ const make = Effect.gen(function* () {
         }
         if (
           input.bindToCurrentThread === true &&
-          (parent === undefined || parent.thread.projectId !== existing.projectId)
+          (parent === undefined || parent.thread.projectId !== projectId)
         ) {
           return yield* failure(
             "invalid_request",
@@ -3429,11 +3452,12 @@ const make = Effect.gen(function* () {
             : input.bindToCurrentThread && parent !== undefined
               ? parent.thread.id
               : null;
-        // Reset the workspace only when the binding flips, so unbinding cannot leave runs in the shared checkout.
+        // A checkout or base ref from the old project cannot be reused after a move.
         const workspaceStrategy =
-          (threadId === null) === (existing.threadId === null)
-            ? existing.workspaceStrategy
-            : yield* scheduledTaskWorkspaceStrategy(threadId !== null, existing.projectId);
+          (threadId === null) !== (existing.threadId === null) ||
+          (moving && existing.workspaceStrategy.type !== "root")
+            ? yield* scheduledTaskWorkspaceStrategy(threadId !== null, projectId)
+            : existing.workspaceStrategy;
         const upsertInput: ScheduledTaskUpsertInput = {
           purposeIntent: input.purposeIntent ?? existing.purposeIntent,
           id: existing.id,
@@ -3445,7 +3469,7 @@ const make = Effect.gen(function* () {
           prompt: input.prompt ?? existing.prompt,
           enabled: input.enabled ?? existing.enabled,
           schedule: input.schedule ?? existing.schedule,
-          projectId: existing.projectId,
+          projectId,
           threadId,
           threadMode:
             input.freshSession === undefined && input.bindToCurrentThread === undefined
@@ -3484,7 +3508,7 @@ const make = Effect.gen(function* () {
                 ? undefined
                 : {
                     request,
-                    recheck: scheduleRecheck(scope, existing.id),
+                    recheck: scheduleRecheck(scope, existing.id, input.projectId),
                     secret:
                       input.schedule?.type === "webhook" &&
                       input.schedule.signature?.secretRef !== undefined

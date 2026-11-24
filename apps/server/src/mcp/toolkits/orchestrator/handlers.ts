@@ -134,32 +134,13 @@ const handlers = {
       // A scheduled run starts long after its caller, with nothing to carry the link.
       { refused: "schedule tasks in this environment" },
     ),
-    McpToolAccess.writes(
-      ({
-        scheduledTaskId,
-        purposeIntent,
-        prompt,
-        title,
-        schedule,
-        enabled,
-        freshSession,
-        bindToCurrentThread,
-      }) =>
-        Effect.gen(function* () {
-          if (scheduledTaskId === undefined) return yield* Effect.die("unreachable");
-          const scope = yield* McpInvocationContext.McpInvocationContext;
-          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
-          return yield* service.updateScheduledTask(scope, {
-            scheduledTaskId,
-            purposeIntent,
-            prompt,
-            title,
-            schedule,
-            enabled,
-            freshSession,
-            bindToCurrentThread,
-          });
-        }),
+    McpToolAccess.writes(({ scheduledTaskId, ...input }) =>
+      Effect.gen(function* () {
+        if (scheduledTaskId === undefined) return yield* Effect.die("unreachable");
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        return yield* service.updateScheduledTask(scope, { ...input, scheduledTaskId });
+      }),
     ),
   ),
   list_scheduled_tasks: McpToolAccess.reads((input) =>

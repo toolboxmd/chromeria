@@ -293,7 +293,14 @@ export function changeDraftProject(
   projectId: ProjectId,
 ): ScheduledTaskDraft {
   if (projectId === draft.projectId) return draft;
-  return { ...unbindDraftFromThread(draft), projectId };
+  const unbound = unbindDraftFromThread(draft);
+  return {
+    ...unbound,
+    projectId,
+    workspace: unbound.workspace === "existing_worktree" ? "worktree" : unbound.workspace,
+    baseRef: "",
+    checkoutPath: "",
+  };
 }
 
 export function createDraft(

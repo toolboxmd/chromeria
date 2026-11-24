@@ -30,7 +30,7 @@ import * as HttpBody from "effect/http/HttpBody";
 import * as Schema from "effect/Schema";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { CommandId, OrchestratorMcpFailure, ThreadId } from "@t3tools/contracts";
+import { CommandId, OrchestratorMcpFailure, ProjectId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -1238,6 +1238,131 @@ it.live(
         );
       }),
     ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
+);
+
+it.live("moves a disabled schedule through both MCP update tools", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const node = yield* makeNode(
+        descriptorOf("scheduler-move", "Scheduler move", { peerAuthority: 1 }),
+        "disk",
+        { productionKernel: true, attachmentRequests: true, nativeOwners: true },
+      );
+      const parent = ThreadId.make("scheduler-move-parent");
+      yield* seedParent(node, parent);
+      const sql = Context.get(node.database, SqlClient.SqlClient);
+      const destination = ProjectId.make("project:destination");
+      const workspace = yield* FileSystem.FileSystem.use((fs) => fs.makeTempDirectoryScoped());
+      yield* sql`
+        INSERT INTO projection_projects
+          (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES (${destination}, 'Destination', ${workspace}, '[]',
+          '2026-10-16T00:00:00Z', '2026-10-16T00:00:00Z')
+      `;
+      const purposeIntent = { version: 1, intent: { type: "unscoped" } } as const;
+      const schedule = { type: "interval", everyMs: 60_000 } as const;
+      const created = yield* nativeCall(node, parent, "schedule_task", {
+        prompt: "Disposable scheduler probe",
+        purposeIntent,
+        schedule,
+        enabled: false,
+        bindToCurrentThread: false,
+        clientRequestId: "create-move-probe",
+      });
+      expect(created.isError, json(created)).not.toBe(true);
+      const { scheduledTaskId } = yield* decodeAutomationScheduleReceipt(created.structuredContent);
+      const getTask = (projectId: ProjectId) =>
+        nativeCall(node, parent, "list_scheduled_tasks", { projectId, scheduledTaskId }).pipe(
+          Effect.flatMap((reply) => decodeScheduledTaskList(reply.structuredContent)),
+          Effect.map(({ tasks }) => tasks[0]),
+        );
+      yield* Effect.gen(function* () {
+        const original = yield* getTask(node.project.id);
+        expect(original).toMatchObject({
+          scheduledTaskId,
+          purposeIntent,
+          schedule,
+          enabled: false,
+        });
+
+        const moved = yield* nativeCall(node, parent, "schedule_task", {
+          scheduledTaskId,
+          projectId: destination,
+          clientRequestId: "move-probe-to-destination",
+        });
+        expect(moved.isError, json(moved)).not.toBe(true);
+        expect(moved.structuredContent).toMatchObject({ applied: true, scheduledTaskId });
+        expect(yield* getTask(destination)).toEqual({ ...original, projectId: destination });
+        expect(yield* getTask(node.project.id)).toBeUndefined();
+
+        const restored = yield* nativeCall(node, parent, "update_scheduled_task", {
+          scheduledTaskId,
+          projectId: node.project.id,
+          clientRequestId: "move-probe-back",
+        });
+        expect(restored.isError, json(restored)).not.toBe(true);
+        expect(restored.structuredContent).toMatchObject({ applied: true, scheduledTaskId });
+
+        for (const [fields, error] of [
+          [
+            { projectId: "project:missing", title: "Must not save" },
+            "Project project:missing was not found.",
+          ],
+          [{ checkReason: "No check edit", title: "Must not save" }, "checkReason"],
+          [
+            {
+              schedule: {
+                type: "fixed_time",
+                timeOfDay: "09:00",
+                chosen: [{ requested: "09:00", offsetMinutes: 5 }],
+              },
+            },
+            "Omit chosen",
+          ],
+        ] as const) {
+          const rejected = yield* nativeCall(node, parent, "schedule_task", {
+            scheduledTaskId,
+            ...fields,
+            clientRequestId: `reject-probe-${error}`,
+          });
+          expect(rejected.isError, json(rejected)).toBe(true);
+          expect(json(rejected)).toContain(error);
+          expect(yield* getTask(node.project.id)).toEqual(original);
+        }
+
+        const bound = yield* nativeCall(node, parent, "update_scheduled_task", {
+          scheduledTaskId,
+          bindToCurrentThread: true,
+          clientRequestId: "bind-move-probe",
+        });
+        expect(bound.isError, json(bound)).not.toBe(true);
+        const boundTask = yield* getTask(node.project.id);
+        expect(boundTask?.boundThreadId).toBe(parent);
+        const rejected = yield* nativeCall(node, parent, "update_scheduled_task", {
+          scheduledTaskId,
+          projectId: destination,
+          clientRequestId: "refuse-bound-probe",
+        });
+        expect(rejected.isError, json(rejected)).toBe(true);
+        expect(json(rejected)).toContain("Unbind the scheduled task before moving it");
+        expect(yield* getTask(node.project.id)).toEqual(boundTask);
+      }).pipe(
+        Effect.ensuring(
+          nativeCall(node, parent, "delete_scheduled_task", {
+            scheduledTaskId,
+            clientRequestId: "delete-move-probe",
+          }).pipe(
+            Effect.tap((reply) =>
+              Effect.sync(() => expect(reply.isError, json(reply)).not.toBe(true)),
+            ),
+            Effect.orDie,
+          ),
+        ),
+      );
+      expect(yield* getTask(node.project.id)).toBeUndefined();
+      expect(yield* getTask(destination)).toBeUndefined();
+    }),
+  ).pipe(Effect.provide(Layer.merge(NodeServices.layer, layerFixtureHostServices))),
 );
 
 it.live("scheduler-replay382: replayed creation preserves later independent schedule edits", () =>

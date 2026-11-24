@@ -2009,8 +2009,25 @@ export const layer = Layer.effect(
               // keep their run history, and so real load failures propagate instead
               // of silently resetting an existing row.
               yield* localFence;
-              if (extensionCommit !== undefined) yield* extensionCommit;
               const existingTask = yield* findTask(id);
+              if (existingTask !== null && existingTask.projectId !== input.projectId) {
+                const destination = yield* sql`
+                  SELECT 1 FROM projection_projects
+                  WHERE project_id = ${input.projectId} AND deleted_at IS NULL
+                `.pipe(
+                  Effect.mapError((cause) =>
+                    taskError("Could not read the destination project.", { taskId: id, cause }),
+                  ),
+                );
+                if (destination.length === 0)
+                  return yield* taskError(
+                    "The destination project was not found in this environment.",
+                    {
+                      taskId: id,
+                    },
+                  );
+              }
+              if (extensionCommit !== undefined) yield* extensionCommit;
               const currentThread = resolveThreadBinding(input, existingTask);
               if (requestDigest(currentThread) !== requestDigest(capturedThread))
                 return yield* taskError(

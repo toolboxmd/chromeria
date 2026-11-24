@@ -18,6 +18,7 @@ import { resolveSettingsScope, type SettingsScopeSearch } from "./settingsScope"
 
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
+  changeDraftProject,
   scheduledTaskDefaultModel,
   defaultScheduledTaskProjectId,
   matchesScheduledTaskScope,
@@ -199,6 +200,19 @@ describe("fixed-time scheduled tasks", () => {
 });
 
 describe("scheduled task destination", () => {
+  it("replaces a checkout from the old project with a new worktree in the destination", () => {
+    const draft = taskToDraft({
+      ...legacyTask,
+      workspaceStrategy: { type: "existing_worktree", worktreePath: "/repos/old-checkout" },
+    });
+    expect(changeDraftProject(draft, second.id)).toMatchObject({
+      projectId: second.id,
+      workspaceMode: "worktree",
+      baseRef: "",
+      existingWorktreePath: "",
+    });
+  });
+
   it("unbinding leaves the shared checkout for a new worktree from the remote", () => {
     const rootBound = taskToDraft({
       ...legacyTask,

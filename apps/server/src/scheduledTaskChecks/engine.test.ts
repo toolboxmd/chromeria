@@ -951,6 +951,8 @@ it.effect("check edits require a reason and reverts copy an earlier version", ()
   Effect.gen(function* () {
     const h = yield* harness();
     yield* h.save({ checkCommand: "check-v1", checkReason: "first" });
+    const reasonOnly = yield* Effect.flip(h.save({ checkReason: "No edit" }));
+    assert.include(reasonOnly.message, "checkReason requires a check edit or revert");
     assert.isTrue(Exit.isFailure(yield* Effect.exit(h.save({ checkCommand: "check-v2" }))));
     assert.isTrue(
       Exit.isFailure(
