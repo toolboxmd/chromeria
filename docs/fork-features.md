@@ -301,7 +301,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/issues/876",
     "https://github.com/toolboxmd/chromeria/issues/956",
     "https://github.com/toolboxmd/chromeria/issues/963",
-    "https://github.com/toolboxmd/chromeria/issues/965"
+    "https://github.com/toolboxmd/chromeria/issues/965",
+    "https://github.com/toolboxmd/chromeria/issues/969"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/9",
@@ -397,7 +398,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/web/src/browserHistoryStore.browser.test.ts",
     "apps/web/src/components/chat/HtmlRenderDialog.browser.test.tsx",
     "apps/desktop/src/app/DesktopCliShim.ts",
-    "apps/desktop/src/app/DesktopCliShim.test.ts"
+    "apps/desktop/src/app/DesktopCliShim.test.ts",
+    "packages/ssh/src/launcherTestHarness.ts"
   ],
   "sharedFiles": [],
   "keywords": [
