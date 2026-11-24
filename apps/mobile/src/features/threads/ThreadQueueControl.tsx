@@ -30,6 +30,7 @@ import * as Dialog from "../../components/ui/Dialog";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/ui/FilePreviewModal";
 import { SheetHeader } from "../../components/ui/SheetHeader";
 import { AppText as Text } from "../../components/ui/AppText";
+import { useChildRequestNotice } from "./useChildRequestNotice";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { Menu } from "../../components/ui/Menu";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -77,7 +78,10 @@ function QueuedRunSender(props: {
   readonly message: QueuedRunMessage;
 }) {
   const gt = useGT();
-  const { attribution, scheduledTaskId } = resolveUserMessagePresentation(props.message);
+  const { attribution, scheduledTaskId, childRequest } = resolveUserMessagePresentation(
+    props.message,
+  );
+  const childNotice = useChildRequestNotice(props.environmentId, childRequest);
   const senderThreadId = attribution === "agent" ? props.message.senderThreadId : undefined;
   // A linked environment's agent sent it from a thread there.
   const linkedSender = attribution === "agent" ? props.message.linkedSender : undefined;
@@ -102,9 +106,14 @@ function QueuedRunSender(props: {
             icon: "bubble.left.and.bubble.right" as const,
             label: senderShell?.title.trim() || linkedSender?.title.trim() || gt("Agent"),
           }
-        : attribution === "t3code"
-          ? { icon: null, label: gt("Sent by T3 Code") }
-          : null;
+        : childNotice !== null
+          ? {
+              icon: childNotice.symbol,
+              label: `${childNotice.title ?? gt("Child thread")} · ${childNotice.summary}`,
+            }
+          : attribution === "t3code"
+            ? { icon: null, label: gt("Sent by T3 Code") }
+            : null;
   if (sender === null) return null;
   return (
     <View className="flex-row items-center gap-1">
