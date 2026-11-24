@@ -933,7 +933,13 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
       // Its thread stays in the old project, so moving the task leaves it for a new one.
       yield* seedMoveProjects;
       const { task: moved } = yield* service.upsert(move);
-      assert.deepEqual(moved, { ...before, projectId: movedProjectId, threadId: null });
+      assert.isAbove(Date.parse(moved.updatedAt), Date.parse(before.updatedAt));
+      assert.deepEqual(moved, {
+        ...before,
+        projectId: movedProjectId,
+        threadId: null,
+        updatedAt: moved.updatedAt,
+      });
       yield* TestClock.adjust(5);
       yield* service.runNow({ id: input.id });
       assert.equal((yield* Ref.get(initialLaunch))?.projectId, movedProjectId);
