@@ -1180,6 +1180,7 @@ const make = Effect.gen(function* () {
       tab.cdp,
       { width: size.width, height: size.height },
       tab.zoomFactor,
+      authorize,
     );
     await broadcastViewport(tab);
   };
@@ -1212,6 +1213,7 @@ const make = Effect.gen(function* () {
         tab.cdp,
         previewViewportSize(tab.page) ?? UNATTACHED_FILL_VIEWPORT,
         zoomFactor,
+        authorize,
       );
       tab.zoomFactor = zoomFactor;
       await broadcastViewport(tab);
@@ -1487,6 +1489,7 @@ const make = Effect.gen(function* () {
           cdp,
           fixedViewportSize(tab.setting) ?? UNATTACHED_FILL_VIEWPORT,
           tab.zoomFactor,
+          authorize,
         );
       }
       await applyRendering(tab, snapshot, authorize);
@@ -4052,7 +4055,7 @@ const make = Effect.gen(function* () {
         if (tab.setting._tag !== "fill" || tab.desktop) return;
         const current = previewViewportSize(tab.page);
         if (current?.width === width && current.height === height) return;
-        await resizeAgentViewport(tab.page, tab.cdp, { width, height }, tab.zoomFactor);
+        await resizeAgentViewport(tab.page, tab.cdp, { width, height }, tab.zoomFactor, authorize);
         await broadcastViewport(tab);
         return;
       }

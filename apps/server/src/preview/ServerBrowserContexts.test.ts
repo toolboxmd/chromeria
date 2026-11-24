@@ -7,10 +7,17 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { INCOGNITO_BROWSER_PROFILE_ID } from "@t3tools/contracts";
-import { chromium, type Browser, type BrowserContext, type BrowserType } from "playwright-core";
+import {
+  chromium,
+  type Browser,
+  type BrowserContext,
+  type BrowserType,
+  type CDPSession,
+  type Page,
+} from "playwright-core";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { ServerBrowserContexts } from "./ServerBrowserContexts.ts";
+import { resizeAgentViewport, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 
 const launches = vi.hoisted(() => ({
   launch: vi.fn<BrowserType["launch"]>(),
@@ -110,6 +117,28 @@ beforeEach(() => {
 });
 
 describe("ServerBrowserContexts", () => {
+  it("does not resize the tab if access is revoked while clearing zoom", async () => {
+    let authorized = true;
+    const authorize = async () => {
+      if (!authorized) throw new Error("grant revoked");
+    };
+    const send = vi.fn(async (method: string) => {
+      if (method === "Emulation.clearDeviceMetricsOverride") authorized = false;
+    });
+    const page = makePage() as unknown as Page;
+    const cdp = { send } as unknown as CDPSession;
+    const size = { width: 1280, height: 800 };
+    await resizeAgentViewport(page, cdp, size, 1.5, authorize);
+
+    await expect(resizeAgentViewport(page, cdp, size, 1, authorize)).rejects.toThrow(
+      "grant revoked",
+    );
+    expect(send.mock.calls.map(([method]) => method)).toEqual([
+      "Emulation.setDeviceMetricsOverride",
+      "Emulation.clearDeviceMetricsOverride",
+    ]);
+  });
+
   it("closes the shared browser only after it holds no context for the idle period", async () => {
     vi.useFakeTimers();
     try {

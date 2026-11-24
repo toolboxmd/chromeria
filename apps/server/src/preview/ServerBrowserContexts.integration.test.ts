@@ -107,6 +107,7 @@ describe.skipIf(!testChromium)("ServerBrowserContexts on Chrome for Testing", ()
         const context = await pool.contextFor(profile);
         const page = await context.newPage();
         const cdp = await context.newCDPSession(page);
+        const authorize = async () => {};
         const metrics = () =>
           page.evaluate(`({
             screen: [screen.width, screen.height],
@@ -115,9 +116,9 @@ describe.skipIf(!testChromium)("ServerBrowserContexts on Chrome for Testing", ()
             dpr: devicePixelRatio
           })`);
         const monitor = { screen: [1920, 1080], workArea: [1920, 1032] };
-        await resizeAgentViewport(page, cdp, { width: 1280, height: 800 }, 1);
+        await resizeAgentViewport(page, cdp, { width: 1280, height: 800 }, 1, authorize);
         expect(await metrics()).toEqual({ ...monitor, viewport: [1280, 800], dpr: 2 });
-        await resizeAgentViewport(page, cdp, { width: 1400, height: 900 }, 1);
+        await resizeAgentViewport(page, cdp, { width: 1400, height: 900 }, 1, authorize);
         await page.goto(origin);
         expect(await metrics()).toEqual({ ...monitor, viewport: [1400, 900], dpr: 2 });
 
@@ -133,13 +134,13 @@ describe.skipIf(!testChromium)("ServerBrowserContexts on Chrome for Testing", ()
         expect(pngDimensions(await frame)).toEqual([2800, 1800]);
         await cdp.send("Page.stopScreencast");
 
-        await resizeAgentViewport(page, cdp, { width: 1200, height: 900 }, 1.5);
+        await resizeAgentViewport(page, cdp, { width: 1200, height: 900 }, 1.5, authorize);
         expect(await metrics()).toMatchObject({
           screen: monitor.screen,
           viewport: [800, 600],
           dpr: 3,
         });
-        await resizeAgentViewport(page, cdp, { width: 1200, height: 900 }, 1);
+        await resizeAgentViewport(page, cdp, { width: 1200, height: 900 }, 1, authorize);
         expect(pngDimensions(await captureViewport(cdp, { format: "png" }))).toEqual([2400, 1800]);
         expect(await metrics()).toEqual({ ...monitor, viewport: [1200, 900], dpr: 2 });
       });

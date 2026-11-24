@@ -31,10 +31,12 @@ export const resizeAgentViewport = async (
   cdp: CDPSession,
   size: ViewportSize,
   zoom: number,
+  authorize: () => Promise<void>,
 ) => {
   if (zoom === 1) {
     if ((agentViewports.get(page)?.zoom ?? 1) !== 1) {
       await cdp.send("Emulation.clearDeviceMetricsOverride");
+      await authorize();
     }
     // Playwright's viewport setter replaces the screen. Device metrics emulation
     // also removes the work area inset, so use it only when zoom changes the DPR.
