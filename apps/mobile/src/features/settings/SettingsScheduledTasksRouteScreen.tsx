@@ -52,7 +52,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "../../components/ui/Button";
 import { AppText as Text } from "../../components/ui/AppText";
-import { ScheduledTaskRuns } from "./ScheduledTaskRuns";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import {
   EnvironmentMachineSymbol,
@@ -1700,108 +1699,111 @@ function ScheduledTaskItem({
   };
 
   return (
-    <View className={!divided ? "px-4 py-3" : "border-t border-border-subtle px-4 py-3"}>
-      <View className="flex-row items-start gap-1">
+    <View
+      className={
+        !divided
+          ? "flex-row items-start gap-1 px-4 py-3"
+          : "flex-row items-start gap-1 border-t border-border-subtle px-4 py-3"
+      }
+    >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={gt("Edit {title}", { title: named })}
+        onPress={onEdit}
+        className="min-w-0 flex-1 gap-1 active:opacity-70"
+      >
+        {origin}
+        <Text textRole="body" className="text-foreground" numberOfLines={1}>
+          {task.title}
+        </Text>
+        <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+          {!task.enabled
+            ? gt("{schedule} · Paused", {
+                schedule: describeSchedule(task, timeZone, m, locale),
+              })
+            : task.nextRunAt
+              ? gt("{schedule} · {nextRun}", {
+                  schedule: describeSchedule(task, timeZone, m, locale),
+                  nextRun: formatNextScheduledTaskRun(task.nextRunAt, now, m),
+                })
+              : describeSchedule(task, timeZone, m, locale)}
+        </Text>
+        {task.blockedByPolicy ? (
+          <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+            {task.blockedByPolicy}
+          </Text>
+        ) : null}
+        {task.lastRunError ? (
+          <Text className="text-sm text-danger-foreground" numberOfLines={2}>
+            <T>
+              Last run failed: <Var>{task.lastRunError}</Var>
+            </T>
+          </Text>
+        ) : null}
+        <ScheduledTaskFork.ForkTaskSummaryText task={task} />
+      </Pressable>
+      <Menu
+        actions={[
+          { id: "edit", title: gt("Edit") },
+          ...(task.threadId !== null && scheduledTaskThreadMode(task) !== "new_thread"
+            ? [{ id: "thread", title: gt("Open thread") }]
+            : []),
+          {
+            id: "toggle",
+            title: task.enabled ? gt("Pause") : gt("Resume"),
+            attributes: { disabled: !canOperate },
+          },
+          ...(task.schedule.type === "webhook"
+            ? []
+            : [ScheduledTaskFork.runNowAction(task, canOperate, m)]),
+          ...abandonReport.actions(task),
+          {
+            id: "delete",
+            title: gt("Delete"),
+            attributes: { destructive: true, disabled: !canOperate },
+          },
+        ]}
+        onPressAction={({ nativeEvent }) => {
+          const action = nativeEvent.event;
+          if (action === "edit") {
+            onEdit();
+          } else if (action === "thread" && task.threadId !== null) {
+            selectDetail({
+              name: "Thread",
+              params: {
+                environmentId: String(environmentId),
+                threadId: String(task.threadId),
+              },
+            });
+          } else if (action === "delete") {
+            Dialog.alert(gt("Delete task?"), named, [
+              { text: gt("Cancel"), style: "cancel" },
+              {
+                text: gt("Delete"),
+                style: "destructive",
+                onPress: () => void act("delete"),
+              },
+            ]);
+          } else if (action === "toggle" || action === "run") {
+            void act(action);
+          } else {
+            abandonReport.onAction(action, task);
+          }
+        }}
+      >
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={gt("Edit {title}", { title: named })}
-          onPress={onEdit}
-          className="min-w-0 flex-1 gap-1 active:opacity-70"
+          accessibilityLabel={gt("Actions for {title}", { title: named })}
+          className="h-11 w-11 items-center justify-center"
         >
-          {origin}
-          <Text textRole="body" className="text-foreground" numberOfLines={1}>
-            {task.title}
-          </Text>
-          <Text className="text-sm text-foreground-muted" numberOfLines={2}>
-            {!task.enabled
-              ? gt("{schedule} · Paused", {
-                  schedule: describeSchedule(task, timeZone, m, locale),
-                })
-              : task.nextRunAt
-                ? gt("{schedule} · {nextRun}", {
-                    schedule: describeSchedule(task, timeZone, m, locale),
-                    nextRun: formatNextScheduledTaskRun(task.nextRunAt, now, m),
-                  })
-                : describeSchedule(task, timeZone, m, locale)}
-          </Text>
-          {task.blockedByPolicy ? (
-            <Text className="text-sm text-foreground-muted" numberOfLines={2}>
-              {task.blockedByPolicy}
-            </Text>
-          ) : null}
-          {task.lastRunError ? (
-            <Text className="text-sm text-danger-foreground" numberOfLines={2}>
-              <T>
-                Last run failed: <Var>{task.lastRunError}</Var>
-              </T>
-            </Text>
-          ) : null}
-          <ScheduledTaskFork.ForkTaskSummaryText task={task} />
+          <SymbolView
+            name="ellipsis"
+            size={18}
+            tintColorClassName="accent-icon"
+            type="monochrome"
+          />
         </Pressable>
-        <Menu
-          actions={[
-            { id: "edit", title: gt("Edit") },
-            ...(task.threadId !== null && scheduledTaskThreadMode(task) !== "new_thread"
-              ? [{ id: "thread", title: gt("Open thread") }]
-              : []),
-            {
-              id: "toggle",
-              title: task.enabled ? gt("Pause") : gt("Resume"),
-              attributes: { disabled: !canOperate },
-            },
-            ...(task.schedule.type === "webhook"
-              ? []
-              : [ScheduledTaskFork.runNowAction(task, canOperate, m)]),
-            ...abandonReport.actions(task),
-            {
-              id: "delete",
-              title: gt("Delete"),
-              attributes: { destructive: true, disabled: !canOperate },
-            },
-          ]}
-          onPressAction={({ nativeEvent }) => {
-            const action = nativeEvent.event;
-            if (action === "edit") {
-              onEdit();
-            } else if (action === "thread" && task.threadId !== null) {
-              selectDetail({
-                name: "Thread",
-                params: {
-                  environmentId: String(environmentId),
-                  threadId: String(task.threadId),
-                },
-              });
-            } else if (action === "delete") {
-              Dialog.alert(gt("Delete task?"), named, [
-                { text: gt("Cancel"), style: "cancel" },
-                {
-                  text: gt("Delete"),
-                  style: "destructive",
-                  onPress: () => void act("delete"),
-                },
-              ]);
-            } else if (action === "toggle" || action === "run") {
-              void act(action);
-            } else {
-              abandonReport.onAction(action, task);
-            }
-          }}
-        >
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={gt("Actions for {title}", { title: named })}
-            className="h-11 w-11 items-center justify-center"
-          >
-            <SymbolView
-              name="ellipsis"
-              size={18}
-              tintColorClassName="accent-icon"
-              type="monochrome"
-            />
-          </Pressable>
-        </Menu>
-      </View>
-      <ScheduledTaskRuns environmentId={environmentId} task={task} />
+      </Menu>
     </View>
   );
 }

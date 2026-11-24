@@ -45,7 +45,7 @@ const formatStarted = (value: string) =>
     minute: "2-digit",
   });
 
-/** Under the task: one mark per kept run, oldest first, and the runs themselves on demand. */
+/** Under the task row: one mark per kept run, oldest first, and the runs themselves on demand. */
 export function ScheduledTaskRuns({
   environmentId,
   task,
@@ -65,7 +65,7 @@ export function ScheduledTaskRuns({
   const views = scheduledTaskRunViews(runs, states);
   if (views.runs.length === 0) return null;
   return (
-    <View className="gap-2 pt-1">
+    <View className="-mt-1 gap-2 px-4 pb-3">
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded }}
