@@ -916,7 +916,11 @@ export const layer = Layer.effect(
           ),
         );
 
-    const markRunning = (id: ScheduledTaskId, startedAtIso: string, webhookDeliveryId?: string) =>
+    const markRunning = (
+      task: Pick<ScheduledTask, "id" | "projectId" | "createdAt" | "updatedAt">,
+      startedAtIso: string,
+      webhookDeliveryId?: string,
+    ) =>
       sql.withTransaction(
         sql<{ task_id: string }>`
         UPDATE scheduled_tasks
@@ -925,22 +929,24 @@ export const layer = Layer.effect(
             last_run_webhook_delivery_id = ${webhookDeliveryId ?? null},
             last_run_status = 'running',
             last_run_error = NULL
-        WHERE task_id = ${id}
+        WHERE task_id = ${task.id}
+          AND project_id = ${task.projectId}
+          AND created_at = ${task.createdAt}
+          AND updated_at = ${task.updatedAt}
         RETURNING task_id
       `.pipe(
           Effect.mapError((cause) =>
-            taskError("Could not mark schedule task as running.", { taskId: id, cause }),
+            taskError("Could not mark schedule task as running.", { taskId: task.id, cause }),
           ),
-          // A task deleted after the re-read must not be dispatched from the stale snapshot.
           Effect.flatMap((rows) =>
             rows.length > 0
-              ? sql`UPDATE scheduled_task_request_incarnations SET active_request_id=NULL WHERE task_id=${id}`.pipe(
+              ? sql`UPDATE scheduled_task_request_incarnations SET active_request_id=NULL WHERE task_id=${task.id}`.pipe(
                   Effect.asVoid,
                   Effect.mapError((cause) =>
-                    taskError("Could not bind schedule run.", { taskId: id, cause }),
+                    taskError("Could not bind schedule run.", { taskId: task.id, cause }),
                   ),
                 )
-              : taskError("Schedule task not found.", { taskId: id }),
+              : taskError("The schedule changed before the run could start.", { taskId: task.id }),
           ),
         ),
       );
@@ -1538,22 +1544,31 @@ export const layer = Layer.effect(
           .pipe(Effect.mapError((error) => taskError(error.message, { taskId: active.id })));
         if (decision._tag === "skip") return { task: active, threadId: null };
 
-        markedRunning = true;
-        if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
-        else
-          yield* sql
-            .withTransaction(
-              Effect.gen(function* () {
-                yield* markRunning(active.id, startedAtIso, webhook.deliveryId);
-                // Recovery must distinguish this delivery from other windows waiting on the same task.
-                yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`;
-              }),
-            )
-            .pipe(
-              Effect.mapError((cause) =>
-                taskError("Could not start webhook run.", { taskId: task.id, cause }),
-              ),
-            );
+        const mark = markRunning(active, startedAtIso, webhook?.deliveryId);
+        yield* (
+          webhook === undefined
+            ? mark
+            : sql
+                .withTransaction(
+                  mark.pipe(
+                    Effect.andThen(
+                      sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`,
+                    ),
+                  ),
+                )
+                .pipe(
+                  Effect.mapError((cause) =>
+                    taskError("Could not start webhook run.", { taskId: task.id, cause }),
+                  ),
+                )
+        ).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              markedRunning = true;
+            }),
+          ),
+          Effect.uninterruptible,
+        );
 
         yield* notifyChanged;
 
@@ -2011,6 +2026,11 @@ export const layer = Layer.effect(
               yield* localFence;
               const existingTask = yield* findTask(id);
               if (existingTask !== null && existingTask.projectId !== input.projectId) {
+                if (existingTask.lastRunStatus === "running")
+                  return yield* taskError(
+                    "Let the running scheduled task finish before moving it.",
+                    { taskId: id },
+                  );
                 yield* dispatchPolicy.assertMoveAllowed(id);
                 const destination = yield* sql`
                   SELECT 1 FROM projection_projects
@@ -2630,7 +2650,7 @@ export const layer = Layer.effect(
                 : null;
             yield* sql`INSERT INTO scheduled_manual_requests VALUES (${request.id},${request.generation},${request.inputDigest},${input.id},${incarnation.incarnation},${encodedSnapshot},${iso(startedAt)},${stage},${reference},NULL)`;
             if (decision._tag !== "skip") {
-              yield* markRunning(input.id, iso(startedAt));
+              yield* markRunning(current, iso(startedAt));
               yield* sql`UPDATE scheduled_task_request_incarnations SET active_request_id=${request.id} WHERE task_id=${input.id}`;
             }
             return { row: (yield* readManual(request))[0]!, decision };

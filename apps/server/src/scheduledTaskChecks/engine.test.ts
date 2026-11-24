@@ -12,6 +12,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -107,7 +108,12 @@ const storeRow = (current: ScheduledTask) =>
   });
 
 /** Real store and engine; observation, dispatch and checks are scripted. */
-const harness = (options: { readonly role?: string } = {}) =>
+const harness = (
+  options: {
+    readonly role?: string;
+    readonly beforeRole?: Effect.Effect<void>;
+  } = {},
+) =>
   Effect.gen(function* () {
     yield* ensureCheckSchema;
     const sent: Array<{
@@ -180,17 +186,21 @@ const harness = (options: { readonly role?: string } = {}) =>
           return bound === null ? "/project" : "/worktree";
         }),
       role: (state, _task, launching) =>
-        state.role === null
-          ? Effect.succeed(null)
-          : options.role === undefined
-            ? Effect.fail(
-                new ScheduledTaskCheckError({ message: `no Prism pick for ${state.role}` }),
-              )
-            : Effect.succeed({
-                // A post only takes the kit; a launch takes Prism's model too.
-                modelSelection: launching ? { ...selection, model: options.role } : selection,
-                kitText: "KIT",
-              }),
+        (options.beforeRole ?? Effect.void).pipe(
+          Effect.andThen(
+            state.role === null
+              ? Effect.succeed(null)
+              : options.role === undefined
+                ? Effect.fail(
+                    new ScheduledTaskCheckError({ message: `no Prism pick for ${state.role}` }),
+                  )
+                : Effect.succeed({
+                    // A post only takes the kit; a launch takes Prism's model too.
+                    modelSelection: launching ? { ...selection, model: options.role } : selection,
+                    kitText: "KIT",
+                  }),
+          ),
+        ),
     });
     const save = (
       fields: Record<string, unknown>,
@@ -945,6 +955,31 @@ it.effect(
         [[recorded.commandId, recorded.messageId, recorded.payload!.text]],
       );
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("admission refuses a superseded certificate even when the project matches", () =>
+  Effect.gen(function* () {
+    const reached = yield* Deferred.make<void>();
+    const proceed = yield* Deferred.make<void>();
+    const h = yield* harness({
+      beforeRole: Deferred.succeed(reached, undefined).pipe(
+        Effect.andThen(Deferred.await(proceed)),
+      ),
+    });
+    yield* h.save({ checkCommand: "check", checkReason: "outcome" });
+    const before = yield* h.state();
+    const admitting = yield* h.decide("manual").pipe(Effect.result, Effect.forkScoped);
+    yield* Deferred.await(reached);
+    const sql = yield* SqlClient.SqlClient;
+    // The launch snapshot still names the same project, but a new definition now owns it.
+    yield* sql`
+      INSERT INTO fork_automation_bindings (kind, resource_id, certificate_id)
+      VALUES ('schedule', ${taskId}, 'new-definition')
+    `;
+    yield* Deferred.succeed(proceed, undefined);
+    assert.equal((yield* Fiber.join(admitting))._tag, "Failure");
+    assert.deepEqual(yield* h.state(), before);
+  }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
 );
 
 it.effect("check edits require a reason and reverts copy an earlier version", () =>

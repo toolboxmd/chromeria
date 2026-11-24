@@ -1069,7 +1069,7 @@ it.effect("a first run whose thread was deleted before it bound removes the task
 );
 
 it.effect.each(["recreated under the same id", "moved to another project"] as const)(
-  "a first run never binds its thread to a task %s",
+  "a first run leaves a clean binding after the task is %s",
   (change) =>
     Effect.gen(function* () {
       const launching = yield* Deferred.make<void>();
@@ -1125,10 +1125,15 @@ it.effect.each(["recreated under the same id", "moved to another project"] as co
           yield* service.upsert(input);
         } else {
           yield* seedMoveProjects;
-          yield* service.upsert({ ...input, projectId: movedProjectId });
+          const refused = yield* Effect.flip(
+            service.upsert({ ...input, projectId: movedProjectId }),
+          );
+          assert.include(refused.message, "Let the running scheduled task finish");
         }
         yield* Deferred.succeed(proceed, undefined);
         yield* Fiber.await(run);
+        if (change === "moved to another project")
+          yield* service.upsert({ ...input, projectId: movedProjectId });
 
         const replacement = (yield* service.list()).tasks.find((task) => task.id === input.id);
         assert.equal(replacement?.threadId, null);
