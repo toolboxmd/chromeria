@@ -4053,18 +4053,16 @@ sources and reasons.
 ```json
 {
   "id": "provider-thread-environment",
-  "purpose": "Give Grok, locally spawned OpenCode sessions, Muse, and configured Cursor stdio MCP servers the owning T3 thread ID. Drop each carried edit when upstream covers that launch path.",
+  "purpose": "Give Grok, locally spawned per-thread OpenCode sessions, and Muse the owning T3 thread ID. Drop each carried edit when upstream covers that launch path.",
   "issues": ["https://github.com/toolboxmd/chromeria/issues/947"],
-  "prs": ["https://github.com/pingdotgg/t3code/pull/38855"],
-  "newFiles": [],
-  "upstreamFiles": [
-    "packages/provider-cursor/src/server/adapter.test.ts",
-    "packages/provider-cursor/src/server/workspaceMcpServers.ts",
-    "packages/provider-muse/src/server/adapter.test.ts"
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/950",
+    "https://github.com/pingdotgg/t3code/pull/38855"
   ],
+  "newFiles": [],
+  "upstreamFiles": ["packages/provider-muse/src/server/adapter.test.ts"],
   "sharedFiles": [
     "apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.test.ts",
-    "packages/provider-cursor/src/server/adapter.ts",
     "packages/provider-grok/src/server/adapter.ts",
     "packages/provider-muse/src/server/adapter.ts",
     "packages/provider-opencode/src/server/adapter.test.ts",
