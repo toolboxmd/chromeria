@@ -7,6 +7,7 @@ import {
   promachosHomeRefs,
   promachosHomes,
   promachosMembership,
+  promachosOlderSettledScopes,
 } from "./conversations.ts";
 
 const home = { environmentId: EnvironmentId.make("env-a"), projectId: ProjectId.make("home") };
@@ -306,5 +307,15 @@ describe("promachosConversationGroups", () => {
     expect(ids(groups.active)).toEqual(["open", "woken", "unknown-server"]);
     expect(ids(groups.snoozed)).toEqual(["snoozed", "both"]);
     expect(ids(groups.settled)).toEqual(["settled"]);
+  });
+});
+
+describe("promachosOlderSettledScopes", () => {
+  it("scopes older settled paging to the home's projects on each environment", () => {
+    const merged = { environmentId: home.environmentId, projectId: ProjectId.make("home-copy") };
+    expect(promachosOlderSettledScopes([home, homeOnB, merged])).toEqual([
+      { environmentId: home.environmentId, projectIds: [home.projectId, merged.projectId] },
+      { environmentId: homeOnB.environmentId, projectIds: [homeOnB.projectId] },
+    ]);
   });
 });

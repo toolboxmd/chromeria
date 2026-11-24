@@ -3,7 +3,7 @@ import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environ
 import type { ScopedProjectRef } from "@t3tools/contracts";
 import { Link, useParams } from "@tanstack/react-router";
 import { msg, T, useGT, useLocale, useMessages } from "gt-react";
-import { PlusIcon } from "lucide-react";
+import { ChevronDownIcon, PlusIcon } from "lucide-react";
 import { useState } from "react";
 
 import { contextMenuSourceOf } from "../../contextMenuSource";
@@ -11,6 +11,7 @@ import { isElectron } from "../../env";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { useThreadActionMenu } from "../../hooks/useThreadActionMenu";
 import { useServerConfigs, useVisibleThreadShells } from "../../state/entities";
+import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../../state/olderSettledShelf";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../../threadRoutes";
 import {
   hasUnseenCompletion,
@@ -28,6 +29,7 @@ import { usePersonViewThreads } from "../people/usePersonView";
 import {
   promachosConversationGroups,
   promachosConversations,
+  promachosOlderSettledScopes,
 } from "@t3tools/client-runtime/promachos/conversations";
 import { PromachosRoundButton } from "./PromachosChrome";
 import { usePromachosHome, useStartPromachosConversation } from "./promachosMode";
@@ -90,6 +92,17 @@ function PromachosConversationList({
     supports: (environmentId) => serverConfigs.has(environmentId),
   });
   const [expanded, setExpanded] = useState({ snoozed: false, settled: false });
+  // Shells leave older settled threads out; the Settled group pages them in, as the sidebar does.
+  const [settledVisibleCount, setSettledVisibleCount] = useState(SETTLED_PAGE_COUNT);
+  const olderSettled = useOlderSettledShelf({
+    scopes: promachosOlderSettledScopes(homeRefs),
+    expanded: expanded.settled,
+    visibleCount: settledVisibleCount,
+  });
+  const listedSettled = groups.settled.filter(olderSettled.isListed);
+  useOlderSettledShelfGrowth(olderSettled, listedSettled);
+  const settledCount = groups.settled.length + olderSettled.unloadedCount(personThreads);
+  const shownSettled = listedSettled.slice(0, settledVisibleCount);
   // The open conversation's header owns renaming and guest sharing.
   const { openMenu } = useThreadActionMenu({
     threadRef: null,
@@ -176,16 +189,21 @@ function PromachosConversationList({
       <ul className="flex flex-col">{groups.active.map(renderConversation)}</ul>
       {(
         [
-          ["snoozed", gt("Snoozed", { $context: "sidebar section" }), groups.snoozed],
-          ["settled", gt("Settled", { $context: "sidebar section" }), groups.settled],
+          [
+            "snoozed",
+            gt("Snoozed", { $context: "sidebar section" }),
+            groups.snoozed,
+            groups.snoozed.length,
+          ],
+          ["settled", gt("Settled", { $context: "sidebar section" }), shownSettled, settledCount],
         ] as const
-      ).map(([group, label, parked]) =>
-        parked.length === 0 ? null : (
+      ).map(([group, label, parked, count]) =>
+        count === 0 ? null : (
           <div key={group} className="px-1 pt-1">
             <CollapsibleSectionHeader
               expanded={expanded[group]}
               onClick={() => setExpanded({ ...expanded, [group]: !expanded[group] })}
-              accessory={<span className="font-normal tabular-nums">{parked.length}</span>}
+              accessory={<span className="font-normal tabular-nums">{count}</span>}
             >
               {label}
             </CollapsibleSectionHeader>
@@ -194,12 +212,35 @@ function PromachosConversationList({
                 renderConversation,
               )}
             </ul>
+            {group === "settled" && expanded.settled && settledCount > shownSettled.length ? (
+              <button
+                type="button"
+                aria-disabled={olderSettled.loading}
+                onClick={() => {
+                  if (olderSettled.loading) return;
+                  olderSettled.retry();
+                  setSettledVisibleCount(settledVisibleCount + SETTLED_PAGE_COUNT);
+                }}
+                className="flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-md px-2 text-left text-sm text-muted-foreground hover:bg-accent/60 hover:text-foreground aria-disabled:cursor-default"
+              >
+                <ChevronDownIcon aria-hidden className="size-4 shrink-0" />
+                {olderSettled.loading
+                  ? gt("Loading")
+                  : olderSettled.failed
+                    ? gt("Could not load older threads. Retry")
+                    : gt("{count, plural, one {Show {count} more} other {Show {count} more}}", {
+                        count: Math.min(settledCount - shownSettled.length, SETTLED_PAGE_COUNT),
+                      })}
+              </button>
+            ) : null}
           </div>
         ),
       )}
     </SidebarGroup>
   );
 }
+
+const SETTLED_PAGE_COUNT = 25;
 
 // Where the conversation stands, for rows that quote no message.
 const PREVIEW: Record<SidebarThreadStatus, string> = {

@@ -5,6 +5,7 @@ import {
   type EnvironmentProject,
   type EnvironmentThreadShell,
 } from "../state/models.ts";
+import type { OlderSettledScope } from "../state/olderSettledThreads.ts";
 import {
   deriveLogicalProjectKeyFromSettings,
   type ProjectGroupingSettings,
@@ -156,6 +157,17 @@ export function promachosConversationGroups<
     ).push(conversation);
   }
   return groups;
+}
+
+/** The home's projects per environment: the scope its older settled conversations page in. */
+export function promachosOlderSettledScopes(
+  homeRefs: ReadonlyArray<ScopedProjectRef>,
+): OlderSettledScope[] {
+  const scopes = new Map<EnvironmentId, ScopedProjectRef["projectId"][]>();
+  for (const ref of homeRefs) {
+    scopes.set(ref.environmentId, [...(scopes.get(ref.environmentId) ?? []), ref.projectId]);
+  }
+  return [...scopes].map(([environmentId, projectIds]) => ({ environmentId, projectIds }));
 }
 
 function lastActivityMs(thread: {
