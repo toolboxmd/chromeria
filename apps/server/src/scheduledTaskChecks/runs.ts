@@ -82,7 +82,12 @@ const messageRunDrafts = Effect.fn("ScheduledTaskRuns.messageRunDrafts")(functio
       json_extract(run.payload_json, '$.startedAt') AS started_at
     FROM orchestration_v2_projection_messages message
     JOIN orchestration_v2_projection_runs run ON run.run_id = message.run_id
-    WHERE (
+    -- Match the partial index predicate so the lookup starts at this task's messages.
+    WHERE message.message_id >= 'scheduled-task-message:'
+      AND message.message_id < 'scheduled-task-message;'
+      AND json_valid(message.payload_json)
+      AND json_extract(message.payload_json, '$.scheduledTaskId') = ${taskId}
+      AND (
         (message.message_id >= ${prefix} AND message.message_id < ${end})
         -- A keyed manual run's id holds its request, not its task.
         OR (
@@ -90,7 +95,6 @@ const messageRunDrafts = Effect.fn("ScheduledTaskRuns.messageRunDrafts")(functio
           AND message.message_id < 'scheduled-task-message:manual;'
         )
       )
-      AND json_extract(message.payload_json, '$.scheduledTaskId') = ${taskId}
       AND run.status <> 'rolled_back'
       -- A task deleted and created again under the same id starts without the old one's runs.
       AND julianday(run.requested_at) >= julianday(${createdAt})

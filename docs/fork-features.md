@@ -1756,13 +1756,15 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "https://github.com/toolboxmd/chromeria/issues/707",
     "https://github.com/toolboxmd/chromeria/issues/719",
     "https://github.com/toolboxmd/chromeria/issues/920",
-    "https://github.com/toolboxmd/chromeria/issues/951"
+    "https://github.com/toolboxmd/chromeria/issues/951",
+    "https://github.com/toolboxmd/chromeria/issues/959"
   ],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/174-scheduled-tasks-v2"],
   "newFiles": [
     "apps/mobile/src/features/settings/ScheduledTaskRuns.tsx",
     "apps/mobile/src/features/settings/scheduledTaskDraftFork.test.ts",
     "apps/mobile/src/features/settings/scheduledTaskFork.tsx",
+    "apps/server/src/persistence/forkScheduledTaskRunsSchema.ts",
     "apps/server/src/scheduledTaskChecks/DispatchPolicy.ts",
     "apps/server/src/scheduledTaskChecks/ScheduledTaskChecks.integration.test.ts",
     "apps/server/src/scheduledTaskChecks/ScheduledTaskChecks.ts",
@@ -1821,12 +1823,14 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/web/src/routes/_chat.settings.scheduled-tasks.tsx",
     "docs/user/project-settings.md",
     "packages/client-runtime/package.json",
+    "packages/client-runtime/src/state/server.test.ts",
     "packages/client-runtime/src/state/server.ts",
     "packages/contracts/src/scheduledTask.ts"
   ],
   "sharedFiles": [
     "apps/server/src/mcp/OrchestratorMcpService.ts",
     "apps/server/src/orchestration-v2/runtimeLayer.ts",
+    "apps/server/src/persistence/Sqlite.ts",
     "apps/server/src/persistence/forkV1Backfills.ts",
     "apps/web/src/components/chat/QueuedRunsControl.tsx",
     "apps/web/src/components/chat/TimelineUserMessageRow.tsx",
