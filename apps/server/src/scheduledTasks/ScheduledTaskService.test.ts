@@ -46,6 +46,16 @@ const threadShell = (
   state: { archivedAt?: string | null; deletedAt?: string | null } = {},
 ) => ({ projectId, archivedAt: null, deletedAt: null, ...state }) as never;
 
+const movedProjectId = ProjectId.make("project:moved");
+const seedMoveProjects = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+    VALUES ('project:test', 'Original', '/projects/original', '[]', '1970-01-01', '1970-01-01'),
+           (${movedProjectId}, 'Destination', '/projects/destination', '[]', '1970-01-01', '1970-01-01')
+  `;
+});
+
 const insertRow = (
   sql: SqlClient.SqlClient,
   row: {
@@ -907,14 +917,32 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
         yield* service.runNow({ id: input.id });
         assert.equal((yield* Ref.get(sends)).at(-1)?.text, prompt);
       }
-      // Its thread stays in the old project, so moving the task leaves it for a new one.
-      const moved = yield* service.upsert({
+      const before = yield* service
+        .list()
+        .pipe(Effect.map(({ tasks }) => tasks.find((task) => task.id === input.id)!));
+      const move = {
         ...input,
-        projectId: ProjectId.make("project:moved"),
+        prompt: before.prompt,
+        projectId: movedProjectId,
         threadId: launched,
+      };
+      const rejected = yield* Effect.flip(service.upsert(move));
+      assert.include(rejected.message, "destination project was not found in this environment");
+      assert.deepEqual((yield* service.list()).tasks, [before]);
+
+      // Its thread stays in the old project, so moving the task leaves it for a new one.
+      yield* seedMoveProjects;
+      const { task: moved } = yield* service.upsert(move);
+      assert.isAbove(Date.parse(moved.updatedAt), Date.parse(before.updatedAt));
+      assert.deepEqual(moved, {
+        ...before,
+        projectId: movedProjectId,
+        threadId: null,
+        updatedAt: moved.updatedAt,
       });
-      assert.equal(moved.task.threadId, null);
-      assert.equal(moved.task.threadMode, "fresh_session");
+      yield* TestClock.adjust(5);
+      yield* service.runNow({ id: input.id });
+      assert.equal((yield* Ref.get(initialLaunch))?.projectId, movedProjectId);
       const unbound = yield* service.upsert({ ...input, threadMode: "new_thread" });
       assert.equal(unbound.task.threadId, null);
       // Clearing the thread keeps the mode, so the next run starts a thread for later runs.
@@ -1047,7 +1075,7 @@ it.effect("a first run whose thread was deleted before it bound removes the task
 );
 
 it.effect.each(["recreated under the same id", "moved to another project"] as const)(
-  "a first run never binds its thread to a task %s",
+  "a first run leaves a clean binding after the task is %s",
   (change) =>
     Effect.gen(function* () {
       const launching = yield* Deferred.make<void>();
@@ -1102,10 +1130,16 @@ it.effect.each(["recreated under the same id", "moved to another project"] as co
           yield* TestClock.adjust("1 second");
           yield* service.upsert(input);
         } else {
-          yield* service.upsert({ ...input, projectId: ProjectId.make("project:moved") });
+          yield* seedMoveProjects;
+          const refused = yield* Effect.flip(
+            service.upsert({ ...input, projectId: movedProjectId }),
+          );
+          assert.include(refused.message, "Let the running scheduled task finish");
         }
         yield* Deferred.succeed(proceed, undefined);
         yield* Fiber.await(run);
+        if (change === "moved to another project")
+          yield* service.upsert({ ...input, projectId: movedProjectId });
 
         const replacement = (yield* service.list()).tasks.find((task) => task.id === input.id);
         assert.equal(replacement?.threadId, null);

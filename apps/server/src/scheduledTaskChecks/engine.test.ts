@@ -12,6 +12,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -107,7 +108,12 @@ const storeRow = (current: ScheduledTask) =>
   });
 
 /** Real store and engine; observation, dispatch and checks are scripted. */
-const harness = (options: { readonly role?: string } = {}) =>
+const harness = (
+  options: {
+    readonly role?: string;
+    readonly beforeRole?: Effect.Effect<void>;
+  } = {},
+) =>
   Effect.gen(function* () {
     yield* ensureCheckSchema;
     const sent: Array<{
@@ -180,17 +186,21 @@ const harness = (options: { readonly role?: string } = {}) =>
           return bound === null ? "/project" : "/worktree";
         }),
       role: (state, _task, launching) =>
-        state.role === null
-          ? Effect.succeed(null)
-          : options.role === undefined
-            ? Effect.fail(
-                new ScheduledTaskCheckError({ message: `no Prism pick for ${state.role}` }),
-              )
-            : Effect.succeed({
-                // A post only takes the kit; a launch takes Prism's model too.
-                modelSelection: launching ? { ...selection, model: options.role } : selection,
-                kitText: "KIT",
-              }),
+        (options.beforeRole ?? Effect.void).pipe(
+          Effect.andThen(
+            state.role === null
+              ? Effect.succeed(null)
+              : options.role === undefined
+                ? Effect.fail(
+                    new ScheduledTaskCheckError({ message: `no Prism pick for ${state.role}` }),
+                  )
+                : Effect.succeed({
+                    // A post only takes the kit; a launch takes Prism's model too.
+                    modelSelection: launching ? { ...selection, model: options.role } : selection,
+                    kitText: "KIT",
+                  }),
+          ),
+        ),
     });
     const save = (
       fields: Record<string, unknown>,
@@ -487,7 +497,9 @@ it.effect("waits for upstream usage-limit recovery and resumes itself only when 
     h.set({ usageLimit: null, runError: null });
     h.pass(true);
     yield* h.runs.drive(task());
-    assert.equal((yield* h.state()).runs[0]?.stage, "done");
+    const recovered = yield* h.state();
+    assert.equal(recovered.runs[0]?.stage, "done");
+    assert.deepEqual(checkedRunStatus(recovered), { status: "succeeded", error: null });
     assert.deepEqual(h.checks, ["check@/worktree"]);
 
     // Without upstream recovery the run resumes its own thread at the reset.
@@ -947,10 +959,37 @@ it.effect(
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
+it.effect("admission refuses a superseded certificate even when the project matches", () =>
+  Effect.gen(function* () {
+    const reached = yield* Deferred.make<void>();
+    const proceed = yield* Deferred.make<void>();
+    const h = yield* harness({
+      beforeRole: Deferred.succeed(reached, undefined).pipe(
+        Effect.andThen(Deferred.await(proceed)),
+      ),
+    });
+    yield* h.save({ checkCommand: "check", checkReason: "outcome" });
+    const before = yield* h.state();
+    const admitting = yield* h.decide("manual").pipe(Effect.result, Effect.forkScoped);
+    yield* Deferred.await(reached);
+    const sql = yield* SqlClient.SqlClient;
+    // The launch snapshot still names the same project, but a new definition now owns it.
+    yield* sql`
+      INSERT INTO fork_automation_bindings (kind, resource_id, certificate_id)
+      VALUES ('schedule', ${taskId}, 'new-definition')
+    `;
+    yield* Deferred.succeed(proceed, undefined);
+    assert.equal((yield* Fiber.join(admitting))._tag, "Failure");
+    assert.deepEqual(yield* h.state(), before);
+  }).pipe(Effect.scoped, Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 it.effect("check edits require a reason and reverts copy an earlier version", () =>
   Effect.gen(function* () {
     const h = yield* harness();
     yield* h.save({ checkCommand: "check-v1", checkReason: "first" });
+    const reasonOnly = yield* Effect.flip(h.save({ checkReason: "No edit" }));
+    assert.include(reasonOnly.message, "checkReason requires a check edit or revert");
     assert.isTrue(Exit.isFailure(yield* Effect.exit(h.save({ checkCommand: "check-v2" }))));
     assert.isTrue(
       Exit.isFailure(

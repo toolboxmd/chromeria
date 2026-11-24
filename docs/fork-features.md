@@ -1759,6 +1759,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "https://github.com/toolboxmd/chromeria/issues/719",
     "https://github.com/toolboxmd/chromeria/issues/920",
     "https://github.com/toolboxmd/chromeria/issues/951",
+    "https://github.com/toolboxmd/chromeria/issues/955",
     "https://github.com/toolboxmd/chromeria/issues/959"
   ],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/fork/v2...feat/174-scheduled-tasks-v2"],
@@ -1810,6 +1811,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
   "upstreamFiles": [
     "apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.tsx",
     "apps/mobile/src/features/settings/SettingsScheduledTasksRouteScreen.test.tsx",
+    "apps/mobile/src/features/settings/scheduledTaskDraft.test.ts",
     "apps/mobile/src/features/settings/scheduledTaskDraft.ts",
     "apps/server/src/scheduledTasks/Schedule.ts",
     "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
@@ -1819,6 +1821,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/web/src/components/settings/EnvironmentRow.tsx",
     "apps/web/src/components/settings/ScheduledTasksSettings.browser.test.tsx",
     "apps/web/src/components/settings/ScheduledTasksSettings.tsx",
+    "apps/web/src/components/settings/scheduledTasksSettings.logic.test.ts",
     "apps/web/src/components/settings/scheduledTasksSettings.logic.ts",
     "apps/web/src/components/settings/settingsScopeNavigation.test.ts",
     "apps/web/src/components/sidebar/mainAppLocation.ts",

@@ -198,6 +198,11 @@ const replaceRun = (state: CheckState, run: CheckedRun): CheckState => ({
 const ORPHANED_COMMAND =
   "This command run was interrupted before its result was recorded, for example by a Chromeria restart. It may or may not have finished, and it was not run again.";
 
+type RunDestination = {
+  readonly task: Pick<ScheduledTask, "projectId" | "createdAt" | "updatedAt">;
+  readonly certificateId?: string | null | undefined;
+};
+
 export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps) {
   const sql = yield* SqlClient.SqlClient;
   yield* AutomationAuthority.ensureAutomationAuthoritySchema;
@@ -237,8 +242,38 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
    * reaches the new run. A recovered step needs none; `launched` marks a dispatched command.
    */
   const admissions = new Map<string, { launched: boolean }>();
-  const store = (previous: CheckState, next: CheckState) =>
-    writeCheckState(previous, compact(next)).pipe(Effect.tap(() => deps.changed));
+  const store = (previous: CheckState, next: CheckState, destination?: RunDestination) => {
+    const write = writeCheckState(previous, compact(next));
+    // New work and a project move exclude each other at the write. The earlier
+    // snapshot check can race certificate capture or Prism's role selection.
+    const recorded =
+      destination === undefined
+        ? write
+        : sql.withTransaction(
+            Effect.gen(function* () {
+              const current = yield* sql`
+                SELECT 1 FROM scheduled_tasks AS task
+                LEFT JOIN fork_automation_bindings AS binding
+                  ON binding.kind = 'schedule' AND binding.resource_id = task.task_id
+                WHERE task.task_id = ${next.taskId} AND task.project_id = ${destination.task.projectId}
+                  AND task.created_at = ${destination.task.createdAt}
+                  AND (
+                    ${destination.certificateId === undefined ? 1 : 0} = 1
+                    OR (
+                      task.updated_at = ${destination.task.updatedAt}
+                      AND binding.certificate_id IS ${destination.certificateId ?? null}
+                    )
+                  )
+              `;
+              if (current.length === 0)
+                return yield* fail(
+                  "The schedule destination or authority changed before the run could start.",
+                );
+              return yield* write;
+            }),
+          );
+    return recorded.pipe(Effect.tap(() => deps.changed));
+  };
 
   /** A bound report needs the user, so the run does (D40); its check is not run until it releases. */
   const reportNeedsYou = (state: CheckState, run: CheckedRun, reason: string) => {
@@ -255,19 +290,29 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
     });
   };
 
-  const retry = (state: CheckState, run: CheckedRun, error: string, now: number) => {
+  const retry = (
+    state: CheckState,
+    run: CheckedRun,
+    error: string,
+    now: number,
+    destination?: RunDestination,
+  ) => {
     const delay = RECOVERY_DELAYS_MS[run.attempt];
-    return store(state, {
-      ...replaceRun(state, {
-        ...run,
-        error,
-        stage: delay === undefined ? "needs-you" : "retry",
-        attempt: run.attempt + 1,
-        retryAt: delay === undefined ? null : iso(now + delay),
-      }),
-      failureStreak: state.failureStreak + 1,
-      lastError: error,
-    });
+    return store(
+      state,
+      {
+        ...replaceRun(state, {
+          ...run,
+          error,
+          stage: delay === undefined ? "needs-you" : "retry",
+          attempt: run.attempt + 1,
+          retryAt: delay === undefined ? null : iso(now + delay),
+        }),
+        failureStreak: state.failureStreak + 1,
+        lastError: error,
+      },
+      destination,
+    );
   };
 
   /** Sends exactly the recorded send; a failure turns into a delayed retry. */
@@ -292,14 +337,16 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
     run: CheckedRun,
     now: number,
     threadMissing = false,
+    certificateId?: string | null,
   ) {
+    const destination = { task, certificateId };
     const index = run.sends.length;
     const kind = run.hasWork ? "continue" : "start";
     // A new-thread run launches until its thread exists, each time as a new send.
     const launching = task.threadId === null && (index === 0 || threadMissing);
     const picked = yield* deps.role(state, task, launching).pipe(Effect.result);
     if (picked._tag === "Failure") {
-      const failed = yield* retry(state, run, picked.failure.message, now);
+      const failed = yield* retry(state, run, picked.failure.message, now, destination);
       return { _tag: "refused", state: failed, error: picked.failure } as const;
     }
     const role = picked.success;
@@ -361,7 +408,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
       retryAt: null,
       sends: [...run.sends, send],
     };
-    const stored = yield* store(state, replaceRun(state, next));
+    const stored = yield* store(state, replaceRun(state, next), destination);
     return { _tag: "recorded", state: stored, run: next, send } as const;
   });
 
@@ -692,10 +739,20 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
             const withRun: CheckState = { ...state, runs: [...state.runs, run] };
             if (state.kind === "command") {
               // Stored as running before anything is spawned: a restart never runs it twice.
-              yield* store(state, withRun);
+              yield* store(state, withRun, {
+                task,
+                certificateId: certificate?.id ?? null,
+              });
               return fork(launchCommand(task, run, state.command!, admit(run.id)), run);
             }
-            const started = yield* startSend(task, withRun, run, now);
+            const started = yield* startSend(
+              task,
+              withRun,
+              run,
+              now,
+              false,
+              certificate?.id ?? null,
+            );
             return started._tag === "refused"
               ? fork(Effect.fail(started.error), run)
               : fork(
@@ -984,6 +1041,12 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
       return yield* store(state, { ...state, command: fields.command! });
     }
     if (commandField) return yield* fail("A task's kind cannot change. Create a new task instead.");
+    if (
+      fields.checkReason !== undefined &&
+      fields.checkCommand === undefined &&
+      fields.revertCheckVersion === undefined
+    )
+      return yield* fail("checkReason requires a check edit or revert.");
     let checks = state.checks;
     if (fields.checkCommand !== undefined || fields.revertCheckVersion !== undefined) {
       if (fields.checkReason === undefined)

@@ -818,17 +818,31 @@ const MAX_NAMED_ARGUMENTS = 5;
 const MAX_ARGUMENT_NAME_CHARS = 64;
 
 /**
- * Rejects top-level arguments the advertised schema does not list, naming them. Nested objects stay lenient:
- * the advertised schema merges tagged unions, so strict decoding would reject keys agents were shown.
+ * Rejects unknown top-level arguments by name. Schedule edits also reject unknown nested
+ * fields before decoding can discard them and let the scheduler confirm a partial edit.
  */
 const advertisedArgumentsOnly = (tool: Tool.Any) => {
+  const name: string = tool.name;
   const { properties } = advertisedJsonSchema(tool);
   const accepted = new Set(Predicate.isObject(properties) ? Object.keys(properties) : []);
   const acceptedText = [...accepted].join(", ") || "none";
+  const decodeScheduleEdit =
+    name === "schedule_task" || name === "update_scheduled_task"
+      ? Schema.decodeUnknownResult(
+          Schema.toCodecJson(OrchestratorToolkit.tools[name].parametersSchema),
+          { onExcessProperty: "error", reportInput: false },
+        )
+      : undefined;
   return Schema.Record(Schema.String, Schema.Unknown).check(
     Schema.makeFilter((input) => {
       const unknown = Object.keys(input).filter((key) => !accepted.has(key));
-      if (unknown.length === 0) return undefined;
+      if (unknown.length === 0) {
+        const decoded =
+          name === "update_scheduled_task" || input.scheduledTaskId != null
+            ? decodeScheduleEdit?.(input)
+            : undefined;
+        return decoded?._tag === "Failure" ? decoded.failure.issue : undefined;
+      }
       const named = unknown
         .slice(0, MAX_NAMED_ARGUMENTS)
         .map((key) => JSON.stringify(cutText(key, MAX_ARGUMENT_NAME_CHARS)));

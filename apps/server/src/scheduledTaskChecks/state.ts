@@ -110,6 +110,7 @@ export const CheckedRun = Schema.Struct({
   /** Pinned at the first check from the run's thread workspace. */
   checkCwd: Schema.NullOr(TrimmedNonEmptyString),
   stage: ScheduledTaskRunStage,
+  retiredAuthority: Schema.optionalKey(Schema.Literal(true)),
   attempt: NonNegativeInt,
   retryAt: Schema.NullOr(IsoDateTime),
   hasWork: Schema.Boolean,
@@ -189,6 +190,9 @@ export const holdsTask = (state: Pick<CheckState, "kind">, run: CheckedRun) =>
 
 export const unfinishedRun = (state: CheckState): CheckedRun | undefined =>
   state.runs.find((run) => holdsTask(state, run));
+
+export const checkedRunPassed = (run: CheckedRun) =>
+  run.stage === "done" && run.retiredAuthority !== true;
 
 /** Bounded history: unfinished runs and the versions they pin always survive. */
 export const compact = (state: CheckState): CheckState => {
@@ -299,7 +303,8 @@ export function checkedRunStatus(
       status: "failed",
       error: `Imported from Chromeria v1 (${run.imported.status}); it is not resumed here. Run now starts a new run.`,
     };
-  if (run.stage === "done") return { status: "succeeded", error: null };
+  if (checkedRunPassed(run)) return { status: "succeeded", error: null };
+  if (run.stage === "done") return { status: "failed", error: run.error };
   if (run.stage === "needs-you")
     return { status: "failed", error: `Needs you: ${run.error ?? "the run stopped."}` };
   return { status: "running", error: null };

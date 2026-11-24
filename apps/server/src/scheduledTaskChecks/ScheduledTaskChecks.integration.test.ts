@@ -41,6 +41,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+import { CurrentTransformer } from "effect/sql/Statement";
 import * as TestClock from "effect/testing/TestClock";
 
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -126,6 +127,7 @@ const checkResult = (code: number) => ({
 interface DispatchBarrier {
   readonly admitted: Deferred.Deferred<void>;
   readonly proceed: Deferred.Deferred<void>;
+  readonly beforeMark?: boolean;
 }
 
 /** Upstream's service with the fork's policy, its admitted dispatches held at a barrier. */
@@ -133,18 +135,19 @@ const withDispatchBarrier = (barrier: DispatchBarrier) =>
   Layer.unwrap(
     Effect.gen(function* () {
       const policy = yield* ScheduledTaskDispatchPolicy;
+      const hold = Deferred.succeed(barrier.admitted, undefined).pipe(
+        Effect.andThen(Deferred.await(barrier.proceed)),
+      );
       const held: ScheduledTaskDispatchPolicyShape = {
+        ...policy,
         decide: (input) =>
           policy.decide(input).pipe(
+            Effect.tap((decision) =>
+              decision._tag === "fork" && barrier.beforeMark ? hold : Effect.void,
+            ),
             Effect.map((decision) =>
-              decision._tag === "fork"
-                ? {
-                    _tag: "fork" as const,
-                    dispatch: Deferred.succeed(barrier.admitted, undefined).pipe(
-                      Effect.andThen(Deferred.await(barrier.proceed)),
-                      Effect.andThen(decision.dispatch),
-                    ),
-                  }
+              decision._tag === "fork" && !barrier.beforeMark
+                ? { ...decision, dispatch: hold.pipe(Effect.andThen(decision.dispatch)) }
                 : decision,
             ),
           ),
@@ -2256,6 +2259,284 @@ it.effect(
         assert.deepEqual(task.purposeIntent, purpose(2));
       }).pipe(Effect.provide(runtime(database)), Effect.scoped);
     }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "a project move cannot overwrite a thread mode changed since the caller read the task",
+  () =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* Effect.gen(function* () {
+        const checks = yield* ScheduledTaskChecks.ScheduledTaskChecks;
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const sql = yield* SqlClient.SqlClient;
+        const destination = ProjectId.make("project:other");
+        yield* sql`
+        INSERT INTO projection_projects
+          (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES (${destination}, 'Destination', '/projects/other', '[]', ${CANONICAL}, ${CANONICAL})
+      `;
+        const base = {
+          title: "Concurrent edit",
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+          prompt: "Review",
+          enabled: false,
+          projectId,
+          threadId: null,
+          threadMode: "new_thread",
+          workspaceStrategy: { type: "root" },
+          modelSelection: selection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          schedule: { type: "interval", everyMs: 3_600_000 },
+        } as const;
+        const { task: stale } = yield* service.upsert(base);
+        const { task: current } = yield* service.upsert({
+          ...base,
+          id: stale.id,
+          threadMode: "fresh_session",
+        });
+        const result = yield* Effect.result(
+          checks.update(
+            {
+              input: { scheduledTaskId: stale.id, projectId: destination },
+              existing: stale,
+              threadId: null,
+              parent: undefined,
+            },
+            service.upsert,
+          )({ ...base, id: stale.id, projectId: destination }),
+        );
+        assert.equal(result._tag, "Failure");
+        assert.deepEqual((yield* service.list()).tasks, [current]);
+
+        yield* service.upsert({
+          ...base,
+          id: stale.id,
+          projectId: destination,
+          threadMode: "fresh_session",
+        });
+        const { task: edited } = yield* checks.update(
+          {
+            input: { scheduledTaskId: stale.id, title: "Edited concurrently" },
+            existing: stale,
+            threadId: null,
+            parent: undefined,
+          },
+          service.upsert,
+        )({ ...base, id: stale.id, title: "Edited concurrently" });
+        assert.equal(edited.title, "Edited concurrently");
+        assert.equal(edited.projectId, destination);
+        assert.equal(edited.threadMode, "fresh_session");
+      }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
+
+it.effect.each(["runAt", "at"] as const)(
+  "moves an enabled pending one-time task after its %s arrives",
+  (field) =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const sql = yield* SqlClient.SqlClient;
+        const destination = ProjectId.make("project:due-move");
+        yield* sql`
+          INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+          VALUES (${destination}, 'Destination', '/projects/due-move', '[]', ${CANONICAL}, ${CANONICAL})
+        `;
+        const runAt = "2026-10-08T12:00:00.001Z";
+        const input = {
+          title: "One-time work",
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+          prompt: "Review",
+          enabled: true,
+          projectId,
+          threadId: null,
+          workspaceStrategy: { type: "root" },
+          modelSelection: selection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          schedule: { type: "once", ...(field === "runAt" ? { runAt } : { at: runAt }) },
+        } as const;
+        const { task: original } = yield* service.upsert(input);
+        yield* TestClock.adjust(2);
+        const { task: moved } = yield* service.upsert({
+          ...input,
+          id: original.id,
+          projectId: destination,
+          requireExisting: true,
+        });
+        assert.equal(moved.projectId, destination);
+        assert.deepEqual(moved.schedule, original.schedule);
+        assert.equal(moved.nextRunAt, runAt);
+        assert.equal(moved.runCount, 0);
+        assert.equal(moved.id, original.id);
+      }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
+
+it.effect("a checked run must settle before its task can move to a different project", () =>
+  Effect.gen(function* () {
+    const database = yield* tempDatabase;
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const sql = yield* SqlClient.SqlClient;
+      const destination = ProjectId.make("project:after-run");
+      yield* sql`
+        INSERT INTO projection_projects
+          (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES (${destination}, 'Destination', '/projects/after-run', '[]', ${CANONICAL}, ${CANONICAL})
+      `;
+      const input = {
+        title: "Checked schedule",
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
+        prompt: "Review",
+        enabled: false,
+        projectId,
+        threadId: null,
+        workspaceStrategy: { type: "root" },
+        modelSelection: selection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        schedule: { type: "interval", everyMs: 3_600_000 },
+      } as const;
+      const { task } = yield* service.upsert(input);
+      const run = sentRun("run:before-move", "message:before-move");
+      const active = yield* writeCheckState(null, checkState(task.id, [run]));
+      const move = { ...input, id: task.id, projectId: destination };
+      const refused = yield* Effect.flip(service.upsert(move));
+      assert.include(refused.message, "Let the unfinished scheduled run finish before moving");
+      assert.equal((yield* service.list()).tasks[0]?.projectId, projectId);
+      assert.deepEqual(yield* readCheckState(task.id), active);
+
+      const settled = yield* writeCheckState(active, {
+        ...active,
+        runs: [{ ...run, stage: "done" }],
+      });
+      const moved = yield* service.upsert(move);
+      assert.equal(moved.task.projectId, destination);
+      assert.equal(moved.task.id, task.id);
+      assert.deepEqual(yield* readCheckState(task.id), settled);
+    }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+  }).pipe(Effect.scoped),
+);
+
+it.effect.each(["ordinary", "command", "command round-trip"] as const)(
+  "a page move wins over a %s admission that still has the old definition",
+  (kind) =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const sql = yield* SqlClient.SqlClient;
+        const destination = ProjectId.make("project:moved-during-admission");
+        yield* sql`
+        INSERT INTO projection_projects
+          (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES
+          (${projectId}, 'Source', '/projects/source', '[]', ${CANONICAL}, ${CANONICAL}),
+          (${destination}, 'Destination', '/projects/moved', '[]', ${CANONICAL}, ${CANONICAL})
+      `;
+        const input = {
+          title: "Checked command",
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
+          prompt: "Review",
+          enabled: true,
+          projectId,
+          threadId: null,
+          workspaceStrategy: { type: "root", branch: "old-branch" },
+          modelSelection: selection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          schedule: { type: "interval", everyMs: 3_600_000 },
+        } as const;
+        const { task } = yield* service.upsert(input);
+        const state =
+          kind === "ordinary"
+            ? null
+            : yield* writeCheckState(null, {
+                ...checkState(task.id),
+                kind: "command",
+                command: "true",
+                checks: [],
+              });
+        const pauseAt =
+          kind === "ordinary"
+            ? "ScheduledTaskChecks.read"
+            : "DestinationAutomationAuthority.currentAutomationCertificate";
+        const checkedSnapshot = yield* Deferred.make<void>();
+        const continueAdmission = yield* Deferred.make<void>();
+        const starting = yield* service.runNow({ id: task.id }).pipe(
+          Effect.provideService(CurrentTransformer, (statement, _sql, _fiber, span) =>
+            Option.isSome(span.parent) &&
+            span.parent.value._tag === "Span" &&
+            span.parent.value.name === pauseAt
+              ? Deferred.succeed(checkedSnapshot, undefined).pipe(
+                  Effect.andThen(Deferred.await(continueAdmission)),
+                  Effect.as(statement),
+                )
+              : Effect.succeed(statement),
+          ),
+          Effect.result,
+          Effect.forkScoped,
+        );
+        yield* Deferred.await(checkedSnapshot);
+        let moved = yield* service.upsert({
+          ...input,
+          id: task.id,
+          projectId: destination,
+          workspaceStrategy: { type: "root" },
+        });
+        assert.equal(moved.task.projectId, destination);
+        if (kind === "command round-trip") {
+          moved = yield* service.upsert({
+            ...input,
+            id: task.id,
+            workspaceStrategy: { type: "root" },
+          });
+          assert.equal(moved.task.projectId, projectId);
+          assert.deepEqual(moved.task.workspaceStrategy, { type: "root" });
+        }
+        yield* Deferred.succeed(continueAdmission, undefined);
+        const result = yield* Fiber.join(starting);
+        assert.equal(result._tag, "Failure");
+        assert.deepEqual(yield* readCheckState(task.id), state);
+        assert.deepEqual((yield* service.list()).tasks, [moved.task]);
+      }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+    }).pipe(Effect.scoped),
+);
+
+it.effect("an admitted checked run still dispatches after a same-project edit", () =>
+  Effect.gen(function* () {
+    const database = yield* tempDatabase;
+    const barrier = {
+      admitted: yield* Deferred.make<void>(),
+      proceed: yield* Deferred.make<void>(),
+      beforeMark: true,
+    };
+    const id = ScheduledTaskId.make("scheduled-task:edit-after-admission");
+    yield* Effect.gen(function* () {
+      yield* createThread;
+      yield* insertTask({ id, schedule: { type: "interval", everyMs: 3_600_000 }, next: null });
+      yield* writeCheckState(null, checkState(id));
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const starting = yield* service.runNow({ id }).pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(barrier.admitted);
+      const [task] = (yield* service.list()).tasks;
+      yield* TestClock.adjust(1);
+      yield* service.upsert({
+        ...task!,
+        title: "Edited after admission",
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
+        requireExisting: true,
+      });
+      yield* Deferred.succeed(barrier.proceed, undefined);
+      assert.equal((yield* Fiber.join(starting))._tag, "Success");
+      assert.lengthOf(yield* messagesOf, 1);
+    }).pipe(Effect.provide(runtime(database, { dispatchBarrier: barrier })), Effect.scoped);
+  }).pipe(Effect.scoped),
 );
 
 it.effect("the live list shows a save and a delete as soon as each returns", () =>

@@ -951,6 +951,12 @@ export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTas
 /** `schedule_task` creates a task, or updates one when `scheduledTaskId` is given. */
 export const OrchestratorMcpSaveScheduledTaskInput = Schema.Struct({
   ...OrchestratorMcpScheduleTaskInput.fields,
+  projectId: Schema.optional(
+    ProjectId.annotate({
+      description:
+        "Create in this project (defaults to your thread's project), or move an existing unbound task here. Use a project in the target environment.",
+    }),
+  ),
   scheduledTaskId: Schema.optional(ScheduledTaskId),
   prompt: Schema.optional(OrchestratorMcpPrompt),
   schedule: Schema.optional(OrchestratorMcpSchedule),
@@ -1012,6 +1018,11 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   purposeIntent: Schema.optional(SavedPurposeIntent),
   bare: Schema.optional(BareLaunchRequest),
   scheduledTaskId: ScheduledTaskId,
+  projectId: Schema.optional(
+    ProjectId.annotate({
+      description: "Move an unbound task to this project in the same environment.",
+    }),
+  ),
   prompt: Schema.optional(OrchestratorMcpPrompt),
   title: Schema.optional(OrchestratorMcpTitle),
   schedule: Schema.optional(OrchestratorMcpSchedule),
