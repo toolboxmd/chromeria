@@ -61,6 +61,61 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
+## Track an Issue or PR outcome
+
+Each run records the GitHub Issue or PR it works toward. Agents set it when
+they launch or delegate work; there is no composer control. **Steer** and
+**Restart** continue the running purpose. A message already queued keeps the
+purpose admitted when it was sent.
+
+A parent's continuation of its original delegated work keeps that launch's
+purpose. Your own follow-up in the child uses the child's stored purpose while
+the original parent still receives the result. When linking a PR, an agent can
+declare the outcome it delivers. Linking or unlinking a PR never reassigns
+runs. Legacy callers and saved schedules without a purpose
+are recorded as unscoped; choose a purpose before editing a legacy schedule.
+
+## Choose what a thread does while idle
+
+The idle control decides what an idle thread does: nothing, keep its prompt cache
+warm, or keep working with Wight mode. On web and desktop it is the ghost icon on
+the right of the chat header, next to the people icon; the icon shows **Warm** or
+**Wight** while one is on. On the phone it is the first menu in the thread's header,
+or under **More** in a Promachos chat.
+Choosing one turns the other off. Agents can turn keep-warm on and off with
+`t3_thread_configure`.
+
+### Keep the prompt cache warm
+
+Use **Keep cache warm** before you step away from a Claude thread for hours. After
+55 quiet minutes T3 Code sends a one-word ping turn in the same session, with the
+thread's own model and settings, so your next message reads the conversation from
+the cache instead of writing it again. The control shows when the next ping is due
+and when it stops by itself. Pings never notify you or mark the thread unread; the
+chat shows them as one gray line, such as "Kept warm, 4 pings".
+
+It stops by itself 24 hours after your last message or after you turned it on,
+whichever is later; at the provider's usage limit; and when you archive or settle
+the thread. The control says which. Only Claude threads offer it, because other
+providers' caches do not last an hour. On a Claude API key the cache lasts 5
+minutes, so the ping does not help there.
+
+### Keep a thread working with Wight mode
+
+Wight sends “continue” with the current time whenever the thread becomes idle.
+Leave the hours timer empty to run until turned off; the phone offers preset
+timers. To change the timer, turn Wight off and on again. Time spent paused counts
+toward the timer; expiry and turning off let the current turn finish.
+
+Set **Wight usage limit** for each instance in **Settings > Providers** on web or
+desktop. Any reported usage window at or above that percentage pauses new Wight
+turns until it drops below. The default is 80%; 0% pauses them. Providers without
+reported usage windows run without an enforceable quota limit, which the control
+shows. Approvals, unanswered questions, plans, interrupts and other errors wait for
+your input. Existing user messages, child reports and answers keep their normal
+delivery. Usage-limit failures wait for reset recovery; Wight never resumes them
+early.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work.
@@ -295,9 +350,17 @@ fill the screen; close the full-screen view to return to the parent and inspecto
 Stop on a thread also stops the subagents it delegated to.
 Before archiving the parent, wait for its delegated tasks to finish or cancel them.
 
-Subagent threads started by the agent can't take messages; message the parent
-thread instead. When such a subagent needs an approval or an answer, the parent
-thread asks for it.
+Threads belonging to a harness's native subagents can't take direct messages;
+message their parent instead. App-owned delegated child threads accept
+follow-ups. When a child needs an approval or an answer, its parent asks for it.
+
+For a task delegated to a linked environment, open the task from its original
+conversation to read and answer its questions or approvals. Web, desktop and
+mobile use your original connection; you do not need to save a separate
+connection to the destination. Both environments must remain reachable. If a
+request changed or a response was not confirmed, refresh it before changing your
+answer. Questions whose provider callback is no longer available explain that
+limitation instead of accepting an answer.
 
 Expand a tool call in the conversation to see its full command and output.
 Summaries shorten shell wrappers and can still describe the latest call after it

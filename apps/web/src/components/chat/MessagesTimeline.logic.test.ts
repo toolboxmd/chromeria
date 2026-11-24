@@ -60,6 +60,48 @@ describe("resolveAssistantMessageCopyState", () => {
 });
 
 describe("deriveMessagesTimelineRows", () => {
+  it("folds consecutive keep-warm pings and their replies into one growing line", () => {
+    const message = (id: string, role: "user" | "assistant", runId: string, at: string) =>
+      ({
+        kind: "message",
+        id,
+        createdAt: at,
+        message: {
+          id: MessageId.make(id),
+          role,
+          runId: RunId.make(runId),
+          text: role === "user" ? "Prompt" : "Ok",
+          streaming: false,
+          createdAt: at,
+          updatedAt: at,
+        },
+      }) satisfies TimelineEntry;
+    const ping = (n: number, at: string) => [
+      message(`keep-warm:thread:0:${n}`, "user", `ping-${n}`, at),
+      message(`ping-reply-${n}`, "assistant", `ping-${n}`, at),
+    ];
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        message("ask", "user", "real", "2026-11-23T10:00:00Z"),
+        message("answer", "assistant", "real", "2026-11-23T10:00:01Z"),
+        ...ping(1, "2026-11-23T10:56:00Z"),
+        ...ping(2, "2026-11-23T11:51:00Z"),
+        message("back", "user", "return", "2026-11-23T12:30:00Z"),
+        ...ping(3, "2026-11-23T13:30:00Z"),
+      ],
+      latestRun: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(
+      rows.flatMap((row) =>
+        row.kind === "keep-warm" ? [row.label] : row.kind === "message" ? [row.id] : [],
+      ),
+    ).toEqual(["ask", "answer", "Kept warm, 2 pings", "back", "Kept warm, 1 ping"]);
+  });
+
   it.each([
     ["html-render", "reply-run", true],
     ["mcp-app", "reply-run", true],
