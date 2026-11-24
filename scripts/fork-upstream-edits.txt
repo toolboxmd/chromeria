@@ -877,3 +877,6 @@ apps/server/src/workflows/WorkflowAgentThreads.ts
 apps/server/src/orchestration-v2/CheckpointCaptureService.ts
 apps/server/src/vcs/VcsProcess.test.ts
 apps/server/src/vcs/VcsProcess.ts
+packages/provider-cursor/src/server/adapter.test.ts
+packages/provider-cursor/src/server/workspaceMcpServers.ts
+packages/provider-muse/src/server/adapter.test.ts
