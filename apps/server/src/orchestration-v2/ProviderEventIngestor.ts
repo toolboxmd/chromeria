@@ -658,7 +658,8 @@ export const layer: Layer.Layer<
                 itemId: idAllocator.derive.userTurnItem({ messageId: input.event.messageId }),
               });
               if (
-                item?.type !== "user_message" ||
+                item === null ||
+                (item.type !== "user_message" && item.type !== "notification") ||
                 item.status === input.event.status ||
                 (item.status !== "pending" && item.status !== "completed")
               ) {
