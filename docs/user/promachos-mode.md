@@ -58,7 +58,7 @@ the environment's own machine, so it works for remote environments too. The fold
 becomes a git repository with a starter `AGENTS.md` and a `CLAUDE.md` that points to
 it, is added as a project, and becomes that machine's home.
 
-Write the Promachos persona under "Who you are" in that `AGENTS.md`. Every
+Write the Promachos persona under "Who I am" in that `AGENTS.md`. Every
 conversation in the home reads it.
 
 Files, a git repository or a project already there are kept as they are, so you can
