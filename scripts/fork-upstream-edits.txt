@@ -863,6 +863,9 @@ apps/web/src/browserHistoryStore.browser.test.ts
 # HTML render dialog test uses a local frame and the default viewport (#956).
 apps/web/src/components/chat/HtmlRenderDialog.browser.test.tsx
 
+# AppImage launcher installs stop traps before starting the CLI (#963, upstream #41531).
+apps/desktop/src/app/DesktopCliShim.ts
+
 # Steered wake recovery (#875)
 apps/server/src/orchestration-v2/ProviderEventIngestor.ts
 
