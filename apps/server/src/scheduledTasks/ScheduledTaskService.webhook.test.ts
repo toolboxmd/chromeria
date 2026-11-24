@@ -312,7 +312,10 @@ it.effect("dispatches exactly the rendered prompt and logs the delivery", () =>
         deliveryId: deliveries[0]!.id,
       });
       assert.equal(delivery.body, new TextDecoder().decode(pullRequestBody));
-      assert.equal(delivery.renderedPrompt, launched.initialMessage?.text);
+      assert.equal(
+        delivery.renderedPrompt,
+        launched.initialMessage?.text.split("\n\n[T3 Code scheduled run]")[0],
+      );
 
       yield* service.triggerWebhook(requestFor(task));
       const next = framed.exec((yield* Queue.take(launches)).initialMessage?.text ?? "")?.[1];
@@ -1084,7 +1087,7 @@ it.effect("a coalesced window dispatches the prompt saved after it opened", () =
         yield* TestClock.adjust("10 seconds");
         yield* workers.get("webhook-coalescing")!;
         const launched = yield* Queue.take(launches);
-        assert.equal(launched.initialMessage?.text, "Use the updated instructions.");
+        assert.match(launched.initialMessage?.text ?? "", /^Use the updated instructions\.\n\n/);
         const owner = (yield* service.listWebhookDeliveries({ id: task.id })).deliveries[0]!;
         const { delivery } = yield* service.getWebhookDelivery({
           id: task.id,
@@ -1115,7 +1118,7 @@ it.effect("retrying a running window keeps the prompt it was dispatched with", (
         yield* TestClock.adjust("10 seconds");
         yield* drainPendingDispatch(workers);
         const launched = yield* Queue.take(launches);
-        assert.equal(launched.initialMessage?.text, "Prompt at dispatch");
+        assert.match(launched.initialMessage?.text ?? "", /^Prompt at dispatch\n\n/);
         yield* save("Prompt saved after dispatch");
         yield* sql`DROP TRIGGER fail_completion`;
         yield* drainPendingDispatch(workers);
@@ -1573,7 +1576,7 @@ it.effect("keeps replay keys when dispatch succeeds but completion bookkeeping f
   ),
 );
 
-it.effect.each([119_000, 120_000])(
+it.effect.each([119_000, 119_750, 120_000])(
   "bounds coalesced prompt logs and checks trimmed length for %i body characters",
   (length) => {
     const workers = new Map<string, Effect.Effect<void>>();
@@ -1597,10 +1600,12 @@ it.effect.each([119_000, 120_000])(
           yield* TestClock.adjust("10 seconds");
           yield* drainPendingDispatch(workers);
           const delivery = (yield* service.listWebhookDeliveries({ id: task.id })).deliveries[0]!;
-          if (length === 119_000) {
+          if (length < 120_000) {
+            assert.equal(delivery.outcome, "accepted");
             const launch = yield* Queue.take(launches);
             assert.isAbove(launch.initialMessage!.text.length, 120_000);
-            assert.equal(delivery.outcome, "accepted");
+            if (length === 119_750)
+              assert.isAbove(launch.initialMessage!.text.trim().length, 120_000);
             const detail = yield* service.getWebhookDelivery({
               id: task.id,
               deliveryId: delivery.id,

@@ -79,6 +79,11 @@ import { dispatchVia, ScheduledTaskDispatchPolicy } from "../scheduledTaskChecks
 import { forkFireKey } from "../scheduledTaskChecks/schedules.ts";
 import { migrateLegacyCalendarSchedules } from "../scheduledTaskChecks/fixedTimeMigration.ts";
 import { deleteSpentOnceTask } from "../scheduledTaskChecks/spentOnce.ts";
+import {
+  appendScheduledRunSettlement,
+  ownsScheduledThread,
+  scheduledRunCanSettle,
+} from "../scheduledTaskChecks/runPrompt.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
@@ -332,6 +337,7 @@ export type ManualOptions = {
 export class ScheduledTaskService extends Context.Service<
   ScheduledTaskService,
   {
+    readonly awaitCheckedRunPass?: (threadId: ThreadId) => Effect.Effect<boolean>;
     readonly mutationReceipt?: (
       request: RequestIdentity,
     ) => Effect.Effect<Option.Option<McpScheduledMutationReceipt>, OrchestratorMcpFailure>;
@@ -1199,6 +1205,13 @@ export const layer = Layer.effect(
       );
     });
 
+    const ownsRunThread = (task: ScheduledTask) =>
+      ownsScheduledThread(task).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.mapError((cause) =>
+          taskError("Could not read scheduled thread ownership.", { taskId: task.id, cause }),
+        ),
+      );
     const dispatchOwnedTask = Effect.fn("ScheduledTaskService.dispatchOwnedTask")(function* (
       active: ScheduledTask,
       commandId: CommandId,
@@ -1239,6 +1252,17 @@ export const layer = Layer.effect(
               provenance: { type: "schedule", scheduledTaskId: active.id },
             };
       const threadMode = scheduledTaskThreadMode(active);
+      const text =
+        decision._tag === "upstream" &&
+        (yield* ownsRunThread(active)) &&
+        (yield* scheduledRunCanSettle(active.bare, active.threadId).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError((cause) =>
+            taskError("Could not read scheduled thread tools.", { taskId: active.id, cause }),
+          ),
+        ))
+          ? appendScheduledRunSettlement(prompt)
+          : prompt;
       const bindingFence =
         active.threadId === null && threadMode !== "new_thread"
           ? yield* MutationReceipts.captureResourceFence(active.id).pipe(
@@ -1255,7 +1279,7 @@ export const layer = Layer.effect(
             threadId,
             messageId,
             scheduledTaskId: active.id,
-            text: prompt,
+            text,
             attachments: [],
             mode: "queue",
             ...(threadMode === "fresh_session" ? { freshContext: true } : {}),
@@ -1303,7 +1327,7 @@ export const layer = Layer.effect(
               initialMessage: {
                 messageId,
                 scheduledTaskId: active.id,
-                text: prompt,
+                text,
                 attachments: [],
               },
               createdBy: active.createdBy,
@@ -3593,8 +3617,6 @@ export const layer = Layer.effect(
             Effect.mapError((cause) => taskError("Could not generate frame id.", { cause })),
           );
           const rendered = renderWebhookPrompt(task.prompt, request, frameId);
-          // Providers trim the prompt before checking, so whitespace around
-          // it is free.
           if (rendered.prompt.trim().length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
             yield* log("dispatch_failed", {
               signatureVerified: signature !== null,

@@ -6,7 +6,7 @@ import { readScheduledBare } from "../scheduledTasks/bareState.ts";
 import {
   CommandId,
   MessageId,
-  ThreadId,
+  type ThreadId,
   type ModelSelection,
   type ScheduledTask,
   type ScheduledTaskId,
@@ -28,6 +28,12 @@ import {
   type ScheduledTaskDispatchDecision,
 } from "./DispatchPolicy.ts";
 import type { ReportFence } from "./handoff.ts";
+import {
+  appendScheduledRunSettlement,
+  ownedCheckedRunThreadId,
+  ownsScheduledThread,
+  scheduledRunCanSettle,
+} from "./runPrompt.ts";
 import { forkScheduledSlot } from "./schedules.ts";
 import {
   RECOVERY_DELAYS_MS,
@@ -161,9 +167,6 @@ const upstreamDecision: ScheduledTaskDispatchDecision = { _tag: "upstream" };
 const skipDecision: ScheduledTaskDispatchDecision = { _tag: "skip" };
 const refuse = (message: string) => new ScheduledTaskDispatchRefused({ message });
 const fail = (message: string) => new ScheduledTaskCheckError({ message });
-
-const runThreadId = (task: ScheduledTask, runId: string) =>
-  task.threadId ?? ThreadId.make(`scheduled-run:${runId}`);
 
 const sendIdentity = (run: CheckedRun, index: number) => ({
   commandId: CommandId.make(`scheduled-task-check:${run.id}:${index}`),
@@ -322,6 +325,17 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
                 }),
             ),
           );
+    const text = sendText(
+      task,
+      run,
+      { kind },
+      kind === "start" && task.bare === undefined ? (role?.kitText ?? null) : null,
+    );
+    const ownsThread =
+      run.threadId === ownedCheckedRunThreadId(run.id) ||
+      (yield* ownsScheduledThread({ id: task.id, threadId: run.threadId }));
+    const canSettle =
+      ownsThread && (yield* scheduledRunCanSettle(task.bare, launching ? null : run.threadId));
     const send: RunSend = {
       index,
       ...sendIdentity(run, index),
@@ -335,12 +349,7 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
         ...(bareAuthority === undefined ? {} : { bareReadGrant: bareAuthority.readGrant }),
         ...(task.bare === undefined ? {} : { bare: task.bare }),
         ...(task.linkOrigin === undefined ? {} : { linkOrigin: task.linkOrigin }),
-        text: sendText(
-          task,
-          run,
-          { kind },
-          kind === "start" && task.bare === undefined ? (role?.kitText ?? null) : null,
-        ),
+        text: canSettle ? appendScheduledRunSettlement(text) : text,
         modelSelection: launch === null ? null : launch.modelSelection,
         launch,
         projectId: task.projectId,
@@ -538,12 +547,12 @@ export const makeCheckedRuns = Effect.fnUntraced(function* (deps: CheckedRunDeps
     checkVersion: state.kind === "agent" ? activeCheck(state).version : null,
     threadId:
       state.kind === "agent"
-        ? runThreadId(
-            task,
+        ? (task.threadId ??
+          ownedCheckedRunThreadId(
             manualRequestId === undefined
               ? `${task.id}:${slot}`
               : `${task.id}:manual:${manualRequestId}`,
-          )
+          ))
         : null,
     checkCwd: null,
     stage: "running",

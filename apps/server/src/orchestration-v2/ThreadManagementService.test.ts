@@ -1076,6 +1076,8 @@ it.effect.each([
 
 it.effect.each([
   { status: "completed" as const, followUp: "none", settles: true },
+  { status: "completed" as const, followUp: "failed-outcome-check", settles: false },
+  { status: "completed" as const, followUp: "passed-outcome-check", settles: true },
   { status: "failed" as const, followUp: "none", settles: false },
   { status: "interrupted" as const, followUp: "none", settles: false },
   { status: "completed" as const, followUp: "notification", settles: true },
@@ -1095,6 +1097,7 @@ it.effect.each([
     const projectId = ProjectId.make("project:thread-management:settle-after-run");
     const threadId = ThreadId.make("thread:thread-management:settle-after-run");
     const runId = RunId.make("run:thread-management:settle-after-run");
+    const pendingCheck = followUp.endsWith("-outcome-check");
     const followUpId = RunId.make(`${runId}:follow-up`);
     const subscribed = yield* Deferred.make<void>();
     const events = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
@@ -1166,7 +1169,7 @@ it.effect.each([
             ),
           dispatch: (command) =>
             Effect.gen(function* () {
-              if (followUp !== "none" && !raced) {
+              if (followUp !== "none" && !pendingCheck && !raced) {
                 raced = true;
                 rejectedCommandId = command.commandId;
                 return yield* new Orchestrator.OrchestratorDispatchError({
@@ -1194,10 +1197,27 @@ it.effect.each([
     const service = yield* ThreadManagementService.ThreadManagementService.pipe(
       Effect.provide(layerTest),
     );
+    const checking = yield* Deferred.make<void>();
+    const outcome = yield* Deferred.make<boolean>();
     const fiber = yield* service
-      .settleAfterRun({ projectId, threadId, runId })
+      .settleAfterRun({
+        projectId,
+        threadId,
+        runId,
+        ...(pendingCheck
+          ? {
+              allowSettlement: Deferred.succeed(checking, undefined).pipe(
+                Effect.andThen(Deferred.await(outcome)),
+              ),
+            }
+          : {}),
+      })
       .pipe(Effect.forkChild);
-    if (followUp !== "none") {
+    if (pendingCheck) {
+      yield* Deferred.await(checking);
+      expect(dispatched).toEqual([]);
+      yield* Deferred.succeed(outcome, followUp === "passed-outcome-check");
+    } else if (followUp !== "none") {
       yield* Deferred.await(subscribed);
       expect(dispatched).toEqual([]);
       nextRun.status =

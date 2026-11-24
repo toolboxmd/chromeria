@@ -66,6 +66,7 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   dependencies: [
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
+    ScheduledTaskService.ScheduledTaskService,
     SecureRandom.SecureRandom,
   ],
 })

@@ -83,7 +83,7 @@ import {
   fixtureSpectra,
   reportReceipt,
 } from "./spectra.testkit.ts";
-import type { CheckState } from "./state.ts";
+import { RECOVERY_DELAYS_MS, type CheckState } from "./state.ts";
 import { readCheckState, writeCheckState } from "./store.ts";
 
 const toJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -229,13 +229,13 @@ const runtime = (
   );
 };
 
-const createThreadIn = (worktreePath: string | null) =>
+const createThreadIn = (worktreePath: string | null, targetThreadId = threadId) =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     yield* orchestrator.dispatch({
       type: "thread.create",
       commandId: CommandId.make("checks:create"),
-      threadId,
+      threadId: targetThreadId,
       projectId,
       title: "Checked work",
       modelSelection: selection,
@@ -619,12 +619,16 @@ const runEvent = (
   payload,
 });
 
-const persist = (id: string, events: ReadonlyArray<OrchestrationV2DomainEvent>) =>
+const persist = (
+  id: string,
+  events: ReadonlyArray<OrchestrationV2DomainEvent>,
+  targetThreadId = threadId,
+) =>
   Effect.gen(function* () {
     yield* (yield* EventSink.EventSinkV2).commitCommand({
       commandId: CommandId.make(id),
       commandType: "fixture",
-      threadId,
+      threadId: targetThreadId,
       acceptedAt: recoveryRun.requestedAt,
       events,
       effects: [],
@@ -675,6 +679,95 @@ const sentRun = (id: string, messageId: string): CheckState["runs"][number] => (
 
 const runOf = (id: string) =>
   readCheckState(ScheduledTaskId.make(id)).pipe(Effect.map((state) => state!.runs[0]!));
+
+it.effect.each([true, false])(
+  "a Spectrum report turn only settles its scheduler-owned thread when the final check passes (%s)",
+  (passes) =>
+    Effect.gen(function* () {
+      const database = yield* tempDatabase;
+      const worktree = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "chromeria-checks-wt-"));
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => NodeFS.rmSync(worktree, { recursive: true, force: true })),
+      );
+      yield* TestClock.setTime(Date.parse(CANONICAL));
+      const id = ScheduledTaskId.make("scheduled-task:settlement-after-report");
+      const schedulerRunId = `${id}:${CANONICAL}`;
+      const ownedThread = ThreadId.make(`scheduled-run:${schedulerRunId}`);
+      const sentMessage = `scheduled-task-check-message:${schedulerRunId}:0`;
+      const reportId = "settlement-proof";
+      const primary = {
+        ...threadRun("run:settlement:checked", sentMessage, "completed"),
+        threadId: ownedThread,
+      };
+      const report = {
+        ...threadRun("run:settlement:report", `report-message:${reportId}`, "completed", 2),
+        threadId: ownedThread,
+      };
+      yield* Effect.gen(function* () {
+        const threads = yield* ThreadManagementService.ThreadManagementService;
+        const scheduler = yield* ScheduledTaskService.ScheduledTaskService;
+        const checks = yield* ScheduledTaskChecks.ScheduledTaskChecks;
+        const gateReached = yield* Deferred.make<void>();
+        yield* ensureSpectraFixture;
+        yield* createThreadIn(worktree, ownedThread);
+        yield* insertTask({
+          id,
+          schedule: { type: "interval", everyMs: 3_600_000 },
+          next: null,
+          threadId: null,
+        });
+        yield* writeCheckState(
+          null,
+          checkState(id, [
+            {
+              ...sentRun(schedulerRunId, sentMessage),
+              threadId: ownedThread,
+              attempt: RECOVERY_DELAYS_MS.length,
+            },
+          ]),
+        );
+        yield* bindSpectrum({
+          callerThreadId: ownedThread,
+          schedulerRunId,
+          status: "settled",
+          report: reportId,
+        });
+        yield* reportReceipt(ownedThread, reportId, "accepted");
+        yield* persist(
+          "settlement:work-and-report",
+          [
+            runEvent("run.created", primary, "settlement:work"),
+            runEvent("run.created", report, "settlement:report"),
+          ],
+          ownedThread,
+        );
+        const settlement = yield* threads
+          .settleAfterRun({
+            projectId,
+            threadId: ownedThread,
+            runId: report.id,
+            allowSettlement: Deferred.succeed(gateReached, undefined).pipe(
+              Effect.andThen(scheduler.awaitCheckedRunPass!(ownedThread)),
+            ),
+          })
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(gateReached);
+        assert.notEqual((yield* threads.getThreadShell(ownedThread))?.settledOverride, "settled");
+        yield* checks.reconcile;
+        assert.equal((yield* runOf(id)).stage, passes ? "done" : "needs-you");
+        yield* Fiber.join(settlement);
+        assert.equal(
+          (yield* threads.getThreadShell(ownedThread))?.settledOverride === "settled",
+          passes,
+        );
+      }).pipe(
+        Effect.provide(
+          runtime(database, { check: Effect.succeed(passes ? 0 : 1), spectra: fixtureSpectra() }),
+        ),
+        Effect.scoped,
+      );
+    }).pipe(Effect.scoped),
+);
 
 it.effect(
   "a pass never settles when recovery resumes the run's work during its check, and settles once that work completes",

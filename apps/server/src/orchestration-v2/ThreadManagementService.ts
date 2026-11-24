@@ -571,11 +571,13 @@ export interface ThreadManagementServiceShape {
     readonly projectId: ProjectId;
     readonly threadId: ThreadId;
     readonly runId: RunId;
+    readonly allowSettlement?: Effect.Effect<boolean>;
   }) => Effect.Effect<void, ThreadManagementFailure>;
   readonly settleThread: (input: {
     readonly threadId: ThreadId;
     readonly commandId: CommandId;
     readonly byOwnAgent: boolean;
+    readonly allowSettlement?: Effect.Effect<boolean> | undefined;
   }) => Effect.Effect<
     { readonly sequence: number } | { readonly settlesWhenTurnEnds: true },
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
@@ -1469,6 +1471,14 @@ const make = Effect.gen(function* () {
     const requestedAt = yield* DateTime.now;
     const { run } = yield* waitForThread({ ...input, timeoutMs: SETTLE_AFTER_RUN_WAIT_MS });
     if (run?.status !== "completed") return;
+    if (
+      input.allowSettlement !== undefined &&
+      !(yield* input.allowSettlement.pipe(
+        Effect.timeoutOption(Duration.millis(SETTLE_AFTER_RUN_WAIT_MS)),
+        Effect.map(Option.getOrElse(() => false)),
+      ))
+    )
+      return;
     const afterSequence = yield* orchestrator.getThreadEventSequence(input.threadId);
     const trySettle = Effect.gen(function* () {
       const sequence = yield* orchestrator.getThreadEventSequence(input.threadId);
@@ -1579,6 +1589,7 @@ const make = Effect.gen(function* () {
         projectId: shell.projectId,
         threadId: shell.id,
         runId: shell.activeRunId,
+        ...(input.allowSettlement === undefined ? {} : { allowSettlement: input.allowSettlement }),
       }).pipe(Effect.ignoreCause({ log: true }), Effect.forkIn(layerScope));
       return { settlesWhenTurnEnds: true } as const;
     }

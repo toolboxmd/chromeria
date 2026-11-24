@@ -549,7 +549,8 @@ it.effect("a Prism pick selects the model of a new thread only and prefixes its 
     yield* wired.save({ checkCommand: "check", checkReason: "outcome", role: "worker" });
     yield* wired.fire("scheduled", NOW, task({ threadId: null }));
     assert.equal(wired.sent[0]?.modelSelection?.model, "picked-model");
-    assert.match(wired.sent[0]!.text, /KIT\n\nDo the work$/);
+    assert.match(wired.sent[0]!.text, /KIT\n\nDo the work\n\n/);
+    assert.include(wired.sent[0]!.text, "t3_thread_organize");
     // Posting to a bound thread keeps that thread's stored model and effort.
     const bound = yield* harness({ role: "picked-model" });
     yield* bound.runs.removeTask(taskId, null, Effect.void);
@@ -1370,24 +1371,30 @@ it.effect.each([false, true])(
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
-it.effect(
-  "bare checked sends pin task-only text, request and admitted reads across crash replay and task edits",
-  () =>
+it.effect.each([undefined, "preview_open", "mcp__t3_code__t3_thread_organize"] as const)(
+  "bare checked sends pin the prompt and admitted reads with optional tool %s",
+  (tool) =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       const h = yield* harness({ role: "picked-model" });
       yield* h.save({ checkCommand: "check", checkReason: "outcome", role: "worker" });
-      const bare = { additions: [{ type: "file" as const, path: "/admitted/caller/input.txt" }] };
+      const bare = {
+        additions: [
+          { type: "file" as const, path: "/admitted/caller/input.txt" },
+          ...(tool === undefined ? [] : [{ type: "mcp" as const, server: "t3-code", tool }]),
+        ],
+      };
       yield* h.decide("scheduled", NOW, task({ threadId: null, bare }));
       const pinned = (yield* h.state()).runs[0]!.sends[0]!.payload!;
-      assert.equal(pinned.text, "Do the work");
+      if (tool?.endsWith("t3_thread_organize")) assert.include(pinned.text, "t3_thread_organize");
+      else assert.equal(pinned.text, "Do the work");
       assert.deepEqual(pinned.bare, bare);
       assert.deepEqual(pinned.launch?.bare, bare);
       assert.deepEqual(pinned.bareReadGrant, { type: "roots", roots: ["/admitted/caller"] });
       h.set({ landed: false, busy: false });
       yield* h.runs.drive(task({ threadId: null, prompt: "Edited", title: "Edited" }));
       assert.equal(h.sent.length, 1);
-      assert.equal(h.sent[0]!.text, "Do the work");
+      assert.equal(h.sent[0]!.text, pinned.text);
       assert.equal(h.sent[0]!.modelSelection?.model, "picked-model");
       assert.deepEqual((yield* h.state()).runs[0]!.sends[0]!.payload, pinned);
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
