@@ -863,6 +863,10 @@ apps/web/src/browserHistoryStore.browser.test.ts
 # HTML render dialog test uses a local frame and the default viewport (#956).
 apps/web/src/components/chat/HtmlRenderDialog.browser.test.tsx
 
+# AppImage launcher forwards early stops and preserves the CLI exit status (#963).
+apps/desktop/src/app/DesktopCliShim.ts
+apps/desktop/src/app/DesktopCliShim.test.ts
+
 # Steered wake recovery (#875)
 apps/server/src/orchestration-v2/ProviderEventIngestor.ts
 

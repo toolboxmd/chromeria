@@ -119,12 +119,20 @@ export const renderCliShim = (input: {
     // Ctrl-C to the CLI directly. A background child would read /dev/null, so pass stdin on fd 9.
     // With stdin closed, `exec 9<&0` would end the shell; `command` makes it a normal error.
     "{ command exec 9<&0; } 2>/dev/null || exec 9</dev/null",
+    // Set before the CLI starts: the old `exit 130` trap would unmount under it. A signal that
+    // lands before $cli is known is kept in $stop and forwarded once it is.
+    "cli=",
+    "stop=",
+    `trap 'if [ -n "$cli" ]; then kill -TERM "$cli" 2>/dev/null; else stop=TERM; fi' TERM`,
+    `trap 'if [ -n "$cli" ]; then kill -HUP "$cli" 2>/dev/null; else stop=HUP; fi' HUP`,
+    // A Ctrl-C during launch must leave the launcher alive to wait for the CLI.
+    "trap ':' INT",
     `${run("$mount")} <&9 9<&- &`,
     "cli=$!",
     "exec 9<&-",
-    `trap 'kill -TERM "$cli" 2>/dev/null' TERM`,
-    `trap 'kill -HUP "$cli" 2>/dev/null' HUP`,
+    // The terminal also signals the CLI. Ignore INT here so it cannot interrupt wait.
     "trap '' INT",
+    '[ -z "$stop" ] || kill -"$stop" "$cli" 2>/dev/null',
     "status=0",
     'wait "$cli" || status=$?',
     // A trapped signal interrupts wait; wait again for the CLI's own exit status.
