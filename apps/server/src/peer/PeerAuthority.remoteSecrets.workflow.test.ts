@@ -871,6 +871,7 @@ it.live(
         expect(
           (yield* nativeCall(a, parent, "schedule_task", {
             ...input,
+            purposeIntent: { version: 1, intent: { type: "unscoped" } },
             scheduledTaskId: "unknown-task",
             clientRequestId: "wrong-family",
           })).isError,

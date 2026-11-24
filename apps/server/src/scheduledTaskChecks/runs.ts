@@ -11,7 +11,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { conversationPreviewText } from "../promachos/conversationPreview.ts";
-import type { CheckedRun, CheckState } from "./state.ts";
+import { checkedRunPassed, type CheckedRun, type CheckState } from "./state.ts";
 import { readCheckState } from "./store.ts";
 
 /** A run before its thread and summary are read. */
@@ -27,7 +27,7 @@ const lastLine = (text: string | undefined) => text?.trimEnd().split("\n").at(-1
 
 function checkedRunStatus(state: CheckState, run: CheckedRun): ScheduledTaskRunRecord["status"] {
   if (run.imported !== undefined) return "failed";
-  if (run.stage === "done") return "succeeded";
+  if (run.stage === "done") return checkedRunPassed(run) ? "succeeded" : "failed";
   if (run.stage === "needs-you") return "failed";
   // A command run that is not running ended; only `done` passed.
   return state.kind === "command" && run.stage !== "running" ? "failed" : "running";

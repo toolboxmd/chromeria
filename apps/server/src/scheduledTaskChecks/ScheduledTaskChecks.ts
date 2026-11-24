@@ -58,8 +58,10 @@ import {
 } from "./schedules.ts";
 import {
   CHECK_OUTPUT_BYTES,
+  checkedRunPassed,
   checkedRunStatus,
   commandSummary,
+  compact,
   outcomeCheckSummary,
   unfinishedRun,
   type CheckState,
@@ -71,6 +73,7 @@ import {
   listCheckStates,
   bindCheckAutomation,
   readCheckState,
+  writeCheckState,
 } from "./store.ts";
 import { ownedCheckedRunThreadId, ownsScheduledThread } from "./runPrompt.ts";
 
@@ -536,22 +539,53 @@ const policyLayer = Layer.effect(
   ScheduledTaskDispatchPolicy,
   Effect.gen(function* () {
     const { runs, sql } = yield* Engine;
+    const withSql = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+      Effect.provideService(effect, SqlClient.SqlClient, sql);
     return {
-      assertRunIdle: Effect.fn("ScheduledTaskDispatchPolicy.assertRunIdle")(
+      beforeDefinitionChange: Effect.fn("ScheduledTaskDispatchPolicy.beforeDefinitionChange")(
         function* (id, operation) {
-          const state = yield* readCheckState(id).pipe(
-            Effect.provideService(SqlClient.SqlClient, sql),
-            Effect.mapError(toTaskError(id)),
-          );
-          if (state !== null && unfinishedRun(state) !== undefined)
-            return yield* new ScheduledTaskError({
-              message:
-                operation === "move"
-                  ? "Let the unfinished scheduled run finish before moving the task."
-                  : "Let the unfinished scheduled run finish before editing the task.",
-              taskId: id,
-            });
+          const state = yield* readCheckState(id);
+          const run = state === null ? undefined : unfinishedRun(state);
+          if (state === null || run === undefined) return;
+          if (
+            operation === "resume" &&
+            state.kind === "agent" &&
+            run.automationCertificateId !== undefined
+          ) {
+            const retired = yield* sql`
+              SELECT 1 FROM fork_automation_certificates
+              WHERE id = ${run.automationCertificateId} AND disabled = 1 AND revoked = 0
+            `;
+            if (retired.length > 0) {
+              const error = "The run stopped when its automation authority was retired.";
+              yield* writeCheckState(
+                state,
+                compact({
+                  ...state,
+                  runs: state.runs.map((entry) =>
+                    entry.id === run.id ? { ...entry, stage: "done", error, retryAt: null } : entry,
+                  ),
+                  failureStreak: state.failureStreak + 1,
+                  lastError: error,
+                }),
+              );
+              return;
+            }
+          }
+          return yield* new ScheduledTaskError({
+            message:
+              operation === "move"
+                ? "Let the unfinished scheduled run finish before moving the task."
+                : "Let the unfinished scheduled run finish before editing the task.",
+            taskId: id,
+          });
         },
+        (effect, id) =>
+          withSql(effect).pipe(
+            Effect.mapError((error) =>
+              error._tag === "ScheduledTaskError" ? error : toTaskError(id)(error),
+            ),
+          ),
       ),
       decide: Effect.fn("ScheduledTaskDispatchPolicy.decide")((input) =>
         runs.decide(input).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
@@ -668,7 +702,7 @@ const decoratedLayer = Layer.effect(
                     return false;
                   if (current.stage === "running" || current.stage === "usage-limit")
                     return undefined;
-                  return current.stage === "done";
+                  return checkedRunPassed(current);
                 }),
               ),
               Stream.filter((passed): passed is boolean => passed !== undefined),
@@ -814,7 +848,15 @@ const decoratedLayer = Layer.effect(
                   : chooseMinutes(schedule, busyMinutes(tasks, input.id, now), now);
             schedule = chosen === undefined ? requested : { ...requested, chosen };
           }
-          const save = inner.upsert({ ...input, schedule }, options);
+          const save = inner
+            .upsert({ ...input, schedule }, options)
+            .pipe(
+              Effect.tap(() =>
+                existing?.enabled === false && input.enabled
+                  ? PubSub.publish(changes, undefined).pipe(Effect.asVoid)
+                  : Effect.void,
+              ),
+            );
           if (input.id === undefined || input.schedule.type !== "fixed_time")
             return { task: yield* attach((yield* save).task) };
           // The merge read the stored task outside upstream's transaction; inside it, a newer
@@ -847,6 +889,9 @@ const decoratedLayer = Layer.effect(
       ),
       setEnabled: Effect.fn("ScheduledTaskService.ScheduledTaskService.setEnabled")((input) =>
         inner.setEnabled(input).pipe(
+          Effect.tap(() =>
+            input.enabled ? PubSub.publish(changes, undefined).pipe(Effect.asVoid) : Effect.void,
+          ),
           Effect.flatMap((result) => attach(result.task)),
           Effect.map((task) => ({ task })),
         ),

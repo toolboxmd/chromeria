@@ -2061,7 +2061,7 @@ export const layer = Layer.effect(
                   taskId: id,
                 });
               if (moving) {
-                yield* dispatchPolicy.assertRunIdle(id, "move");
+                yield* dispatchPolicy.beforeDefinitionChange(id, "move");
                 const destination = yield* sql`
                   SELECT 1 FROM projection_projects
                   WHERE project_id = ${input.projectId} AND deleted_at IS NULL
@@ -2077,13 +2077,17 @@ export const layer = Layer.effect(
                       taskId: id,
                     },
                   );
-              } else if (existingTask !== null && accepted !== undefined) {
+              }
+              if (extensionCommit !== undefined) yield* extensionCommit;
+              if (!moving && existingTask !== null && accepted !== undefined) {
                 // Replacing a certificate would leave a checked run using retired authority.
                 const current = yield* automation.current("schedule", id);
                 if (Option.getOrUndefined(current)?.id !== accepted.certificate.id)
-                  yield* dispatchPolicy.assertRunIdle(id, "edit");
+                  yield* dispatchPolicy.beforeDefinitionChange(
+                    id,
+                    !existingTask.enabled && input.enabled ? "resume" : "edit",
+                  );
               }
-              if (extensionCommit !== undefined) yield* extensionCommit;
               const currentThread = resolveThreadBinding(input, existingTask);
               if (requestDigest(currentThread) !== requestDigest(capturedThread))
                 return yield* taskError(
@@ -2458,7 +2462,28 @@ export const layer = Layer.effect(
           input.enabled && !existing.enabled && existing.purposeIntent !== undefined
             ? Option.isSome(yield* automation.current("schedule", input.id))
             : false;
-        if (reaccept) return yield* upsert({ ...existing, enabled: true });
+        if (reaccept) {
+          const unchanged = Effect.gen(function* () {
+            const current = yield* loadTask(input.id);
+            if (
+              current.createdAt !== existing.createdAt ||
+              current.updatedAt !== existing.updatedAt ||
+              current.projectId !== existing.projectId
+            )
+              return yield* taskError(
+                "The task changed before it could resume. Read it and retry.",
+                {
+                  taskId: input.id,
+                },
+              );
+          });
+          return yield* upsert({ ...existing, enabled: true, requireExisting: true }).pipe(
+            Effect.provideService(MutationReceipts.DefinitionExtension, {
+              definition: undefined,
+              prepare: Effect.succeed(unchanged),
+            }),
+          );
+        }
         return yield* MutationReceipts.accept(
           input.id,
           applyEnabled(input),

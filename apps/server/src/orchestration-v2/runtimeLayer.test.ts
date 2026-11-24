@@ -535,12 +535,18 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
         const projectId = ProjectId.make(`automation-delete-project:${deletion}`);
         const threadId = ThreadId.make(`automation-delete-thread:${deletion}`);
         const otherThreadId = ThreadId.make(`automation-surviving-thread:${deletion}`);
-        const otherProjectId = ProjectId.make("automation-other-project");
+        const otherProjectId = ProjectId.make(`automation-other-project:${deletion}`);
         yield* projects.create({
           commandId: CommandId.make(`automation-create-project:${deletion}`),
           projectId,
           title: "Automation lifecycle",
           workspaceRoot: `/work/automation-lifecycle/${deletion}`,
+        });
+        yield* projects.create({
+          commandId: CommandId.make(`automation-create-other-project:${deletion}`),
+          projectId: otherProjectId,
+          title: "Surviving project",
+          workspaceRoot: `/work/automation-lifecycle/${deletion}-other`,
         });
         for (const id of [threadId, otherThreadId]) {
           yield* orchestrator.dispatch({

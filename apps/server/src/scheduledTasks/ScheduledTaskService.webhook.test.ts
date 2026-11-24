@@ -261,7 +261,7 @@ const withService = <A, E>(
       ),
       ManagedPolicy.layerTest(options.policy),
       Layer.succeed(ScheduledTaskDispatchPolicy, {
-        assertRunIdle: () => Effect.void,
+        beforeDefinitionChange: () => Effect.void,
         decide: () =>
           (options.beforeAdmission ?? Effect.void).pipe(Effect.as({ _tag: "upstream" as const })),
       }),
