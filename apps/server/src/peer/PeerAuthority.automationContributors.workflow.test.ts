@@ -1278,6 +1278,14 @@ it.live("moves a disabled schedule through both MCP update tools", () =>
           Effect.map(({ tasks }) => tasks[0]),
         );
       yield* Effect.gen(function* () {
+        const probe = (yield* node.scheduled.list()).tasks.find(
+          (task) => task.id === scheduledTaskId,
+        )!;
+        yield* node.scheduled.upsert({
+          ...probe,
+          workspaceStrategy: { type: "root", branch: "source-only" },
+          requireExisting: true,
+        });
         const original = yield* getTask(node.project.id);
         expect(original).toMatchObject({
           scheduledTaskId,
@@ -1295,6 +1303,10 @@ it.live("moves a disabled schedule through both MCP update tools", () =>
         expect(moved.structuredContent).toMatchObject({ applied: true, scheduledTaskId });
         expect(yield* getTask(destination)).toEqual({ ...original, projectId: destination });
         expect(yield* getTask(node.project.id)).toBeUndefined();
+        expect(
+          (yield* node.scheduled.list()).tasks.find((task) => task.id === scheduledTaskId)
+            ?.workspaceStrategy,
+        ).toEqual({ type: "root" });
 
         const restored = yield* nativeCall(node, parent, "update_scheduled_task", {
           scheduledTaskId,

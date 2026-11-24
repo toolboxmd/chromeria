@@ -3457,7 +3457,9 @@ const make = Effect.gen(function* () {
           (threadId === null) !== (existing.threadId === null) ||
           (moving && existing.workspaceStrategy.type !== "root")
             ? yield* scheduledTaskWorkspaceStrategy(threadId !== null, projectId)
-            : existing.workspaceStrategy;
+            : moving
+              ? { type: "root" as const }
+              : existing.workspaceStrategy;
         const upsertInput: ScheduledTaskUpsertInput = {
           purposeIntent: input.purposeIntent ?? existing.purposeIntent,
           id: existing.id,

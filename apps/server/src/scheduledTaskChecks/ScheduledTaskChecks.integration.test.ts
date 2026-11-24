@@ -2423,8 +2423,8 @@ it.effect("a checked run must settle before its task can move to a different pro
   }).pipe(Effect.scoped),
 );
 
-it.effect.each(["ordinary", "command"] as const)(
-  "a page move wins over a %s admission that still has the old project",
+it.effect.each(["ordinary", "command", "command round-trip"] as const)(
+  "a page move wins over a %s admission that still has the old definition",
   (kind) =>
     Effect.gen(function* () {
       const database = yield* tempDatabase;
@@ -2435,7 +2435,9 @@ it.effect.each(["ordinary", "command"] as const)(
         yield* sql`
         INSERT INTO projection_projects
           (project_id, title, workspace_root, scripts_json, created_at, updated_at)
-        VALUES (${destination}, 'Destination', '/projects/moved', '[]', ${CANONICAL}, ${CANONICAL})
+        VALUES
+          (${projectId}, 'Source', '/projects/source', '[]', ${CANONICAL}, ${CANONICAL}),
+          (${destination}, 'Destination', '/projects/moved', '[]', ${CANONICAL}, ${CANONICAL})
       `;
         const input = {
           title: "Checked command",
@@ -2444,7 +2446,7 @@ it.effect.each(["ordinary", "command"] as const)(
           enabled: true,
           projectId,
           threadId: null,
-          workspaceStrategy: { type: "root" },
+          workspaceStrategy: { type: "root", branch: "old-branch" },
           modelSelection: selection,
           runtimeMode: "full-access",
           interactionMode: "default",
@@ -2481,8 +2483,22 @@ it.effect.each(["ordinary", "command"] as const)(
           Effect.forkScoped,
         );
         yield* Deferred.await(checkedSnapshot);
-        const moved = yield* service.upsert({ ...input, id: task.id, projectId: destination });
+        let moved = yield* service.upsert({
+          ...input,
+          id: task.id,
+          projectId: destination,
+          workspaceStrategy: { type: "root" },
+        });
         assert.equal(moved.task.projectId, destination);
+        if (kind === "command round-trip") {
+          moved = yield* service.upsert({
+            ...input,
+            id: task.id,
+            workspaceStrategy: { type: "root" },
+          });
+          assert.equal(moved.task.projectId, projectId);
+          assert.deepEqual(moved.task.workspaceStrategy, { type: "root" });
+        }
         yield* Deferred.succeed(continueAdmission, undefined);
         const result = yield* Fiber.join(starting);
         assert.equal(result._tag, "Failure");

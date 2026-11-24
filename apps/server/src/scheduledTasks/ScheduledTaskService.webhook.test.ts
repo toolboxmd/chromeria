@@ -5,6 +5,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import {
+  ProjectId,
   type ManagedPolicyDocument,
   ScheduledTaskUpsertInput,
   ScheduledTaskWebhookDeliveryId,
@@ -31,6 +32,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import { ScheduledTaskDispatchPolicy } from "../scheduledTaskChecks/DispatchPolicy.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
 import { renderWebhookPrompt } from "./webhookTemplate.ts";
 
@@ -165,6 +167,7 @@ const withService = <A, E>(
     readonly secretsByRef: Map<string, string>;
   }) => Effect.Effect<A, E, never>,
   options: {
+    readonly beforeAdmission?: Effect.Effect<void>;
     readonly onFrame?: () => void;
     readonly frameGate?: {
       readonly started: Deferred.Deferred<void>;
@@ -257,6 +260,11 @@ const withService = <A, E>(
         Effect.succeed({ relayHookBaseUrl: options.relayHookBaseUrl ?? null }),
       ),
       ManagedPolicy.layerTest(options.policy),
+      Layer.succeed(ScheduledTaskDispatchPolicy, {
+        assertRunIdle: () => Effect.void,
+        decide: () =>
+          (options.beforeAdmission ?? Effect.void).pipe(Effect.as({ _tag: "upstream" as const })),
+      }),
     );
     return yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
@@ -279,6 +287,72 @@ const withService = <A, E>(
         : Layer.succeed(SqlClient.SqlClient, options.sql),
     ),
   );
+
+it.effect.each(["immediate", "coalesced"] as const)(
+  "dispatches an accepted %s webhook in the destination if a move wins admission",
+  (kind) =>
+    Effect.gen(function* () {
+      const admission = yield* Deferred.make<void>();
+      const moved = yield* Deferred.make<void>();
+      const workers = new Map<string, Effect.Effect<void>>();
+      const destination = ProjectId.make("webhook-destination");
+      yield* withService(
+        ({ service, launches, sql }) =>
+          Effect.gen(function* () {
+            yield* sql`
+              INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+              VALUES (${destination}, 'Destination', '/projects/webhook-destination', '[]', '2026-10-08T00:00:00.000Z', '2026-10-08T00:00:00.000Z')
+            `;
+            const input = yield* webhookTaskInput({
+              schedule:
+                kind === "immediate"
+                  ? { type: "webhook" }
+                  : {
+                      type: "webhook",
+                      dedupe: { coalesceKey: "{{body}}", coalesceWindowSeconds: 10 },
+                    },
+            });
+            const { task } = yield* service.upsert(input);
+            const request = service.triggerWebhook(requestFor(task));
+            const delivery = yield* (
+              kind === "immediate"
+                ? waitForSpan(request, "ScheduledTaskService.runWebhookDelivery")
+                : request.pipe(
+                    Effect.tap((result) =>
+                      Effect.sync(() => assert.equal(result._tag, "accepted")),
+                    ),
+                    Effect.andThen(TestClock.adjust("11 seconds")),
+                    Effect.andThen(drainPendingDispatch(workers)),
+                  )
+            ).pipe(Effect.forkScoped);
+
+            yield* Deferred.await(admission);
+            const saved = yield* service.upsert({ ...input, projectId: destination });
+            assert.equal(saved.task.projectId, destination);
+            yield* Deferred.succeed(moved, undefined);
+            yield* Fiber.join(delivery);
+
+            const queued = yield* Queue.clear(launches);
+            assert.deepEqual(
+              queued.map((launch) => launch.projectId),
+              [destination],
+            );
+            assert.equal((yield* service.list()).tasks[0]?.runCount, 1);
+            const history = yield* service.listWebhookDeliveries({ id: task.id });
+            assert.deepEqual(
+              history.deliveries.map((entry) => entry.outcome),
+              ["accepted"],
+            );
+          }).pipe(Effect.scoped),
+        {
+          workers,
+          beforeAdmission: Deferred.succeed(admission, undefined).pipe(
+            Effect.andThen(Deferred.await(moved)),
+          ),
+        },
+      );
+    }),
+);
 
 it.effect("dispatches exactly the rendered prompt and logs the delivery", () =>
   withService(({ service, launches }) =>

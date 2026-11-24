@@ -172,6 +172,11 @@ class WebhookDeliverySkipped extends Schema.TaggedError<WebhookDeliverySkipped>(
   { reason: Schema.String },
 ) {}
 
+class WebhookAdmissionChanged extends Schema.TaggedError<WebhookAdmissionChanged>()(
+  "WebhookAdmissionChanged",
+  {},
+) {}
+
 interface RateWindow {
   readonly accepted: ReadonlyArray<{ readonly at: number }>;
   readonly rejectedLogged: boolean;
@@ -942,12 +947,12 @@ export const layer = Layer.effect(
           Effect.flatMap((rows) =>
             rows.length > 0
               ? sql`UPDATE scheduled_task_request_incarnations SET active_request_id=NULL WHERE task_id=${task.id}`.pipe(
-                  Effect.asVoid,
+                  Effect.as(true),
                   Effect.mapError((cause) =>
                     taskError("Could not bind schedule run.", { taskId: task.id, cause }),
                   ),
                 )
-              : taskError("The schedule changed before the run could start.", { taskId: task.id }),
+              : Effect.succeed(false),
           ),
         ),
       );
@@ -1515,7 +1520,19 @@ export const layer = Layer.effect(
                     : null;
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
-        yield* validateBinding(active);
+        const binding = yield* Effect.result(validateBinding(active));
+        if (binding._tag === "Failure") {
+          if (webhook !== undefined) {
+            const current = yield* findTask(active.id);
+            if (
+              current?.createdAt !== active.createdAt ||
+              current.updatedAt !== active.updatedAt ||
+              current.projectId !== active.projectId
+            )
+              return yield* new WebhookAdmissionChanged();
+          }
+          return yield* binding.failure;
+        }
         if (trigger === "manual") {
           const scope = yield* Effect.serviceOption(Invocation.McpInvocationContext);
           if (Option.isSome(scope) && scope.value.authority !== undefined) {
@@ -1548,14 +1565,16 @@ export const layer = Layer.effect(
         // A fork decision has already recorded its work. Only ordinary work still needs
         // the row-version check here, before anything commits to dispatching it.
         const mark = markRunning(active, startedAtIso, decision._tag, webhook?.deliveryId);
-        yield* (
+        const admitted = yield* (
           webhook === undefined
             ? mark
             : sql
                 .withTransaction(
                   mark.pipe(
-                    Effect.andThen(
-                      sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`,
+                    Effect.tap((started) =>
+                      started
+                        ? sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`
+                        : Effect.void,
                     ),
                   ),
                 )
@@ -1565,13 +1584,17 @@ export const layer = Layer.effect(
                   ),
                 )
         ).pipe(
-          Effect.tap(() =>
+          Effect.tap((started) =>
             Effect.sync(() => {
-              markedRunning = true;
+              markedRunning = started;
             }),
           ),
           Effect.uninterruptible,
         );
+        if (!admitted)
+          return yield* webhook === undefined
+            ? taskError("The schedule changed before the run could start.", { taskId: task.id })
+            : new WebhookAdmissionChanged();
 
         yield* notifyChanged;
 
@@ -1677,6 +1700,7 @@ export const layer = Layer.effect(
         // The stored row can belong to a replacement, so report this dispatch separately.
         return { task: recorded, threadId, dispatchFailed: !runSucceeded };
       }).pipe(
+        Effect.retry({ while: (error) => error._tag === "WebhookAdmissionChanged" }),
         Effect.onError((cause) =>
           markedRunning
             ? releaseStuckRun(task, startedAtIso, errorMessage(cause), webhook?.deliveryId)
@@ -2222,6 +2246,12 @@ export const layer = Layer.effect(
                 isSameSchedule(existingTask.schedule, schedule);
               if (!scheduleUnchanged)
                 yield* requireFutureOnce({ enabled: input.enabled, schedule }, now, id);
+              // Two saves in one clock tick must still invalidate a snapshot taken before a move.
+              const updatedAt =
+                existingTask !== null &&
+                Date.parse(existingTask.updatedAt) >= DateTime.toEpochMillis(now)
+                  ? iso(DateTime.makeUnsafe(Date.parse(existingTask.updatedAt) + 1))
+                  : iso(now);
               const task: ScheduledTask = {
                 ...(bare === undefined ? {} : { bare }),
                 id,
@@ -2242,7 +2272,7 @@ export const layer = Layer.effect(
                 // Origin belongs to creation, not editable forms or later caller metadata.
                 ...(linkOrigin === undefined ? {} : { linkOrigin }),
                 createdAt: existingTask?.createdAt ?? iso(now),
-                updatedAt: iso(now),
+                updatedAt,
                 nextRunAt: scheduleUnchanged
                   ? existingTask.nextRunAt
                   : nextRunAt({ enabled: input.enabled, schedule }, now),
@@ -2660,7 +2690,10 @@ export const layer = Layer.effect(
                 : null;
             yield* sql`INSERT INTO scheduled_manual_requests VALUES (${request.id},${request.generation},${request.inputDigest},${input.id},${incarnation.incarnation},${encodedSnapshot},${iso(startedAt)},${stage},${reference},NULL)`;
             if (decision._tag !== "skip") {
-              yield* markRunning(current, iso(startedAt), decision._tag);
+              if (!(yield* markRunning(current, iso(startedAt), decision._tag)))
+                return yield* taskError("The schedule changed before the run could start.", {
+                  taskId: current.id,
+                });
               yield* sql`UPDATE scheduled_task_request_incarnations SET active_request_id=${request.id} WHERE task_id=${input.id}`;
             }
             return { row: (yield* readManual(request))[0]!, decision };
