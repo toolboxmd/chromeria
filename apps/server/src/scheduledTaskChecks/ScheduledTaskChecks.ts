@@ -537,6 +537,17 @@ const policyLayer = Layer.effect(
   Effect.gen(function* () {
     const { runs, sql } = yield* Engine;
     return {
+      assertMoveAllowed: Effect.fn("ScheduledTaskDispatchPolicy.assertMoveAllowed")(function* (id) {
+        const state = yield* readCheckState(id).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(toTaskError(id)),
+        );
+        if (state !== null && unfinishedRun(state) !== undefined)
+          return yield* new ScheduledTaskError({
+            message: "Let the unfinished scheduled run finish before moving the task.",
+            taskId: id,
+          });
+      }),
       decide: Effect.fn("ScheduledTaskDispatchPolicy.decide")((input) =>
         runs.decide(input).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       ),

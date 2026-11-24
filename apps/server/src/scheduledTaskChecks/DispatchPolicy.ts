@@ -1,4 +1,4 @@
-import type { ScheduledTask } from "@t3tools/contracts";
+import type { ScheduledTask, ScheduledTaskError, ScheduledTaskId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
 import type * as DateTime from "effect/DateTime";
@@ -29,6 +29,7 @@ export class ScheduledTaskDispatchFailed extends Schema.TaggedError<ScheduledTas
 ) {}
 
 export interface ScheduledTaskDispatchPolicyShape {
+  readonly assertMoveAllowed: (id: ScheduledTaskId) => Effect.Effect<void, ScheduledTaskError>;
   readonly decide: (input: {
     readonly task: ScheduledTask;
     readonly trigger: "scheduled" | "manual" | "webhook";
@@ -41,7 +42,12 @@ const upstreamDecision: ScheduledTaskDispatchDecision = { _tag: "upstream" };
 
 export class ScheduledTaskDispatchPolicy extends Context.Reference<ScheduledTaskDispatchPolicyShape>(
   "t3/scheduledTaskChecks/ScheduledTaskDispatchPolicy",
-  { defaultValue: () => ({ decide: () => Effect.succeed(upstreamDecision) }) },
+  {
+    defaultValue: () => ({
+      assertMoveAllowed: () => Effect.void,
+      decide: () => Effect.succeed(upstreamDecision),
+    }),
+  },
 ) {}
 
 /**

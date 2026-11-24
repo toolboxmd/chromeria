@@ -822,22 +822,23 @@ const MAX_ARGUMENT_NAME_CHARS = 64;
  * fields before decoding can discard them and let the scheduler confirm a partial edit.
  */
 const advertisedArgumentsOnly = (tool: Tool.Any) => {
+  const name: string = tool.name;
   const { properties } = advertisedJsonSchema(tool);
   const accepted = new Set(Predicate.isObject(properties) ? Object.keys(properties) : []);
   const acceptedText = [...accepted].join(", ") || "none";
   const decodeScheduleEdit =
-    tool.name === "schedule_task" || tool.name === "update_scheduled_task"
-      ? Schema.decodeUnknownResult(Schema.toCodecJson(tool.parametersSchema), {
-          onExcessProperty: "error",
-          reportInput: false,
-        })
+    name === "schedule_task" || name === "update_scheduled_task"
+      ? Schema.decodeUnknownResult(
+          Schema.toCodecJson(OrchestratorToolkit.tools[name].parametersSchema),
+          { onExcessProperty: "error", reportInput: false },
+        )
       : undefined;
   return Schema.Record(Schema.String, Schema.Unknown).check(
     Schema.makeFilter((input) => {
       const unknown = Object.keys(input).filter((key) => !accepted.has(key));
       if (unknown.length === 0) {
         const decoded =
-          tool.name === "update_scheduled_task" || input.scheduledTaskId != null
+          name === "update_scheduled_task" || input.scheduledTaskId != null
             ? decodeScheduleEdit?.(input)
             : undefined;
         return decoded?._tag === "Failure" ? decoded.failure.issue : undefined;

@@ -134,6 +134,7 @@ const withDispatchBarrier = (barrier: DispatchBarrier) =>
     Effect.gen(function* () {
       const policy = yield* ScheduledTaskDispatchPolicy;
       const held: ScheduledTaskDispatchPolicyShape = {
+        ...policy,
         decide: (input) =>
           policy.decide(input).pipe(
             Effect.map((decision) =>
@@ -2327,6 +2328,52 @@ it.effect(
         assert.equal(edited.threadMode, "fresh_session");
       }).pipe(Effect.provide(runtime(database)), Effect.scoped);
     }).pipe(Effect.scoped),
+);
+
+it.effect("a checked run must settle before its task can move to a different project", () =>
+  Effect.gen(function* () {
+    const database = yield* tempDatabase;
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const sql = yield* SqlClient.SqlClient;
+      const destination = ProjectId.make("project:after-run");
+      yield* sql`
+        INSERT INTO projection_projects
+          (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES (${destination}, 'Destination', '/projects/after-run', '[]', ${CANONICAL}, ${CANONICAL})
+      `;
+      const input = {
+        title: "Checked schedule",
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
+        prompt: "Review",
+        enabled: false,
+        projectId,
+        threadId: null,
+        workspaceStrategy: { type: "root" },
+        modelSelection: selection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        schedule: { type: "interval", everyMs: 3_600_000 },
+      } as const;
+      const { task } = yield* service.upsert(input);
+      const run = sentRun("run:before-move", "message:before-move");
+      const active = yield* writeCheckState(null, checkState(task.id, [run]));
+      const move = { ...input, id: task.id, projectId: destination };
+      const refused = yield* Effect.flip(service.upsert(move));
+      assert.include(refused.message, "Let the unfinished scheduled run finish before moving");
+      assert.equal((yield* service.list()).tasks[0]?.projectId, projectId);
+      assert.deepEqual(yield* readCheckState(task.id), active);
+
+      const settled = yield* writeCheckState(active, {
+        ...active,
+        runs: [{ ...run, stage: "done" }],
+      });
+      const moved = yield* service.upsert(move);
+      assert.equal(moved.task.projectId, destination);
+      assert.equal(moved.task.id, task.id);
+      assert.deepEqual(yield* readCheckState(task.id), settled);
+    }).pipe(Effect.provide(runtime(database)), Effect.scoped);
+  }).pipe(Effect.scoped),
 );
 
 it.effect("the live list shows a save and a delete as soon as each returns", () =>

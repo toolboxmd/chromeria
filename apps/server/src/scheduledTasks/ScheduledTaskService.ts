@@ -2011,6 +2011,7 @@ export const layer = Layer.effect(
               yield* localFence;
               const existingTask = yield* findTask(id);
               if (existingTask !== null && existingTask.projectId !== input.projectId) {
+                yield* dispatchPolicy.assertMoveAllowed(id);
                 const destination = yield* sql`
                   SELECT 1 FROM projection_projects
                   WHERE project_id = ${input.projectId} AND deleted_at IS NULL
