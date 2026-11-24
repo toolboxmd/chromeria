@@ -6,6 +6,7 @@ import {
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2Run,
   MessageId,
+  ProjectId,
   RunId,
   ScheduledTaskUpsertInput,
 } from "@t3tools/contracts";
@@ -228,7 +229,7 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
     }>({ runs: [activeRun], messages: [] });
     const runDueWork = yield* Ref.make<Effect.Effect<void>>(Effect.void);
     const sql = yield* SqlClient.SqlClient;
-    const outcomeDuringLookup = yield* Ref.make(false);
+    const duringLookup = yield* Ref.make<Effect.Effect<void>>(Effect.void);
     const layerDependencies = Layer.mergeAll(
       NodeCrypto.layer,
       ManagedPolicy.layerTest(),
@@ -277,14 +278,8 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
           }),
         getThreadRecords: (_id, fields) =>
           Effect.gen(function* () {
-            if (
-              fields.some((field) => field === "messages") &&
-              (yield* Ref.get(outcomeDuringLookup))
-            ) {
-              yield* Ref.set(outcomeDuringLookup, false);
-              yield* sql`UPDATE scheduled_tasks SET last_run_status = 'failed',
-                last_run_error = 'Provider failed' WHERE task_id = 'scheduled-task:busy-thread'`;
-            }
+            if (fields.some((field) => field === "messages"))
+              yield* Effect.flatten(Ref.getAndSet(duringLookup, Effect.void));
             return (yield* Ref.get(thread)) as never;
           }).pipe(Effect.orDie),
         getThreadShell: () =>
@@ -356,7 +351,14 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
       // The prior run can finish while the poll is looking up its held occurrence.
       yield* sql`UPDATE scheduled_tasks SET last_run_status = 'succeeded', last_run_error = NULL
         WHERE task_id = ${task.id}`;
-      yield* Ref.set(outcomeDuringLookup, true);
+      yield* Ref.set(
+        duringLookup,
+        sql`UPDATE scheduled_tasks SET last_run_status = 'failed',
+          last_run_error = 'Provider failed' WHERE task_id = ${task.id}`.pipe(
+          Effect.asVoid,
+          Effect.orDie,
+        ),
+      );
       yield* TestClock.adjust("61 seconds");
       yield* Effect.flatten(Ref.get(runDueWork));
       const [raced] = (yield* service.list()).tasks;
@@ -405,6 +407,38 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
       yield* TestClock.adjust("61 seconds");
       yield* Effect.flatten(Ref.get(runDueWork));
       expect(yield* queuedOccurrencesOf(once.id)).toBe(2);
+
+      // A held occurrence belongs to the old thread and cannot consume the moved task's slot.
+      const beforeMove = (yield* service.list()).tasks.find((entry) => entry.id === task.id)!;
+      const destination = ProjectId.make("project-after-queue");
+      yield* sql`
+        INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+        VALUES (${destination}, 'Destination', '/projects/after-queue', '[]', ${task.createdAt}, ${task.createdAt})
+      `;
+      yield* Ref.update(thread, (current) => ({
+        ...current,
+        runs: current.runs.map((run) =>
+          run.status === "queued" ? { ...run, queueHeld: true } : run,
+        ),
+      }));
+      yield* Ref.set(
+        duringLookup,
+        service
+          .upsert({
+            ...beforeMove,
+            projectId: destination,
+            threadId: null,
+            unbindThread: true,
+            requireExisting: true,
+          })
+          .pipe(Effect.asVoid, Effect.orDie),
+      );
+      yield* TestClock.adjust("61 seconds");
+      yield* Effect.flatten(Ref.get(runDueWork));
+      const moved = (yield* service.list()).tasks.find((entry) => entry.id === task.id)!;
+      expect(moved.projectId).toBe(destination);
+      expect(moved.nextRunAt).toBe(beforeMove.nextRunAt);
+      expect(moved.lastRunError).toBe(beforeMove.lastRunError);
     }).pipe(
       Effect.provide(
         ScheduledTaskService.layer.pipe(

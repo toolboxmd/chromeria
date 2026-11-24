@@ -127,6 +127,7 @@ const checkResult = (code: number) => ({
 interface DispatchBarrier {
   readonly admitted: Deferred.Deferred<void>;
   readonly proceed: Deferred.Deferred<void>;
+  readonly beforeMark?: boolean;
 }
 
 /** Upstream's service with the fork's policy, its admitted dispatches held at a barrier. */
@@ -134,21 +135,22 @@ const withDispatchBarrier = (barrier: DispatchBarrier) =>
   Layer.unwrap(
     Effect.gen(function* () {
       const policy = yield* ScheduledTaskDispatchPolicy;
+      const hold = Deferred.succeed(barrier.admitted, undefined).pipe(
+        Effect.andThen(Deferred.await(barrier.proceed)),
+      );
       const held: ScheduledTaskDispatchPolicyShape = {
         ...policy,
         decide: (input) =>
           policy.decide(input).pipe(
-            Effect.map((decision) =>
-              decision._tag === "fork"
-                ? {
-                    _tag: "fork" as const,
-                    dispatch: Deferred.succeed(barrier.admitted, undefined).pipe(
-                      Effect.andThen(Deferred.await(barrier.proceed)),
-                      Effect.andThen(decision.dispatch),
-                    ),
-                  }
-                : decision,
-            ),
+            Effect.flatMap((decision) => {
+              if (decision._tag !== "fork") return Effect.succeed(decision);
+              return barrier.beforeMark
+                ? hold.pipe(Effect.as(decision))
+                : Effect.succeed({
+                    ...decision,
+                    dispatch: hold.pipe(Effect.andThen(decision.dispatch)),
+                  });
+            }),
           ),
       };
       return ScheduledTaskService.layer.pipe(
@@ -2444,6 +2446,37 @@ it.effect.each(["ordinary", "command"] as const)(
         assert.deepEqual((yield* service.list()).tasks, [moved.task]);
       }).pipe(Effect.provide(runtime(database)), Effect.scoped);
     }).pipe(Effect.scoped),
+);
+
+it.effect("an admitted checked run still dispatches after a same-project edit", () =>
+  Effect.gen(function* () {
+    const database = yield* tempDatabase;
+    const barrier = {
+      admitted: yield* Deferred.make<void>(),
+      proceed: yield* Deferred.make<void>(),
+      beforeMark: true,
+    };
+    const id = ScheduledTaskId.make("scheduled-task:edit-after-admission");
+    yield* Effect.gen(function* () {
+      yield* createThread;
+      yield* insertTask({ id, schedule: { type: "interval", everyMs: 3_600_000 }, next: null });
+      yield* writeCheckState(null, checkState(id));
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const starting = yield* service.runNow({ id }).pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(barrier.admitted);
+      const [task] = (yield* service.list()).tasks;
+      yield* TestClock.adjust(1);
+      yield* service.upsert({
+        ...task!,
+        title: "Edited after admission",
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
+        requireExisting: true,
+      });
+      yield* Deferred.succeed(barrier.proceed, undefined);
+      assert.equal((yield* Fiber.join(starting))._tag, "Success");
+      assert.lengthOf(yield* messagesOf, 1);
+    }).pipe(Effect.provide(runtime(database, { dispatchBarrier: barrier })), Effect.scoped);
+  }).pipe(Effect.scoped),
 );
 
 it.effect("the live list shows a save and a delete as soon as each returns", () =>

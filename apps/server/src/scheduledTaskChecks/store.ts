@@ -115,19 +115,22 @@ export const consumeSlot = Effect.fn("ScheduledTaskChecks.consumeSlot")(function
     UPDATE scheduled_tasks
     SET next_run_at = ${next}, updated_at = ${DateTime.formatIso(DateTime.toUtc(now))}
     WHERE task_id = ${task.id}
+      AND project_id = ${task.projectId}
       AND created_at = ${task.createdAt}
+      AND updated_at = ${task.updatedAt}
       AND next_run_at IS ${task.nextRunAt}
   `;
 });
 
 /** Whether upstream's row still matches the snapshot a fire read, so it is not acted on stale. */
 export const isCurrentTask = Effect.fn("ScheduledTaskChecks.isCurrentTask")(function* (
-  task: Pick<ScheduledTask, "id" | "createdAt" | "updatedAt">,
+  task: Pick<ScheduledTask, "id" | "projectId" | "createdAt" | "updatedAt">,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ readonly task_id: string }>`
     SELECT task_id FROM scheduled_tasks
-    WHERE task_id = ${task.id} AND created_at = ${task.createdAt} AND updated_at = ${task.updatedAt}
+    WHERE task_id = ${task.id} AND project_id = ${task.projectId}
+      AND created_at = ${task.createdAt} AND updated_at = ${task.updatedAt}
   `;
   return rows.length === 1;
 });

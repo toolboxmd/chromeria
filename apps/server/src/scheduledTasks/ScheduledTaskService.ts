@@ -919,6 +919,7 @@ export const layer = Layer.effect(
     const markRunning = (
       task: Pick<ScheduledTask, "id" | "projectId" | "createdAt" | "updatedAt">,
       startedAtIso: string,
+      admission: "upstream" | "fork",
       webhookDeliveryId?: string,
     ) =>
       sql.withTransaction(
@@ -932,7 +933,7 @@ export const layer = Layer.effect(
         WHERE task_id = ${task.id}
           AND project_id = ${task.projectId}
           AND created_at = ${task.createdAt}
-          AND updated_at = ${task.updatedAt}
+          AND (${admission === "fork" ? 1 : 0} = 1 OR updated_at = ${task.updatedAt})
         RETURNING task_id
       `.pipe(
           Effect.mapError((cause) =>
@@ -1544,7 +1545,9 @@ export const layer = Layer.effect(
           .pipe(Effect.mapError((error) => taskError(error.message, { taskId: active.id })));
         if (decision._tag === "skip") return { task: active, threadId: null };
 
-        const mark = markRunning(active, startedAtIso, webhook?.deliveryId);
+        // A fork decision has already recorded its work. Only ordinary work still needs
+        // the row-version check here, before anything commits to dispatching it.
+        const mark = markRunning(active, startedAtIso, decision._tag, webhook?.deliveryId);
         yield* (
           webhook === undefined
             ? mark
@@ -1735,6 +1738,9 @@ export const layer = Layer.effect(
                     THEN ${runError} ELSE last_run_error END`
             }
         WHERE task_id = ${task.id}
+          AND project_id = ${task.projectId}
+          AND created_at = ${task.createdAt}
+          AND updated_at = ${task.updatedAt}
           AND next_run_at IS ${task.nextRunAt}
           AND last_run_at IS ${task.lastRunAt}
         RETURNING task_id
@@ -2650,7 +2656,7 @@ export const layer = Layer.effect(
                 : null;
             yield* sql`INSERT INTO scheduled_manual_requests VALUES (${request.id},${request.generation},${request.inputDigest},${input.id},${incarnation.incarnation},${encodedSnapshot},${iso(startedAt)},${stage},${reference},NULL)`;
             if (decision._tag !== "skip") {
-              yield* markRunning(current, iso(startedAt));
+              yield* markRunning(current, iso(startedAt), decision._tag);
               yield* sql`UPDATE scheduled_task_request_incarnations SET active_request_id=${request.id} WHERE task_id=${input.id}`;
             }
             return { row: (yield* readManual(request))[0]!, decision };
