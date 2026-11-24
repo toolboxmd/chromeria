@@ -279,14 +279,23 @@ describe("promachosConversationGroups", () => {
   const now = "2026-10-01T12:00:00.000Z";
   const conversation = (
     id: string,
-    state: { snoozedUntil?: string; settledOverride?: "settled"; environmentId?: string } = {},
+    state: {
+      snoozedUntil?: string;
+      settledOverride?: "settled";
+      settledAt?: string;
+      environmentId?: string;
+    } = {},
   ) => ({
-    id,
+    id: ThreadId.make(id),
     environmentId: EnvironmentId.make(state.environmentId ?? "env-a"),
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     snoozedUntil: state.snoozedUntil ?? null,
     settledOverride: state.settledOverride ?? null,
+    settledAt: state.settledAt ?? null,
+    latestUserMessageAt: null,
+    latestRun: null,
+    updatedAt: "2026-10-01T08:00:00.000Z",
   });
 
   it("takes snoozed and settled conversations out of the list until they wake or their server is unknown", () => {
@@ -295,7 +304,14 @@ describe("promachosConversationGroups", () => {
       conversation("open"),
       conversation("snoozed", { snoozedUntil: later }),
       conversation("woken", { snoozedUntil: "2026-10-01T11:00:00.000Z" }),
-      conversation("settled", { settledOverride: "settled" }),
+      conversation("settled-first", {
+        settledOverride: "settled",
+        settledAt: "2026-10-01T09:00:00.000Z",
+      }),
+      conversation("settled-last", {
+        settledOverride: "settled",
+        settledAt: "2026-10-01T10:00:00.000Z",
+      }),
       conversation("both", { snoozedUntil: later, settledOverride: "settled" }),
       conversation("unknown-server", { settledOverride: "settled", environmentId: "env-b" }),
     ];
@@ -306,7 +322,8 @@ describe("promachosConversationGroups", () => {
     const ids = (group: ReadonlyArray<{ readonly id: string }>) => group.map((row) => row.id);
     expect(ids(groups.active)).toEqual(["open", "woken", "unknown-server"]);
     expect(ids(groups.snoozed)).toEqual(["snoozed", "both"]);
-    expect(ids(groups.settled)).toEqual(["settled"]);
+    // Newest settle first, the order older settled conversations page in.
+    expect(ids(groups.settled)).toEqual(["settled-last", "settled-first"]);
   });
 });
 

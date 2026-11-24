@@ -11,6 +11,7 @@ import {
   type ProjectGroupingSettings,
 } from "../state/projectGrouping.ts";
 import { effectiveSnoozed, type ThreadSnoozeShell } from "../state/threadSettled.ts";
+import { sortSettledThreads, type SettledThreadTimestampInput } from "../state/threadSort.ts";
 
 type HomeProject = Pick<
   EnvironmentProject,
@@ -138,7 +139,9 @@ export function promachosConversations<
  * environment whose server has not answered yet; its conversations stay listed.
  */
 export function promachosConversationGroups<
-  T extends ThreadSnoozeShell & Pick<EnvironmentThreadShell, "environmentId" | "settledOverride">,
+  T extends ThreadSnoozeShell &
+    SettledThreadTimestampInput &
+    Pick<EnvironmentThreadShell, "id" | "environmentId" | "settledOverride">,
 >(
   conversations: ReadonlyArray<T>,
   options: {
@@ -156,7 +159,8 @@ export function promachosConversationGroups<
         : groups.active
     ).push(conversation);
   }
-  return groups;
+  // Settled rows run newest settle first, the order the server pages older ones in.
+  return { ...groups, settled: sortSettledThreads(groups.settled) };
 }
 
 /** The home's projects per environment: the scope its older settled conversations page in. */
