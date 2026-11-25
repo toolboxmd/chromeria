@@ -24,6 +24,15 @@ import {
   startOpeningEnvironmentThread,
   threadEnvironment,
 } from "../../../state/threads";
+import { agentNotificationLaunchRouted } from "../../agent-awareness/notificationNavigation";
+import { promachosConversationMembershipAtom } from "../../promachos/promachosLaunch";
+import { rootNavigationPending } from "../../../lib/rootNavigation";
+import {
+  navigationCustomizationAvailable,
+  resolveHiddenNavigationTabs,
+  type NavigationTab,
+} from "./navigation-tab-order";
+import { resolveWorkspaceLaunch } from "./workspace-launch";
 import {
   rememberedSettingsPage,
   workspaceSelectionsIn,
@@ -143,16 +152,41 @@ export function settingsLinkPage() {
   return REMEMBERS && workspaceHasColumns() ? rememberedSettingsPage(selections) : undefined;
 }
 
+let launchTab: NavigationTab | undefined;
+
+/** Fork: the tab a cold start without a link opens on, once `launchWorkspaceURL` has run. */
+export function launchWorkspaceTab() {
+  return launchTab;
+}
+
+function threadURL(thread: { readonly environmentId: string; readonly threadId: string }) {
+  // createURL runs encodeURI over its path, which would encode each segment a second time.
+  return `${Linking.createURL("/")}threads/${encodeURIComponent(thread.environmentId)}/${encodeURIComponent(thread.threadId)}`;
+}
+
 /**
- * Where a cold start without a link opens. A window that starts with columns reopens the last
- * chat beside the list instead of an empty detail column; a compact window opens on the list.
+ * Where a cold start without a link opens: the tab used last (toolboxmd/chromeria#898). A window
+ * that starts with columns reopens the last chat beside the list instead of an empty detail
+ * column; a compact window opens on the list. The Promachos tab reopens its last conversation.
  * It waits for the first layout metrics as long as the workspace itself does.
  */
 export async function launchWorkspaceURL(): Promise<string | null> {
-  if (!REMEMBERS) return null;
-  const metrics = firstNativeLayoutMetrics(NATIVE_METRICS_TIMEOUT_MS);
-  await hydrateWorkspaceSelections();
-  const thread = selections.threads;
+  const metrics = REMEMBERS ? firstNativeLayoutMetrics(NATIVE_METRICS_TIMEOUT_MS) : null;
+  const hydrated = hydrateWorkspaceSelections();
+  // A notification or quick action that launched the app queues its page until navigation is ready.
+  await agentNotificationLaunchRouted();
+  const preferences = await loadPreferences().catch(() => null);
+  const launch = resolveWorkspaceLaunch({
+    launchIntent: rootNavigationPending(),
+    lastTab: preferences?.lastWorkspaceTab,
+    hiddenTabs: navigationCustomizationAvailable()
+      ? resolveHiddenNavigationTabs(preferences?.hiddenNavigationTabs)
+      : [],
+    promachosConversation: preferences?.promachosConversation,
+  });
+  launchTab = launch.tab;
+  await hydrated;
+  const thread = launch.promachosConversation ?? (REMEMBERS ? selections.threads : undefined);
   // Read the chat's cached copy while the layout metrics are still on their way.
   if (thread) {
     startOpeningEnvironmentThread(
@@ -161,9 +195,19 @@ export async function launchWorkspaceURL(): Promise<string | null> {
     );
   }
   await metrics;
-  if (!thread || !workspaceHasColumns() || !workspaceSelectionCheck.thread(thread)) return null;
-  // createURL runs encodeURI over its path, which would encode each segment a second time.
-  return `${Linking.createURL("/")}threads/${encodeURIComponent(thread.environmentId)}/${encodeURIComponent(thread.threadId)}`;
+  if (!thread || !workspaceSelectionCheck.thread(thread)) return null;
+  if (launch.promachosConversation) {
+    // Unknown reopens it; the chat forgets it if the home turns out to have moved.
+    if (appAtomRegistry.get(promachosConversationMembershipAtom(thread)) !== "out") {
+      return threadURL(thread);
+    }
+    void savePreferencesPatch({ promachosConversation: undefined }).catch(() => undefined);
+    return null;
+  }
+  // Other tabs open on their list; Chats reopens its chat only beside the list.
+  if (launch.tab !== undefined && launch.tab !== "threads") return null;
+  if (!workspaceHasColumns()) return null;
+  return threadURL(thread);
 }
 
 /** Whether the workspace shows its first detail page, directly above its list. */

@@ -2,6 +2,7 @@ import {
   navigationCustomizationAvailable,
   overflowNavigationTabs,
 } from "../layout/workspace/navigation-tab-order";
+import { usePromachosHomeLabel } from "../promachos/promachosHome";
 import {
   NAVIGATION_TAB_ICONS,
   WORKSPACE_TAB_LABELS,
@@ -251,6 +252,7 @@ function useSettingsIndexSections(): SettingsListSection[] {
     label: string,
     extra?: Pick<SettingsListRow, "disabled" | "value">,
   ): SettingsListRow => ({ id: target, icon, label, target, ...extra });
+  const promachosHomeLabel = usePromachosHomeLabel() ?? gt("Not set");
   const serverPage = (target: SettingsPageTarget, icon: SettingsListRow["icon"], label: string) =>
     page(target, icon, label, { disabled: noServerTargets });
   // The same pages and groups as Settings on web, minus what mobile has no setting for.
@@ -274,6 +276,10 @@ function useSettingsIndexSections(): SettingsListSection[] {
         serverPage("SettingsThreads", "text.bubble", gt("Threads")),
         page("SettingsScheduledTasks", "clock", gt("Scheduled tasks")),
       ],
+    },
+    {
+      title: gt("Promachos"),
+      rows: [page("SettingsPromachos", "house", gt("Home"), { value: promachosHomeLabel })],
     },
     {
       title: gt("Code"),
