@@ -50,6 +50,7 @@ import type { TimestampFormat } from "@t3tools/contracts/settings";
 import { GuestMessageName } from "./guestMessageStyle";
 import { TimelineRowTimestamp } from "./TimelineRowParts";
 import { FoldedMessageHeader, useScheduledTaskTitle } from "./TimelineUserMessageRow";
+import { useChildRequestNotice } from "./useChildRequestNotice";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 
 export interface EditQueuedRunRequest {
@@ -483,8 +484,10 @@ function QueuedMessage(props: {
   const attribution = presentation?.attribution ?? null;
   const scheduledTaskId = presentation?.scheduledTaskId;
   const senderThreadId = props.message?.senderThreadId;
+  const childNotice = useChildRequestNotice(props.environmentId, presentation?.childRequest);
   // A linked environment's agent sent it from a thread there.
   const senderRef =
+    childNotice?.childRef ??
     props.message?.linkedSender ??
     (senderThreadId === undefined ? null : scopeThreadRef(props.environmentId, senderThreadId));
   const [expanded, setExpanded] = useState(false);
@@ -511,7 +514,14 @@ function QueuedMessage(props: {
             fitLabel: !senderTitle,
             summary: props.previewText.split(/\r?\n/).find((line) => line.trim()) ?? "",
           }
-        : null;
+        : childNotice !== null
+          ? {
+              icon: childNotice.icon,
+              label: childNotice.title ?? gt("Child thread"),
+              fitLabel: childNotice.title === null,
+              summary: childNotice.summary,
+            }
+          : null;
   const bodyVisible = fold === null || expanded;
 
   return (
@@ -592,7 +602,7 @@ function QueuedMessage(props: {
       <div className="flex items-center gap-0.5 pe-1 text-xs text-muted-foreground">
         {props.message ? (
           <span className="me-1 flex items-center gap-2 px-1 opacity-0 transition-opacity duration-200 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover/queued:opacity-100">
-            {attribution === "agent" &&
+            {(attribution === "agent" || childNotice !== null) &&
             senderRef &&
             // Only an environment this client is connected to can open the sender's thread there.
             (props.message?.linkedSender === undefined || linkedSenderEnvironment !== null) ? (
@@ -608,7 +618,7 @@ function QueuedMessage(props: {
                 tone="muted"
                 render={
                   <Link
-                    to="/settings/scheduled-tasks"
+                    to="/scheduled-tasks"
                     search={{ environmentId: props.environmentId, taskId: scheduledTaskId }}
                   />
                 }

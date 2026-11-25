@@ -187,6 +187,12 @@ export const make = Effect.gen(function* () {
         ...outputSchema,
         clientRequestId: requestId,
       });
+      // Fork: a send can be a notice to an ancestor there, which has no turn of its own yet.
+      if (sent.runId === null) {
+        return yield* new WorkflowAgentError({
+          reason: `Thread ${sent.threadId} in ${environment} queued the message without a turn.`,
+        });
+      }
       return { threadId: sent.threadId, turnId: sent.runId, environment };
     }
     if (input.project === undefined) {
