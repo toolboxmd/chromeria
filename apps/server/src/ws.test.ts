@@ -18,6 +18,8 @@ import {
   AuthSessionId,
   AuthSourceControlWriteScope,
   AuthTerminalOperateScope,
+  CommandId,
+  ORCHESTRATION_V2_WS_METHODS,
   ORCHESTRATION_PROTOCOL_VERSION,
   ORCHESTRATION_PROTOCOL_QUERY_PARAM,
   EnvironmentId,
@@ -88,6 +90,7 @@ import * as AntigravityInstallation from "./provider/AntigravityInstallation.ts"
 import * as ProviderInstallation from "./provider/providerInstallation.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
+import * as CheckpointStore from "./checkpointing/CheckpointStore.ts";
 import * as NativeChildWorkQuery from "./orchestration-v2/NativeChildWorkQuery.ts";
 import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as ThreadViewers from "./orchestration-v2/ThreadViewers.ts";
@@ -155,6 +158,14 @@ import * as StorageCleanup from "./storageCleanup.ts";
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
+import * as BareLaunch from "./orchestration-v2/BareLaunch.ts";
+import * as CommandReceiptStore from "./orchestration-v2/CommandReceiptStore.ts";
+import * as ProviderReplayHarness from "./orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as ProviderAdapterRegistry from "./orchestration-v2/ProviderAdapterRegistry.ts";
+import { CodexProviderCapabilitiesV2 } from "./orchestration-v2/Adapters/CodexAdapterV2.ts";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderRegistryMock from "./provider/testUtils/providerRegistryMock.ts";
+import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as UsageService from "./usage/UsageService.ts";
@@ -3013,6 +3024,139 @@ const layerWorkflowRpcTest = Layer.mergeAll(
   Layer.fresh(layerConfigSources),
   Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
   Layer.mock(ServerBrowser.ServerBrowser)({}),
+);
+
+it.effect("launch RPC persists explicit purpose and keeps legacy launches unscoped", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const database = Layer.succeed(SqlClient.SqlClient, sql);
+    const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "default" };
+    const replay = ProviderReplayHarness.layerWithRegistry(
+      { name: "ws-launch-purpose" },
+      ProviderAdapterRegistry.layerFromAdapters([
+        {
+          instanceId: modelSelection.instanceId,
+          driver: ProviderDriverKind.make("codex"),
+          getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+          planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
+          openSession: () => Effect.die("Launch admission fixture cannot open a provider session"),
+        } satisfies ProviderAdapter.ProviderAdapterV2["Service"],
+      ]),
+      { databaseLayer: database, runEffectWorker: false },
+    );
+    const projectId = ProjectId.make("project:ws-launch-purpose");
+    const launchServices = Layer.mergeAll(
+      replay,
+      IdAllocator.layer,
+      CommandReceiptStore.layer.pipe(Layer.provide(database)),
+      WorktreeSetupTracker.layer,
+      Layer.mock(BareLaunch.BareLaunch)({}),
+      Layer.mock(CheckpointStore.CheckpointStore)({
+        isGitRepository: () => Effect.succeed(false),
+      }),
+      Layer.mock(GitWorkflowService.GitWorkflowService)({
+        currentBranch: () => Effect.succeed(null),
+      }),
+      Layer.mock(TextGeneration.TextGeneration)({}),
+      ProviderRegistryMock.layer(),
+      Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/unused",
+        folderForThread: () => Effect.succeedNone,
+      }),
+      Layer.mock(ProjectService.ProjectService)({
+        getById: () =>
+          Effect.succeedSome({
+            id: projectId,
+            title: "Purpose fixture",
+            workspaceRoot: "/workspace",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: "2026-11-25T00:00:00.000Z",
+            updatedAt: "2026-11-25T00:00:00.000Z",
+            deletedAt: null,
+          }),
+      }),
+    );
+    const services = Layer.mergeAll(
+      layerUnusedConfigRpcServices,
+      launchServices,
+      ThreadLaunchService.layer.pipe(
+        Layer.provide(Layer.mergeAll(layerUnusedConfigRpcServices, launchServices)),
+      ),
+      Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+      Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+      Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+      Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+      Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+      Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+      Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+      Layer.mock(ServerRuntimeStartup.ServerRuntimeStartup)({ enqueueCommand: (effect) => effect }),
+      Layer.mock(SessionStore.SessionStore)({
+        cookieName: "launch-purpose-test",
+        legacyCookieName: undefined,
+        getPerson: () => Effect.succeed(null),
+      }),
+      Layer.mock(AnalyticsService.AnalyticsService)({ record: () => Effect.succeed(false) }),
+    );
+    const scopes = [AuthOrchestrationOperateScope];
+    const rpc = layerWsRpc(
+      {
+        sessionId: AuthSessionId.make("launch-purpose-test"),
+        subject: "launch-purpose-test",
+        method: "browser-session-cookie",
+        scopes,
+      },
+      {},
+      yield* ServerBrowser.ServerBrowser,
+      () => Effect.void,
+      { secretReferences: true },
+    ).pipe(Layer.provideMerge(services), Layer.merge(RpcAuthorization.layer(scopes)));
+    yield* Effect.gen(function* () {
+      const client = yield* RpcTest.makeClient(WsRpcGroup);
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const reference = {
+        host: "github.com",
+        repository: "example/repo",
+        kind: "issue",
+        number: 377,
+      } as const;
+      for (const withPurpose of [false, true]) {
+        const threadId = ThreadId.make(`thread:launch-purpose:${withPurpose}`);
+        yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+          commandId: CommandId.make(`command:launch-purpose:${withPurpose}`),
+          threadId,
+          projectId,
+          title: "Purpose fixture",
+          modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          workspaceStrategy: { type: "root" },
+          initialMessage: { text: "First prompt", attachments: [] },
+          ...(withPurpose
+            ? { purposeIntent: { version: 1, intent: { type: "reference", reference } } }
+            : {}),
+        });
+        const projection = yield* projections.getThreadProjection(threadId);
+        assert.deepEqual(
+          projection.runs.map((run) => run.purpose),
+          [
+            withPurpose
+              ? {
+                  version: 1,
+                  scope: { type: "single", reference },
+                  provenance: { type: "declared" },
+                }
+              : {
+                  version: 1,
+                  scope: { type: "unscoped", reason: "legacy_no_intent" },
+                  provenance: { type: "legacy" },
+                },
+          ],
+        );
+      }
+    }).pipe(Effect.provide(rpc));
+  }).pipe(Effect.provide(layerWorkflowRpcTest)),
 );
 
 /** A client for the ACP Registry RPCs; `calls` records what reached the agent or the catalog. */

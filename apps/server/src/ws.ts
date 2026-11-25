@@ -2351,6 +2351,9 @@ export const layerWsRpc = (
                     .pipe(
                       Effect.andThen(
                         launchThreadAsSessionPerson({
+                          ...(input.purposeIntent === undefined
+                            ? {}
+                            : { purposeIntent: input.purposeIntent }),
                           ...(input.prismRole === undefined ? {} : { prismRole: input.prismRole }),
                           commandId: input.commandId,
                           ...(input.threadId === undefined ? {} : { threadId: input.threadId }),

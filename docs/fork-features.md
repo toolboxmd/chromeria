@@ -3271,7 +3271,8 @@ sources and reasons.
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/388",
     "https://github.com/toolboxmd/chromeria/pull/581",
-    "https://github.com/toolboxmd/chromeria/pull/637"
+    "https://github.com/toolboxmd/chromeria/pull/637",
+    "https://github.com/toolboxmd/chromeria/pull/973"
   ],
   "newFiles": [
     "apps/mobile/src/features/threads/ExecutionPurposePicker.tsx",
@@ -3288,6 +3289,7 @@ sources and reasons.
   "upstreamFiles": [
     "apps/mobile/src/features/threads/useStartSideChat.ts",
     "apps/web/src/components/chat/useMultipleModelSend.ts",
+    "apps/web/src/components/chat/useSideChat.ts",
     "apps/mobile/src/state/threadOutboxDelivery.ts",
     "apps/mobile/src/features/threads/McpAppWebView.tsx",
     "apps/mobile/src/features/threads/NewTaskDraftScreen.tsx",
@@ -3304,6 +3306,8 @@ sources and reasons.
   "sharedFiles": [
     "apps/web/src/components/chat/useComposerSend.ts",
     "apps/web/src/components/chat/useThreadLifecycle.tsx",
+    "apps/mobile/src/lib/projectThreadStartTurn.ts",
+    "apps/mobile/src/state/threadOutboxDelivery.permissions.test.ts",
     "apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts",
     "apps/server/src/mcp/toolkits/pullRequests/handlers.ts",
     "apps/server/src/pullRequest/PullRequestWatchService.test.ts",
@@ -3362,6 +3366,7 @@ sources and reasons.
     "apps/server/src/scheduledTasks/ScheduledTaskService.webhook.test.ts",
     "apps/server/src/scheduling/Scheduler.integration.test.ts",
     "apps/server/src/ws.ts",
+    "apps/server/src/ws.test.ts",
     "apps/web/src/components/ChatView.tsx",
     "apps/web/src/components/pullRequest/ThreadPullRequestsPanel.tsx",
     "apps/web/src/components/settings/ScheduledTasksSettings.tsx",

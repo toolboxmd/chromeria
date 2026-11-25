@@ -19,6 +19,7 @@ import { readThreadShell, waitForThreadShell } from "../../state/entities";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
+import { useStartTurnWithPurpose } from "./useStartTurnWithPurpose";
 
 export type SideChatMessage = Pick<
   StartThreadTurnInput["message"],
@@ -45,9 +46,7 @@ export function useSideChat(input: {
   const setThreadRuntimeMode = useOrchestrationCommand(threadEnvironment.setRuntimeMode, {
     reportFailure: false,
   });
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = useStartTurnWithPurpose();
   const reportFailure = (
     failure: Extract<AtomCommandResult<unknown, unknown>, { readonly _tag: "Failure" }>,
     fallback: string,
