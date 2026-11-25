@@ -266,11 +266,12 @@ it.effect("an idle Steer starts a message but Restart still requires active work
 );
 
 it.effect(
-  "explicit PR deliveries preserve outcome identity after linking, replay and unlinking",
+  "explicit PR deliveries preserve outcome identity after linking and replay; unlinking drops only that PR's",
   () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const sink = yield* EventSink.EventSinkV2;
       const threadId = ThreadId.make("thread:purpose-delivery");
       yield* createThread(threadId);
       yield* orchestrator.dispatch(
@@ -295,42 +296,116 @@ it.effect(
         (yield* projections.getThreadProjection(threadId)).thread.purposeDeliveries,
         "navigation alone does not declare delivery or ownership",
       );
-      for (const [id, purpose] of [
-        ["deliver-a", referenceA],
-        ["deliver-a-again", referenceA],
-        ["deliver-b", referenceB],
+      const otherNumber = {
+        ...link,
+        number: 202,
+        url: "https://github.com/delivery/repo/pull/202",
+      };
+      const otherRepository = {
+        ...link,
+        repository: "delivery/other",
+        url: "https://github.com/delivery/other/pull/101",
+      };
+      for (const [id, command, purpose] of [
+        ["deliver-a", link, referenceA],
+        ["deliver-a-again", link, referenceA],
+        ["deliver-b", link, referenceB],
+        ["deliver-other-number", otherNumber, referenceA],
+        ["deliver-other-repository", otherRepository, referenceB],
       ] as const) {
         yield* orchestrator.dispatch({
-          ...link,
+          ...command,
           commandId: CommandId.make(id),
           purposeDelivery: { version: 1 as const, purpose },
         });
       }
-      yield* orchestrator.dispatch({
-        type: "thread.pull-request.unlink",
-        commandId: CommandId.make("unlink-delivery-navigation"),
-        threadId,
-        host: link.host,
-        repository: link.repository,
-        number: link.number,
-      });
-      const after = yield* projections.getThreadProjection(threadId);
       const declaredAt = DateTime.formatIso(yield* DateTime.now);
-      const expected = [referenceA, referenceB].map((purpose) => ({
+      const delivery = (
+        pullRequest: { repository: string; number: number },
+        purpose: typeof referenceA | typeof referenceB,
+      ) => ({
         version: 1 as const,
         purpose,
-        pullRequest: {
-          host: "github.com",
-          repository: "delivery/repo",
-          kind: "pr" as const,
-          number: 101,
-        },
+        pullRequest: { host: "github.com", kind: "pr" as const, ...pullRequest },
         declaredAt,
-      }));
-      assert.deepEqual(after.thread.purposeDeliveries, expected);
+      });
+      const kept = [
+        delivery({ repository: "delivery/repo", number: 202 }, referenceA),
+        delivery({ repository: "delivery/other", number: 101 }, referenceB),
+      ];
+      assert.deepEqual(
+        (yield* projections.getThreadProjection(threadId)).thread.purposeDeliveries,
+        [
+          delivery({ repository: "delivery/repo", number: 101 }, referenceA),
+          delivery({ repository: "delivery/repo", number: 101 }, referenceB),
+          ...kept,
+        ],
+      );
+      const unlink = (commandId: string, key: { repository: string; number: number }) =>
+        orchestrator.dispatch({
+          type: "thread.pull-request.unlink",
+          commandId: CommandId.make(commandId),
+          threadId,
+          host: "GitHub.com",
+          repository: key.repository.toUpperCase(),
+          number: key.number,
+        });
+      yield* unlink("unlink-delivery-navigation", { repository: "delivery/repo", number: 101 });
+      const after = yield* projections.getThreadProjection(threadId);
+      assert.deepEqual(after.thread.purposeDeliveries, kept);
       assert.deepEqual(after.runs, before.runs);
       assert.deepEqual(after.thread.purposeSelection, before.thread.purposeSelection);
-      assert.deepEqual(after.thread.pullRequests, []);
+      assert.deepEqual(
+        after.thread.pullRequests?.map((entry) => [entry.repository, entry.number]),
+        [
+          ["delivery/repo", 202],
+          ["delivery/other", 101],
+        ],
+      );
+
+      // A declaration recorded before unlink removed it can outlive its navigation link.
+      const now = yield* DateTime.now;
+      yield* sink.write({
+        commandId: CommandId.make("fixture:stale-delivery"),
+        events: [
+          {
+            id: EventId.make("event:stale-delivery"),
+            type: "thread.metadata-updated",
+            threadId,
+            providerInstanceId: after.thread.providerInstanceId,
+            occurredAt: now,
+            payload: {
+              ...after.thread,
+              purposeDeliveries: [
+                ...kept,
+                delivery({ repository: "delivery/repo", number: 101 }, referenceA),
+              ],
+              updatedAt: now,
+            },
+          },
+        ],
+      });
+      yield* unlink("unlink-stale-delivery", { repository: "delivery/repo", number: 101 });
+      assert.deepEqual(
+        (yield* projections.getThreadProjection(threadId)).thread.purposeDeliveries,
+        kept,
+      );
+
+      yield* orchestrator.dispatch({
+        ...link,
+        commandId: CommandId.make("deliver-stack-layer"),
+        number: 303,
+        url: "https://github.com/delivery/repo/pull/303",
+        source: "stack",
+        purposeDelivery: { version: 1 as const, purpose: referenceA },
+      });
+      yield* unlink("unlink-stack-layer", { repository: "delivery/repo", number: 303 });
+      const dismissed = yield* projections.getThreadProjection(threadId);
+      assert.deepEqual(dismissed.thread.purposeDeliveries, kept);
+      assert.equal(
+        dismissed.thread.pullRequests?.find((entry) => entry.number === 303)?.source,
+        "stack-dismissed",
+      );
     }).pipe(Effect.provide(layerTest)),
 );
 

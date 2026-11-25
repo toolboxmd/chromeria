@@ -71,8 +71,8 @@ purpose admitted when it was sent.
 A parent's continuation of its original delegated work keeps that launch's
 purpose. Your own follow-up in the child uses the child's stored purpose while
 the original parent still receives the result. When linking a PR, an agent can
-declare the outcome it delivers. Linking or unlinking a PR never reassigns
-runs. Legacy callers and saved schedules without a purpose
+declare the outcome it delivers; unlinking the PR withdraws that declaration.
+Linking or unlinking a PR never reassigns runs. Legacy callers and saved schedules without a purpose
 are recorded as unscoped; choose a purpose before editing a legacy schedule.
 
 ## Choose what a thread does while idle

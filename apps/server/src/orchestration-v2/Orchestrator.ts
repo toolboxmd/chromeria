@@ -6208,7 +6208,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               link,
             ];
           } else if (command.type === "thread.pull-request.unlink") {
-            if (!existing || existing.source === "stack-dismissed") return thread;
+            // Unlinking corrects a mistaken link, so it also withdraws this PR's declarations,
+            // including ones that outlived their navigation link.
+            if (
+              purposeDeliveries?.some((entry) => threadPullRequestKeysEqual(entry.pullRequest, key))
+            )
+              purposeDeliveries = purposeDeliveries.filter(
+                (entry) => !threadPullRequestKeysEqual(entry.pullRequest, key),
+              );
+            if (!existing || existing.source === "stack-dismissed")
+              return purposeDeliveries === thread.purposeDeliveries
+                ? thread
+                : { ...thread, purposeDeliveries, updatedAt: now };
             const belongsToStack =
               existing.source === "stack" ||
               existing.stack !== null ||
