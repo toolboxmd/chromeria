@@ -1,6 +1,7 @@
 import { errorDisplayMessage, thrownErrorMessage } from "@t3tools/client-runtime/errors";
 import { m as resolveMessage } from "~/i18n/messages";
 import { managedCapabilityDenial } from "@t3tools/client-runtime/contract-labels";
+import { PeerGrantSettings } from "./PeerGrantSettings";
 import { SessionPermissions } from "./SessionPermissions";
 import { useSearch } from "@tanstack/react-router";
 import { ChevronRightIcon, EllipsisIcon } from "lucide-react";
@@ -16,6 +17,7 @@ import {
   allowsPreviewTunnel,
   isManagedSettingPath,
   type AuthClientSession,
+  COOKIE_MIRROR_CHILD_SUBJECT_PREFIX,
   type AuthPairingLink,
   type AuthPairingCredentialResult,
   type AdvertisedEndpoint,
@@ -486,9 +488,11 @@ function ConnectionsSettingsContent({
     const event = authAccessChanges.data;
     if (event?.type !== "snapshot") return [];
     return sortDesktopClientSessions(
-      event.payload.clientSessions.map((clientSession: AuthClientSession) =>
-        toDesktopClientSessionRecord(clientSession),
-      ),
+      event.payload.clientSessions
+        .filter(
+          (clientSession) => !clientSession.subject.startsWith(COOKIE_MIRROR_CHILD_SUBJECT_PREFIX),
+        )
+        .map((clientSession: AuthClientSession) => toDesktopClientSessionRecord(clientSession)),
     );
   })();
   const isLocalBackendNetworkAccessible = desktopBridge
@@ -1178,6 +1182,7 @@ function ConnectionsSettingsContent({
     clientSessions: typeof desktopClientSessions,
   ) => (
     <PairingClientsList
+      environmentId={accessEnvironmentId!}
       servedByEnvironment={isPrimaryAccess}
       endpointUrl={desktopServerExposureState?.endpointUrl}
       endpoints={visibleDesktopAdvertisedEndpoints}
@@ -1497,6 +1502,9 @@ function ConnectionsSettingsContent({
                 )}
               </ScrollArea>
             </FoldedSettingsSection>
+          ) : null}
+          {canReadAccess && accessServerConfig?.environment.capabilities.peerAuthority === 1 ? (
+            <PeerGrantSettings environmentId={accessEnvironmentId} />
           ) : null}
           {canReadAccess &&
           connectDevices !== null &&
