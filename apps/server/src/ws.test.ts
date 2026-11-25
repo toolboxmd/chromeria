@@ -3038,8 +3038,9 @@ it.effect("launch RPC persists explicit purpose and keeps legacy launches unscop
           instanceId: modelSelection.instanceId,
           driver: ProviderDriverKind.make("codex"),
           getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+          planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
           openSession: () => Effect.die("Launch admission fixture cannot open a provider session"),
-        } as ProviderAdapter.ProviderAdapterV2["Service"],
+        } satisfies ProviderAdapter.ProviderAdapterV2["Service"],
       ]),
       { databaseLayer: database, runEffectWorker: false },
     );
@@ -3096,7 +3097,7 @@ it.effect("launch RPC persists explicit purpose and keeps legacy launches unscop
         legacyCookieName: undefined,
         getPerson: () => Effect.succeed(null),
       }),
-      Layer.mock(AnalyticsService.AnalyticsService)({ record: () => Effect.void }),
+      Layer.mock(AnalyticsService.AnalyticsService)({ record: () => Effect.succeed(false) }),
     );
     const scopes = [AuthOrchestrationOperateScope];
     const rpc = layerWsRpc(
