@@ -2,16 +2,17 @@ import { NATIVE_WORKSPACE_COLUMNS_SUPPORTED } from "../native/NativeWorkspaceCol
 import Constants from "expo-constants";
 import { useGT } from "gt-react-native";
 import { useState } from "react";
-import { Platform, View } from "react-native";
+import { Image, Platform, View } from "react-native";
 
 import { AppText as Text } from "./ui/AppText";
-import { T3Wordmark } from "./T3Wordmark";
 import { IPAD_HOME_TITLE_OFFSET } from "../lib/layoutMetrics";
 import { resolveMobileStageLabel } from "../lib/mobileBranding";
 import { useAndroidControlSizing } from "./ui/useAndroidControlSizing";
 
 const BRAND_MAX_FONT_SCALE = 1.4;
-const WORDMARK_SUFFIX = "Code";
+// Fork: the Chromeria mark and name in place of T3's wordmark (toolboxmd/chromeria#898).
+const BRAND_NAME = "Chromeria";
+const BRAND_MARK = require("../../../../assets/chromeria/chromeria-web-icon-192x192.png");
 
 export function brandTitleOffset(): number {
   if (Platform.OS !== "ios") return 0;
@@ -42,7 +43,9 @@ export function CompactBrandTitle(
         props.fit && showStage ? (event) => setFullWidth(event.nativeEvent.layout.width) : undefined
       }
       aria-level={1}
-      accessibilityLabel={props.accessibilityLabel ?? gt("T3 Code, Threads")}
+      accessibilityLabel={
+        props.accessibilityLabel ?? gt("{product}, Threads", { product: BRAND_NAME })
+      }
       accessible
       role="heading"
       className="flex-row items-center gap-1.5"
@@ -52,15 +55,19 @@ export function CompactBrandTitle(
         props.fit && { flexShrink: 0 },
       ]}
     >
-      <T3Wordmark colorClassName="accent-icon" height={Math.round(15 * scale)} />
+      <Image
+        source={BRAND_MARK}
+        accessibilityIgnoresInvertColors
+        style={{ width: Math.round(22 * scale), height: Math.round(22 * scale), borderRadius: 5 }}
+      />
       {/* A logo beside a fixed-size wordmark: it may grow with Dynamic Type, not crowd the bar. */}
       <Text
         allowFontScaling={props.allowFontScaling}
         maxFontSizeMultiplier={BRAND_MAX_FONT_SCALE}
-        className="font-t3-medium text-foreground-muted"
+        className="font-t3-medium text-foreground"
         style={{ fontSize: 21 * scale, letterSpacing: -0.5 * scale }}
       >
-        {WORDMARK_SUFFIX}
+        {BRAND_NAME}
       </Text>
       {showStage ? (
         <View
