@@ -80,6 +80,13 @@ export const GIT_INDEX_LOCKED_DETAIL =
 
 export const CHECKPOINT_CAPTURE_OPERATION = "GitVcsDriver.checkpoints.captureCheckpoint";
 
+// Chromeria: a rewind restores a worktree just (re)created, whose background index swap briefly
+// holds index.lock; Git fails rather than waits, and a command that could not lock changed nothing.
+const RETRIED_GIT_OPERATIONS = new Set([
+  CHECKPOINT_CAPTURE_OPERATION,
+  "GitVcsDriver.checkpoints.restoreCheckpoint",
+]);
+
 // Caller operations are diagnostic strings; only known labels may become metric attributes.
 const gitMetricOperations = new Set([
   CHECKPOINT_CAPTURE_OPERATION,
@@ -404,7 +411,7 @@ export const make = Effect.gen(function* () {
     const bounded = vcsProcesses.withPermits(1)(runUnbounded(input));
     if (
       input.command === "git" &&
-      input.operation === CHECKPOINT_CAPTURE_OPERATION &&
+      RETRIED_GIT_OPERATIONS.has(input.operation) &&
       input.onStdoutChunk === undefined
     ) {
       return yield* bounded.pipe(
