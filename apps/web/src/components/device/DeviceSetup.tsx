@@ -97,7 +97,7 @@ export function platformSetupStatus(
   resolve: MessageResolver = m,
 ) {
   const hasDevices = state.devices.some((device) => device.platform === platform);
-  if (platform === "android" && !hasDevices && isAndroidDiscoveryUncertain(state)) {
+  if (platform === "android" && isAndroidDiscoveryUncertain(state)) {
     return {
       ready: false,
       message: resolve(
@@ -432,7 +432,7 @@ export function AgentDeviceSetupStatus(props: {
   return null;
 }
 
-function PlatformStatus(props: {
+export function PlatformStatus(props: {
   readonly platform: string;
   readonly status: { readonly ready: boolean; readonly message: string };
   readonly compact?: boolean;

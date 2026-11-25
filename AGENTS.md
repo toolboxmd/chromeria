@@ -45,6 +45,18 @@ Of note: Most T3 Code contributions will come from T3 Code itself, often control
 - **you** = the agent reading this file. **we / us / maintainers** = Theo, Julius, and the people building T3 Code. **user** = person driving coding agents in T3 Code. **agent** = coding agent running inside T3 Code.
 - Domain terms (environment, project, thread, turn, provider, checkpoint, etc.): [00_glossary.md](docs/internals/00_glossary.md).
 
+## Connected projects
+
+Chromeria is one system with AgentsMD, Agent Observer and ContextMD. Root [`GLOSSARY.md`](GLOSSARY.md) is the system glossary: it defines every term two or more of them use, and its names win over the T3 terms above in fork prose and new names; T3 code identifiers keep their names. Before naming a concept, check it there and in the connected project's glossary; reuse the existing term or add the new one to `GLOSSARY.md`, never a conflicting synonym.
+
+| Project        | Repository                 | Glossary                                                                           |
+| -------------- | -------------------------- | ---------------------------------------------------------------------------------- |
+| AgentsMD       | `toolboxmd/agentsmd`       | [`GLOSSARY.md`](https://github.com/toolboxmd/agentsmd/blob/main/GLOSSARY.md)       |
+| Agent Observer | `toolboxmd/agent-observer` | [`GLOSSARY.md`](https://github.com/toolboxmd/agent-observer/blob/main/GLOSSARY.md) |
+| ContextMD      | `toolboxmd/contextmd`      | [`GLOSSARY.md`](https://github.com/toolboxmd/contextmd/blob/main/GLOSSARY.md)      |
+
+Model Router (`toolboxmd/model-router`) is retired; Prism absorbed it.
+
 ## The three ways to hurt yourself
 
 1. **Killing by pattern.** Never `pkill -f`, `pgrep | kill`, or `kill` a PID you found by matching a name, path, or worktree string. Your own agent process has this worktree's path in its argv, and this machine runs several other dev servers at once. Kill only a PID you captured at spawn, or the owner of your port from `ss -H -ltnp` after confirming `/proc/<pid>/cwd` is your worktree.
@@ -65,36 +77,98 @@ The most common defect in this repo is a change that works on the path you teste
 - **Languages.** Translate user-facing copy in `apps/{web,mobile}/src/i18n/translations` (`vp run i18n:generate` / `vp run i18n:check`) and `apps/marketing/src/i18n`. See [14_i18n.md](docs/internals/14_i18n.md).
 - **Docs.** Check whether the change makes existing guidance inaccurate. Follow [Documentation](#documentation).
 
-## Dev servers and test data
+## Dev servers
 
-See [00_development.md](docs/operations/00_development.md) for setup, ports, seeding (`vp run migrate-dev-db`), and [reusable dev auth](docs/operations/00_development.md#reusable-dev-credential). Agent-specific rules:
+- In a worktree or agent shell where `vp` is not on PATH, run it as `pnpm exec vp`.
 
-- **Worktree setup:** Wait while `.t3/setup-running` names a live PID; do not run `vp i` concurrently. If no `.t3/setup-*` marker exists, run `vp i` yourself.
-- **Process lifecycle:** Start dev servers, Metro, and builds from your own shell so they exit with your session—never detach with `systemd-run`, `nohup`, `setsid`, or `tmux` unless asked. Stop background tasks with your harness's own stop (`vp` does not forward SIGTERM to child Vite/server processes).
-- **Sharing (`vp run dev --share`):** Wait for `pairingUrl:` and hand the full URL to the user. Never wire `tailscale serve` by hand, open the URL yourself, or consume the user's one-time pairing link. Mint another with `node apps/server/src/bin.ts pair` if needed.
-- **Test data:** Always copy in (never symlink) and refresh `statev2.sqlite`, not `state.sqlite`. Bring `secrets` / `settings.json` only if the flow under test needs them.
-- **Extra checkouts:** Put `git worktree add` next to this worktree, not in `/tmp`, and remove it when done.
+- `vp i` installs. Worktrees get this from the t3.json setup script; if module resolution looks broken, it probably did not run.
+- Setup runs in the background. While `.t3/setup-running` names a live PID, wait for it and do not run `vp i`. It ends with `.t3/setup-done` or `.t3/setup-failed` (with the error tail). With no marker at all, setup never ran here, so run `vp i` yourself.
+- `vp run dev` starts server and web. In a worktree, state defaults to that worktree's gitignored `.t3`, which deliberately outranks an ambient `T3CODE_HOME` so you cannot land on shared state by accident. An explicit `--home-dir` still wins. A plain `git clone` is not a worktree: it shares `~/.t3/dev` with the main checkout and is not seeded. To isolate one, run `vp run migrate-dev-db --base-dir <clone>/.t3`, then `vp run dev --home-dir <clone>/.t3`.
+- Ports derive from the worktree path and are stable across restarts, but read the real ones from the `[dev-runner]` line since occupied ports shift.
+- Sharing over the tailnet is three steps: run `vp run dev --share` in the background, wait for the `pairingUrl:` line in its output, then give that full URL to an unpaired browser. Do not wire up `tailscale serve` by hand, open the URL yourself, or consume the user's pairing link. A browser with the reusable dev cookie can use the bare origin. If a normal one-time token was consumed, mint a fresh one with `node apps/server/src/bin.ts pair`. It carries standard scopes, while the startup URL carries admin scopes needed for Connections settings.
+- To reuse web dev auth across worktrees, configure one fixed `T3CODE_DEV_AUTH_TOKEN` in the main checkout's gitignored `.env`. The `t3.json` setup links that file into worktrees. Never commit or publish the token or a startup URL. See [Reusable dev credential](docs/internals/04_environment-auth.md#reusable-dev-credential).
+- Stop what you started, by the PID you tracked. See rule 1. `vp` does not pass SIGTERM on, so signalling the `vp run dev` PID alone leaves Vite and the server running. Stop the background task with your harness's own stop, which ends the whole tree.
+- Run dev servers, Metro, and builds from your own shell so they end with your session. Do not detach them with `systemd-run`, `nohup`, `setsid`, or `tmux` unless the user asks for one that outlives the session. Detached servers ran for weeks and filled RAM and swap. The dev runner stops itself above `--memory-limit-gb` (half of RAM, at most 16 GiB) on Linux.
+- Need a second checkout? `git worktree add` it next to this worktree, not in `/tmp`. Remove it when done.
+
+## Test data
+
+An empty database is a bad test. Seed your worktree's `.t3` with a copy of real data instead of pointing at live state:
+
+- The first `vp run dev` in a worktree does this for you when its database is missing and the source is at most 500 MiB. Larger sources warn and dev starts with an empty database. `--no-seed` or `T3CODE_DEV_SEED=0` skips seeding. Manual migration still accepts larger sources and may use substantial disk space before pruning.
+- Run `vp run migrate-dev-db` with your dev server stopped to refresh. It rebuilds `<worktree>/.t3/userdata/statev2.sqlite` from a read-only snapshot of `~/.t3/userdata/statev2.sqlite`, the developer's real data. It keeps recent projects and their stopped threads, and drops scheduled tasks, pending work, auth sessions, and links to other environments, so your dev server never runs the developer's agents or reaches their other machines. Raise `--projects` and `--threads-per-project` for more data.
+- Chromeria uses `chromeria-v2.sqlite`, seeded from a read-only sibling `state.sqlite` when missing. The upstream dev migration command above writes `statev2.sqlite`; for the fork import proof, use the read-only snapshot harness documented in `docs/fork.md`, never a server against live state.
+- Bring `secrets` and `settings.json` only if the flow under test needs them.
+- Copy in, never symlink. Data flows one way: into your sandbox, never back out.
 
 ## Verifying
 
-- Before you push, run `vp run check:changed`. **Do not run repo-wide checks** (`vp check`, `vp run -r test`, `vp run -r typecheck`) unless asked—CI owns the full suite.
-- Iterate with `vp test run <files>` (add `-t "<name>"` for large files) and `vp run typecheck` (`effect-tsgo tsrs --noEmit`). Run `node -e` snippets from the owning package (`effect` does not resolve from repo root).
-- Follow [15_testing.md](docs/internals/15_testing.md) for what to test, bug-fix proof, draining async work (no sleeps/polling), web browser tests (`await using screen = await render(...)`), and real-app [Scenarios](docs/internals/15_testing.md#scenarios) (`vp run scenarios:prove`).
-- Give user-visible frontend changes one integrated pass in a real client: `test-t3-app` for web, `test-t3-mobile` for mobile (primary agent only; subagents do not launch dev servers). Inspect the rendered result and walk the flow as a user using the feature—checking layout, visual hierarchy, and ergonomics—and fix anything rough until you are satisfied before handing back. Use the free `Replay (dev)` provider unless the change depends on a real provider (then pick its cheapest model, e.g. Haiku or Luna). On mobile, run `vp run mobile:install <ios|android> [device-id]` before Metro rather than rebuilding from scratch.
+- Before you push, run `vp run check:changed`. It runs CI's fast checks for changed files: format, lint, knip, typecheck of affected packages and dependents, tests beside changes, and the cross-file checks those miss. CI still runs the full test suites.
+- While you iterate, run `vp test run <files>`. For big files, add `-t "<name>"`.
+- Use `vp run typecheck`; it caches per package. Each package runs `effect-tsgo tsrs --noEmit`, the Rust TypeScript 7 checker with Effect's diagnostics built in. There is no `typescript` package to run.
+- Run `node -e` snippets from `apps/server` or the owning package. `effect` does not resolve from the repo root.
+- Test behavior that can break, such as orchestration and event-sourcing, provider protocol translation, auth and permission guards, persistence and migrations, external-format parsing, race fixes, and the logic a bug fix changed. Leave out tests for what types already guarantee, trivial logic, copy text, smoke runs, mock-call mirrors, callback wiring, and props rendered to static markup.
+- Extend before you add. When an existing test or table covers the behavior, add a row or an assertion there. Write a new `it` only when no case fits.
+- Test at one layer: the lowest one that fails on `main`. Do not repeat the case in a wrapper test, at each call site, or in web and mobile copies of the same logic.
+- Write a browser test only for behavior that needs a real browser: layout and scrolling, focus and pointer input, real workers, or a component wired to its hooks. Logic a component calls gets a unit test beside it (`*.logic.test.ts`). A browser test file spends seconds in CI loading its module graph before its first test runs; a unit test takes milliseconds.
+- [Testing](docs/internals/15_testing.md) carries these same test rules, plus review guidance, for review bots. Change both together.
+- **Do not run repo-wide checks.** No `vp check`, no `vp run -r test`, no `vp run -r typecheck` unless I ask. CI owns the full suite.
+- Backend behavior changes ship with focused tests for that behavior.
+- Proof for a bug fix depends on the bug. Logic, data, state, and protocol bugs get a failing test first (the fewest that fail on `main` for that reason, in an existing case of the module's test file where one fits), then the fix. Purely visual bugs (spacing, colour, alignment, a layout shift) get before/after captures as their proof and no test: do not add UI tests for nitpicks, and do not ask for one in review when a capture already shows it. A server-only fix with no visible surface ships the test plus a short runtime transcript. For a bug a user can reproduce in the web client, `vp run scenarios:prove` shows it failing on base and passing on the fix in the real app; see [Scenarios](docs/internals/15_testing.md#scenarios).
+- The server is event-sourced, and side effects run after the command commits. In tests, drain the effect worker (`OrchestrationEffectWorkerV2.drain`) or await the specific persisted event or `Deferred` that marks the milestone. Never wait on sleeps or polling. A test that needs a timeout to pass is wrong. Concretely:
+  - `it.effect` runs on a `TestClock`; `Effect.sleep` only advances through `TestClock.adjust`. `it.live` is wall-clock and only for subprocess or network fixtures.
+  - No `yieldNow` or `sleep` polling loops. Await the `Deferred`, take from the `Queue`, or drain the worker.
+  - No per-test timeout argument or `retry`. The project timeout is the ceiling, and flaky tests are fixed, not retried.
+  - No `performance.now()` or `Date.now()` deltas. Assert on events and counts, not elapsed time.
+  - Browser tests assert through `expect.element` or `vi.waitFor`, never `requestAnimationFrame` or `transitionend`.
+  - `vi.mock` factories must not spread a real module that pulls in Shiki or the diff workers.
+  - `it.skip` and friends need a tracking issue on the line above: `// quarantine: #1234 <why>`.
+  - Lint enforces this: `t3code/no-test-timeout-or-unreasoned-skip`, `t3code/no-frame-waits-in-browser-tests`, `t3code/no-wall-clock-in-tests`, `t3code/no-real-time-wait-in-tests`, `t3code/no-polling-loop-in-tests`.
+- Web browser tests are `*.browser.test.tsx` or `*.browser.test.ts` and render with `await using screen = await render(...)` from `apps/web/test/render.tsx`. `t3code/require-disposable-render` errors on the old patterns.
+  - Acquire what the test drives after mounting (fake timers it advances, spies it sets up after mounting) after the render, so it disposes before the unmount. Anything the first render reads comes before it.
+  - A helper that renders and then waits or clicks puts the screen in an `AsyncDisposableStack` and `move()`s it out only on success, so a failed wait still unmounts.
+  - `rerender` needs a fresh element on every call.
+  - No lifecycle hooks and no module-level mutable state. Shared mock state that `vi.mock` factories read is reset by a `setup()` call at the top of the test.
+  - `router` is on by default. Pass `router: false` only with a one-line comment saying why.
+
+  ```tsx
+  it("saves on Enter", async () => {
+    const onSave = vi.fn();
+    using _now = vi.spyOn(Date, "now").mockReturnValue(0);
+    await using screen = await render(<TitleEditor onSave={onSave} />, { router: "/threads/1" });
+    await userEvent.type(screen.getByRole("textbox"), "Title{Enter}");
+    expect(onSave).toHaveBeenCalledWith("Title");
+  });
+  ```
+
+- User-visible frontend changes should get one integrated pass in a real client: `test-t3-app` for web, `test-t3-mobile` for mobile. The primary agent does this once after integrating: it starts and owns the dev server, then hands the web browser pass to a `computer-use` child (`delegate_task` with `prismRole: "computer-use"`) with the URL and what to check. Subagents do not launch their own dev servers.
+
+- Real agent turns cost money. To watch a turn stream through the pipeline and UI, use the free `Replay (dev)` provider that `vp run dev` registers; [test-t3-app](.agents/skills/test-t3-app/SKILL.md) shows how to start one. Use a real provider only when the change depends on that provider's behavior, and then pick its cheapest model, such as Haiku for Claude or Luna for Codex.
+
+For mobile verification, a missing or outdated native client is an install step, not a blocker. Run `vp run mobile:install <ios|android> [device-id]` on the device host before starting Metro; it targets the only booted simulator or connected Android device when the id is omitted. It installs the dev client for this checkout's native fingerprint from the shared cache in seconds and builds only when no machine has built it yet, so prefer it over `expo run:*`, `xcodebuild`, or `gradlew`, which rebuild from scratch. Its stdout is one JSON line; build output goes to the log it names. See `test-t3-mobile` for the full workflow.
 
 ## Evals
 
-`evals/` checks how real models behave with T3 Code's model-facing text: agent instructions, MCP tool descriptions and schemas, and generated titles. Before changing that text, read [evals/README.md](evals/README.md) and run the evals it names. When fixing a model behavior bug, add a case that fails before the fix.
+`evals/` checks how real models behave with T3 Code's model-facing text: agent instructions, MCP tool descriptions and schemas, and generated titles. Before you change that text, read [evals/README.md](evals/README.md) and run the evals it names. Upstream absorptions and fork feature PRs instead follow the [eval scope in the fork guide](docs/fork.md#proof-and-upstream-overlap): only the affected fork-owned cases, never a full run. When you fix a model behavior bug, add a case that fails before the fix.
+
+## Upstream first
+
+Before fixing a bug or building a feature, search `pingdotgg/t3code` main, open PRs, and Issues, and record what you found in the Issue. Prefer a merged commit over an open PR, read its complete diff, and verify it against the fork's reproduction. A ported fix needs the same proof and independent review as fork code; link its upstream source in the PR.
 
 ## Pull requests
 
-- Never make a PR unless the developer explicitly asks you to do so.
-- `origin` is not always GitHub. Check `git remote get-url origin` before your first forge command and use that forge's CLI and skill. See [Forge mirror](docs/operations/00_development.md#forge-mirror-optional).
+- Open a ready PR to `main` for automatic squash merge. Keep it draft or mark it **DO NOT MERGE** until any required approval for feature deletion, destructive migration or Project Direction changes is granted. Absorption proof PRs stay marked and use the absorption procedure. The workflow requires green checks on the current head and the newest `review/independent` status there to be `success` from `lukemaj`. No agent wake is needed just to merge. If the workflow is unavailable or lacks permission, verify the same gate and squash with `--match-head-commit <head>`. Retire the worktree and branches after merge. A guarded replacement of main outside the daily absorption still needs approval.
+- Standing install authority (developer, 2026-10-14, confirmed 2026-11-14): after a merge to `main`, stage that build on bestia, rocky and cavallo and restart Chromeria to swap it in, the same rollout the daily absorption job runs. It covers merged `main` only, never a branch. A restart cuts every running turn, so before staging read `~/dev/runbook/cavallo/CHROMERIA.md` in full, plus `~/dev/runbook/rocky/CHROMERIA.md` for rocky or `~/dev/runbook/bestia/README.md` for bestia, and follow them: they own the restart tool, the pre-check that must pass first, the post-check, deployment retention and the `CHANGES.md` record.
+- Do not bump versions. Package versions belong to upstream releases; a Chromeria build is identified by its embedded `t3codeCommitHash`.
+- `origin` is not always GitHub. Check `git remote get-url origin` before your first forge command; push and open PRs on GitHub, where CI runs. Without `gh repo set-default toolboxmd/chromeria`, `gh` resolves to `upstream` and files publicly there, so confirm with `gh repo set-default --view`. See [Forge mirror](docs/operations/00_development.md#forge-mirror-optional).
+- Bring a branch up to date with main by rebasing, never merging, and run `bash scripts/fork-check.sh --upstream upstream` before pushing: CI's Fork Stack Model check rejects merge commits and upstream edits not registered per [`docs/fork.md`](docs/fork.md).
 - Conventional commit titles, plain language: `fix(web): new threads no longer spike CPU`.
 - Body: the problem in a sentence or two, then how you fixed it. End with the model and harness that did the work.
-- UI changes need before/after images; motion or timing needs a short video. Upload PR evidence to GitHub—never commit PR-only screenshots or assets.
-- One request is one PR. Split only when asked. Outside contributions follow [CONTRIBUTING.md](CONTRIBUTING.md#one-problem).
-- When babysitting: call `watch_pull_request` and end your turn. Do not poll or sleep. Verify each bot finding against the source, fix real ones, dismiss false positives with a written reason. Stay quiet when nothing is new; stop when bots are green on the latest commit.
+- UI changes need before/after images. Motion or timing needs a short video.
+- Upload PR evidence to GitHub. Never commit PR-only screenshots or assets such as `.github/pr-assets/`.
+- One request is one PR. Split it only when the maintainer asks. Outside contributions follow the stricter [one problem per PR](CONTRIBUTING.md#one-problem) rule.
+- A PR that adds, splits, merges or removes a part of [`docs/map.md`](docs/map.md), or that ships work for a part, updates the map in the same PR. Add a secondary `PR #N` ref only for an open PR that does not close the primary Issue, so failing checks can mark the part broken. The Map tab colours parts from GitHub, so closing an Issue needs no map edit.
+- When babysitting: call `watch_pull_request` and end your turn. T3 Code wakes you on checks, comments, or conflicts. Do not poll or sleep. Verify each bot finding against the source, fix real ones, dismiss false positives with a written reason. Stay quiet when nothing is new. Stop when the bots are green on the latest commit.
 
 ## Documentation
 
