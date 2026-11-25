@@ -132,6 +132,11 @@ const ThreadProject = Schema.Struct({
   projectId: Schema.NonEmptyString,
 });
 const isThreadProject = Schema.is(ThreadProject);
+const PromachosConversation = Schema.Struct({
+  environmentId: Schema.NonEmptyString,
+  threadId: Schema.NonEmptyString,
+});
+const isPromachosConversation = Schema.is(PromachosConversation);
 
 export interface Preferences {
   readonly navigationTabOrder?: readonly string[];
@@ -175,12 +180,17 @@ export interface Preferences {
   readonly workingShelfEnabled?: boolean;
   readonly useLastProjectForNewThreads?: boolean;
   readonly lastThreadProject?: typeof ThreadProject.Type;
+  /** Fork: the conversation the Promachos tab showed last; unset when it showed its list. */
+  readonly promachosConversation?: typeof PromachosConversation.Type;
+  /** Fork: the tab a cold start without a link reopens (toolboxmd/chromeria#898). */
+  readonly lastWorkspaceTab?: string;
   readonly modelFavorites?: ReadonlyArray<{
     readonly provider: ProviderInstanceId;
     readonly model: string;
   }>;
   readonly threadListSettledShelfExpanded?: boolean;
   readonly threadListSnoozedShelfExpanded?: boolean;
+  readonly threadListPromachosShelfExpanded?: boolean;
   readonly threadListWorkingShelfExpanded?: boolean;
   readonly threadListFilters?: ThreadListFilters;
   readonly pullRequestListFilters?: PullRequestListPreferences;
@@ -267,9 +277,12 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     workingShelfEnabled?: boolean;
     useLastProjectForNewThreads?: boolean;
     lastThreadProject?: typeof ThreadProject.Type;
+    promachosConversation?: typeof PromachosConversation.Type;
+    lastWorkspaceTab?: string;
     modelFavorites?: Preferences["modelFavorites"];
     threadListSettledShelfExpanded?: boolean;
     threadListSnoozedShelfExpanded?: boolean;
+    threadListPromachosShelfExpanded?: boolean;
     threadListWorkingShelfExpanded?: boolean;
     threadListFilters?: ThreadListFilters;
     pullRequestListFilters?: PullRequestListPreferences;
@@ -419,6 +432,12 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   if (isThreadProject(parsed.lastThreadProject)) {
     preferences.lastThreadProject = parsed.lastThreadProject;
   }
+  if (isPromachosConversation(parsed.promachosConversation)) {
+    preferences.promachosConversation = parsed.promachosConversation;
+  }
+  if (typeof parsed.lastWorkspaceTab === "string") {
+    preferences.lastWorkspaceTab = parsed.lastWorkspaceTab;
+  }
   if (Array.isArray(parsed.modelFavorites)) {
     preferences.modelFavorites = parsed.modelFavorites.filter(
       (favorite) =>
@@ -435,6 +454,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (typeof parsed.threadListSnoozedShelfExpanded === "boolean") {
     preferences.threadListSnoozedShelfExpanded = parsed.threadListSnoozedShelfExpanded;
+  }
+  if (typeof parsed.threadListPromachosShelfExpanded === "boolean") {
+    preferences.threadListPromachosShelfExpanded = parsed.threadListPromachosShelfExpanded;
   }
   if (typeof parsed.threadListWorkingShelfExpanded === "boolean") {
     preferences.threadListWorkingShelfExpanded = parsed.threadListWorkingShelfExpanded;

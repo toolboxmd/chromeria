@@ -18,6 +18,7 @@ function makeRow(id: string, environmentId: string, key: string | null, pinned: 
     pinOrderKey: pinned ? key : null,
     activeOrderKey: pinned ? null : key,
     createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
     unsettledAt: "2026-01-01T00:00:00.000Z",
     pinnedAt: pinned ? "2026-01-01T00:00:00.000Z" : null,
   };
