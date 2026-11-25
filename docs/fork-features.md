@@ -3271,7 +3271,8 @@ sources and reasons.
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/388",
     "https://github.com/toolboxmd/chromeria/pull/581",
-    "https://github.com/toolboxmd/chromeria/pull/637"
+    "https://github.com/toolboxmd/chromeria/pull/637",
+    "https://github.com/toolboxmd/chromeria/pull/973"
   ],
   "newFiles": [
     "apps/mobile/src/features/threads/ExecutionPurposePicker.tsx",
@@ -3365,6 +3366,7 @@ sources and reasons.
     "apps/server/src/scheduledTasks/ScheduledTaskService.webhook.test.ts",
     "apps/server/src/scheduling/Scheduler.integration.test.ts",
     "apps/server/src/ws.ts",
+    "apps/server/src/ws.test.ts",
     "apps/web/src/components/ChatView.tsx",
     "apps/web/src/components/pullRequest/ThreadPullRequestsPanel.tsx",
     "apps/web/src/components/settings/ScheduledTasksSettings.tsx",
