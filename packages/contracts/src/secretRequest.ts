@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 
 import { ThreadId, TrimmedNonEmptyString, TurnItemId } from "./baseSchemas.ts";
 import { SecretReference } from "./secretReference.ts";
@@ -14,17 +15,68 @@ export function secretRequestPageUrl(value: string): URL | null {
   }
 }
 
-/** Server stores the value under a one-use SecretRef; the thread learns only status. */
+/** A field's name doubles as its file name, so it stays a plain lowercase word. */
+export const SecretRequestFieldName = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(64),
+  Schema.isPattern(/^[a-z0-9_-]+$/),
+  // The one key a plain object cannot hold as its own property.
+  Schema.makeFilter((name: string) => name !== "__proto__", { expected: "not __proto__" }),
+);
+
+/** A typed secret, kept exactly as entered: spaces can be part of a password. */
+const SecretValue = Schema.String.check(
+  Schema.makeFilter((value: string) => value.trim().length > 0, {
+    expected: "a non-blank secret",
+  }),
+);
+
+/** One input on a secret request card. Carries what is asked, never the value. */
+export const SecretRequestField = Schema.Struct({
+  name: SecretRequestFieldName,
+  label: TrimmedNonEmptyString,
+  placeholder: Schema.optional(TrimmedNonEmptyString),
+  /** `false` shows what the user types, such as an email. */
+  secret: Schema.optional(Schema.Boolean),
+});
+export type SecretRequestField = typeof SecretRequestField.Type;
+
+/** The name of the one field a request without `fields` asks for. */
+export const SECRET_REQUEST_SINGLE_FIELD_NAME = "secret";
+
+const SecretRequestFieldValues = Schema.Record(SecretRequestFieldName, SecretValue);
+
+const SecretRequestFieldsSave = Schema.Struct({
+  type: Schema.Literal("save"),
+  secrets: SecretRequestFieldValues,
+});
+
+/** Upstream clients name the field values `values`; decoded as `secrets`. */
+const UpstreamSecretRequestFieldsSave = Schema.Struct({
+  type: Schema.Literal("save"),
+  values: SecretRequestFieldValues,
+}).pipe(
+  Schema.decodeTo(
+    SecretRequestFieldsSave,
+    SchemaTransformation.transform({
+      decode: ({ type, values }) => ({ type, secrets: values }),
+      encode: ({ type, secrets }) => ({ type, values: secrets }),
+    }),
+  ),
+);
+
+/**
+ * The user's answer to an agent's request for a secret. A card without
+ * `fields` is saved with `secret`; a card with `fields` is saved with every
+ * field's value in `secrets`, keyed by name. The server writes the values to
+ * private files for the agent; the thread learns only the status.
+ */
 export const SecretRequestAnswerInput = Schema.Struct({
   threadId: ThreadId,
   turnItemId: TurnItemId,
   answer: Schema.Union([
-    Schema.Struct({ type: Schema.Literal("save"), secret: TrimmedNonEmptyString }),
-    /** A request with `fields`: one value per field name. */
-    Schema.Struct({
-      type: Schema.Literal("save"),
-      values: Schema.Record(Schema.String, TrimmedNonEmptyString),
-    }),
+    Schema.Struct({ type: Schema.Literal("save"), secret: SecretValue }),
+    SecretRequestFieldsSave,
+    UpstreamSecretRequestFieldsSave,
     Schema.Struct({ type: Schema.Literal("decline") }),
     /** Read once through a configured secret provider; only servers advertising `secretRequestReferences` accept it. */
     Schema.Struct({ type: Schema.Literal("reference"), reference: SecretReference }),
@@ -46,8 +98,8 @@ const SECRET_REQUEST_FAILURE_MESSAGES = {
   load_failed: "Could not load the secret request.",
   not_found: "This secret request no longer exists.",
   already_answered: "This secret request was already answered.",
-  fields_mismatch: "This request asks for different values. Update the app and try again.",
   agent_stopped: "The agent that asked has stopped, so this secret can't be used.",
+  fields_mismatch: "Fill in every field of this request.",
   store_failed: "Could not store the secret.",
   reference_unreadable: "Could not read the secret from the secret provider.",
   record_failed: "Saved the secret, but could not update the request.",
@@ -57,8 +109,6 @@ const SECRET_REQUEST_FAILURE_MESSAGES = {
     "That secretRef was already used or does not exist. Ask the user again with request_secret.",
   ref_expired: "That secretRef expired. Ask the user again with request_secret.",
   consume_failed: "Could not use that secretRef. Try again.",
-  not_a_file_request:
-    'The user did not save this secret for shell use. Ask again with request_secret and delivery: "file".',
 } as const;
 
 export const SecretRequestFailureReason = Schema.Literals(
