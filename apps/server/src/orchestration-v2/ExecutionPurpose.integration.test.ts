@@ -406,6 +406,46 @@ it.effect(
         dismissed.thread.pullRequests?.find((entry) => entry.number === 303)?.source,
         "stack-dismissed",
       );
+
+      const legacy = (number: number) => ({
+        projectId: ProjectId.make("project:purpose"),
+        repository: "delivery/repo",
+        number,
+        url: `https://github.com/delivery/repo/pull/${number}`,
+      });
+      const setLegacy = (commandId: string, linkedPullRequest: ReturnType<typeof legacy> | null) =>
+        orchestrator.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make(commandId),
+          threadId,
+          linkedPullRequest,
+        });
+      const deliveriesNow = () =>
+        projections
+          .getThreadProjection(threadId)
+          .pipe(Effect.map((projection) => projection.thread.purposeDeliveries));
+      for (const number of [404, 505]) {
+        yield* orchestrator.dispatch({
+          ...link,
+          commandId: CommandId.make(`deliver-legacy-${number}`),
+          number,
+          url: legacy(number).url,
+          purposeDelivery: { version: 1 as const, purpose: referenceB },
+        });
+      }
+      const legacy404 = delivery({ repository: "delivery/repo", number: 404 }, referenceB);
+      const legacy505 = delivery({ repository: "delivery/repo", number: 505 }, referenceB);
+      yield* setLegacy("legacy-set-404", legacy(404));
+      yield* setLegacy("legacy-refresh-404", {
+        ...legacy(404),
+        repository: "Delivery/Repo",
+      });
+      assert.deepEqual(yield* deliveriesNow(), [...kept, legacy404, legacy505]);
+      yield* setLegacy("legacy-replace-505", legacy(505));
+      assert.deepEqual(yield* deliveriesNow(), [...kept, legacy505]);
+      yield* setLegacy("legacy-clear", null);
+      assert.deepEqual(yield* deliveriesNow(), kept);
+      assert.deepEqual((yield* projections.getThreadProjection(threadId)).runs, before.runs);
     }).pipe(Effect.provide(layerTest)),
 );
 

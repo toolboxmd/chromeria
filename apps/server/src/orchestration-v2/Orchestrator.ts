@@ -1047,6 +1047,16 @@ const withoutChecksAnswer = ({
   ...watch
 }: ThreadPullRequestWatch): ThreadPullRequestWatch => watch;
 
+// Removing a PR link withdraws this thread's delivery declarations for that PR.
+function withoutPurposeDeliveries(
+  deliveries: OrchestrationV2AppThread["purposeDeliveries"],
+  key: Parameters<typeof threadPullRequestKeysEqual>[1],
+): OrchestrationV2AppThread["purposeDeliveries"] {
+  return deliveries?.some((entry) => threadPullRequestKeysEqual(entry.pullRequest, key))
+    ? deliveries.filter((entry) => !threadPullRequestKeysEqual(entry.pullRequest, key))
+    : deliveries;
+}
+
 function legacyPullRequestLink(
   thread: OrchestrationV2AppThread,
   linked: ThreadLinkedPullRequest,
@@ -6095,6 +6105,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ? {}
               : {
                   linkedPullRequest: command.linkedPullRequest,
+                  ...(thread.linkedPullRequest &&
+                  thread.purposeDeliveries !== undefined &&
+                  !(
+                    command.linkedPullRequest &&
+                    threadPullRequestKeysEqual(
+                      legacyThreadPullRequestKey(command.linkedPullRequest),
+                      legacyThreadPullRequestKey(thread.linkedPullRequest),
+                    )
+                  )
+                    ? {
+                        purposeDeliveries: withoutPurposeDeliveries(
+                          thread.purposeDeliveries,
+                          legacyThreadPullRequestKey(thread.linkedPullRequest),
+                        ),
+                      }
+                    : {}),
                   pullRequests: [
                     ...threadPullRequestsOf(thread).filter(
                       (link) =>
@@ -6208,14 +6234,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               link,
             ];
           } else if (command.type === "thread.pull-request.unlink") {
-            // Unlinking corrects a mistaken link, so it also withdraws this PR's declarations,
-            // including ones that outlived their navigation link.
-            if (
-              purposeDeliveries?.some((entry) => threadPullRequestKeysEqual(entry.pullRequest, key))
-            )
-              purposeDeliveries = purposeDeliveries.filter(
-                (entry) => !threadPullRequestKeysEqual(entry.pullRequest, key),
-              );
+            // Unlinking corrects a mistaken link, including one whose declarations outlived it.
+            purposeDeliveries = withoutPurposeDeliveries(purposeDeliveries, key);
             if (!existing || existing.source === "stack-dismissed")
               return purposeDeliveries === thread.purposeDeliveries
                 ? thread
