@@ -3288,6 +3288,7 @@ sources and reasons.
   "upstreamFiles": [
     "apps/mobile/src/features/threads/useStartSideChat.ts",
     "apps/web/src/components/chat/useMultipleModelSend.ts",
+    "apps/web/src/components/chat/useSideChat.ts",
     "apps/mobile/src/state/threadOutboxDelivery.ts",
     "apps/mobile/src/features/threads/McpAppWebView.tsx",
     "apps/mobile/src/features/threads/NewTaskDraftScreen.tsx",
@@ -3304,6 +3305,8 @@ sources and reasons.
   "sharedFiles": [
     "apps/web/src/components/chat/useComposerSend.ts",
     "apps/web/src/components/chat/useThreadLifecycle.tsx",
+    "apps/mobile/src/lib/projectThreadStartTurn.ts",
+    "apps/mobile/src/state/threadOutboxDelivery.permissions.test.ts",
     "apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts",
     "apps/server/src/mcp/toolkits/pullRequests/handlers.ts",
     "apps/server/src/pullRequest/PullRequestWatchService.test.ts",

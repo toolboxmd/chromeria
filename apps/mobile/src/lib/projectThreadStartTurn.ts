@@ -7,6 +7,7 @@ import {
   type OrchestrationMessageContext,
   type ProjectId,
   type ProviderInteractionMode,
+  type PurposeIntent,
   type RuntimeMode,
 } from "@t3tools/contracts";
 import {
@@ -33,6 +34,7 @@ export interface ProjectThreadStartTurnSpec {
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
+  readonly purposeIntent?: PurposeIntent | undefined;
   readonly workspaceMode: "local" | "worktree";
   readonly branch: string | null;
   readonly worktreePath: string | null;
@@ -68,6 +70,7 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
     titleSeed: title,
     runtimeMode: spec.runtimeMode,
     interactionMode: spec.interactionMode,
+    ...(spec.purposeIntent === undefined ? {} : { purposeIntent: spec.purposeIntent }),
     bootstrap: {
       createThread: {
         projectId: spec.projectId,

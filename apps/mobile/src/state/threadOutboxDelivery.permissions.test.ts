@@ -596,14 +596,17 @@ describe("queued task whose launch reply is lost", () => {
     await settled.promise.finally(release);
   }
 
-  it("resends an unedited launch instead of handing its text back", async () => {
-    await loseLaunchReply(queuedTask());
+  it("resends an unedited launch with its queued purpose instead of handing its text back", async () => {
+    const purposeIntent = { version: 1, intent: { type: "unscoped" } } as const;
+    await loseLaunchReply({ ...queuedTask(), purposeIntent });
     await fireRetry();
 
     expect(state.draftText).toBe("Keep this draft separate");
     // The resend reuses the launch's command and message ids, so the server replays it.
     const [first, resent] = state.start.mock.calls.map(([call]) => call.input);
     expect(state.start).toHaveBeenCalledTimes(2);
+    expect(first.purposeIntent).toEqual(purposeIntent);
+    expect(resent.purposeIntent).toEqual(purposeIntent);
     expect(resent.commandId).toBe(first.commandId);
     expect(resent.message.messageId).toBe(first.message.messageId);
     expect(remaining()).toEqual([]);
