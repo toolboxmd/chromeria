@@ -873,19 +873,21 @@ const make = Effect.gen(function* () {
         const project = yield* projectOf(thread, PullRequestUnlinkFailedError);
         const target = yield* resolveTarget(input, project);
         const request = yield* negotiatedRequest;
-        if (
-          request === undefined &&
-          !threadPullRequestsOf(thread).some(
-            (link) => link.source !== "stack-dismissed" && threadPullRequestKeysEqual(link, target),
-          )
-        )
+        const isLinked = threadPullRequestsOf(thread).some(
+          (link) => link.source !== "stack-dismissed" && threadPullRequestKeysEqual(link, target),
+        );
+        const hasDelivery =
+          thread.purposeDeliveries?.some((entry) =>
+            threadPullRequestKeysEqual(entry.pullRequest, target),
+          ) ?? false;
+        if (request === undefined && !isLinked && !hasDelivery)
           return {
             host: target.host,
             repository: target.repository,
             number: target.number,
             wasLinked: false,
           };
-        const wasLinked = yield* engine
+        yield* engine
           .dispatch({
             type: "thread.pull-request.unlink",
             commandId: yield* commandId("mcp-pr-unlink", thread.id),
@@ -894,17 +896,13 @@ const make = Effect.gen(function* () {
             repository: target.repository,
             number: target.number,
           })
-          .pipe(
-            Effect.as(true),
-
-            Effect.catchCause(dispatchFailure(PullRequestUnlinkFailedError)),
-          );
+          .pipe(Effect.catchCause(dispatchFailure(PullRequestUnlinkFailedError)));
         return request === undefined
           ? {
               host: target.host,
               repository: target.repository,
               number: target.number,
-              wasLinked,
+              wasLinked: isLinked,
             }
           : confirmed(request);
       }),

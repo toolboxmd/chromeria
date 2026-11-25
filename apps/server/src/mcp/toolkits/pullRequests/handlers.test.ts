@@ -6,6 +6,7 @@ import {
   type OrchestrationV2ServerCommand as OrchestrationCommand,
   PullRequestOperationError,
   type OrchestrationProjectShell,
+  type OrchestrationV2ThreadShell,
   type PullRequestActionInput,
   type PullRequestDiffResult,
   type PullRequestSubmitReviewInput,
@@ -144,6 +145,7 @@ function makeLink(
 
 interface HarnessOptions {
   readonly thread?: PullRequestTestThread | null;
+  readonly purposeDeliveries?: OrchestrationV2ThreadShell["purposeDeliveries"];
   readonly project?: OrchestrationProjectShell | null;
   readonly reject?: (command: OrchestrationCommand) => string | null;
   readonly projects?: ReadonlyArray<OrchestrationProjectShell>;
@@ -204,7 +206,16 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
       getThreadShell: (id) =>
-        Effect.succeed(id === thread?.id ? v2PullRequestThread(thread) : null),
+        Effect.succeed(
+          id === thread?.id
+            ? {
+                ...v2PullRequestThread(thread),
+                ...(options.purposeDeliveries === undefined
+                  ? {}
+                  : { purposeDeliveries: options.purposeDeliveries }),
+              }
+            : null,
+        ),
       dispatch,
     }),
     Layer.mock(PullRequestService.PullRequestService)({
@@ -508,19 +519,33 @@ describe("pull request toolkit handlers", () => {
     }),
   );
 
-  it.effect("reports a dismissed stack member as not linked and leaves it dismissed", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeHarness({
-        thread: makeThread([makeLink(9, { source: "stack-dismissed" })]),
-      });
-      const result = yield* harness.call("unlink_pull_request", {
-        repository: "t3tools/t3code",
-        number: 9,
-      });
-      if ("type" in result) throw new Error("Unkeyed calls keep their legacy result.");
-      expect(result.wasLinked).toBe(false);
-      expect(yield* Ref.get(harness.commands)).toEqual([]);
-    }),
+  it.effect(
+    "reports a dismissed stack member as not linked but still withdraws a stale delivery",
+    () =>
+      Effect.gen(function* () {
+        const delivered = (number: number) =>
+          ({
+            version: 1 as const,
+            purpose: { host: "github.com", repository: "t3tools/t3code", kind: "issue", number: 1 },
+            pullRequest: { host: "github.com", repository: "t3tools/t3code", kind: "pr", number },
+            declaredAt: "2026-08-20T00:00:00.000Z",
+          }) as const;
+        const harness = yield* makeHarness({
+          thread: makeThread([makeLink(9, { source: "stack-dismissed" })]),
+          purposeDeliveries: [delivered(7)],
+        });
+        for (const number of [9, 7]) {
+          const result = yield* harness.call("unlink_pull_request", {
+            repository: "t3tools/t3code",
+            number,
+          });
+          if ("type" in result) throw new Error("Unkeyed calls keep their legacy result.");
+          expect(result.wasLinked).toBe(false);
+        }
+        expect(yield* Ref.get(harness.commands)).toMatchObject([
+          { type: "thread.pull-request.unlink", number: 7 },
+        ]);
+      }),
   );
 
   it.effect("links several pull requests in one call", () =>
