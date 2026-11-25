@@ -128,7 +128,7 @@ it.effect("points to Labs only when the server hides the feedback tool", () =>
       yield* expectOneLine(args, baseDir, stderr);
     }
     // Off is read from the settings file alone: listing opened no database, so none exists.
-    const dbPath = path.join(baseDir, "userdata", "statev2.sqlite");
+    const dbPath = path.join(baseDir, "userdata", "chromeria-v2.sqlite");
     expect(yield* fs.exists(dbPath)).toBe(false);
     const turnOn = (dir: string) =>
       fs.writeFileString(
@@ -159,7 +159,10 @@ it.effect("points to Labs only when the server hides the feedback tool", () =>
     const damaged = yield* fs.makeTempDirectoryScoped({ prefix: "t3-feedback-cli-" });
     yield* fs.makeDirectory(path.join(damaged, "userdata"), { recursive: true });
     yield* turnOn(damaged);
-    yield* fs.writeFileString(path.join(damaged, "userdata", "statev2.sqlite"), "not a database");
+    yield* fs.writeFileString(
+      path.join(damaged, "userdata", "chromeria-v2.sqlite"),
+      "not a database",
+    );
     yield* expectOneLine(["list"], damaged, "Could not read this machine's feedback reports: ");
 
     // A database from before agent feedback, with no table for it, lists nothing.
@@ -167,7 +170,7 @@ it.effect("points to Labs only when the server hides the feedback tool", () =>
     yield* fs.makeDirectory(path.join(older, "userdata"), { recursive: true });
     yield* turnOn(older);
     const olderDatabase = new NodeSqlite.DatabaseSync(
-      path.join(older, "userdata", "statev2.sqlite"),
+      path.join(older, "userdata", "chromeria-v2.sqlite"),
     );
     olderDatabase.exec("CREATE TABLE projection_projects (project_id TEXT)");
     olderDatabase.close();
