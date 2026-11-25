@@ -2,6 +2,9 @@ import {
   EnvironmentId,
   ProviderDriverKind,
   ServerSelfUpdateError,
+  SCHEDULED_TASK_RUNS_WS_METHODS,
+  ScheduledTaskId,
+  type ScheduledTaskRunRecord,
   ProviderInstanceId,
   type ProviderInstallState,
   type ProviderSetupInput,
@@ -1896,6 +1899,83 @@ describe("provider setup commands", () => {
     }),
   );
 });
+
+it.effect("reads scheduled task runs afresh after the page is closed and reopened", () =>
+  Effect.gen(function* () {
+    let reads = 0;
+    let run: ScheduledTaskRunRecord = {
+      id: "scheduled-run",
+      startedAt: "2026-11-24T08:00:00.000Z",
+      endedAt: null,
+      status: "running",
+      thread: null,
+      summary: null,
+    };
+    const client = {
+      [SCHEDULED_TASK_RUNS_WS_METHODS.list]: () =>
+        Effect.promise(async () => {
+          reads++;
+          return { runs: [run] };
+        }),
+      [WS_METHODS.scheduledTasksSubscribe]: () => Stream.never,
+    } as unknown as WsRpcProtocolClient;
+    const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+      target: TARGET,
+      state: yield* SubscriptionRef.make<SupervisorConnectionState>({
+        ...AVAILABLE_CONNECTION_STATE,
+        phase: "connected",
+      }),
+      session: yield* SubscriptionRef.make(Option.some(session(client))),
+      prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+      connect: Effect.void,
+      disconnect: Effect.void,
+      retryNow: Effect.void,
+    });
+    const environments = EnvironmentRegistry.EnvironmentRegistry.of({
+      run: (_id, effect) =>
+        Effect.provideService(effect, EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      followStream: (_id, stream) =>
+        Stream.provideService(stream, EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+    } as EnvironmentRegistry.EnvironmentRegistry["Service"]);
+    const runtime = Atom.runtime(
+      Layer.merge(
+        Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environments),
+        Layer.succeed(
+          Persistence.EnvironmentCacheStore,
+          {} as Persistence.EnvironmentCacheStore["Service"],
+        ),
+      ),
+    );
+    const atoms = createServerEnvironmentAtoms(runtime, {
+      initialConfigValueAtom: () => Atom.make(CONFIG),
+    });
+    const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (registry) =>
+      Effect.sync(() => registry.dispose()),
+    );
+    const runs = atoms.scheduledTaskRuns({
+      environmentId: TARGET.environmentId,
+      input: { id: ScheduledTaskId.make("task:daily") },
+    });
+    const read = AtomRegistry.getResult(registry, runs, { suspendOnWaiting: true });
+    const afterScheduledTasks = Effect.callback<void>((resume) => {
+      registry.schedulerAsync.makeDispatcher().scheduleTask(() => resume(Effect.void), 0);
+    });
+
+    const closeBadge = registry.mount(runs);
+    const closePanel = registry.mount(runs);
+    expect((yield* read).runs).toEqual([run]);
+    expect(reads).toBe(1);
+    closeBadge();
+    closePanel();
+    yield* afterScheduledTasks;
+
+    run = { ...run, status: "succeeded", endedAt: "2026-11-24T08:00:10.000Z" };
+    registry.mount(runs);
+    yield* afterScheduledTasks;
+    expect((yield* read).runs).toEqual([run]);
+    expect(reads).toBe(2);
+  }),
+);
 
 describe("resource telemetry history", () => {
   it.effect.each([

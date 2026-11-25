@@ -9,6 +9,7 @@ import {
   type ScheduledTask,
 } from "@t3tools/contracts";
 import {
+  changeDraftProject,
   createDraft,
   editDraft,
   scheduledTaskDefaultModel,
@@ -111,6 +112,21 @@ describe("scheduleFromDraft", () => {
       ).toBeNull();
     },
   );
+});
+
+it("replaces a checkout from the old project with a new worktree in the destination", () => {
+  const draft = {
+    ...createDraft(ProjectId.make("old"), null),
+    workspace: "existing_worktree" as const,
+    checkoutPath: "/repos/old-checkout",
+  };
+  const destination = ProjectId.make("new");
+  expect(changeDraftProject(draft, destination)).toMatchObject({
+    projectId: destination,
+    workspace: "worktree",
+    baseRef: "",
+    checkoutPath: "",
+  });
 });
 
 describe("scheduled task model defaults", () => {
