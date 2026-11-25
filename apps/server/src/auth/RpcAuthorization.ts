@@ -6,6 +6,7 @@ import {
   authScopeRequiredResponse,
   AssetCreateUrlInput,
   AuthAccessReadScope,
+  AuthAccessWriteScope,
   ServerSettingsPatch,
   ProviderInstanceMutation,
   requiredScopesForServerSettingsPatch,
@@ -24,6 +25,9 @@ import {
   AuthRelayReadScope,
   AuthRelayWriteScope,
   AuthTerminalOperateScope,
+  FEATURE_MAP_WS_METHODS,
+  ISSUE_WS_METHODS,
+  SCHEDULED_TASK_RUNS_WS_METHODS,
   ORCHESTRATION_V2_WS_METHODS,
   type OrchestrationV2Command,
   type OrchestrationV2ThreadLaunchInput,
@@ -39,6 +43,8 @@ import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
 import { isProviderSignOutPrompt } from "../orchestration-v2/CommandPolicy.ts";
+
+import { ISSUE_LINK_RPC_SCOPES } from "../issueLinks/rpcScopes.ts";
 
 type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 
@@ -98,6 +104,11 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverGetStorageCleanupReport]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetDatabaseStorage]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetSettings]: AuthOrchestrationReadScope,
+  [WS_METHODS.remoteTaskRequest]: AuthOrchestrationOperateScope,
+  [WS_METHODS.remoteTaskRequestRead]: AuthOrchestrationReadScope,
+  [WS_METHODS.remoteTaskView]: AuthOrchestrationReadScope,
+  [WS_METHODS.peerGrantsList]: AuthAccessReadScope,
+  [WS_METHODS.peerGrantsUpdate]: AuthAccessWriteScope,
   [WS_METHODS.peerLinksList]: AuthAccessReadScope,
   // Names only, so a client that reads threads can open a linked environment's.
   [WS_METHODS.peerLinksNames]: AuthOrchestrationReadScope,
@@ -129,6 +140,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverRefreshUsageRates]: AuthDiagnosticsReadScope,
   [WS_METHODS.serverSignalProcess]: AuthEnvironmentMaintainScope,
   [WS_METHODS.serverReportClientActivity]: AuthOrchestrationReadScope,
+  [WS_METHODS.scheduledTasksList]: AuthOrchestrationReadScope,
   [WS_METHODS.scheduledTasksSubscribe]: AuthOrchestrationReadScope,
   [WS_METHODS.workflowsSubscribe]: AuthOrchestrationReadScope,
   [WS_METHODS.workflowsCounts]: AuthOrchestrationReadScope,
@@ -249,6 +261,16 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.subscribeServerConfig]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeServerLifecycle]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeAuthAccess]: AuthAccessReadScope,
+  // Fork: GitHub Issues (toolboxmd/t3code#27); its writes are in CLIENT_GUARDED_RPC_SCOPES.
+  [ISSUE_WS_METHODS.issuesList]: AuthOrchestrationReadScope,
+  [ISSUE_WS_METHODS.issuesDetail]: AuthOrchestrationReadScope,
+  [ISSUE_WS_METHODS.issuesStates]: AuthOrchestrationReadScope,
+  // Fork: feature map (toolboxmd/chromeria#235).
+  [FEATURE_MAP_WS_METHODS.read]: AuthOrchestrationReadScope,
+  // Fork: Issue links (toolboxmd/t3code#28).
+  ...ISSUE_LINK_RPC_SCOPES,
+  // Fork: scheduled task runs (toolboxmd/chromeria#951).
+  [SCHEDULED_TASK_RUNS_WS_METHODS.list]: AuthOrchestrationReadScope,
 } as const satisfies Readonly<Record<WsRpcMethod, AuthEnvironmentScope>>;
 
 export function requiredScopeForRpcMethod(method: string): AuthEnvironmentScope {

@@ -22,7 +22,7 @@ import {
   UserRoundIcon,
 } from "lucide-react";
 import { msg, T, useGT, useMessages } from "gt-react";
-import { type ElementType, useState } from "react";
+import { type ElementType, type ReactNode, useState } from "react";
 
 import { getSourceControlPresentationForKind } from "~/sourceControlPresentation";
 import { useDebouncedValue } from "~/state/queries";
@@ -57,6 +57,7 @@ import {
   type PullRequestLabelFacet,
 } from "./pullRequestList.logic";
 import { resolveFilterOptions } from "./pullRequestListOptions";
+import { searchFilterOptions } from "./pullRequestFilterSearch.logic";
 import { PullRequestActorAvatar } from "./pullRequestPresentation";
 import { PullRequestGlyph } from "./pullRequestIcons";
 
@@ -195,7 +196,7 @@ const CHECKS_OPTIONS = [
   { value: "failing", label: msg("Failing", { $context: "checks filter" }), Icon: CircleXIcon },
 ] as const satisfies ReadonlyArray<PullRequestFilterOption<string>>;
 
-function PullRequestFilterRadioGroup<Value extends string>({
+export function PullRequestFilterRadioGroup<Value extends string>({
   label,
   value,
   options,
@@ -247,16 +248,67 @@ function PullRequestFilterRadioGroup<Value extends string>({
   );
 }
 
-export function PullRequestFilterRadioSubmenu<Value extends string>({
+/** A long list's search box, matching the host-backed author and label searches. */
+function PullRequestFilterSearch({
   label,
   value,
-  options,
   onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <MenuSearchInput
+      autoFocus
+      value={value}
+      onChange={(event) => onChange(event.currentTarget.value)}
+      placeholder={label}
+      aria-label={label}
+    />
+  );
+}
+
+/** A long list's row, searched like the author filter. */
+export function PullRequestSearchableFilterSubmenu<Value extends string>({
+  searchLabel,
+  ...props
 }: {
   label: string;
   value: Value;
   options: ReadonlyArray<PullRequestFilterOption<Value>>;
   onChange: (value: Value) => void;
+  searchLabel: string;
+}) {
+  const [query, setQuery] = useState("");
+  const { shown, empty } = searchFilterOptions(props.options, props.value, query);
+  return (
+    <PullRequestFilterRadioSubmenu
+      {...props}
+      shownOptions={shown}
+      search={<PullRequestFilterSearch label={searchLabel} value={query} onChange={setQuery} />}
+      empty={empty ? "No matches" : undefined}
+    />
+  );
+}
+
+export function PullRequestFilterRadioSubmenu<Value extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  shownOptions = options,
+  search,
+  empty,
+}: {
+  label: string;
+  value: Value;
+  options: ReadonlyArray<PullRequestFilterOption<Value>>;
+  onChange: (value: Value) => void;
+  /** A searched subset of `options`, headed by the `search` box. */
+  shownOptions?: ReadonlyArray<PullRequestFilterOption<Value>>;
+  search?: ReactNode;
+  empty?: string | undefined;
 }) {
   const current = options.find((option) => option.value === value) ?? options[0];
   if (!current) return null;
@@ -270,12 +322,14 @@ export function PullRequestFilterRadioSubmenu<Value extends string>({
         </span>
       </MenuSubTrigger>
       <MenuSubPopup>
+        {search}
         <PullRequestFilterRadioGroup
           label={label}
           value={value}
-          options={options}
+          options={shownOptions}
           onChange={onChange}
         />
+        {empty ? <MenuItem disabled>{empty}</MenuItem> : null}
       </MenuSubPopup>
     </MenuSub>
   );
@@ -477,7 +531,7 @@ function PullRequestLabelChoices({
   );
 }
 
-function PullRequestLabelFilter({
+export function PullRequestLabelFilter({
   value,
   options,
   scope,
@@ -513,6 +567,23 @@ function PullRequestLabelFilter({
         />
       </MenuSubPopup>
     </MenuSub>
+  );
+}
+
+/** The Filters button, counting the filters that are off their default. */
+export function PullRequestFiltersTrigger({ count }: { count: number }) {
+  return (
+    <MenuTrigger render={<Button variant="outline" />}>
+      <ListFilterIcon className="size-4" />
+      <span>
+        <T>Filters</T>
+      </span>
+      {count > 0 ? (
+        <span className="rounded-full bg-muted px-1.5 text-xs text-muted-foreground tabular-nums">
+          {count}
+        </span>
+      ) : null}
+    </MenuTrigger>
   );
 }
 
@@ -614,17 +685,7 @@ export function PullRequestFiltersMenu({
   ];
   return (
     <Menu onOpenChange={onOpenChange}>
-      <MenuTrigger render={<Button variant="outline" />}>
-        <ListFilterIcon className="size-4" />
-        <span>
-          <T>Filters</T>
-        </span>
-        {filterCount > 0 ? (
-          <span className="rounded-full bg-muted px-1.5 text-xs text-muted-foreground tabular-nums">
-            {filterCount}
-          </span>
-        ) : null}
-      </MenuTrigger>
+      <PullRequestFiltersTrigger count={filterCount} />
       <MenuPopup align="end" side="bottom">
         <PullRequestFilterRadioSubmenu
           label={gt("State", { $context: "pull request filter" })}
