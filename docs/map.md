@@ -137,7 +137,7 @@ flowchart TD
     NR["Network routes"]
     %% NR: #292 #358 PR #498 PR #497
     EP["Execution purpose"]
-    %% EP: #377 PR #388 #526 PR #581
+    %% EP: #377 PR #388 #526 PR #581 PR #973
     PRN["Paired session renewal"]
     %% PRN: #323 #336 PR #477 PR #504 PR #473
     OAG["Outside-agent grants"]
