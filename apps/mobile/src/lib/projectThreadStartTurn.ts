@@ -40,6 +40,9 @@ export interface ProjectThreadStartTurnSpec {
   /** Tracked repositories a new worktree takes, by path; absent leaves the choice to the server. */
   readonly worktreeRepositories?: ReadonlyArray<string>;
   readonly worktreeBranchName: string;
+  /** Fork: start the thread bare (toolboxmd/chromeria#319). */
+  readonly bare?: boolean;
+  readonly prismRole?: "promachos";
 }
 
 export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpec) {
@@ -60,6 +63,8 @@ export function buildProjectThreadStartTurnInput(spec: ProjectThreadStartTurnSpe
       attachments: spec.uploadedAttachments,
     },
     modelSelection: spec.modelSelection,
+    ...(spec.bare ? { bare: {} } : {}),
+    ...(spec.prismRole ? { prismRole: spec.prismRole } : {}),
     titleSeed: title,
     runtimeMode: spec.runtimeMode,
     interactionMode: spec.interactionMode,
