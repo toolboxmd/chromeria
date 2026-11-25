@@ -8,6 +8,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useGT } from "gt-react";
 import { PencilIcon, QuoteIcon } from "lucide-react";
 import {
+  use,
   useEffect,
   useEffectEvent,
   useRef,
@@ -24,6 +25,7 @@ import {
   assistantCitationRoute,
 } from "../../lib/assistantCitationNavigation";
 import { cn } from "~/lib/utils";
+import { SideThreadsOpenContext } from "~/hooks/useSideThreadTrigger";
 import { useQuietThreadShell } from "~/state/entities";
 import { ContextChip, ContextChipAction, ContextChipLabel } from "../ContextChip";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -79,31 +81,53 @@ function ResponseCard({
   trailing: boolean;
 }) {
   const linkProps = useCitationSourceLinkProps(citation);
+  // Read-only timelines (guest page, linked pane) cannot open another thread.
+  const canOpen = use(SideThreadsOpenContext);
+  const cardClassName =
+    "block min-w-0 rounded-lg bg-black/10 px-2.5 py-1.5 text-start text-sm text-muted-foreground! no-underline! wrap-break-word dark:bg-black/35";
+  const card = (
+    <>
+      {title ? (
+        <span className="block truncate text-xs font-medium text-foreground/80" dir="auto">
+          {title}
+        </span>
+      ) : null}
+      <span className="line-clamp-2" dir={textDirection(citation.text)}>
+        {preview}
+      </span>
+    </>
+  );
   return (
     // One copy boundary for the card and its comment, so a copied card carries the comment once.
     <span
       data-markdown-copy={copyMarkdown}
       className={cn("block", !leading && "mt-[0.65rem]", !trailing && "mb-[0.65rem]")}
     >
-      <Link
-        {...linkProps}
-        // A selection inside the card's boundary copies the card here and the comment as text.
-        data-markdown-copy={cardCopyMarkdown}
-        // The response is findable in its own message; here it is clamped and mostly hidden.
-        data-thread-find-ignore
-        aria-label={label}
-        // The message's markdown styles colour and underline links; a card is neither.
-        className="block min-w-0 rounded-lg bg-black/10 px-2.5 py-1.5 text-start text-sm text-muted-foreground! no-underline! wrap-break-word hover:bg-black/14 focus-visible:outline-2 focus-visible:outline-ring dark:bg-black/35 dark:hover:bg-black/50"
-      >
-        {title ? (
-          <span className="block truncate text-xs font-medium text-foreground/80" dir="auto">
-            {title}
-          </span>
-        ) : null}
-        <span className="line-clamp-2" dir={textDirection(citation.text)}>
-          {preview}
+      {canOpen ? (
+        <Link
+          {...linkProps}
+          // A selection inside the card's boundary copies the card here and the comment as text.
+          data-markdown-copy={cardCopyMarkdown}
+          // The response is findable in its own message; here it is clamped and mostly hidden.
+          data-thread-find-ignore
+          aria-label={label}
+          // The message's markdown styles colour and underline links; a card is neither.
+          className={cn(
+            cardClassName,
+            "hover:bg-black/14 focus-visible:outline-2 focus-visible:outline-ring dark:hover:bg-black/50",
+          )}
+        >
+          {card}
+        </Link>
+      ) : (
+        <span
+          data-markdown-copy={cardCopyMarkdown}
+          data-thread-find-ignore
+          className={cardClassName}
+        >
+          {card}
         </span>
-      </Link>
+      )}
       {comment ? (
         <span className="mt-1.5 block whitespace-pre-wrap" dir={textDirection(comment)}>
           {comment}

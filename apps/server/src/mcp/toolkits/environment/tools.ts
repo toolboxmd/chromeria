@@ -1,9 +1,13 @@
+import * as McpRouting from "../../McpRouting.ts";
 import {
+  AutoBalanceSettings,
   BackgroundActivityProfile,
   BackgroundActivityProfileSelection,
   ExecutionEnvironmentDescriptor,
+  HostResourcesSnapshot,
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
+  McpConfirmedOperation,
   ServerSettings,
   ServerSettingsPatch,
 } from "@t3tools/contracts";
@@ -12,6 +16,7 @@ import { Tool, Toolkit } from "effect/ai";
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as HostResources from "../../../resourceTelemetry/HostResources.ts";
 import * as Settings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
@@ -26,6 +31,8 @@ const PreferenceFields = {
     customInstructions: Schema.String,
     truncated: Schema.Boolean,
   }),
+  // Older linked environments omit it.
+  loadBalancing: Schema.optionalKey(AutoBalanceSettings),
 };
 const shared = {
   failure: OrchestratorMcpFailure,
@@ -36,12 +43,13 @@ const shared = {
     ServerEnvironment.ServerEnvironment,
     Settings.ServerSettingsService,
     ThreadCommandExecutor.ThreadCommandExecutor,
+    HostResources.HostResources,
   ],
 };
 const EnvironmentReadTool = Tool.make("t3_environment_read", {
   ...shared,
   description:
-    "Read this server's identity and preferences. Providers and models: `orchestrator_capabilities`.",
+    "Read server identity, preferences, and load. Providers and models: `orchestrator_capabilities`.",
   parameters: Schema.Struct({ environmentId: OrchestratorMcpEnvironmentTarget }),
   success: Schema.Struct({
     environmentId: ExecutionEnvironmentDescriptor.fields.environmentId,
@@ -49,6 +57,7 @@ const EnvironmentReadTool = Tool.make("t3_environment_read", {
     serverVersion: Schema.String,
     platform: ExecutionEnvironmentDescriptor.fields.platform,
     preferences: Schema.Struct(PreferenceFields),
+    hostResources: Schema.optionalKey(HostResourcesSnapshot),
   }),
 })
   .annotate(Tool.Readonly, true)
@@ -56,15 +65,16 @@ const EnvironmentReadTool = Tool.make("t3_environment_read", {
 const EnvironmentPreferencesTool = Tool.make("t3_environment_preferences_update", {
   ...shared,
   description:
-    "Update environment-wide preferences. Live full-access or default caller thread only. Omitted fields are unchanged; `customInstructions: ''` clears it.",
-  parameters: Schema.Struct({
-    environmentId: OrchestratorMcpEnvironmentTarget,
-    defaultThreadEnvMode: ServerSettingsPatch.fields.defaultThreadEnvMode,
-    newWorktreesStartFromOrigin: ServerSettingsPatch.fields.newWorktreesStartFromOrigin,
-    enableProviderUpdateChecks: ServerSettingsPatch.fields.enableProviderUpdateChecks,
-    backgroundActivity: Schema.optionalKey(Schema.Struct({ profile: BackgroundActivityProfile })),
-    sourceControlWritingStyle: ServerSettingsPatch.fields.sourceControlWritingStyle,
-  }),
-  success: Schema.Struct(PreferenceFields),
+    "Update environment-wide preferences. Live full-access or default caller thread only. Omitted fields are unchanged; `customInstructions: ''` clears it. A negotiated clientRequestId returns this action's confirmed-operation receipt on retry; read current preferences with `t3_environment_read`.",
+  parameters: McpRouting.parameters(
+    Schema.Struct({
+      defaultThreadEnvMode: ServerSettingsPatch.fields.defaultThreadEnvMode,
+      newWorktreesStartFromOrigin: ServerSettingsPatch.fields.newWorktreesStartFromOrigin,
+      enableProviderUpdateChecks: ServerSettingsPatch.fields.enableProviderUpdateChecks,
+      backgroundActivity: Schema.optionalKey(Schema.Struct({ profile: BackgroundActivityProfile })),
+      sourceControlWritingStyle: ServerSettingsPatch.fields.sourceControlWritingStyle,
+    }),
+  ),
+  success: Schema.Union([Schema.Struct(PreferenceFields), McpConfirmedOperation]),
 }).annotate(Tool.Destructive, true);
 export const EnvironmentToolkit = Toolkit.make(EnvironmentReadTool, EnvironmentPreferencesTool);

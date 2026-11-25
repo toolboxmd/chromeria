@@ -1,4 +1,5 @@
-import { WS_METHODS } from "@t3tools/contracts";
+import { createResourceViewerAccessAtomFamily } from "./deviceHubAccess.ts";
+import { WS_METHODS, PreviewViewerOpenInput } from "@t3tools/contracts";
 import * as Stream from "effect/Stream";
 import { Atom } from "effect/reactivity";
 
@@ -20,7 +21,23 @@ export function createPreviewEnvironmentAtoms<R, E>(
     key: ({ environmentId, input }: { environmentId: string; input: { threadId: string } }) =>
       JSON.stringify([environmentId, input.threadId]),
   };
+  const viewerOpen = createEnvironmentRpcCommand(runtime, {
+    label: "environment-data:preview:viewer-open",
+    tag: WS_METHODS.previewViewerOpen,
+  });
+  const viewerClose = createEnvironmentRpcCommand(runtime, {
+    label: "environment-data:preview:viewer-close",
+    tag: WS_METHODS.previewViewerClose,
+  });
   return {
+    viewerOpen,
+    viewerClose,
+    viewerAccess: createResourceViewerAccessAtomFamily(runtime, {
+      input: PreviewViewerOpenInput,
+      open: viewerOpen,
+      renew: viewerOpen,
+      close: viewerClose,
+    }),
     list: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:preview:list",
       tag: WS_METHODS.previewList,

@@ -1,8 +1,8 @@
 import { expect, it } from "@effect/vitest";
+import { layerLoopbackServerTest } from "./testUtils/loopbackHttpServer.ts";
 import { describe, vi } from "vite-plus/test";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeHttpPlatform from "@effect/platform-node/NodeHttpPlatform";
-import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -328,7 +328,7 @@ describe("untraced requests", () => {
       const services = yield* Layer.build(
         HttpRouter.serve(layerRoutes, { disableListenLog: true, disableLogger: true }).pipe(
           ServerHttp.withRootRequestSpans,
-          Layer.provideMerge(NodeHttpServer.layerTest),
+          Layer.provideMerge(layerLoopbackServerTest),
         ),
       ).pipe(Effect.withSpan("server.lifetime"), Effect.provide(layerTracer));
       // Without a traceparent header, the server alone decides each request's parent.
@@ -354,12 +354,12 @@ const makeStaticRequest = Effect.fn("HttpTest.makeStaticRequest")(function* (sta
     ServerHttp.layerStaticAndDevRoute,
     ServerHttp.layerHttpCompression,
   ).pipe(Layer.provideMerge(NodeHttpPlatform.layer));
-  // HttpRouter.serve prefers outer services; inject the test FileSystem between it and NodeHttpServer.layerTest.
+  // HttpRouter.serve prefers outer services; inject the test FileSystem between it and layerLoopbackServerTest.
   const services = yield* Layer.build(
     HttpRouter.serve(layerApp, { disableListenLog: true }).pipe(
       Layer.provideMerge(ServerConfig.layer({ ...config, staticDir })),
       Layer.provideMerge(Layer.succeed(FileSystem.FileSystem, fileSystem)),
-      Layer.provideMerge(NodeHttpServer.layerTest),
+      Layer.provideMerge(layerLoopbackServerTest),
     ),
   );
   const client = Context.get(services, HttpClient.HttpClient);
