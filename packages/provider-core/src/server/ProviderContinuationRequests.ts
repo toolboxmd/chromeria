@@ -1,3 +1,4 @@
+import type { ExecutionPurpose } from "@t3tools/contracts";
 import {
   type OrchestrationV2Notification,
   MessageId,
@@ -13,6 +14,12 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 
 export interface ProviderContinuationRequest {
+  /** Captured at the native operation owner before buffered output is ingested. */
+  readonly nativeCauses?: ReadonlyArray<{
+    readonly operationId: string;
+    readonly purpose?: ExecutionPurpose;
+  }>;
+  readonly recordDisposition?: (disposition: "dropped_disabled") => Effect.Effect<void>;
   readonly threadId: ThreadId;
   readonly providerThreadId: ProviderThreadId;
   readonly driver: ProviderDriverKind;

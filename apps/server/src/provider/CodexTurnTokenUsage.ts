@@ -1,4 +1,4 @@
-import type { TurnTokenUsage } from "@t3tools/contracts";
+import type { TurnTokenUsage, UsageClosure, UsageClosureOpenReason } from "@t3tools/contracts";
 import type * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 type CodexCumulativeTokenUsage = {
@@ -17,6 +17,10 @@ interface CodexTurnTokenUsageAccumulator {
   reasoningTokens: number;
   observed: boolean;
   hasSubagents: boolean;
+  // A reconnect retried a response, or a thread-wide total went backwards mid-turn.
+  streamBroken: boolean;
+  // The thread's total grew under another turn id while this turn ran.
+  unattributed: boolean;
 }
 
 export interface CodexTurnTokenUsageState {
@@ -61,9 +65,23 @@ export function getCodexTurnAccumulator(
     reasoningTokens: 0,
     observed: false,
     hasSubagents: false,
+    streamBroken: false,
+    unattributed: false,
   };
   state.byTurnId.set(turnId, created);
   return created;
+}
+
+function codexTotalRegressed(
+  previous: CodexCumulativeTokenUsage,
+  current: CodexCumulativeTokenUsage,
+): boolean {
+  return (
+    current.inputTokens < previous.inputTokens ||
+    current.cachedInputTokens < previous.cachedInputTokens ||
+    current.outputTokens < previous.outputTokens ||
+    current.reasoningTokens < previous.reasoningTokens
+  );
 }
 
 /** total is thread-wide; last covers the newest model response. */
@@ -72,13 +90,7 @@ function codexTurnTokenUsageDelta(
   current: CodexCumulativeTokenUsage,
   last: CodexCumulativeTokenUsage,
 ): CodexCumulativeTokenUsage {
-  if (
-    previous === undefined ||
-    current.inputTokens < previous.inputTokens ||
-    current.cachedInputTokens < previous.cachedInputTokens ||
-    current.outputTokens < previous.outputTokens ||
-    current.reasoningTokens < previous.reasoningTokens
-  ) {
+  if (previous === undefined || codexTotalRegressed(previous, current)) {
     return last;
   }
   return {
@@ -102,11 +114,23 @@ export function accumulateCodexTurnTokenUsage(
   const current = codexTokenUsageBreakdown(usage.total);
   if (state.activeTurnId !== turnId) {
     // Every thread-wide total updates the baseline; late finished-turn updates do not count toward the live turn.
+    if (
+      state.activeTurnId !== undefined &&
+      state.baseline !== undefined &&
+      !codexTotalRegressed(state.baseline, current) &&
+      (current.inputTokens > state.baseline.inputTokens ||
+        current.outputTokens > state.baseline.outputTokens)
+    ) {
+      getCodexTurnAccumulator(state, state.activeTurnId).unattributed = true;
+    }
     state.baseline = current;
     return;
   }
 
   const accumulator = getCodexTurnAccumulator(state, turnId);
+  if (state.baseline !== undefined && codexTotalRegressed(state.baseline, current)) {
+    accumulator.streamBroken = true;
+  }
   const delta = codexTurnTokenUsageDelta(
     state.baseline,
     current,
@@ -133,28 +157,49 @@ export function accumulateCodexTurnTokenUsage(
   }
 }
 
+export interface CodexTurnClosureObservations {
+  // A child thread from an earlier turn still ran, or a child turn had no known parent.
+  readonly childThreadActive: boolean;
+  // A prompt suggestion samples the thread after this turn's usage is final.
+  readonly promptSampling: boolean;
+  readonly compactions: number;
+}
+
 /** `model` is the thread model Codex last reported, which a reroute replaces. */
 export function completeCodexTurnTokenUsage(
   state: CodexTurnTokenUsageState,
   turnId: string,
   completed: boolean,
   model?: string,
-): TurnTokenUsage {
+  observations: CodexTurnClosureObservations = {
+    childThreadActive: false,
+    promptSampling: false,
+    compactions: 0,
+  },
+): { readonly turnTokenUsage: TurnTokenUsage; readonly usageClosure: UsageClosure } {
   const usage = state.byTurnId.get(turnId);
   state.byTurnId.delete(turnId);
   if (state.activeTurnId === turnId) state.activeTurnId = undefined;
   const models = model === undefined ? {} : { models: [model] };
+  const open = (reason: UsageClosureOpenReason): UsageClosure => ({
+    version: 1,
+    state: "open",
+    reason,
+  });
   if (!usage?.observed) {
     return {
-      usageStatus: "unavailable",
-      usageScope: "main_agent",
-      hasSubagents: usage?.hasSubagents ?? false,
-      ...models,
+      turnTokenUsage: {
+        usageStatus: "unavailable",
+        usageScope: "main_agent",
+        hasSubagents: usage?.hasSubagents ?? false,
+        ...models,
+      },
+      usageClosure: open(completed ? "usage_incomplete" : "turn_not_completed"),
     };
   }
 
   // Codex counts cache reads and writes inside inputTokens.
-  return {
+  const turnTokenUsage: TurnTokenUsage = {
     usageStatus: completed ? "complete" : "partial",
     usageScope: "main_agent",
     inputTokens: usage.inputTokens,
@@ -167,4 +212,24 @@ export function completeCodexTurnTokenUsage(
     hasSubagents: usage.hasSubagents,
     ...models,
   };
+  // A compaction's own usage never reaches thread/tokenUsage/updated, so it is counted, not closed over.
+  const usageClosure: UsageClosure = !completed
+    ? open("turn_not_completed")
+    : usage.hasSubagents
+      ? open("native_child_observed")
+      : observations.childThreadActive
+        ? open("native_child_running")
+        : usage.streamBroken
+          ? open("usage_stream_broken")
+          : usage.unattributed
+            ? open("usage_unattributed")
+            : observations.promptSampling
+              ? open("prompt_suggestion_sampled")
+              : {
+                  version: 1,
+                  state: "main_agent_only",
+                  witness: "event_stream",
+                  uncountedCompactions: observations.compactions,
+                };
+  return { turnTokenUsage, usageClosure };
 }

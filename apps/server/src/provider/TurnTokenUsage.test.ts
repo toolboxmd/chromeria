@@ -36,7 +36,7 @@ describe("billable native turn usage", () => {
       "turn",
       update(breakdown(1030, 515, 108), breakdown(20, 10, 6)),
     );
-    expect(completeCodexTurnTokenUsage(state, "turn", true)).toEqual({
+    expect(completeCodexTurnTokenUsage(state, "turn", true).turnTokenUsage).toEqual({
       usageStatus: "complete",
       usageScope: "main_agent",
       hasSubagents: false,
@@ -53,7 +53,7 @@ describe("billable native turn usage", () => {
     accumulateCodexTurnTokenUsage(state, "turn", update(breakdown(100, 40, 20)));
     accumulateCodexTurnTokenUsage(state, "turn", update(breakdown(20, 5, 3)));
     getCodexTurnAccumulator(state, "turn").hasSubagents = true;
-    expect(completeCodexTurnTokenUsage(state, "turn", false)).toMatchObject({
+    expect(completeCodexTurnTokenUsage(state, "turn", false).turnTokenUsage).toMatchObject({
       usageStatus: "partial",
       hasSubagents: true,
       inputTokens: 120,
@@ -71,11 +71,13 @@ describe("billable native turn usage", () => {
       "next",
       update(breakdown(104, 12, 21), breakdown(4, 2, 1)),
     );
-    expect(completeCodexTurnTokenUsage(state, "next", true)).toMatchObject({
+    expect(completeCodexTurnTokenUsage(state, "next", true).turnTokenUsage).toMatchObject({
       inputTokens: 4,
       outputTokens: 1,
     });
-    expect(completeCodexTurnTokenUsage(state, "missing", false).usageStatus).toBe("unavailable");
+    expect(completeCodexTurnTokenUsage(state, "missing", false).turnTokenUsage.usageStatus).toBe(
+      "unavailable",
+    );
   });
 
   it("counts Claude cached input inside total input and bounds thinking output", () => {
@@ -216,7 +218,12 @@ describe("billable native turn usage", () => {
   it("measures Claude ledger growth only from a known, nondecreasing baseline", () => {
     const ledger = (output: number) =>
       claudeModelLedger({ "claude-sonnet-4-6": { inputTokens: 100, outputTokens: output } });
-    expect(claudeLedgerDelta(ledger(10), ledger(25))).toEqual({ inputTokens: 0, outputTokens: 15 });
+    expect(claudeLedgerDelta(ledger(10), ledger(25))).toEqual({
+      byModel: new Map([
+        ["claude-sonnet-4-6", { input: 0, cacheRead: 0, cacheCreation: 0, output: 15 }],
+      ]),
+      restoredBaseline: false,
+    });
     expect(claudeLedgerDelta(ledger(25), ledger(10))).toBeUndefined();
     expect(claudeLedgerDelta(undefined, ledger(10))).toBeUndefined();
     expect(claudeModelLedger({})).toBeUndefined();
