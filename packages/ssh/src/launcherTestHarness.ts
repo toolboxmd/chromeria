@@ -184,6 +184,18 @@ PATH=/usr/bin:/bin exec ps "$@"`,
       const version = NodePath.join(home, ".t3/runtime/versions/1.2.3");
       NodeFS.mkdirSync(version, { recursive: true });
       NodeFS.writeFileSync(NodePath.join(version, ".install-complete"), "1.2.3");
+      // Each ownership poll runs in a separate process so SQLite sees the held lock.
+      // Call the real probes directly to avoid loading the Effect CLI on every poll.
+      NodeFS.writeFileSync(
+        NodePath.join(home, "home-owned.ts"),
+        `
+import { serviceLauncherIsServing, stateDirOwned } from ${JSON.stringify(NodePath.join(root, "apps/server/src/serviceLauncher.ts"))};
+const baseDir = process.argv[2];
+if (!(await serviceLauncherIsServing(baseDir)) && !(await stateDirOwned(baseDir))) {
+  process.exitCode = 1;
+}
+`,
+      );
       NodeFS.writeFileSync(
         NodePath.join(home, "helper.ts"),
         `
@@ -202,7 +214,7 @@ if [ "$1" = --version ]; then printf 1.2.3; exit; fi
 [ "$1" = __ssh-helper ]
 case "$2" in
   update-remaining) printf 'marker %s\\n' "$(cat "$HOME/clock")" >> "$HOME/events"; exec "$TEST_REAL_NODE" --require "$HOME/clock.cjs" "$HOME/helper.ts" "$2" "$3" ;;
-  home-owned) exec "$TEST_REAL_NODE" "$HOME/helper.ts" "$2" "$3" ;;
+  home-owned) exec "$TEST_REAL_NODE" "$HOME/home-owned.ts" "$3" ;;
   runtime-port | pick-port | wait-ready) exec "$HOME/bin/test-node" - "$3" ;;
   *) exit 1 ;;
 esac

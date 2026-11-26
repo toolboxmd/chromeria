@@ -8,7 +8,7 @@
     "dev": "vp dev",
     "dev:built": "vp build --watch",
     "build": "vp build",
-    "i18n:generate": "gt generate",
+    "i18n:generate": "gt generate && vp fmt src/i18n/translations",
     "preview": "vp preview",
     "test": "vp test run --passWithNoTests --project unit --project browser",
     "i18n:translate": "gt translate"
