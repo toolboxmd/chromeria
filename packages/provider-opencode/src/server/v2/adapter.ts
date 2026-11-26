@@ -509,8 +509,8 @@ const sessionRules = (
   ...mcpRules(mcpServerName),
   // OpenCode's `browser` tools and skill bind only to its desktop app, never to this headless
   // server, and its keyless `websearch` asks for a provider and often returns nothing; T3's
-  // `preview_*`, `web_search` and `web_read` replace them. Denying "*" last hides them even
-  // after full access's `*` allow.
+  // `preview_*`, `web_search` and `web_read` replace them. Last match wins, so these denies
+  // hide them even after full access's `*` allow; the skill deny names only `browser`.
   rule("browser", "deny"),
   { action: "skill", resource: "browser", effect: "deny" },
   rule("websearch", "deny"),
