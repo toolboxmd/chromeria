@@ -156,6 +156,17 @@ describe("ServerCookieMirror", () => {
     await send([desktop("datadome", "desktop-verdict"), desktop("_px3", "desktop-verdict")]);
     expect(state()).toMatchObject({ datadome: ["mirrored-earlier", -1] });
     expect(jar.has("_px3")).toBe(false);
+    // A delivery that fails before it applies is retried in full.
+    const failing = vi.spyOn(jar, "delete").mockImplementationOnce(() => {
+      throw new Error("synthetic disconnect");
+    });
+    await expect(
+      send([
+        { type: "remove", key: { name: "datadome", domain: ".dash.example.test", path: "/" } },
+      ]),
+    ).rejects.toThrow();
+    failing.mockRestore();
+    expect(jar.has("datadome")).toBe(true);
     const withdraw = () =>
       send([
         { type: "remove", key: { name: "datadome", domain: ".dash.example.test", path: "/" } },

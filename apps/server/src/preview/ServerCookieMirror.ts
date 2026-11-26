@@ -156,9 +156,7 @@ export class ServerCookieMirror {
         // acknowledgement must not delete a verdict the profile earned since.
         if (mutation.type === "remove" && isAntiBotVerdictCookie(mutation.key.name)) {
           const key = cookieMirrorKey(mutation.key);
-          if (withdrawn.has(key)) return false;
-          withdrawn.add(key);
-          return true;
+          return !withdrawn.has(key);
         }
         const key = cookieMirrorKey(mutation.type === "set" ? mutation.cookie : mutation.key);
         const last = mirrored.get(key);
@@ -171,6 +169,10 @@ export class ServerCookieMirror {
         );
       });
       await attached.store.apply(mutations);
+      // Marked only once applied, so a failed delivery is retried.
+      for (const mutation of mutations)
+        if (mutation.type === "remove" && isAntiBotVerdictCookie(mutation.key.name))
+          withdrawn.add(cookieMirrorKey(mutation.key));
       const stored = mutations.length > 0 ? await read() : current;
       for (const mutation of mutations)
         if (mutation.type === "set") {
