@@ -4153,7 +4153,7 @@ sources and reasons.
 ```json
 {
   "id": "prism-codex-credits",
-  "purpose": "Let Prism admit a Codex instance whose plan windows are spent when its own account/rateLimits/read, made for that decision and bounded off the decision's path, shows credits that can pay. The credit rule is upstream's codexCreditBlocks, applied to the raw response without its snapshot merge. The per-instance prismUseCredits setting, on when absent, turns it off; the web usage popover carries one switch per Codex login that writes it for the same login on every connected environment. Drop this feature when upstream ships credit continuation that Prism's window check uses.",
+  "purpose": "Let Prism admit a Codex instance whose plan windows are spent when its own account/rateLimits/read, made for that decision and bounded off the decision's path, shows credits that can pay. The credit rule is upstream's codexCreditBlocks, applied to the raw response without its snapshot merge. The per-instance prismUseCredits setting, on when absent, turns it off; the web usage popover carries one switch per Codex login that writes it for the same login on every enabled environment and names the ones it could not change, a disconnected one included. Drop this feature when upstream ships credit continuation that Prism's window check uses.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/1001",
     "https://github.com/toolboxmd/chromeria/issues/1029"

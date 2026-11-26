@@ -22,15 +22,31 @@ export interface CreditUseTarget {
   }>;
 }
 
-/** The named instance and every other instance of its login, grouped by connected environment. */
+/**
+ * The account's own instance and every other instance of its login, grouped by environment. The
+ * instance comes from the account's key and environments, never from its redeem target, which a
+ * usage hub holding a banked reset for the same login replaces. A hub-only account has none.
+ */
 export function creditUseTargets(
   environments: ReadonlyMap<EnvironmentId, CreditUseEnvironment>,
-  named: { readonly environmentId: EnvironmentId; readonly instanceId: ProviderInstanceId },
+  account: {
+    readonly key: string;
+    readonly environments: ReadonlyArray<{ readonly environmentId: EnvironmentId }>;
+  },
 ): ReadonlyArray<CreditUseTarget> {
+  const own = account.environments.flatMap(({ environmentId }) =>
+    (environments.get(environmentId)?.serverConfig?.providers ?? []).flatMap((provider) =>
+      // `collectLimitAccounts` keys an account by the first native instance merged into it.
+      `${environmentId}:${provider.instanceId}` === account.key
+        ? [{ environmentId, instanceId: provider.instanceId }]
+        : [],
+    ),
+  )[0];
+  if (!own) return [];
   const targets = new Map<EnvironmentId, CreditUseTarget>();
   for (const { environmentId, instanceId } of [
-    named,
-    ...instancesWithRedeemedLogin(environments, named),
+    own,
+    ...instancesWithRedeemedLogin(environments, own),
   ]) {
     const environment = environments.get(environmentId);
     const target = targets.get(environmentId);

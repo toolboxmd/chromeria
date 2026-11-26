@@ -243,12 +243,7 @@ function SegmentPopover({
           ))}
         </div>
       ) : null}
-      {account.driver === "codex" && account.redeem && "instanceId" in account.redeem.input ? (
-        <PrismUseCredits
-          environmentId={account.redeem.environmentId}
-          instanceId={account.redeem.input.instanceId}
-        />
-      ) : null}
+      {account.driver === "codex" ? <PrismUseCredits account={account} /> : null}
     </div>
   );
 }

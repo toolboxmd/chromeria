@@ -5,6 +5,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
+  UsageLimitSourceId,
 } from "@t3tools/contracts";
 import { AtomRegistry } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
@@ -12,13 +13,15 @@ import { page, userEvent } from "vite-plus/test/browser";
 
 import "~/index.css";
 
-import { render } from "../../../test/render";
+import { fakeTimers, render } from "../../../test/render";
 import { environmentPresentations } from "../../state/presentation";
 import { UsageLimitsPooled } from "./UsageLimitsPooled";
 
 const state = vi.hoisted(() => ({
   deniedEnvironments: new Set<string>(),
   failingEnvironments: new Set<string>(),
+  silentEnvironments: new Set<string>(),
+  realCommand: false,
   updateSettings: vi.fn(),
 }));
 
@@ -35,9 +38,15 @@ vi.mock("../../state/presentation", async (importOriginal) => {
   };
 });
 
-vi.mock("../../state/use-atom-command", () => ({
-  useAtomCommand: () => state.updateSettings,
-}));
+vi.mock("../../state/use-atom-command", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../state/use-atom-command")>();
+  return {
+    useAtomCommand: ((...args: Parameters<typeof original.useAtomCommand>) =>
+      state.realCommand
+        ? original.useAtomCommand(...args)
+        : state.updateSettings) as typeof original.useAtomCommand,
+  };
+});
 
 vi.mock("../../state/session", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../state/session")>()),
@@ -94,17 +103,52 @@ const environment = (
   serverConfig: { providers, settings: { ...DEFAULT_SERVER_SETTINGS, prismUseCredits } },
 });
 
+/** A usage hub on bestia that reports the owner's Codex login with a banked reset. */
+const hubWithBankedReset = {
+  id: UsageLimitSourceId.make("hub"),
+  kind: "cliproxy" as const,
+  label: "Hub",
+  checkedAt,
+  accounts: [
+    {
+      id: "codex-owner@example.com.json",
+      driver: ProviderDriverKind.make("codex"),
+      ...owner,
+      usageLimits: {
+        checkedAt,
+        windows: [{ id: "weekly", label: "Weekly", kind: "weekly" as const, usedPercent: 20 }],
+        resetCredits: { availableCount: 2, nextCreditId: "hub-credit" },
+      },
+    },
+  ],
+};
+
 /** One Codex login on three machines, another email on rocky, another workspace on cavallo, and Claude. */
-function setup(saved: {
-  readonly bestia?: Record<string, boolean>;
-  readonly rocky?: Record<string, boolean>;
-  readonly cavallo?: Record<string, boolean>;
-}) {
+function setup(
+  saved: {
+    readonly bestia?: Record<string, boolean>;
+    readonly rocky?: Record<string, boolean>;
+    readonly cavallo?: Record<string, boolean>;
+  },
+  options: { readonly hub?: boolean; readonly realCommand?: boolean } = {},
+) {
   state.deniedEnvironments = new Set();
   state.failingEnvironments = new Set();
+  state.silentEnvironments = new Set();
+  state.realCommand = options.realCommand ?? false;
   state.updateSettings.mockReset();
-  state.updateSettings.mockImplementation(async ({ environmentId }: { environmentId: string }) =>
-    state.failingEnvironments.has(environmentId) ? { _tag: "Failure" } : { _tag: "Success" },
+  state.updateSettings.mockImplementation(
+    ({ environmentId }: { environmentId: string }, call: { signal: AbortSignal }) =>
+      state.silentEnvironments.has(environmentId)
+        ? // Like the real command, a write nobody answers settles only when its signal aborts.
+          new Promise((resolve) =>
+            call.signal.addEventListener("abort", () => resolve({ _tag: "Failure" })),
+          )
+        : Promise.resolve(
+            state.failingEnvironments.has(environmentId)
+              ? { _tag: "Failure" }
+              : { _tag: "Success" },
+          ),
   );
   const presentations = new Map([
     [
@@ -147,6 +191,15 @@ function setup(saved: {
       ),
     ],
   ]);
+  const shown = options.hub
+    ? {
+        ...presentations.get(bestia)!,
+        serverConfig: {
+          ...presentations.get(bestia)!.serverConfig,
+          usageLimitSources: [hubWithBankedReset],
+        },
+      }
+    : presentations.get(bestia)!;
   const registry = AtomRegistry.make({
     initialValues: [
       [environmentPresentations.presentationsWithProvidersAtom, presentations as never],
@@ -154,10 +207,7 @@ function setup(saved: {
   });
   return (
     <RegistryContext.Provider value={registry}>
-      <UsageLimitsPooled
-        presentations={new Map([[bestia, presentations.get(bestia)!]])}
-        now={Date.parse(checkedAt)}
-      />
+      <UsageLimitsPooled presentations={new Map([[bestia, shown]])} now={Date.parse(checkedAt)} />
     </RegistryContext.Provider>
   );
 }
@@ -237,6 +287,52 @@ it("names the machines a failed write or a missing permission left unchanged", a
 
   await expect.element(page.getByText("Not changed on Rocky, Cavallo.")).toBeVisible();
   expect(Object.keys(patches())).toEqual(["bestia", "rocky"]);
+});
+
+it("keeps the switch when a usage hub holds the login's banked reset", async () => {
+  await using screen = await render(setup({ rocky: { codex_main: false } }, { hub: true }));
+  // The hub's credits show on the account, so its redeem target is the hub, not the instance.
+  await userEvent.click(
+    screen.getByRole("button", { name: /^Codex Work: 80% left.*2 reset credits banked/ }),
+  );
+
+  await expect.element(useCredits()).toHaveAttribute("aria-checked", "mixed");
+  await userEvent.click(useCredits());
+  expect(patches()).toEqual({
+    bestia: { prismUseCredits: { codex_work: false } },
+    rocky: { prismUseCredits: { codex_main: false } },
+    cavallo: { prismUseCredits: { codex_work: false } },
+  });
+});
+
+it("is busy while a machine does not answer, then names it after 10 seconds", async () => {
+  await using screen = await render(setup({}));
+  state.silentEnvironments.add("rocky");
+  await userEvent.click(screen.getByRole("button", { name: /^Codex Work: 80% left/ }));
+  await expect.element(useCredits()).toBeVisible();
+  using _timers = fakeTimers();
+  await userEvent.click(useCredits());
+
+  await expect.element(useCredits()).toHaveAttribute("aria-busy", "true");
+  await expect.element(useCredits()).toBeDisabled();
+  await userEvent.click(useCredits(), { force: true });
+  expect(state.updateSettings).toHaveBeenCalledTimes(3);
+  await expect.element(page.getByRole("status")).not.toBeInTheDocument();
+
+  await vi.advanceTimersByTimeAsync(9_999);
+  await expect.element(page.getByRole("status")).not.toBeInTheDocument();
+  await vi.advanceTimersByTimeAsync(1);
+  await expect.element(page.getByText("Not changed on Rocky.")).toBeVisible();
+  await expect.element(useCredits()).toBeEnabled();
+  await expect.element(useCredits()).not.toHaveAttribute("aria-busy");
+});
+
+it("names enabled machines that are not connected, through the real settings command", async () => {
+  await using screen = await render(setup({}, { realCommand: true }));
+  await userEvent.click(screen.getByRole("button", { name: /^Codex Work: 80% left/ }));
+  await userEvent.click(useCredits());
+
+  await expect.element(page.getByText("Not changed on Bestia, Rocky, Cavallo.")).toBeVisible();
 });
 
 it("offers no credit switch for another provider", async () => {
