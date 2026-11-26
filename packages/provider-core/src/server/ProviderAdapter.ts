@@ -1,3 +1,6 @@
+import { ThreadTools } from "@t3tools/contracts";
+import type { ExecutionPurpose } from "@t3tools/contracts";
+import { ThreadBare, type BareSupport } from "@t3tools/contracts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
   type AgentFeedbackMode,
@@ -63,6 +66,8 @@ export const ProviderAdapterV2RuntimeWorkspace = Schema.Struct({
 export type ProviderAdapterV2RuntimeWorkspace = typeof ProviderAdapterV2RuntimeWorkspace.Type;
 
 export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
+  bare: Schema.optional(ThreadBare),
+  tools: Schema.optional(ThreadTools),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   cwd: Schema.NullOr(Schema.String),
@@ -220,6 +225,8 @@ export const ProviderAdapterV2Event = Schema.Union([
     providerTurnId: ProviderTurnId,
     runOrdinal: PositiveInt,
     status: Schema.Literals(["completed", "interrupted", "cancelled"]),
+    /** The runtime was closed, so work it owned cannot report further results. */
+    backgroundWork: Schema.optional(Schema.Literal("ended")),
     failure: Schema.Null,
     reason: Schema.optional(Schema.String),
     threadDisposition: Schema.Literals(["reusable", "broken"]),
@@ -237,6 +244,7 @@ export const ProviderAdapterV2Event = Schema.Union([
     /** The row the failure lands on; defaults to the turn's `terminal-failure` row. */
     failureItemId: Schema.optional(TurnItemId),
     status: Schema.Literal("failed"),
+    backgroundWork: Schema.optional(Schema.Literal("ended")),
     failure: OrchestrationV2ProviderFailure,
     retry: Schema.optional(OrchestrationV2ProviderRetry),
     retryStartedAt: Schema.optional(Schema.DateTimeUtc),
@@ -565,6 +573,8 @@ export const ProviderAdapterV2Error = Schema.Union([
 export type ProviderAdapterV2Error = typeof ProviderAdapterV2Error.Type;
 
 export interface ProviderAdapterV2OpenSessionInput {
+  /** Per-call creation text; cached and loaded sessions never replace their native head. */
+  readonly newSessionInstructions?: string;
   readonly threadId: ThreadId;
   readonly providerSessionId: ProviderSessionId;
   readonly modelSelection: ModelSelection;
@@ -588,6 +598,7 @@ export interface ProviderAdapterV2EnsureThreadInput {
 
 export interface ProviderAdapterV2TurnInput {
   readonly agentFeedback?: AgentFeedbackMode;
+  readonly purpose?: ExecutionPurpose;
   readonly appThread: OrchestrationV2AppThread;
   readonly threadId: ThreadId;
   readonly runId: RunId;
@@ -631,6 +642,7 @@ export function resumeTurnInput(
 }
 
 export interface ProviderAdapterV2SteerInput {
+  readonly purpose?: ExecutionPurpose;
   readonly threadId: ThreadId;
   readonly runId: RunId;
   readonly providerThread: OrchestrationV2ProviderThread;
@@ -645,7 +657,18 @@ export interface ProviderAdapterV2SteerInput {
 export interface ProviderAdapterV2InterruptInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly providerTurnId: ProviderTurnId;
+  /**
+   * Use Stop's native cancellation scope, including background work the harness
+   * can stop. Set by Stop and explicit cut-ins; the next start may respawn the runtime.
+   */
   readonly requestRuntimeRestart?: boolean;
+  /**
+   * Set with requestRuntimeRestart for an explicit cut-in. Publish stopped work's
+   * ends before the turn terminal. If cancellation is unconfirmed, keep the turn
+   * open and fail so its run still observes that work and no replacement starts.
+   * Stop leaves this unset and keeps the harness's existing stop behavior.
+   */
+  readonly replacementFollows?: true;
 }
 
 export interface ProviderAdapterV2RuntimeRequestResponseInput {
@@ -683,6 +706,7 @@ export type ProviderAdapterV2RollbackTarget =
     };
 
 export interface ProviderAdapterV2RollbackThreadInput {
+  readonly newSessionInstructions?: string;
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly target: ProviderAdapterV2RollbackTarget;
   readonly providerThreadTurns: ReadonlyArray<OrchestrationV2ProviderTurn>;
@@ -768,6 +792,14 @@ export type ProviderAdapterV2SubagentOutcome = {
 };
 
 export interface ProviderAdapterV2SessionRuntime {
+  readonly createdSessions?: () => ReadonlyArray<{
+    readonly nativeSessionId: string;
+    readonly text: string;
+    readonly site: "open" | "fallback" | "rollback";
+  }>;
+  readonly getBareReceipt?: (
+    thread: OrchestrationV2ProviderThread,
+  ) => Effect.Effect<import("@t3tools/contracts").BareReceipt>;
   readonly instanceId: ProviderInstanceId;
   readonly driver: ProviderDriverKind;
   readonly providerSessionId: ProviderSessionId;
@@ -783,6 +815,12 @@ export interface ProviderAdapterV2SessionRuntime {
     providerThread: OrchestrationV2ProviderThread,
     options?: { readonly includeSubagents?: boolean },
   ) => Effect.Effect<boolean>;
+  /** Factual ownership of an ended root's stop: an explicit cut-in, or a
+   * terminal still deferred for live descendants. Omitted when nothing is kept. */
+  readonly endedTurnHold?: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    readonly providerTurnId: ProviderTurnId;
+  }) => Effect.Effect<"cut-in" | "descendants" | undefined>;
   /**
    * Set only if all session background tasks and tool calls end with its process. Releasing the
    * session then clears its task roster and interrupts its open tool calls; otherwise threads
@@ -895,6 +933,7 @@ export interface ProviderAdapterV2SessionRuntime {
 export class ProviderAdapterV2 extends Context.Service<
   ProviderAdapterV2,
   {
+    readonly bareSupport?: Effect.Effect<BareSupport>;
     readonly instanceId: ProviderInstanceId;
     readonly driver: ProviderDriverKind;
     /**
