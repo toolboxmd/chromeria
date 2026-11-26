@@ -3961,11 +3961,21 @@ sources and reasons.
 ```json
 {
   "id": "opencode-deferred-tools",
-  "purpose": "OpenCode 1.x and 2.x register the T3 MCP server with deferred tool exposure, so a new thread lists the core tools plus tool_search instead of every schema; a bare launch that names individual T3 tools keeps them listed upfront. Drop when upstream sends the exposure header from the OpenCode adapter or replaces deferred listing.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/778"],
-  "prs": ["https://github.com/toolboxmd/chromeria/pull/780"],
+  "purpose": "OpenCode 1.x registers the T3 MCP server with deferred tool exposure, so a new thread lists the core tools plus tool_search instead of every schema; a bare launch that names individual T3 tools keeps them listed upfront. OpenCode 2 lists every T3 tool, because its code mode already shows a partial catalog and finds the rest with its own search, and its session rules hide OpenCode's desktop-only browser tools and skill and its keyless websearch. Drop when upstream sends the exposure header from the OpenCode adapter or replaces deferred listing.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/778",
+    "https://github.com/toolboxmd/chromeria/issues/1013",
+    "https://github.com/toolboxmd/chromeria/issues/1018"
+  ],
+  "prs": [
+    "https://github.com/toolboxmd/chromeria/pull/780",
+    "https://github.com/toolboxmd/chromeria/pull/1017"
+  ],
   "newFiles": [],
-  "upstreamFiles": [],
+  "upstreamFiles": [
+    "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.integration.test.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/opencode2_fork/opencode_transcript.ndjson"
+  ],
   "sharedFiles": [
     "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts",
     "packages/provider-opencode/src/server/adapter.ts",

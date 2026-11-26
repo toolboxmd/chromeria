@@ -104,7 +104,7 @@ import {
 } from "@t3tools/provider-core/server/subagentProjection";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
-import { OPENCODE_PROVIDER, openCodePermissionRequestKind, t3McpHeaders } from "../adapter.ts";
+import { OPENCODE_PROVIDER, openCodePermissionRequestKind } from "../adapter.ts";
 import {
   openCodeCodeModeHtmlRenders,
   openCodeCodeModeSentMessages,
@@ -507,6 +507,13 @@ const sessionRules = (
   ...(policy.interactionMode === "plan" ? [rule("edit", "deny")] : []),
   ...paths,
   ...mcpRules(mcpServerName),
+  // OpenCode's `browser` tools and skill bind only to its desktop app, never to this headless
+  // server, and its keyless `websearch` asks for a provider and often returns nothing; T3's
+  // `preview_*`, `web_search` and `web_read` replace them. Last match wins, so these denies
+  // hide them even after full access's `*` allow; the skill deny names only `browser`.
+  rule("browser", "deny"),
+  { action: "skill", resource: "browser", effect: "deny" },
+  rule("websearch", "deny"),
 ];
 
 const sameRules = (left: ReadonlyArray<Rule> | undefined, right: ReadonlyArray<Rule>) =>
@@ -4957,7 +4964,9 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (
             config: new Mcp.RemoteConfig({
               type: "remote",
               url: mcpSession!.endpoint,
-              headers: t3McpHeaders(wanted.credential, turnInput.runtimePolicy.bare),
+              // OpenCode 2's code mode already lists a partial catalog and finds the rest with
+              // its own `search`, so deferring behind T3's `tool_search` would only hide tools.
+              headers: { Authorization: wanted.credential },
               oauth: false,
             }),
           })

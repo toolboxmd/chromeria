@@ -66,8 +66,13 @@ const mcpRules = (name: string) => [
   { action: `t3-code-thread_${name}_*`, resource: "*", effect: "allow" },
 ];
 const FULL_ACCESS = [{ action: "*", resource: "*", effect: "allow" }];
+const HIDDEN_OPENCODE_TOOLS = [
+  { action: "browser", resource: "*", effect: "deny" },
+  { action: "skill", resource: "browser", effect: "deny" },
+  { action: "websearch", resource: "*", effect: "deny" },
+];
 
-const t3Rules = (name: string) => [...FULL_ACCESS, ...mcpRules(name)];
+const t3Rules = (name: string) => [...FULL_ACCESS, ...mcpRules(name), ...HIDDEN_OPENCODE_TOOLS];
 
 const BUILD_PATHS = [
   {
@@ -115,6 +120,7 @@ const autoEditRules = (name: string) => [
   { action: "external_directory", resource: "*", effect: "ask" },
   ...BUILD_PATHS,
   ...mcpRules(name),
+  ...HIDDEN_OPENCODE_TOOLS,
 ];
 
 const planRules = (name: string) => [
@@ -122,6 +128,7 @@ const planRules = (name: string) => [
   { action: "edit", resource: "*", effect: "deny" },
   ...PLAN_PATHS,
   ...mcpRules(name),
+  ...HIDDEN_OPENCODE_TOOLS,
 ];
 
 const sessionInfo = (directory: string, permissions: ReadonlyArray<unknown>, title: string) => ({

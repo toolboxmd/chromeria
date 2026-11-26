@@ -133,7 +133,16 @@ const mcpRules = [
   { action: "t3-code-*", resource: "*", effect: "deny" },
   { action: "t3-code-thread_opencode2-adapter_*", resource: "*", effect: "allow" },
 ];
-const t3Rules = [{ action: "*", resource: "*", effect: "allow" }, ...mcpRules];
+const desktopBrowserRules = [
+  { action: "browser", resource: "*", effect: "deny" },
+  { action: "skill", resource: "browser", effect: "deny" },
+  { action: "websearch", resource: "*", effect: "deny" },
+];
+const t3Rules = [
+  { action: "*", resource: "*", effect: "allow" },
+  ...mcpRules,
+  ...desktopBrowserRules,
+];
 const TITLE = "Prime check";
 const sessionInfo = (overrides: Record<string, unknown> = {}) => ({
   id: SESSION,
@@ -327,6 +336,7 @@ const supervisedRules = [
   { action: "external_directory", resource: "*", effect: "ask" },
   ...buildPaths,
   ...mcpRules,
+  ...desktopBrowserRules,
 ];
 
 const shellAsk = {
@@ -2631,7 +2641,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
         reply("session.update", null),
         out("session.update", {
           sessionID: CHILD,
-          permissions: [...supervisedRules.slice(0, 3), ...mcpRules],
+          permissions: [...supervisedRules.slice(0, 3), ...mcpRules, ...desktopBrowserRules],
         }),
         reply("session.update", null),
         out("session.prompt", { sessionID: SESSION, text: "<any>" }),
@@ -6943,7 +6953,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
         config: {
           type: "remote",
           url: "http://127.0.0.1:3773/mcp",
-          headers: { Authorization: "Bearer thread-credential", "t3-tool-exposure": "deferred" },
+          headers: { Authorization: "Bearer thread-credential" },
           oauth: false,
         },
       });
@@ -7015,6 +7025,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
               { action: "*", resource: "*", effect: "allow" },
               { action: "t3-code-*", resource: "*", effect: "deny" },
               { action: `${server}_*`, resource: "*", effect: "allow" },
+              ...desktopBrowserRules,
             ],
           }),
         ),
@@ -7025,7 +7036,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           config: {
             type: "remote",
             url: "http://127.0.0.1:3773/mcp",
-            headers: { Authorization: "Bearer thread-credential", "t3-tool-exposure": "deferred" },
+            headers: { Authorization: "Bearer thread-credential" },
             oauth: false,
           },
         }),
@@ -7083,6 +7094,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
                   { action: "*", resource: "*", effect: "allow" },
                   { action: "t3-code-*", resource: "*", effect: "deny" },
                   { action: "t3-code_*", resource: "*", effect: "allow" },
+                  ...desktopBrowserRules,
                 ],
               }),
             ),
@@ -7093,10 +7105,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
               config: {
                 type: "remote",
                 url: "http://127.0.0.1:3773/mcp",
-                headers: {
-                  Authorization: `Bearer credential-${index}`,
-                  "t3-tool-exposure": "deferred",
-                },
+                headers: { Authorization: `Bearer credential-${index}` },
                 oauth: false,
               },
             }),
@@ -8807,6 +8816,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
             { action: "*", resource: "*", effect: "allow" },
             { action: "t3-code-*", resource: "*", effect: "deny" },
             { action: "t3-code-thread_opencode2-adapter_fork_*", resource: "*", effect: "allow" },
+            ...desktopBrowserRules,
           ],
         }),
         reply("session.update", null),
