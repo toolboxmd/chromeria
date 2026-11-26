@@ -5929,6 +5929,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }).pipe(turnTerminalizationPermit.withPermits(1)),
         );
 
+        // Codex reviews auto-mode approvals with a subagent whose usage the turn's stream may omit.
+        yield* client.handleServerNotification("item/autoApprovalReview/started", (payload) =>
+          Effect.gen(function* () {
+            const context = (yield* Ref.get(activeTurns)).get(payload.turnId);
+            if (context !== undefined) markSubagentUsage(context);
+          }),
+        );
+
         yield* client.handleServerNotification("error", (payload) =>
           Effect.gen(function* () {
             const context = yield* awaitActiveTurn(payload.turnId);

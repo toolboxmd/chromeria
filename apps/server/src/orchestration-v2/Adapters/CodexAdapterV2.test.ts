@@ -3785,6 +3785,29 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       closure: { version: 1, state: "open", reason: "native_child_observed" } as const,
     },
     {
+      name: "leaves a turn open when Codex reviews an approval with its auto reviewer",
+      frames: (nativeThreadId: string, nativeTurnId: string) => [
+        {
+          type: "emit_inbound" as const,
+          label: "auto review started",
+          frame: {
+            method: "item/autoApprovalReview/started",
+            params: {
+              threadId: nativeThreadId,
+              turnId: nativeTurnId,
+              reviewId: "closure-review",
+              startedAtMs: 1782622441000,
+              targetItemId: "closure-command",
+              action: { type: "command", command: "git push", cwd: "/repo", source: "shell" },
+              review: { status: "inProgress" },
+            },
+          },
+        },
+        codexUsageFrame({ nativeThreadId, turnId: nativeTurnId, total: 10, last: 10 }),
+      ],
+      closure: { version: 1, state: "open", reason: "native_child_observed" } as const,
+    },
+    {
       name: "leaves an interrupted turn open",
       status: "interrupted" as const,
       frames: (nativeThreadId: string, nativeTurnId: string) => [
