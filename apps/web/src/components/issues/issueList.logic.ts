@@ -3,6 +3,7 @@ import type {
   IssueLink,
   GitHubIssueListCursors,
   GitHubIssueListEntry,
+  GitHubIssueListInput,
   IssueListRepository,
   GitHubIssueListResult,
   GitHubIssueListSort,
@@ -80,10 +81,52 @@ export function issueKey(issue: Pick<IssueLink, "host" | "repository" | "number"
   return `${repositoryKey(issue.host, issue.repository)}#${issue.number}`;
 }
 
+export interface IssueListTarget {
+  readonly environmentId: EnvironmentId;
+  readonly input: GitHubIssueListInput;
+}
+
+/**
+ * Every page to read: each server's listing, then the continuation of each page that has
+ * answered, until a page carries none. Status is computed here in the client, so a group's count
+ * is a total only when `complete`: every server's last page answered. A continuation already
+ * asked for is not asked again, so a server repeating a cursor ends its walk.
+ */
+export function issueListPages(
+  listings: ReadonlyArray<IssueListTarget>,
+  answerOf: (target: IssueListTarget) => Pick<GitHubIssueListResult, "nextCursors"> | null,
+): { readonly targets: ReadonlyArray<IssueListTarget>; readonly complete: boolean } {
+  const targets: Array<IssueListTarget> = [];
+  const asked = new Set<string>();
+  let complete = true;
+  // Page by page across servers, so a page that arrives later adds its rows after the ones shown.
+  let round = listings;
+  while (round.length > 0) {
+    const next: Array<IssueListTarget> = [];
+    for (const target of round) {
+      const key = JSON.stringify(target);
+      if (asked.has(key)) continue;
+      asked.add(key);
+      targets.push(target);
+      const answer = answerOf(target);
+      if (answer === null) {
+        complete = false;
+      } else if (Object.keys(answer.nextCursors).length > 0) {
+        next.push({
+          environmentId: target.environmentId,
+          input: { ...target.input, cursors: answer.nextCursors },
+        });
+      }
+    }
+    round = next;
+  }
+  return { targets, complete };
+}
+
 /**
  * The answers of every server and every page already loaded, in the order they were asked. Two
  * servers with one repository return the same Issue; the first answer keeps it. A later page of a
- * server replaces its continuation, which is how "load more" walks forward.
+ * server replaces its continuation, which is how the page walk moves forward.
  */
 export function mergeIssueLists(
   values: ReadonlyArray<readonly [EnvironmentId, GitHubIssueListResult]>,

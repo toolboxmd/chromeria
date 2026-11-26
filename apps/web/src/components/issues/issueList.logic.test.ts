@@ -11,6 +11,7 @@ import {
   buildIssueTree,
   collectIssueFacets,
   issueKey,
+  issueListPages,
   matchesIssueFilters,
   mergeIssueLists,
   repositoryKey,
@@ -104,16 +105,51 @@ describe("mergeIssueLists", () => {
   });
 
   it("walks a server's continuation forward and drops it once exhausted", () => {
-    const first = mergeIssueLists([
-      [ENV_A, result([strip(entry(3))], { nextCursors: { "github.com#0": "c1" } })],
-    ]);
+    const listing = { environmentId: ENV_A, input: { state: "open", limit: 1 } } as const;
+    const continuation = {
+      environmentId: ENV_A,
+      input: { state: "open", limit: 1, cursors: { "github.com#0": "c1" } },
+    } as const;
+    const pageOne = result([strip(entry(3))], { nextCursors: { "github.com#0": "c1" } });
+    const pageTwo = result([strip(entry(2))], { nextCursors: {} });
+    const answers = new Map([[JSON.stringify(listing), pageOne]]);
+    const answerOf = (target: unknown) => answers.get(JSON.stringify(target)) ?? null;
+
+    // The first page asks for its continuation unprompted; until that answers, rows are missing.
+    expect(issueListPages([listing], answerOf)).toEqual({
+      targets: [listing, continuation],
+      complete: false,
+    });
+    const first = mergeIssueLists([[ENV_A, pageOne]]);
     expect(first?.nextCursors.get(ENV_A)).toEqual({ "github.com#0": "c1" });
+
+    answers.set(JSON.stringify(continuation), pageTwo);
+    expect(issueListPages([listing], answerOf)).toEqual({
+      targets: [listing, continuation],
+      complete: true,
+    });
     const second = mergeIssueLists([
-      [ENV_A, result([strip(entry(3))], { nextCursors: { "github.com#0": "c1" } })],
-      [ENV_A, result([strip(entry(2))], { nextCursors: {} })],
+      [ENV_A, pageOne],
+      [ENV_A, pageTwo],
     ]);
     expect(second?.entries.map((row) => row.number)).toEqual([3, 2]);
     expect(second?.nextCursors.has(ENV_A)).toBe(false);
+  });
+
+  it("is incomplete while any server has not answered, and asks no page twice", () => {
+    const listingA = { environmentId: ENV_A, input: { state: "open" } } as const;
+    const listingB = { environmentId: ENV_B, input: { state: "open" } } as const;
+    // A server that answers every page with the same cursor would otherwise be walked forever.
+    const stuck = result([], { nextCursors: { "github.com#0": "c1" } });
+    const pages = issueListPages([listingA, listingB], (target) =>
+      target.environmentId === ENV_A ? stuck : null,
+    );
+    expect(pages.targets).toEqual([
+      listingA,
+      listingB,
+      { environmentId: ENV_A, input: { state: "open", cursors: { "github.com#0": "c1" } } },
+    ]);
+    expect(pages.complete).toBe(false);
   });
 
   it("counts each repository on another forge once, across pages and servers", () => {

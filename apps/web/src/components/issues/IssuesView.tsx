@@ -27,12 +27,12 @@ import {
 import { msg, T, useGT, useMessages } from "gt-react";
 import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 
+import { RelativeTime } from "~/components/RelativeTime";
 import { isElectron } from "~/env";
 import { cn } from "~/lib/utils";
 import { useAllEnvironmentShellsBootstrapped, useProjects } from "~/state/entities";
 import { useEnvironments } from "~/state/environments";
 import { issueDetailRead, useIssueList } from "~/state/githubIssues";
-import type { EnvironmentQueryTarget } from "~/state/pullRequests";
 import { useDebouncedValue } from "~/state/queries";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { buildThreadRouteParams } from "~/threadRoutes";
@@ -87,7 +87,9 @@ import { ListModeToggle } from "./ListModeToggle";
 import { useIssueRowThreads } from "./useIssueRowThreads";
 import { useStartThreadFromIssue } from "./useStartThreadFromIssue";
 
-const PAGE_SIZE = 50;
+// GitHub's ceiling for a search page and one `threadsForIssues` batch, so a later page leaves the
+// thread reads of the rows already shown alone.
+const PAGE_SIZE = 100;
 const SEARCH_DEBOUNCE_MS = 250;
 const PREFERENCES_KEY = "t3code:issue-list-preferences";
 
@@ -218,34 +220,24 @@ export function IssuesView() {
       ...(repository?.length === 2 ? { repositories: [filters.repository!] } : {}),
     };
   })();
-  const baseKey = JSON.stringify(baseInput);
-  const [pages, setPages] = useState<{
-    readonly key: string;
-    readonly targets: ReadonlyArray<EnvironmentQueryTarget<GitHubIssueListInput>>;
-  }>({ key: baseKey, targets: [] });
-  const continuations = pages.key === baseKey ? pages.targets : [];
-  const targets = [
-    ...environmentIds.map((environmentId) => ({ environmentId, input: baseInput })),
-    ...continuations,
-  ];
-  const list = useIssueList(targets);
+  const list = useIssueList(
+    environmentIds.map((environmentId) => ({ environmentId, input: baseInput })),
+  );
   const data = list.data;
-
-  const loadMore = () => {
-    if (data === null || data.nextCursors.size === 0) return;
-    // A page already asked for is retried through Retry, not asked for twice.
-    const asked = new Set(continuations.map((target) => JSON.stringify(target)));
-    const next = [...data.nextCursors]
-      .map(([environmentId, cursors]) => ({ environmentId, input: { ...baseInput, cursors } }))
-      .filter((target) => !asked.has(JSON.stringify(target)));
-    if (next.length === 0) return;
-    setPages({ key: baseKey, targets: [...continuations, ...next] });
-  };
 
   const refresh = () => list.refresh();
 
   const linkEnvironments = new Set(environmentIdsWithCapability(environments, "issueLinks"));
-  const { threadsByIssue, working } = useIssueRowThreads(data?.entries ?? [], linkEnvironments);
+  const rowThreads = useIssueRowThreads(data?.entries ?? [], linkEnvironments);
+  const { threadsByIssue, working } = rowThreads;
+  // Status is computed from every row and its threads, so a count is a total only once all of
+  // both have been read.
+  const countsFinal =
+    data !== null &&
+    list.complete &&
+    list.error === null &&
+    data.errors.length === 0 &&
+    !rowThreads.loading;
   const facts = (() => {
     const byKey = new Map<string, IssueRowFacts>();
     for (const entry of data?.entries ?? []) {
@@ -385,31 +377,44 @@ export function IssuesView() {
     );
   } else {
     body = (
-      <ul className="flex flex-col">
-        {tree === null
-          ? (statusGroups ?? []).map((group) => (
-              <IssueStatusGroup
-                key={group.status}
-                status={group.status}
-                count={group.entries.length}
-                collapsed={collapsed.has(group.status)}
-                onToggle={() =>
-                  setCollapsed((previous) => {
-                    const next = new Set(previous);
-                    if (!next.delete(group.status)) next.add(group.status);
-                    return next;
-                  })
-                }
-              >
-                {group.entries.map((entry) => (
-                  <li key={issueKey(entry)}>{renderRow(entry, false)}</li>
-                ))}
-              </IssueStatusGroup>
-            ))
-          : tree.map((node) => (
-              <IssueTreeItem key={node.key} node={node} depth={0} renderRow={renderRow} />
-            ))}
-      </ul>
+      <>
+        <p className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground">
+          {countsFinal
+            ? gt("{count, plural, one {{count} Issue} other {{count} Issues}}", {
+                count: visible.length,
+              })
+            : gt("{count}+ Issues", { count: visible.length })}
+          {list.isPending && !countsFinal ? (
+            <Spinner size="xs" aria-label={gt("Loading more Issues")} />
+          ) : null}
+        </p>
+        <ul className="flex flex-col">
+          {tree === null
+            ? (statusGroups ?? []).map((group) => (
+                <IssueStatusGroup
+                  key={group.status}
+                  status={group.status}
+                  count={group.entries.length}
+                  final={countsFinal}
+                  collapsed={collapsed.has(group.status)}
+                  onToggle={() =>
+                    setCollapsed((previous) => {
+                      const next = new Set(previous);
+                      if (!next.delete(group.status)) next.add(group.status);
+                      return next;
+                    })
+                  }
+                >
+                  {group.entries.map((entry) => (
+                    <li key={issueKey(entry)}>{renderRow(entry, false)}</li>
+                  ))}
+                </IssueStatusGroup>
+              ))
+            : tree.map((node) => (
+                <IssueTreeItem key={node.key} node={node} depth={0} renderRow={renderRow} />
+              ))}
+        </ul>
+      </>
     );
   }
 
@@ -515,14 +520,6 @@ export function IssuesView() {
               ) : null}
 
               {body}
-
-              {data !== null && data.nextCursors.size > 0 && list.error === null ? (
-                <div className="flex justify-center">
-                  <Button variant="outline" size="sm" onClick={loadMore} disabled={list.isPending}>
-                    {list.isPending ? gt("Loading...") : gt("Load more")}
-                  </Button>
-                </div>
-              ) : null}
             </WorkspacePageContainer>
           </div>
         </div>
@@ -567,12 +564,15 @@ function EmptyState({ children }: { children: ReactNode }) {
 function IssueStatusGroup({
   status,
   count,
+  final,
   collapsed,
   onToggle,
   children,
 }: {
   status: IssueStatus;
   count: number;
+  /** False while rows or their threads are still being read: the count can still change. */
+  final: boolean;
   collapsed: boolean;
   onToggle: () => void;
   children: ReactNode;
@@ -592,7 +592,10 @@ function IssueStatusGroup({
         />
         <IssueStatusGlyph status={status} className="size-3.5" />
         <span>{messages(ISSUE_STATUS_PRESENTATION[status].label)}</span>
-        <span className="tabular-nums">{count}</span>
+        <span className="tabular-nums">
+          {count}
+          {final ? null : "+"}
+        </span>
       </button>
       {collapsed ? null : <ul className="flex flex-col">{children}</ul>}
     </li>
@@ -635,14 +638,15 @@ const IssueRow = memo(function IssueRow({
     <div
       className={cn(
         PULL_REQUEST_ROW_CLASS,
-        "group/issue-row px-2 hover:bg-accent/50",
+        "group/issue-row @container/issue-row relative px-2 hover:bg-accent/50",
         selected && "bg-accent text-accent-foreground",
       )}
     >
       <button
         type="button"
         aria-current={selected ? "true" : undefined}
-        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        // Its hit area covers the row, so the update time beside the threads opens the Issue too.
+        className="flex min-w-0 flex-1 items-center gap-2 text-left after:absolute after:inset-0"
         onClick={() => onOpen(entry)}
       >
         <IssueStatusGlyph status={status} />
@@ -676,22 +680,31 @@ const IssueRow = memo(function IssueRow({
               ))}
             </>
           }
-          updatedAt={entry.updatedAt}
         />
       </button>
       {threads.length > 0 ? (
-        <span className="flex max-w-[40%] shrink-0 items-center gap-1">
+        // The title keeps its room: a narrow row shows the threads as icons, a narrower one not
+        // at all (the side panel, which is what narrows the list, lists them).
+        <span className="hidden max-w-[40%] shrink-0 items-center gap-1 @sm/issue-row:flex">
           {threads.slice(0, 2).map((thread) => (
-            <span key={`${thread.environmentId} ${thread.id}`} className="flex min-w-0 max-w-48">
-              <Button size="xs" variant="ghost" onClick={() => onOpenThread(thread)}>
-                <MessageSquareIcon />
-                <span className="truncate">{thread.title}</span>
-              </Button>
-            </span>
+            <Button
+              key={`${thread.environmentId} ${thread.id}`}
+              size="xs"
+              variant="ghost"
+              className="max-w-48 min-w-0 shrink"
+              aria-label={thread.title}
+              title={thread.title}
+              onClick={() => onOpenThread(thread)}
+            >
+              <MessageSquareIcon />
+              <span className="hidden truncate @lg/issue-row:block">{thread.title}</span>
+            </Button>
           ))}
           {threads.length > 2 ? (
             <Tooltip>
-              <TooltipTrigger render={<span className="shrink-0 text-2xs text-muted-foreground" />}>
+              <TooltipTrigger
+                render={<span className="relative shrink-0 text-2xs text-muted-foreground" />}
+              >
                 +{threads.length - 2}
               </TooltipTrigger>
               <TooltipPopup>
@@ -704,9 +717,13 @@ const IssueRow = memo(function IssueRow({
           ) : null}
         </span>
       ) : null}
+      {/* Outside the title block, so it holds one column whether or not threads sit before it. */}
+      <span className="min-w-16 shrink-0 text-right text-2xs whitespace-nowrap text-muted-foreground tabular-nums">
+        <RelativeTime timestamp={entry.updatedAt} />
+      </span>
       <span
         className={cn(
-          "flex opacity-0 group-hover/issue-row:opacity-100 has-[:focus-visible]:opacity-100",
+          "relative flex opacity-0 group-hover/issue-row:opacity-100 has-[:focus-visible]:opacity-100",
           starting && "opacity-100",
         )}
       >

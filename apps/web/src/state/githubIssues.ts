@@ -11,11 +11,15 @@ import {
   ISSUE_WS_METHODS,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import { Atom } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useRef } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
-import { mergeIssueLists } from "../components/issues/issueList.logic";
+import {
+  issueListPages,
+  mergeIssueLists,
+  type IssueListTarget,
+} from "../components/issues/issueList.logic";
 import {
   issueStateChunks,
   linkedIssueEntries,
@@ -90,12 +94,28 @@ export const issueDetailRead = createEnvironmentRpcCommand(connectionAtomRuntime
 
 const useIssueListsQuery = createMergedEnvironmentQuery("web-issues:list", issueList);
 
-/** One listing per environment, merged into the list the page renders. */
-export function useIssueList(targets: ReadonlyArray<EnvironmentQueryTarget<GitHubIssueListInput>>) {
-  const query = useIssueListsQuery(targets);
+/** Each listing with the continuation pages it leads to, read as soon as a page names one. */
+const issueListPagesAtom = Atom.family((key: string) =>
+  Atom.make((get) =>
+    issueListPages(JSON.parse(key) as ReadonlyArray<IssueListTarget>, (target) =>
+      AsyncResult.getOrElse(get(issueList(target)), () => null),
+    ),
+  ).pipe(Atom.withLabel(`web-issues:list-pages:${key}`)),
+);
+
+/**
+ * One listing per environment with every further page, merged into the list the page renders.
+ * `complete` once every page has answered; a page whose reread failed still counts as answered.
+ */
+export function useIssueList(
+  listings: ReadonlyArray<EnvironmentQueryTarget<GitHubIssueListInput>>,
+) {
+  const pages = useAtomValue(issueListPagesAtom(JSON.stringify(listings)));
+  const query = useIssueListsQuery(pages.targets);
   const data = mergeIssueLists(query.values);
   return {
     data,
+    complete: pages.complete,
     error: query.error?.message ?? null,
     isPending: query.isPending,
     refresh: query.refresh,
