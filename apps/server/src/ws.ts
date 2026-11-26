@@ -2903,6 +2903,20 @@ export const layerWsRpc = (
               );
             return { outcome };
           }),
+        [WS_METHODS.providerClearRedeemedReset]: Effect.fnUntraced(function* (input) {
+          const instance = yield* providerInstances.getInstance(input.instanceId);
+          if (instance === undefined || !instance.enabled) {
+            return yield* new ProviderSetupError({
+              instanceId: input.instanceId,
+              operation: "clear-redeemed-reset",
+              detail: instance ? "This provider is disabled." : "Provider instance not found.",
+            });
+          }
+          return yield* resetRedemptions.clearRedeemed(
+            { instanceId: input.instanceId, driver: instance.driverKind },
+            instance.snapshot,
+          );
+        }),
         [WS_METHODS.providerAuthStart]: (input) => providerAuth.start(input, currentSessionId),
         [WS_METHODS.providerAuthRespond]: (input) =>
           Effect.annotateCurrentSpan({ instanceId: input.instanceId }).pipe(

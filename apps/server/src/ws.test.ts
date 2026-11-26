@@ -3035,8 +3035,10 @@ const resetCreditRpcs = WsRpcGroup.omit(
       tag,
     ): tag is Exclude<
       keyof typeof RpcAuthorization.RPC_REQUIRED_SCOPES,
-      "provider.consumeResetCredit"
-    > => tag !== WS_METHODS.providerConsumeResetCredit,
+      "provider.consumeResetCredit" | "provider.clearRedeemedReset"
+    > =>
+      tag !== WS_METHODS.providerConsumeResetCredit &&
+      tag !== WS_METHODS.providerClearRedeemedReset,
   ),
 );
 
@@ -3173,12 +3175,15 @@ it.effect(
       for (const [instanceId, driver] of Object.entries(instances))
         yield* seedUsageLimitFailure(ProviderInstanceId.make(instanceId), driver);
       const outcomes: Record<string, "reset" | "nothingToReset"> = {};
+      const consumed: Array<string> = [];
       const instanceFor = (instanceId: string) =>
         ({
           instanceId: ProviderInstanceId.make(instanceId),
           driverKind: instances[instanceId as keyof typeof instances],
           enabled: true,
-          consumeResetCredit: () => Effect.succeed(outcomes[instanceId]!),
+          snapshot: { getSnapshot: Effect.succeed({}), refreshUsage: Effect.void },
+          consumeResetCredit: () =>
+            Effect.sync(() => consumed.push(instanceId)).pipe(Effect.as(outcomes[instanceId]!)),
         }) as unknown as ProviderInstance;
       const services = Layer.mergeAll(
         layerUnusedConfigRpcServices,
@@ -3228,6 +3233,15 @@ it.effect(
         );
       }
       assert.deepEqual(yield* voided(), []);
+      // Told of a reset redeemed elsewhere: voids the same way and spends nothing here.
+      consumed.length = 0;
+      assert.deepEqual(
+        yield* client[WS_METHODS.providerClearRedeemedReset]({
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+        }),
+        { voided: 1, usage: "headroom" },
+      );
+      assert.deepEqual(consumed, []);
       for (const instanceId of Object.keys(instances)) {
         outcomes[instanceId] = "reset";
         assert.deepEqual(

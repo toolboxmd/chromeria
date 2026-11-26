@@ -904,3 +904,9 @@ apps/server/src/orchestration-v2/testkit/fixtures/opencode2_fork/opencode_transc
 apps/server/src/provider/CodexProvider.ts
 apps/server/src/provider/CodexProvider.test.ts
 apps/server/src/provider/Drivers/CodexDriver.ts
+
+# A redeemed reset reaches the same login on other machines (#1020).
+apps/web/src/components/usage/UsageLimits.tsx
+apps/web/src/components/usage/UsageLimitsPooled.tsx
+apps/mobile/src/features/usage/UsageLimitsSection.tsx
+docs/user/usage.md

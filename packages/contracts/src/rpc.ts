@@ -505,6 +505,7 @@ import {
   SourceControlSignInResult,
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
+import { ProviderClearRedeemedResetInput, ProviderClearRedeemedResetResult } from "./prism.ts";
 import { Project, ProjectMutation, ProjectMutationError } from "./project.ts";
 
 export const WS_METHODS = {
@@ -546,6 +547,7 @@ export const WS_METHODS = {
   providerMcpSignInComplete: "provider.mcpSignIn.complete",
   providerAuthStart: "provider.auth.start",
   providerConsumeResetCredit: "provider.consumeResetCredit",
+  providerClearRedeemedReset: "provider.clearRedeemedReset",
   providerAuthComplete: "provider.auth.complete",
   chatGptReconnectProfile: "provider.chatgpt.reconnect-profile",
   chatGptImportProfile: "provider.chatgpt.import-profile",
@@ -855,6 +857,12 @@ const WsProviderConsumeResetCreditRpc = Rpc.make(WS_METHODS.providerConsumeReset
   payload: ProviderConsumeResetCreditInput,
   success: ProviderConsumeResetCreditResult,
   error: Schema.Union([ProviderSetupError, UsageLimitSourceError, EnvironmentAuthorizationError]),
+});
+
+const WsProviderClearRedeemedResetRpc = Rpc.make(WS_METHODS.providerClearRedeemedReset, {
+  payload: ProviderClearRedeemedResetInput,
+  success: ProviderClearRedeemedResetResult,
+  error: ProviderSetupRpcError,
 });
 
 const WsProviderAuthStartRpc = Rpc.make(WS_METHODS.providerAuthStart, {
@@ -2623,6 +2631,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerRefreshProvidersRpc,
   WsServerUpdateProviderRpc,
   WsProviderConsumeResetCreditRpc,
+  WsProviderClearRedeemedResetRpc,
   WsProviderAuthStartRpc,
   WsProviderAuthCompleteRpc,
   WsChatGptReconnectProfileRpc,
