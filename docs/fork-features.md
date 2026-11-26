@@ -4244,3 +4244,37 @@ sources and reasons.
   "keywords": ["unifiedWindows", "clearsProbeFailure", "CLAUDE_CODE_OAUTH_TOKEN", "24128"]
 }
 ```
+
+## site-hold
+
+```json
+{
+  "id": "site-hold",
+  "purpose": "Stop agent actions on a site in one browser profile after an anti-bot check or block, show the tab to the user, and resume after a human passes it.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/993",
+    "https://github.com/toolboxmd/chromeria/issues/995"
+  ],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...feat/site-hold"],
+  "newFiles": [
+    "apps/mobile/src/features/browser/SiteHoldBanner.tsx",
+    "apps/server/src/preview/SiteHold.test.ts",
+    "apps/server/src/preview/SiteHold.ts",
+    "apps/web/src/components/preview/SiteHoldBanner.tsx"
+  ],
+  "upstreamFiles": ["apps/web/src/components/preview/PreviewView.tsx"],
+  "sharedFiles": [
+    "apps/mobile/src/features/browser/BrowserPreviewRouteScreen.test.tsx",
+    "apps/mobile/src/features/browser/BrowserPreviewRouteScreen.tsx",
+    "apps/server/src/mcp/WebResearchSession.integration.test.ts",
+    "apps/server/src/preview/CredentialLogin.integration.test.ts",
+    "apps/server/src/preview/Manager.ts",
+    "apps/server/src/preview/ServerBrowser.test.ts",
+    "apps/server/src/preview/ServerBrowser.ts",
+    "apps/server/src/webResearch/SessionRead.ts",
+    "packages/contracts/src/preview.ts",
+    "packages/contracts/src/previewAutomation.ts"
+  ],
+  "keywords": ["siteHold", "antiBotChallenge", "captcha-delivery", "cf-mitigated"]
+}
+```

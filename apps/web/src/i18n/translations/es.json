@@ -7116,6 +7116,25 @@
   "cd312dae87fc794f": "La anotación se conservó sin la captura de pantalla.",
   "4616fb6552fd8875": "La página no se cargó. Seleccionar no está disponible hasta que se renderice",
   "770d6036de8dbcb7": "Esta pestaña está abierta en la app de escritorio de T3 Code.",
+  "a374adebaaf3b980": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " pide una verificación humana"
+  ],
+  "b4628441b1a38b85": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " bloqueó este navegador"
+  ],
+  "43a621bb23668f77": "Los agentes dejaron de actuar en este sitio. Toma el control, supera la verificación y luego cede el control. Los agentes continúan cuando la página esté libre.",
+  "83b8cce0be4b3d8f": "Los agentes dejaron de actuar en este sitio. Quita la retención cuando el sitio vuelva a funcionar en este navegador.",
+  "e6d9f36e3b1ffb43": "Quitar retención",
   "126d7b538224ff9a": "Dispositivo",
   "faa872f37599503d": "Navegador",
   "b252602c8f71d6af": "No se puede separar la vista previa",

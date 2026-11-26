@@ -7115,6 +7115,25 @@
   "cd312dae87fc794f": "Die Anmerkung wurde ohne Screenshot behalten.",
   "4616fb6552fd8875": "Die Seite wurde nicht geladen. Auswählen ist erst möglich, wenn die Seite gerendert ist",
   "770d6036de8dbcb7": "Dieser Tab ist in der T3-Code-Desktop-App geöffnet.",
+  "a374adebaaf3b980": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " bittet um eine menschliche Prüfung"
+  ],
+  "b4628441b1a38b85": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " hat diesen Browser gesperrt"
+  ],
+  "43a621bb23668f77": "Agenten handeln auf dieser Website nicht mehr. Steuerung übernehmen, die Prüfung bestehen, dann die Steuerung abgeben. Agenten machen weiter, sobald die Seite frei ist.",
+  "83b8cce0be4b3d8f": "Agenten handeln auf dieser Website nicht mehr. Hebe die Sperre auf, wenn die Website in diesem Browser wieder funktioniert.",
+  "e6d9f36e3b1ffb43": "Sperre aufheben",
   "126d7b538224ff9a": "Gerät",
   "faa872f37599503d": "Browser",
   "b252602c8f71d6af": "Vorschau kann nicht ausgelagert werden",

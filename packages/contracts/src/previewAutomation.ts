@@ -6,6 +6,7 @@ import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts
 import {
   PREVIEW_VIEWPORT_MAX_AREA,
   PreviewRenderedViewportSize,
+  PreviewSiteHold,
   PreviewTabId,
   PreviewViewportPresetId,
   PreviewViewportSetting,
@@ -237,6 +238,8 @@ export const PreviewAutomationStatus = Schema.Struct({
   ),
   profiles: Schema.optional(Schema.Array(PreviewAutomationProfile)),
   defaultProfileId: Schema.optional(BrowserProfileId),
+  /** Agent actions on this tab's site are stopped until the user passes its anti-bot check. */
+  siteHold: Schema.optional(PreviewSiteHold),
 });
 export type PreviewAutomationStatus = typeof PreviewAutomationStatus.Type;
 
@@ -956,6 +959,8 @@ export const PreviewAutomationControlReason = Schema.Literals([
   "interrupted",
   "dialogPending",
   "tabLimit",
+  "antiBotChallenge",
+  "antiBotBlocked",
 ]);
 export type PreviewAutomationControlReason = typeof PreviewAutomationControlReason.Type;
 
@@ -980,6 +985,10 @@ export class PreviewAutomationControlInterruptedError extends Schema.TaggedError
       return "A browser dialog is pending. Read preview_status and resolve it with preview_dialog.";
     if (this.reason === "tabLimit")
       return "Too many server browser tabs are open. Close one with t3_preview_close, or reuse a tabId from preview_status tabs.";
+    if (this.reason === "antiBotChallenge")
+      return "This site shows an anti-bot check. Agent actions on it are stopped in this browser profile, and the user was asked to pass it in this tab. Do not retry, reload, or open the site in another tab or profile. Tell the user and end your turn; a message arrives in this thread when the check is done.";
+    if (this.reason === "antiBotBlocked")
+      return "This site blocked this browser. Agent actions on it are stopped in this browser profile, and the user was told. Do not retry, reload, or open the site in another tab or profile. Tell the user and end your turn.";
     if (this.reason === "closed") return "This browser tab is closed. Call preview_open.";
     if (this.reason === "interrupted")
       return "Browser control changed. Take a fresh snapshot before trying again.";

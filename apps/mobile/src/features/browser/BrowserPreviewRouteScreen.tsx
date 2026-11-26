@@ -21,6 +21,7 @@ import { usePreparedConnection } from "../../state/session";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { BrowserChrome } from "./BrowserBar";
 import { BrowserTabMenu } from "./BrowserTabMenu";
+import { SiteHoldBanner } from "./SiteHoldBanner";
 import { browserTabTitle, browserTabUrl, latestBrowserTab } from "./browserTabs";
 import {
   PreviewStreamWebView,
@@ -358,20 +359,23 @@ function BrowserPreviewScreen({
         {({ onScrollDirection }) =>
           tab ? (
             live ? (
-              <PreviewStreamWebView
-                key={`stream:${tab.tabId}`}
-                environmentId={environmentId}
-                threadId={threadId}
-                tabId={tab.tabId}
-                pdfUri={pdfUri}
-                ref={streamRef}
-                interactive
-                background={themeVariables["--color-sheet-solid"]}
-                onPictureInPicture={onPictureInPicture}
-                onStreamingChange={setStreaming}
-                onScrollDirection={onScrollDirection}
-                onControl={(control) => setCanControl(control?.controller === "you")}
-              />
+              <View className="flex-1">
+                <SiteHoldBanner environmentId={environmentId} tab={tab} />
+                <PreviewStreamWebView
+                  key={`stream:${tab.tabId}`}
+                  environmentId={environmentId}
+                  threadId={threadId}
+                  tabId={tab.tabId}
+                  pdfUri={pdfUri}
+                  ref={streamRef}
+                  interactive
+                  background={themeVariables["--color-sheet-solid"]}
+                  onPictureInPicture={onPictureInPicture}
+                  onStreamingChange={setStreaming}
+                  onScrollDirection={onScrollDirection}
+                  onControl={(control) => setCanControl(control?.controller === "you")}
+                />
+              </View>
             ) : (
               <View className="flex-1" />
             )

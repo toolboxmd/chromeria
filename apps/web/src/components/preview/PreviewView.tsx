@@ -114,6 +114,7 @@ import {
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { observeResize } from "~/lib/observeResize";
 import { SharedTooltipTrigger } from "~/components/ui/shared-tooltip";
+import { SiteHoldBanner } from "./SiteHoldBanner";
 
 interface Props {
   threadRef: ScopedThreadRef;
@@ -1107,6 +1108,12 @@ export function PreviewView({
         }
       />
 
+      {snapshot?.siteHold ? (
+        <SiteHoldBanner
+          hold={snapshot.siteHold}
+          onDone={() => void adjustServerTab({ clear: "siteHold" })}
+        />
+      ) : null}
       <div ref={serverBodyRef} className="relative min-h-0 flex-1 overflow-hidden">
         {runtimeTabId && snapshot && isServerTab ? (
           <>

@@ -7127,6 +7127,25 @@
   "cd312dae87fc794f": "The annotation was kept without the screenshot.",
   "4616fb6552fd8875": "Page didn't load. Pick is unavailable until the page renders",
   "770d6036de8dbcb7": "This tab is open in the T3 Code desktop app.",
+  "a374adebaaf3b980": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " asks for a human check"
+  ],
+  "b4628441b1a38b85": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " blocked this browser"
+  ],
+  "43a621bb23668f77": "Agents stopped acting on this site. Take control, pass the check, then release control. Agents continue once the page is clear.",
+  "83b8cce0be4b3d8f": "Agents stopped acting on this site. Clear the hold when the site works again in this browser.",
+  "e6d9f36e3b1ffb43": "Clear hold",
   "126d7b538224ff9a": "Device",
   "faa872f37599503d": "Browser",
   "b252602c8f71d6af": "Unable to pop out preview",

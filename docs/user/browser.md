@@ -123,6 +123,22 @@ You can also open a tab yourself and tell the agent to “look at this”. Agent
 can read your tab, but cannot use the rbw login tool there when it is a native
 desktop tab.
 
+## Anti-bot checks
+
+When a site answers an agent with an anti-bot check or block (DataDome,
+Cloudflare, Akamai, HUMAN or Imperva), agents stop acting on that site in that
+browser profile, and the tab opens for you with a banner. Agents never solve
+checks. To pass one, choose **Take control**, complete the check, then choose
+**Release control**. Agent actions on the site resume once the page is clear,
+and the thread gets a message so the agent continues.
+
+Choose **Done** on the banner when you passed the check without taking
+control, or **Clear hold** after a block when the site works again. A hold on a
+page that still shows its check tells the agent the page was not verified.
+Until the hold ends, agents cannot open or act on any page of the site in that
+profile. Closing the tab or restarting the server also ends the hold; the next
+check starts a new one.
+
 ## Tab lifetime and limits
 
 When a thread settles, its agent tabs close unless you are watching or

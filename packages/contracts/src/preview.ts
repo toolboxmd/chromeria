@@ -206,6 +206,26 @@ export const PreviewStreamHostSetup = Schema.Struct({
 export type PreviewStreamHostSetup = typeof PreviewStreamHostSetup.Type;
 export const PREVIEW_STREAM_HOST_SETUP_CLOSE_CODE = 4503;
 
+export const PreviewSiteHoldVendor = Schema.Literals([
+  "datadome",
+  "cloudflare",
+  "akamai",
+  "human",
+  "imperva",
+]);
+export type PreviewSiteHoldVendor = typeof PreviewSiteHoldVendor.Type;
+
+/** Agent actions on one site in one browser profile stop until a human passes the check. */
+export const PreviewSiteHold = Schema.Struct({
+  site: Schema.String,
+  vendor: PreviewSiteHoldVendor,
+  /** A challenge can be passed by hand; a block cannot be passed now. */
+  kind: Schema.Literals(["challenge", "blocked"]),
+  url: Url,
+  since: Schema.String,
+});
+export type PreviewSiteHold = typeof PreviewSiteHold.Type;
+
 export const PreviewSessionSnapshot = Schema.Struct({
   threadId: TrimmedNonEmptyString,
   tabId: PreviewTabId,
@@ -225,6 +245,7 @@ export const PreviewSessionSnapshot = Schema.Struct({
   serverPage: Schema.optional(Schema.Boolean),
   reveal: Schema.optional(Schema.Boolean),
   revealRequest: Schema.optional(Schema.Struct({ id: Schema.String, force: Schema.Boolean })),
+  siteHold: Schema.optional(PreviewSiteHold),
   updatedAt: Schema.String,
 });
 export type PreviewSessionSnapshot = typeof PreviewSessionSnapshot.Type;
@@ -264,7 +285,8 @@ export const PreviewAdjustInput = Schema.Struct({
   colorScheme: Schema.optional(PreviewAppearancePreference),
   zoomFactor: Schema.optional(PreviewZoomFactor),
   hardReload: Schema.optional(Schema.Boolean),
-  clear: Schema.optional(Schema.Literals(["cookies", "cache"])),
+  /** `siteHold` is the human saying the site's check is done; agents may act on it again. */
+  clear: Schema.optional(Schema.Literals(["cookies", "cache", "siteHold"])),
 });
 export type PreviewAdjustInput = typeof PreviewAdjustInput.Type;
 

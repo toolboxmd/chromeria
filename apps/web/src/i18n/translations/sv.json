@@ -7118,6 +7118,25 @@
   "cd312dae87fc794f": "Anteckningen behölls utan skärmbilden.",
   "4616fb6552fd8875": "Sidan lästes inte in. Välj är inte tillgängligt förrän sidan har renderats",
   "770d6036de8dbcb7": "Den här fliken är öppen i skrivbordsappen T3 Code.",
+  "a374adebaaf3b980": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ber om en mänsklig kontroll"
+  ],
+  "b4628441b1a38b85": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " blockerade den här webbläsaren"
+  ],
+  "43a621bb23668f77": "Agenter har slutat agera på den här webbplatsen. Ta kontrollen, klara kontrollen och släpp sedan kontrollen. Agenterna fortsätter när sidan är fri.",
+  "83b8cce0be4b3d8f": "Agenter har slutat agera på den här webbplatsen. Häv spärren när webbplatsen fungerar igen i den här webbläsaren.",
+  "e6d9f36e3b1ffb43": "Häv spärren",
   "126d7b538224ff9a": "Enhet",
   "faa872f37599503d": "Webbläsare",
   "b252602c8f71d6af": "Det gick inte att bryta ut förhandsvisningen",

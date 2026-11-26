@@ -936,3 +936,6 @@ apps/server/src/provider/claudeUsageLimits.test.ts
 packages/contracts/src/providerUsageLimits.ts
 packages/provider-core/src/server/usageLimits.ts
 packages/provider-core/src/server/usageLimits.test.ts
+
+# Site hold banner on the web browser panel (#995).
+apps/web/src/components/preview/PreviewView.tsx

@@ -56,6 +56,8 @@ import {
   type PreviewAutomationUploadInput,
   type PreviewAutomationWaitForInput,
   PreviewClearProfileError,
+  CommandId,
+  MessageId,
   type PreviewNavStatus,
   type PreviewSessionSnapshot,
   type PreviewViewportSetting,
@@ -107,6 +109,7 @@ import { resolveRootCliCommand } from "../cli/invocation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { fillCredential, serverBrowserOnly } from "./CredentialFill.ts";
 import { CredentialVault, protocolLoggingEnabled } from "./CredentialVault.ts";
 import { saveSecret, saveSecretServerBrowserOnly } from "./SecretCapture.ts";
@@ -133,6 +136,7 @@ import {
 import { PageWatchStore } from "./PageWatchStore.ts";
 import { installPageWatch } from "./ServerBrowserWatch.ts";
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
+import { classifyAntiBotPage, siteOf, SiteHolds, type HeldSite } from "./SiteHold.ts";
 import { installPdfDocumentNavigation, isPdfAssetUrl } from "./PdfDocumentNavigation.ts";
 
 const SERVER_HOST_CLIENT_ID = SERVER_BROWSER_AUTOMATION_CLIENT_ID;
@@ -572,6 +576,10 @@ interface ServerTab {
   readonly actionTimeline: Array<PreviewAutomationActionEvent>;
   readonly control: SessionControl;
   agentOperating: boolean;
+  /** The latest main-frame document response; clearing a hold classifies the page with it. */
+  mainDocument: { readonly status: number; readonly headers: Record<string, string> } | null;
+  /** Classification of the latest error document, so an action can report the hold it caused. */
+  siteHoldCheck: Promise<void>;
   fileChooserIntercepted: boolean;
   readonly onFileChooser: (chooser: FileChooser) => void;
   readonly watches: Set<string>;
@@ -655,6 +663,40 @@ const READ_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> = new 
   "snapshot",
   "waitFor",
 ]);
+
+/** Operations that can send a request to the tab's site, so a Site hold refuses them. */
+const SITE_HOLD_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> = new Set([
+  "navigate",
+  "readPage",
+  "click",
+  "type",
+  "press",
+  "scroll",
+  "hover",
+  "select",
+  "drag",
+  "upload",
+  "fillCredential",
+  "evaluate",
+  "watchStart",
+]);
+
+const SITE_HOLD_VENDOR_NAMES = {
+  datadome: "DataDome",
+  cloudflare: "Cloudflare",
+  akamai: "Akamai",
+  human: "HUMAN",
+  imperva: "Imperva",
+} as const;
+
+const siteHoldError = (hold: HeldSite) =>
+  new BrowserControlInterrupted({
+    reason: hold.kind === "challenge" ? "antiBotChallenge" : "antiBotBlocked",
+    message:
+      hold.kind === "challenge"
+        ? `${hold.site} shows a ${SITE_HOLD_VENDOR_NAMES[hold.vendor]} anti-bot check. Agent actions on ${hold.site} are stopped in this browser profile, and the user was asked to pass it in this tab. Do not retry, reload, or open the site in another tab or profile. Tell the user and end your turn; a message arrives in this thread when the check is done.`
+        : `${hold.site} blocked this browser (${SITE_HOLD_VENDOR_NAMES[hold.vendor]}). Agent actions on ${hold.site} are stopped in this browser profile, and the user was told. Do not retry, reload, or open the site in another tab or profile. Tell the user and end your turn.`,
+  });
 
 const AGENT_TAB_LIMIT = 8;
 const SERVER_TAB_LIMIT = 32;
@@ -896,6 +938,7 @@ const make = Effect.gen(function* () {
   const agentTurns = yield* (yield* PreviewAgentActivity.PreviewAgentActivity).changes;
   const vault = yield* CredentialVault;
   const secrets = yield* SecretRequests.SecretRequests;
+  const threadManagement = yield* ThreadManagement.ThreadManagementService;
   const protocolLogging = yield* protocolLoggingEnabled;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
@@ -1353,6 +1396,12 @@ const make = Effect.gen(function* () {
   };
 
   const unloadingTabs = new WeakMap<ServerTab, Promise<void>>();
+  yield* manager.registerSiteHoldClear(({ threadId, tabId }) =>
+    Effect.promise(async () => {
+      const tab = tabs.get(tabKey(threadId, tabId));
+      if (tab) await settleSiteHold(tab, "clear");
+    }),
+  );
   yield* manager.registerBeforeClose((snapshots) =>
     Effect.promise(async () => {
       await Promise.all(
@@ -1393,6 +1442,9 @@ const make = Effect.gen(function* () {
     // A desktop page outlives the connection unless its session closed with it.
     const end =
       (tab.desktop || reopening) && !closeSession && sessionOpen(tab) ? "reconnect" : "gone";
+    // Nobody can pass a check in a closed tab; the next challenge page holds the site again.
+    if (end === "gone")
+      for (const [scope, hold] of siteHolds.heldBy(tab.tabId)) siteHolds.clear(scope, hold);
     for (const viewer of tab.viewers) viewer.push({ _tag: end });
     void tab.control.close().catch(constVoid);
     if (tab.desktop) void tab.desktop.close().catch(constVoid);
@@ -1540,6 +1592,8 @@ const make = Effect.gen(function* () {
         actionTimeline: [],
         control,
         agentOperating: false,
+        mainDocument: null,
+        siteHoldCheck: Promise.resolve(),
         fileChooserIntercepted: false,
         onFileChooser: (chooser) => {
           pendingFileChooserOffer = pendingFileChooserOffer
@@ -1744,6 +1798,19 @@ const make = Effect.gen(function* () {
           failed: false,
           timestamp: new Date().toISOString(),
         });
+        if (isMainNavigation(response.request())) {
+          const document = { status: response.status(), headers: response.headers() };
+          tab.mainDocument = document;
+          if (document.status >= 400 || document.headers["cf-mitigated"] !== undefined)
+            tab.siteHoldCheck = response
+              .text()
+              .catch(() => "")
+              .then((html) => {
+                const verdict = classifyAntiBotPage({ ...document, html });
+                if (verdict) return raiseSiteHold(tab, verdict, response.url());
+              })
+              .catch(constVoid);
+        }
       });
       page.on("console", (message) => {
         pushBounded(tab.consoleEntries, {
@@ -2892,6 +2959,10 @@ const make = Effect.gen(function* () {
           ...(candidate.profileId === undefined ? {} : { profileId: candidate.profileId }),
         })),
       ...profileStatus(),
+      ...(() => {
+        const hold = siteHoldOf(tab);
+        return hold ? { siteHold: publicSiteHold(hold) } : {};
+      })(),
       downloads: tab.downloads.map(
         ({ id, fileName, path, sizeBytes, url, completedAt, digest }) => ({
           resource: {
@@ -3317,6 +3388,145 @@ const make = Effect.gen(function* () {
     }
   };
 
+  const siteHolds = new SiteHolds();
+  const isolatedScopes = new WeakMap<object, string>();
+  /** One scope per cookie jar: a persistent profile per runtime, or one isolated context. */
+  const siteHoldScope = (tab: ServerTab) => {
+    if (!tab.isolatedContext)
+      return `${tab.desktop ? "desktop" : "server"}:${tab.profileId ?? DEFAULT_BROWSER_PROFILE_ID}`;
+    const context = tab.page.context();
+    let scope = isolatedScopes.get(context);
+    if (scope === undefined) {
+      scope = `isolated:${tab.threadId}:${tab.tabId}`;
+      isolatedScopes.set(context, scope);
+    }
+    return scope;
+  };
+  const siteHoldOf = (tab: ServerTab, url = tab.page.url()) =>
+    siteHolds.get(siteHoldScope(tab), siteOf(url));
+  const publicSiteHold = ({ site, vendor, kind, url, since }: HeldSite) => ({
+    site,
+    vendor,
+    kind,
+    url,
+    since,
+  });
+
+  const raiseSiteHold = async (
+    tab: ServerTab,
+    verdict: NonNullable<ReturnType<typeof classifyAntiBotPage>>,
+    url: string,
+  ) => {
+    const site = siteOf(url);
+    if (site === undefined || tab.closing) return;
+    const hold: HeldSite = {
+      site,
+      ...verdict,
+      url: ServerBrowserPage.withoutDataPayload(url).slice(0, 2048),
+      since: new Date().toISOString(),
+      threadId: tab.threadId,
+      tabId: tab.tabId,
+    };
+    if (!siteHolds.create(siteHoldScope(tab), hold)) return;
+    runFork(Effect.logInfo("Site hold raised", { site, vendor: hold.vendor, kind: hold.kind }));
+    const target = { threadId: tab.threadId, tabId: tab.tabId };
+    await runPromise(
+      manager.setSiteHold({ ...target, siteHold: publicSiteHold(hold) }).pipe(Effect.ignore),
+    );
+    await runPromise(manager.requestReveal({ ...target, force: true }).pipe(Effect.ignore));
+  };
+
+  /** Refuses before anything reaches a held site; after the action, reports the hold it met. */
+  const guardSiteHold = async <A>(
+    tab: ServerTab,
+    request: PreviewAutomationRequest,
+    run: () => Promise<A>,
+  ): Promise<A> => {
+    if (!SITE_HOLD_OPERATIONS.has(request.operation)) return run();
+    let target = tab.page.url();
+    try {
+      if (request.operation === "navigate")
+        target = resolveNavigationUrl(request.input as PreviewAutomationNavigateInput);
+      else if (request.operation === "readPage")
+        target = normalizePreviewUrl(decodeReadPage(request.input).url);
+    } catch {
+      // The operation reports its own input error.
+    }
+    const before = siteHoldOf(tab, target);
+    if (before) throw siteHoldError(before);
+    const met = async () => {
+      await tab.siteHoldCheck;
+      const hold = siteHoldOf(tab);
+      if (hold) throw siteHoldError(hold);
+    };
+    let result: A;
+    try {
+      result = await run();
+    } catch (cause) {
+      await met();
+      throw cause;
+    }
+    await met();
+    return result;
+  };
+
+  /**
+   * A human release clears the tab's hold only on a verified clean page; Clear hold
+   * clears it either way. The hold stays set until classification ends.
+   */
+  const settleSiteHold = async (tab: ServerTab, how: "release" | "clear") => {
+    for (const [scope, hold] of siteHolds.heldBy(tab.tabId)) {
+      await tab.siteHoldCheck;
+      const html = await tab.page.content().catch(() => "");
+      const verdict =
+        siteOf(tab.page.url()) === hold.site
+          ? classifyAntiBotPage({
+              status: tab.mainDocument?.status ?? 200,
+              headers: tab.mainDocument?.headers ?? {},
+              html,
+            })
+          : undefined;
+      if (verdict && how === "release") continue;
+      if (!siteHolds.clear(scope, hold)) continue;
+      runFork(
+        Effect.logInfo("Site hold cleared", { site: hold.site, verified: verdict === undefined }),
+      );
+      await runPromise(
+        manager
+          .setSiteHold({
+            threadId: ThreadId.make(hold.threadId),
+            tabId: hold.tabId,
+            siteHold: undefined,
+          })
+          .pipe(Effect.ignore),
+      );
+      await runPromise(notifySiteHoldCleared(hold, verdict === undefined));
+    }
+  };
+
+  const notifySiteHoldCleared = Effect.fn("ServerBrowser.notifySiteHoldCleared")(
+    function* (hold: HeldSite, verified: boolean) {
+      const threadId = ThreadId.make(hold.threadId);
+      const thread = yield* threadManagement.getThreadShell(threadId);
+      if (!thread) return;
+      const identity = `site-hold:${hold.tabId}:${hold.site}:${hold.since}`;
+      yield* threadManagement.sendToThread({
+        projectId: thread.projectId,
+        threadId,
+        commandId: CommandId.make(identity),
+        messageId: MessageId.make(identity),
+        text: verified
+          ? `The user passed the anti-bot check on ${hold.site} in browser tab ${hold.tabId}, and agent actions on it work again. Take a fresh preview_snapshot, then continue the browser task.`
+          : `The user cleared the Site hold on ${hold.site} (browser tab ${hold.tabId}), but the page was not verified clean. Read preview_status before acting; if the check is still shown, stop and tell the user.`,
+        attachments: [],
+        mode: "queue",
+        createdBy: "system",
+        creationSource: "server",
+      });
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Site hold message failed", { cause })),
+  );
+
   const runOperation = async (
     request: PreviewAutomationRequest,
     authorize: () => Promise<void>,
@@ -3396,6 +3606,14 @@ const make = Effect.gen(function* () {
             : undefined;
         const navigationTimeout = Math.min(request.timeoutMs, NAVIGATION_TIMEOUT_MS);
         const profileId = existing ? undefined : resolveOpenProfile(open.profileId);
+        if (url) {
+          const held = existing
+            ? siteHoldOf(existing, url)
+            : profileId === undefined || profileId === INCOGNITO_BROWSER_PROFILE_ID
+              ? undefined
+              : siteHolds.get(`server:${profileId}`, siteOf(url));
+          if (held) throw siteHoldError(held);
+        }
         if (!existing) await authorize();
         const tab =
           existing ??
@@ -3476,6 +3694,9 @@ const make = Effect.gen(function* () {
                 ).then(constVoid);
             }
             await shown;
+            await tab.siteHoldCheck;
+            const held = siteHoldOf(tab);
+            if (held) throw siteHoldError(held);
             return statusWithTitle(tab, request.agentSessionId);
           },
           deadlineMs,
@@ -3585,7 +3806,9 @@ const make = Effect.gen(function* () {
         tab.agentOperating = !READ_OPERATIONS.has(request.operation);
         updateFileChooserInterception(tab);
         try {
-          return await runTabOperation(tab, request, authorize, resourceAuthorization, deadlineMs);
+          return await guardSiteHold(tab, request, () =>
+            runTabOperation(tab, request, authorize, resourceAuthorization, deadlineMs),
+          );
         } finally {
           tab.agentOperating = false;
           updateFileChooserInterception(tab);
@@ -4704,6 +4927,7 @@ const make = Effect.gen(function* () {
             );
             broadcastControl(tab);
             await releasing;
+            void settleSiteHold(tab, "release");
           } else if (
             message.type === "dialog" &&
             tab.control.controller === viewer.id &&

@@ -85,6 +85,7 @@ vi.mock("../../components/ui/AppText", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
 vi.mock("./BrowserTabMenu", () => ({ BrowserTabMenu: () => null }));
+vi.mock("./SiteHoldBanner", () => ({ SiteHoldBanner: () => null }));
 vi.mock("./PreviewStreamWebView", () => ({
   PreviewStreamWebView: (props: ComponentProps<typeof PreviewStreamWebViewComponent>) => {
     useImperativeHandle(
