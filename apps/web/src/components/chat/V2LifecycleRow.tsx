@@ -661,6 +661,7 @@ function SubagentTimelineLink(props: {
         <ThreadHoverCardPopup>
           <SubagentTimelineTooltip
             {...props}
+            remote={remote}
             threadId={targetThreadId}
             childEnvironmentId={childEnvironmentId}
             elapsed={
@@ -683,6 +684,7 @@ function SubagentTimelineTooltip(
     model: string | null;
     modelSelection: OrchestrationV2Subagent["modelSelection"];
     elapsed: ReactNode;
+    remote: OrchestrationV2RemoteTaskChild | undefined;
   },
 ) {
   const environmentId = props.parentRef.environmentId;
@@ -702,6 +704,13 @@ function SubagentTimelineTooltip(
   const childProject = useProject(
     child ? scopeProjectRef(childEnvironmentId, child.projectId) : null,
   );
+  const matched = providers.find((provider) => provider.instanceId === props.providerInstanceId);
+  const iconDriver = subagentIconDriver({
+    remote: props.remote,
+    driver: props.driver,
+    resolvedDriver: matched?.driver,
+  });
+  const provider = matched?.driver === iconDriver ? matched : undefined;
   return (
     <SubagentTooltipContent
       title={formatSubagentDisplayTitle(child?.title ?? props.title)}
@@ -709,9 +718,9 @@ function SubagentTimelineTooltip(
       providerInstanceId={props.providerInstanceId}
       origin={props.origin}
       modelSelection={props.modelSelection}
-      provider={providers.find((provider) => provider.instanceId === props.providerInstanceId)}
-      providers={providers}
-      driver={props.driver}
+      provider={provider}
+      providers={props.remote === undefined ? providers : undefined}
+      driver={iconDriver}
       elapsed={props.elapsed}
       status={props.status}
       result={props.result}

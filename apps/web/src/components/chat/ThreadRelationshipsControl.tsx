@@ -974,6 +974,12 @@ export function ThreadRelationshipsPanel(props: {
       resolvedDriver: agent?.remoteChild === undefined ? provider?.driver : remoteProvider?.driver,
     });
     const iconProvider = agent?.remoteChild === undefined ? provider : remoteProvider;
+    const iconProviderEntries =
+      agent?.remoteChild === undefined
+        ? providerEntries
+        : deriveProviderInstanceEntries(
+            providersByEnvironment.get(agent.remoteChild.environmentId) ?? [],
+          );
     const canStopWorkflow =
       canOperateWorkflow &&
       workflowGroup?.workflow.status === "running" &&
@@ -1072,7 +1078,7 @@ export function ThreadRelationshipsPanel(props: {
         <ThreadRelationshipIcon
           driver={isSubagent && !isParent ? iconDriver : undefined}
           provider={iconProvider}
-          providerEntries={providerEntries}
+          providerEntries={iconProviderEntries}
           fallbackIcon={RelationshipIcon}
           status={rowStatus}
         />

@@ -15,6 +15,7 @@ import {
   resolveSubagentMetadata,
   subagentDetailPreview,
 } from "@t3tools/client-runtime/state/subagent-display";
+import { subagentIconDriver } from "@t3tools/client-runtime/state/subagentRuntime";
 import { readSelectedEffortValue } from "@t3tools/client-runtime/state/thread-execution";
 import { resolveSelectableModel } from "@t3tools/shared/model";
 import { getTraitsSpeedDisplay, TraitsSpeedIcon } from "./TraitsSpeed";
@@ -123,7 +124,10 @@ export function SubagentTooltipContent(props: {
         })
         .find(Boolean)
     : undefined;
-  const driver = props.provider?.driver ?? props.driver;
+  const driver = subagentIconDriver({
+    driver: props.driver,
+    resolvedDriver: props.provider?.driver,
+  });
   const entries = deriveProviderInstanceEntries(props.providers ?? []);
   const entry = entries.find((candidate) => candidate.instanceId === props.provider?.instanceId);
   const showInstanceBadge = entry !== undefined && shouldShowInstanceBadge(entry, entries);
