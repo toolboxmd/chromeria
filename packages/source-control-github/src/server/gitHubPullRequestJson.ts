@@ -46,7 +46,8 @@ import type { ProviderChangeRequestSummary } from "@t3tools/source-control-core/
 
 import type * as GitHubSchema from "../../schema/github.graphql.ts";
 import type {
-  PullRequestSummaryRepositoryPullRequestPullRequest as SummarizedPullRequest,
+  PullRequestSummaryFields as SummarizedPullRequest,
+  PullRequestSummaryWithStacksRepositoryPullRequestPullRequest as StackedSummarizedPullRequest,
   PullRequestWatchFingerprintRepositoryPullRequestPullRequest as WatchedPullRequest,
 } from "./pullRequestBatches.graphql.ts";
 import {
@@ -54,6 +55,9 @@ import {
   PullRequestList,
   PullRequestRow,
   PullRequestSearch,
+  PullRequestSearchWithStacks,
+  PullRequestStack,
+  PullRequestStackEntry,
 } from "./pullRequestListings.graphql.ts";
 import type { PullRequestActionSummary } from "./pullRequestMutations.graphql.ts";
 import type {
@@ -851,7 +855,14 @@ function toDetail(raw: DetailFields): GitHubPullRequestDetail {
 const decodeUnknownList = decodeJsonResult(Schema.Array(Schema.Unknown));
 const decodeWorkflowRuns = decodeJsonResult(RawWorkflowRunsSchema);
 const decodeFileEntry = Schema.decodeUnknownExit(RawPullRequestFileSchema);
-const decodeRow = Schema.decodeUnknownExit(PullRequestRow);
+// Only rows from `PullRequestSearchWithStacks` carry a stack.
+const decodeRow = Schema.decodeUnknownExit(
+  Schema.Struct({
+    ...PullRequestRow.fields,
+    stack: Schema.optionalKey(Schema.NullOr(PullRequestStack)),
+    stackEntry: Schema.optionalKey(Schema.NullOr(PullRequestStackEntry)),
+  }),
+);
 
 /** Decode rows individually so one invalid node cannot blank the entire listing. */
 const LenientRows = Schema.Struct({
@@ -865,6 +876,14 @@ export const LenientPullRequestSearch = GraphQL.query(PullRequestSearch.name, {
   result: Schema.Struct({ search: LenientRows }),
 });
 
+/** The generated github.com search, with its rows decoded by `toPullRequestRows` instead. */
+export const LenientPullRequestSearchWithStacks = GraphQL.query(PullRequestSearchWithStacks.name, {
+  document: PullRequestSearchWithStacks.document,
+  variables: PullRequestSearchWithStacks.variables,
+  result: Schema.Struct({ search: LenientRows }),
+});
+
+/** The generated repository list, with its rows decoded by `toPullRequestRows` instead. */
 export const LenientPullRequestList = GraphQL.query(PullRequestList.name, {
   document: PullRequestList.document,
   variables: PullRequestList.variables,
@@ -1002,7 +1021,10 @@ export interface GitHubPullRequestSummary {
   readonly stack?: PullRequestStackMembership | null;
 }
 
-export function toPullRequestSummary(pr: SummarizedPullRequest): GitHubPullRequestSummary {
+/** The summary a linked thread keeps current, from one slice of the batched read. */
+export function toPullRequestSummary(
+  pr: SummarizedPullRequest | StackedSummarizedPullRequest,
+): GitHubPullRequestSummary {
   return {
     number: pr.number,
     title: pr.title,
@@ -1021,7 +1043,7 @@ export function toPullRequestSummary(pr: SummarizedPullRequest): GitHubPullReque
     reviewDecision: toReviewDecisionWithReviews(pr.reviewDecision, nodesOf(pr.latestReviews)),
     checksState: rollupChecksState(rollupStates(pr.commits)),
     mergeability: toMergeability(pr.mergeable),
-    ...(pr.stack === undefined ? {} : { stack: toStackMembership(pr) ?? null }),
+    ...("stack" in pr ? { stack: toStackMembership(pr) ?? null } : {}),
   };
 }
 
@@ -1582,6 +1604,39 @@ export const IMMEDIATELY_MERGEABLE: ReadonlySet<string> = new Set([
   "HAS_HOOKS",
   "UNSTABLE",
 ]);
+
+/**
+ * Whether a merge may call GitHub's merge API. A repository admin bypasses required checks, so
+ * this reads the checks themselves. Checks with no required flag (older Enterprise) all count.
+ */
+export function mergeCiGate(
+  checks: ReadonlyArray<Pick<PullRequestCheck, "name" | "status" | "required">>,
+  truncated: boolean,
+):
+  | { readonly kind: "clear" }
+  | { readonly kind: "wait" | "refuse"; readonly names: ReadonlyArray<string> } {
+  const namesOf = (items: ReadonlyArray<{ readonly name: string }>) => [
+    ...new Set(items.map((item) => item.name)),
+  ];
+  const blocked = (check: { readonly status: string }) =>
+    check.status === "failure" || check.status === "cancelled";
+  const required = checks.filter((check) => check.required === true);
+  const failed = required.filter(blocked);
+  if (failed.length > 0) return { kind: "refuse", names: namesOf(failed) };
+  const waiting = required.filter(
+    (check) => check.status === "pending" || check.status === "action-required",
+  );
+  if (waiting.length > 0) return { kind: "wait", names: namesOf(waiting) };
+  if (truncated) return { kind: "wait", names: ["CI"] };
+  if (checks.some((check) => typeof check.required === "boolean")) return { kind: "clear" };
+  const failedAny = checks.filter(blocked);
+  if (failedAny.length > 0) return { kind: "refuse", names: namesOf(failedAny) };
+  const waitingAny = checks.filter(
+    (check) => check.status === "pending" || check.status === "action-required",
+  );
+  if (waitingAny.length > 0) return { kind: "wait", names: namesOf(waitingAny) };
+  return { kind: "clear" };
+}
 
 /**
  * GitHub answers null only to a GitHub App installation, and no API says what an installation

@@ -1461,6 +1461,7 @@ export function PullRequestDetailPanel({
   const showsMergeNow =
     canMergeSinglePullRequest &&
     detail?.state === "open" &&
+    checksState === "passing" &&
     (primaryAction === "enable-auto-merge" || primaryAction === "auto-merge-armed") &&
     can("merge") &&
     !detail.isDraft &&

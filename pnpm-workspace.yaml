@@ -282,6 +282,7 @@ patchedDependencies:
   # Local agents expose agent.resume() (the protocol's ResumeAction), report startup progress,
   # offer background shells to the host, and refresh a cached model list on a miss.
   "@cursor/sdk@1.5.0": patches/@cursor__sdk@1.5.0.patch
+  vitest@5.1.1: patches/vitest@5.1.1.patch
   # A failed Artifacts.cached effect hangs every later caller: https://github.com/alchemy-run/alchemy/issues/2981
   alchemy@2.0.0-beta.85: patches/alchemy@2.0.0-beta.85.patch
   # Android: a marker orient other than "auto" or a number (auto-start-reverse) no longer throws.

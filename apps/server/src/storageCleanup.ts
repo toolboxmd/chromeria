@@ -43,6 +43,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import { parse as parseYaml } from "yaml";
 
 import * as ServerConfig from "./config.ts";
+import { stackedPullRequestMerged } from "./fork/stackedMergeCleanup.ts";
 import * as GitManager from "./git/GitManager.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -1838,12 +1839,17 @@ const make = Effect.gen(function* () {
               { cwd: worktreePath, branch: thread.branch },
               { refresh: true, includeHeadRepository: true },
             );
-            eligible = storageCleanupPullRequestMerged(pullRequest, {
-              branch: thread.branch,
-              defaultBranch: branch,
-              headSha: head.commitSha,
-              integrated,
-            });
+            eligible =
+              storageCleanupPullRequestMerged(pullRequest, {
+                branch: thread.branch,
+                defaultBranch: branch,
+                headSha: head.commitSha,
+                integrated,
+              }) ||
+              stackedPullRequestMerged(pullRequest, {
+                branch: thread.branch,
+                headSha: head.commitSha,
+              });
             if (eligible) removalReason = "pull request was merged";
           }
           // Squash and rebase merges leave a subagent's commits off the default branch, so

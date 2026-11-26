@@ -136,6 +136,8 @@ describe("renderCliShim", () => {
         expect(mount).toBe("mounted");
 
         await events.until((line) => line === "stopping");
+        // A terminal interrupt during shutdown must preserve the server's exit status.
+        if (target === "the launcher") process.kill(-child.pid!, "SIGINT");
         child.stdin!.end("go\n");
         expect(await exited).toBe(7);
         expect(events.seen.slice(-2)).toEqual(["stopped go", "unmounted"]);

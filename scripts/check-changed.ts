@@ -255,6 +255,16 @@ export const docReaderTests = (files: ReadonlyArray<string>) =>
     ? ["apps/server/src/cloud/ConnectReachability.test.ts"]
     : [];
 
+// An eval's grader tests read its cases; a changed case has no test beside it.
+export const evalCaseTests = (files: ReadonlyArray<string>) => [
+  ...new Set(
+    files.flatMap((file) => {
+      const match = /^evals\/([^/]+)\/cases\//.exec(file);
+      return match ? [`evals/${match[1]}/run.test.ts`] : [];
+    }),
+  ),
+];
+
 const checkChanged = Effect.fn("checkChanged")(function* (input: {
   readonly ref: Option.Option<string>;
   readonly concurrency: Option.Option<number>;
@@ -364,6 +374,9 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     }
   }
   for (const test of docReaderTests(files)) tests.add(test);
+  for (const test of evalCaseTests(files)) {
+    if (yield* fs.exists(inRoot(test))) tests.add(test);
+  }
   // It reads files other than the ones beside it, so no changed file selects it.
   if (affected.includes("t3")) tests.add("apps/server/src/provider/AgentContextBudget.test.ts");
   const { vitestTests, nodeTests } = splitTests(tests);
