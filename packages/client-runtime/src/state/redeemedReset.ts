@@ -40,7 +40,7 @@ const loginOf = (provider: ServerProvider) => {
  * Every other enabled instance with the redeemed instance's login: driver, email and workspace id
  * all present and equal. A missing email or workspace matches nothing.
  */
-function instancesWithRedeemedLogin(
+export function instancesWithRedeemedLogin(
   environments: ReadonlyMap<EnvironmentId, RedeemedResetEnvironment>,
   redeemed: { readonly environmentId: EnvironmentId; readonly instanceId: ProviderInstanceId },
 ): ReadonlyArray<RedeemedResetHolder> {

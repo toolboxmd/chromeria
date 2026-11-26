@@ -4153,7 +4153,7 @@ sources and reasons.
 ```json
 {
   "id": "prism-codex-credits",
-  "purpose": "Let Prism admit a Codex instance whose plan windows are spent when its own account/rateLimits/read, made for that decision and bounded off the decision's path, shows credits that can pay. The credit rule is upstream's codexCreditBlocks, applied to the raw response without its snapshot merge. The per-instance prismUseCredits setting, on when absent, turns it off; the web usage popover carries its switch for a Codex instance. Drop this feature when upstream ships credit continuation that Prism's window check uses.",
+  "purpose": "Let Prism admit a Codex instance whose plan windows are spent when its own account/rateLimits/read, made for that decision and bounded off the decision's path, shows credits that can pay. The credit rule is upstream's codexCreditBlocks, applied to the raw response without its snapshot merge. The per-instance prismUseCredits setting, on when absent, turns it off; the web usage popover carries one switch per Codex login that writes it for the same login on every connected environment. Drop this feature when upstream ships credit continuation that Prism's window check uses.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/1001",
     "https://github.com/toolboxmd/chromeria/issues/1029"
@@ -4162,6 +4162,7 @@ sources and reasons.
   "newFiles": [
     "apps/server/src/prism/CodexCredits.ts",
     "apps/web/src/components/usage/PrismUseCredits.tsx",
+    "apps/web/src/components/usage/PrismUseCredits.logic.ts",
     "apps/web/src/components/usage/PrismUseCredits.browser.test.tsx"
   ],
   "upstreamFiles": [
@@ -4176,6 +4177,7 @@ sources and reasons.
     "packages/contracts/src/settings.ts",
     "apps/server/src/provider/codexUsageLimits.ts",
     "apps/web/src/components/usage/UsageLimitsPooled.tsx",
+    "packages/client-runtime/src/state/redeemedReset.ts",
     "docs/user/usage.md"
   ],
   "keywords": ["continuesOnCredits", "codexCreditBlocks", "prismUseCredits", "hasCredits"]

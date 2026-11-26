@@ -13145,6 +13145,7 @@
   "c6cf1b06e0433ca3": "Progresso da configuração",
   "e0167c02ca493094": "{step}, etapa {number}, {summary}",
   "6389dee75a7cb536": "{step}, etapa {number}",
+  "c76a048e53cf574b": "Não alterado em {machines}.",
   "b1c0b2d22c97dc7f": "Usar créditos",
   "e899e924889a82ee": "Quando as janelas do plano se esgotam, o Prism pode executar o Codex com seus créditos.",
   "5434b97f68b55d8f": "Acima do ritmo: consumindo mais rápido do que a janela passa",
