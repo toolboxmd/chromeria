@@ -3040,19 +3040,145 @@ const resetCreditRpcs = WsRpcGroup.omit(
   ),
 );
 
+/** A failed run on `instanceId`, made through `driver`, whose root error is an unexpired usage limit. */
+const seedUsageLimitFailure = Effect.fn("test.seedUsageLimitFailure")(function* (
+  instanceId: ProviderInstanceId,
+  driver: ProviderDriverKind,
+) {
+  const at = DateTime.makeUnsafe("2026-11-26T15:00:00Z");
+  const threadId = ThreadId.make(`thread:limited:${instanceId}`);
+  const runId = RunId.make(`run:limited:${instanceId}`);
+  const providerThreadId = ProviderThreadId.make(`provider-thread:limited:${instanceId}`);
+  const base = { threadId, occurredAt: at };
+  yield* (yield* EventSink.EventSinkV2).write({
+    events: [
+      {
+        ...base,
+        id: EventId.make(`${runId}:thread`),
+        type: "thread.created",
+        payload: {
+          id: threadId,
+          projectId: acpProjectId,
+          title: "Limited",
+          createdBy: "agent",
+          creationSource: "mcp",
+          providerInstanceId: instanceId,
+          modelSelection: { instanceId, model: "default" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: at,
+          updatedAt: at,
+          archivedAt: null,
+          settledAt: null,
+          settledOverride: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      },
+      {
+        ...base,
+        id: EventId.make(`${runId}:provider-thread`),
+        type: "provider-thread.updated",
+        payload: {
+          id: providerThreadId,
+          driver,
+          providerInstanceId: instanceId,
+          providerSessionId: null,
+          appThreadId: threadId,
+          ownerNodeId: null,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+          status: "idle",
+          firstRunOrdinal: 1,
+          lastRunOrdinal: 1,
+          handoffIds: [],
+          forkedFrom: null,
+          pendingBackgroundTasks: [],
+          contextUsage: null,
+          nativeMetadata: null,
+          goal: null,
+          createdAt: at,
+          updatedAt: at,
+        },
+      },
+      {
+        ...base,
+        id: EventId.make(`${runId}:run`),
+        type: "run.created",
+        payload: {
+          id: runId,
+          threadId,
+          ordinal: 1,
+          providerInstanceId: instanceId,
+          modelSelection: { instanceId, model: "default" },
+          providerThreadId,
+          userMessageId: MessageId.make(`${runId}:prompt`),
+          rootNodeId: null,
+          activeAttemptId: null,
+          status: "failed",
+          requestedAt: at,
+          startedAt: at,
+          completedAt: at,
+          checkpointId: null,
+          contextHandoffId: null,
+        },
+      },
+      {
+        ...base,
+        id: EventId.make(`${runId}:error`),
+        type: "turn-item.updated",
+        payload: {
+          id: TurnItemId.make(`error:${runId}`),
+          type: "error",
+          threadId,
+          runId,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          status: "failed",
+          title: null,
+          startedAt: at,
+          completedAt: at,
+          updatedAt: at,
+          failure: {
+            class: "usage_limit",
+            message: "Claude API rate limit reached. Try again later.",
+            code: "api_error_429",
+            retryable: true,
+            resetAt: "2026-11-28T19:00:00.000Z",
+          },
+        },
+      },
+    ],
+  });
+});
+
 it.effect(
-  "a reset-credit RPC records the redemption's start only when the provider confirms a reset",
+  "a reset-credit RPC voids the instance's blocking failures only when the provider confirms a reset",
   () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+      const instances = {
+        claudeAgent: ProviderDriverKind.make("claudeAgent"),
+        codex: ProviderDriverKind.make("codex"),
+      } as const;
+      for (const [instanceId, driver] of Object.entries(instances))
+        yield* seedUsageLimitFailure(ProviderInstanceId.make(instanceId), driver);
       const outcomes: Record<string, "reset" | "nothingToReset"> = {};
       const instanceFor = (instanceId: string) =>
         ({
           instanceId: ProviderInstanceId.make(instanceId),
+          driverKind: instances[instanceId as keyof typeof instances],
           enabled: true,
-          consumeResetCredit: () =>
-            // The provider answers after the clock moved on; the record keeps the start.
-            TestClock.adjust("5 seconds").pipe(Effect.as(outcomes[instanceId]!)),
+          consumeResetCredit: () => Effect.succeed(outcomes[instanceId]!),
         }) as unknown as ProviderInstance;
       const services = Layer.mergeAll(
         layerUnusedConfigRpcServices,
@@ -3087,37 +3213,46 @@ it.effect(
           ).pipe(Layer.provide(services), Layer.merge(RpcAuthorization.layer(scopes))),
         ),
       );
-      const recorded = () =>
-        sql<{ provider_instance_id: string; started_at: string }>`
-        SELECT provider_instance_id, started_at FROM fork_prism_reset_redemptions
-        ORDER BY provider_instance_id`;
+      const voided = () =>
+        sql<{ turn_item_id: string; provider_instance_id: string; driver: string }>`
+          SELECT turn_item_id, provider_instance_id, driver FROM fork_prism_reset_voided_failures
+          ORDER BY provider_instance_id`;
       yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe("2026-11-26T16:00:00Z")));
-      for (const instanceId of ["claudeAgent", "codex"]) {
+      for (const instanceId of Object.keys(instances)) {
         outcomes[instanceId] = "nothingToReset";
-        const answer = yield* client[WS_METHODS.providerConsumeResetCredit]({
-          instanceId: ProviderInstanceId.make(instanceId),
-        });
-        assert.deepEqual(answer, { outcome: "nothingToReset" });
+        assert.deepEqual(
+          yield* client[WS_METHODS.providerConsumeResetCredit]({
+            instanceId: ProviderInstanceId.make(instanceId),
+          }),
+          { outcome: "nothingToReset" },
+        );
       }
-      assert.deepEqual(yield* recorded(), []);
-      for (const instanceId of ["claudeAgent", "codex"]) {
+      assert.deepEqual(yield* voided(), []);
+      for (const instanceId of Object.keys(instances)) {
         outcomes[instanceId] = "reset";
-        const answer = yield* client[WS_METHODS.providerConsumeResetCredit]({
-          instanceId: ProviderInstanceId.make(instanceId),
-        });
-        assert.deepEqual(answer, { outcome: "reset" });
+        assert.deepEqual(
+          yield* client[WS_METHODS.providerConsumeResetCredit]({
+            instanceId: ProviderInstanceId.make(instanceId),
+          }),
+          { outcome: "reset" },
+        );
       }
-      assert.deepEqual(yield* recorded(), [
-        { provider_instance_id: "claudeAgent", started_at: "2026-11-26T16:00:10.000Z" },
-        { provider_instance_id: "codex", started_at: "2026-11-26T16:00:15.000Z" },
+      assert.deepEqual(yield* voided(), [
+        {
+          turn_item_id: "error:run:limited:claudeAgent",
+          provider_instance_id: "claudeAgent",
+          driver: "claudeAgent",
+        },
+        { turn_item_id: "error:run:limited:codex", provider_instance_id: "codex", driver: "codex" },
       ]);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
-          SqlitePersistence.layerMemory,
           Layer.fresh(layerConfigSources),
           Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
           Layer.mock(ServerBrowser.ServerBrowser)({}),
+          // Last, so the test reads the database the event sink writes.
+          EventSink.layer.pipe(Layer.provideMerge(acpStores)),
         ),
       ),
     ),

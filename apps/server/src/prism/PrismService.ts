@@ -25,7 +25,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRegistry.ts";
-import { initializeResetRedemptions } from "./ResetRedemptions.ts";
+import {
+  blockingUsageLimitFailures,
+  initializeResetRedemptions,
+  type UsageLimitFailure,
+} from "./ResetRedemptions.ts";
 
 /**
  * The model a launch outside any thread inherits: the project's effective default, as the
@@ -143,13 +147,6 @@ function exhaustedWindow(provider: ServerProvider, now: number) {
       window.usedPercent >= 100 &&
       (window.resetsAt === undefined || Date.parse(window.resetsAt) > now),
   );
-}
-
-interface UsageLimitFailure {
-  readonly provider_instance_id: string;
-  readonly run_id: string;
-  readonly failed_at: string;
-  readonly reset_at: string;
 }
 
 /** Why the provider cannot take work now, or undefined when it has headroom. */
@@ -282,31 +279,9 @@ const make = Effect.gen(function* () {
       const instant = yield* DateTime.now;
       const now = DateTime.toEpochMillis(instant);
       // Recovery preferences and stopping a child do not restore its subscription capacity.
-      // Use the executing run's instance, even if its thread has since changed Colors. A reset
-      // credit the owner redeemed on that instance after the failure voids it.
-      const failures = yield* sql<UsageLimitFailure>`
-        SELECT r.provider_instance_id, r.run_id, item.updated_at AS failed_at,
-          json_extract(item.payload_json, '$.failure.resetAt') AS reset_at
-        FROM orchestration_v2_projection_turn_items item
-        INNER JOIN orchestration_v2_projection_runs r ON r.run_id = item.run_id
-        WHERE r.status = 'failed' AND r.provider_instance_id IS NOT NULL
-          AND item.type = 'error' AND item.status = 'failed'
-          AND item.turn_item_id = (
-            SELECT error.turn_item_id FROM orchestration_v2_projection_turn_items error
-            WHERE error.thread_id = r.thread_id AND error.run_id = r.run_id
-              AND error.type = 'error' AND error.status = 'failed'
-              AND error.node_id IS json_extract(r.payload_json, '$.rootNodeId')
-            ORDER BY error.updated_at DESC, error.ordinal DESC, error.turn_item_id DESC
-            LIMIT 1
-          )
-          AND json_extract(item.payload_json, '$.failure.class') = 'usage_limit'
-          AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(instant)})
-          AND NOT EXISTS (
-            SELECT 1 FROM fork_prism_reset_redemptions redemption
-            WHERE redemption.provider_instance_id = r.provider_instance_id
-              AND julianday(redemption.started_at) > julianday(item.updated_at)
-          )
-      `.pipe(
+      // A reset the owner redeemed in Chromeria voids the failures that blocked then.
+      const failures = yield* blockingUsageLimitFailures(instant).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
         Effect.mapError(
           () =>
             new OrchestratorMcpFailure({

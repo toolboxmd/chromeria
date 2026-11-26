@@ -2886,7 +2886,10 @@ export const layerWsRpc = (
               });
             }
             const outcome = yield* resetRedemptions
-              .redeem(input.instanceId, instance.consumeResetCredit(input.creditId))
+              .redeem(
+                { instanceId: input.instanceId, driver: instance.driverKind },
+                instance.consumeResetCredit(input.creditId),
+              )
               .pipe(
                 Effect.mapError(
                   (error) =>

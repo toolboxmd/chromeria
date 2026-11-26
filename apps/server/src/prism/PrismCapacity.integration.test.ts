@@ -6,8 +6,11 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderThreadId,
   TurnItemId,
+  type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderFailure,
+  type OrchestrationV2TurnItem,
   type ProviderConsumeResetCreditOutcome,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -36,18 +39,49 @@ const failure: OrchestrationV2ProviderFailure = {
   resetAt,
 };
 
+const providerThreadId = ProviderThreadId.make("provider-thread:recovery");
+
 const seed = Effect.fn("capacityTest.seed")(function* (
   observed = failure,
   nodeId = recoveryRun.rootNodeId,
   retired = false,
+  driver = "codex",
 ) {
   const error = errorFor(recoveryRun);
+  const run = { ...recoveryRun, providerThreadId };
+  const thread: OrchestrationV2DomainEvent = {
+    id: EventId.make("capacity:provider-thread"),
+    threadId: run.threadId,
+    occurredAt: run.requestedAt,
+    type: "provider-thread.updated",
+    payload: {
+      id: providerThreadId,
+      driver: ProviderDriverKind.make(driver),
+      providerInstanceId: run.providerInstanceId!,
+      providerSessionId: null,
+      appThreadId: run.threadId,
+      ownerNodeId: null,
+      nativeThreadRef: null,
+      nativeConversationHeadRef: null,
+      status: "idle",
+      firstRunOrdinal: 1,
+      lastRunOrdinal: 1,
+      handoffIds: [],
+      forkedFrom: null,
+      pendingBackgroundTasks: [],
+      contextUsage: null,
+      nativeMetadata: null,
+      goal: null,
+      createdAt: run.requestedAt,
+      updatedAt: run.requestedAt,
+    },
+  };
   yield* (yield* EventSink.EventSinkV2).commitCommand({
     commandId: CommandId.make("capacity:seed"),
     commandType: "fixture",
     threadId: recoveryRun.threadId,
     acceptedAt: recoveryRun.requestedAt,
-    events: recoveryEvents(recoveryRun).map((event) =>
+    events: [...recoveryEvents(run), thread].map((event) =>
       event.type === "turn-item.updated"
         ? { ...event, payload: { ...error, nodeId, failure: observed } }
         : event.type === "thread.created" && retired
@@ -127,16 +161,28 @@ const withRedemptions = (deps: ReturnType<typeof dependencies>) =>
     ResetRedemptions.layer.pipe(Layer.provide(deps)),
   );
 
-/** A reset redeemed on `instanceId` that started at `at`, with the provider's `outcome`. */
+/** A reset redeemed on `instanceId` through `driver`, its clock at `at`, with the provider's `outcome`. */
 const redeemAt = Effect.fn("capacityTest.redeemAt")(function* (
   instanceId: ProviderInstanceId,
   at: string,
   outcome: ProviderConsumeResetCreditOutcome = "reset",
+  driver = "codex",
 ) {
   yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(at)));
-  yield* (yield* ResetRedemptions.ResetRedemptions).redeem(instanceId, Effect.succeed(outcome));
+  yield* (yield* ResetRedemptions.ResetRedemptions).redeem(
+    { instanceId, driver: ProviderDriverKind.make(driver) },
+    Effect.succeed(outcome),
+  );
   yield* TestClock.setTime(DateTime.toEpochMillis(now));
 });
+
+const voided = Effect.flatMap(
+  SqlClient.SqlClient,
+  (sql) =>
+    sql<{
+      readonly turn_item_id: string;
+    }>`SELECT turn_item_id FROM fork_prism_reset_voided_failures`,
+);
 
 const resolve = (role: "worker" | "computer-use" = "worker") =>
   Effect.flatMap(Prism.PrismService, (prism) => prism.resolve({ projectId, role, lane: "hard" }));
@@ -247,14 +293,15 @@ describe("Prism capacity from durable run failures", () => {
       yield* redeemAt(spare.instanceId, "2026-10-08T10:30:00Z");
       assert.strictEqual((yield* Effect.flip(resolve())).code, "provider_unavailable");
       yield* redeemAt(limited.instanceId, "2026-10-08T10:30:00Z");
+      assert.deepStrictEqual(yield* voided, [{ turn_item_id: errorFor(recoveryRun).id }]);
       assert.deepStrictEqual((yield* resolve()).modelSelection, limited);
     }).pipe(Effect.provide(withRedemptions(deps)));
   });
 
+  // A redemption voids only the failures that existed when it started, whatever the clocks say.
   it.effect.each([
-    { case: "before the failure", at: "2026-10-08T10:00:30Z" },
-    // The failure was recorded at 10:01:00.000Z; the comparison is strict.
-    { case: "at the failure's instant", at: "2026-10-08T10:01:00.000+00:00" },
+    { case: "with the clock stepped back", at: "2026-10-08T10:30:00Z" },
+    { case: "on an ordinary clock", at: "2026-10-08T10:00:30Z" },
   ])("keeps a failure recorded after a reset redeemed $case", ({ at }) => {
     const deps = dependencies(false, [limited]);
     return Effect.gen(function* () {
@@ -268,12 +315,66 @@ describe("Prism capacity from durable run failures", () => {
     }).pipe(Effect.provide(withRedemptions(deps)));
   });
 
+  it.effect("keeps a voided failure voided when Codex later rewrites it", () => {
+    const deps = dependencies(false, [limited]);
+    return Effect.gen(function* () {
+      yield* seed({ ...failure, resetAt: null });
+      // Without a reset time the failure blocks nothing yet; record one so it is in the set.
+      const restamp = (at: string) =>
+        Effect.gen(function* () {
+          const occurredAt = DateTime.makeUnsafe(at);
+          yield* (yield* EventSink.EventSinkV2).commitCommand({
+            commandId: CommandId.make(`capacity:restamp:${at}`),
+            commandType: "fixture",
+            threadId: recoveryRun.threadId,
+            acceptedAt: occurredAt,
+            events: [
+              {
+                id: EventId.make(`capacity:restamp:${at}`),
+                threadId: recoveryRun.threadId,
+                occurredAt,
+                type: "turn-item.updated",
+                payload: {
+                  ...(errorFor(recoveryRun) as Extract<OrchestrationV2TurnItem, { type: "error" }>),
+                  updatedAt: occurredAt,
+                  failure,
+                },
+              },
+            ],
+            effects: [],
+          });
+        });
+      yield* restamp("2026-10-08T10:02:00Z");
+      yield* redeemAt(limited.instanceId, "2026-10-08T10:30:00Z");
+      // A late rate-limit notification gives the same error a newer timestamp.
+      yield* restamp("2026-10-08T10:45:00Z");
+      assert.deepStrictEqual((yield* resolve()).modelSelection, limited);
+    }).pipe(Effect.provide(withRedemptions(deps)));
+  });
+
+  it.effect("does not void a failure made by another driver under the same instance id", () => {
+    const deps = dependencies(false, [limited]);
+    return Effect.gen(function* () {
+      yield* seed(failure, recoveryRun.rootNodeId, false, "claudeAgent");
+      yield* redeemAt(limited.instanceId, "2026-10-08T10:30:00Z", "reset", "codex");
+      assert.deepStrictEqual(yield* voided, []);
+      assert.strictEqual((yield* Effect.flip(resolve())).code, "provider_unavailable");
+      yield* (yield* SqlClient.SqlClient)`INSERT INTO fork_prism_reset_voided_failures
+        VALUES (${errorFor(recoveryRun).id}, ${limited.instanceId}, 'codex', '2026-10-08T10:30:00Z')`;
+      assert.strictEqual((yield* Effect.flip(resolve())).code, "provider_unavailable");
+    }).pipe(Effect.provide(withRedemptions(deps)));
+  });
+
   it.effect("keeps a failure recorded while the reset is being confirmed", () => {
     const deps = dependencies(false, [limited]);
     return Effect.gen(function* () {
       yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe("2026-10-08T10:00:30Z")));
       const redemptions = yield* ResetRedemptions.ResetRedemptions;
-      yield* redemptions.redeem(limited.instanceId, seed().pipe(Effect.as("reset" as const)));
+      yield* redemptions.redeem(
+        { instanceId: limited.instanceId, driver: ProviderDriverKind.make("codex") },
+        seed().pipe(Effect.as("reset" as const)),
+      );
+      assert.deepStrictEqual(yield* voided, []);
       assert.strictEqual((yield* Effect.flip(resolve())).code, "provider_unavailable");
     }).pipe(Effect.provide(withRedemptions(deps)));
   });
@@ -286,9 +387,7 @@ describe("Prism capacity from durable run failures", () => {
         yield* seed();
         yield* redeemAt(limited.instanceId, "2026-10-08T10:30:00Z", outcome);
         assert.strictEqual((yield* Effect.flip(resolve())).code, "provider_unavailable");
-        const rows =
-          yield* (yield* SqlClient.SqlClient)`SELECT * FROM fork_prism_reset_redemptions`;
-        assert.strictEqual(rows.length, 0);
+        assert.deepStrictEqual(yield* voided, []);
       }).pipe(Effect.provide(withRedemptions(deps)));
     },
   );
@@ -345,15 +444,16 @@ describe("Prism capacity from durable run failures", () => {
     return Effect.gen(function* () {
       yield* seed();
       const sql = yield* SqlClient.SqlClient;
-      const redemptions = yield* ResetRedemptions.ResetRedemptions;
-      yield* sql`DROP TABLE fork_prism_reset_redemptions`;
-      yield* sql`CREATE TABLE fork_prism_reset_redemptions (provider_instance_id TEXT PRIMARY KEY)`;
-      assert.strictEqual(
-        yield* redemptions.redeem(limited.instanceId, Effect.succeed("reset" as const)),
-        "reset",
+      // Readable, but without the column the insert writes.
+      yield* sql`DROP TABLE fork_prism_reset_voided_failures`;
+      yield* sql`CREATE TABLE fork_prism_reset_voided_failures
+        (turn_item_id TEXT, provider_instance_id TEXT, driver TEXT)`;
+      const outcome = yield* (yield* ResetRedemptions.ResetRedemptions).redeem(
+        { instanceId: limited.instanceId, driver: ProviderDriverKind.make("codex") },
+        Effect.succeed("reset" as const),
       );
-      yield* sql`DROP TABLE fork_prism_reset_redemptions`;
-      yield* ResetRedemptions.initializeResetRedemptions;
+      assert.strictEqual(outcome, "reset");
+      assert.deepStrictEqual(yield* voided, []);
       assert.strictEqual((yield* Effect.flip(resolve())).code, "provider_unavailable");
     }).pipe(Effect.provide(withRedemptions(deps)));
   });
