@@ -649,6 +649,9 @@ export const MergePullRequestResult = Schema.Struct({
   state: PullRequestState.annotate({
     description: "open while auto-merge or a merge queue waits for checks.",
   }),
+  waiting: Schema.optional(Schema.String).annotate({
+    description: "Set when the PR stayed open because required CI has not finished.",
+  }),
 });
 export type MergePullRequestResult = typeof MergePullRequestResult.Type;
 
@@ -807,7 +810,7 @@ const ReviewPullRequestTool = Tool.make("pull_request_review", {
 
 const MergePullRequestTool = Tool.make("pull_request_merge", {
   description:
-    "Merge a PR. Refuses if the head moved from expectedHeadSha (headSha in pull_request_read).",
+    "Merge a PR after required checks. Names a failure. Refuses a moved head (expectedHeadSha).",
   parameters: Schema.Struct({
     ...ThreadPullRequestInput.fields,
     expectedHeadSha: TrimmedNonEmptyString,

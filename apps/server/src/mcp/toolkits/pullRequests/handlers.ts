@@ -1449,7 +1449,11 @@ const make = Effect.gen(function* () {
         const after = yield* pullRequests
           .summary({ ...ref, allowStale: false })
           .pipe(Effect.mapError(forgeFailure));
-        return { ...identityOf(target), state: after.state };
+        return {
+          ...identityOf(target),
+          state: after.state,
+          ...(after.state === "open" ? { waiting: "Waiting for CI" } : {}),
+        };
       }),
     ),
     ci_logs: McpToolAccess.reads((input) =>

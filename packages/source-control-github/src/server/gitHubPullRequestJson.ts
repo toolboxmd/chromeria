@@ -1606,6 +1606,39 @@ export const IMMEDIATELY_MERGEABLE: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Whether a merge may call GitHub's merge API. A repository admin bypasses required checks, so
+ * this reads the checks themselves. Checks with no required flag (older Enterprise) all count.
+ */
+export function mergeCiGate(
+  checks: ReadonlyArray<Pick<PullRequestCheck, "name" | "status" | "required">>,
+  truncated: boolean,
+):
+  | { readonly kind: "clear" }
+  | { readonly kind: "wait" | "refuse"; readonly names: ReadonlyArray<string> } {
+  const namesOf = (items: ReadonlyArray<{ readonly name: string }>) => [
+    ...new Set(items.map((item) => item.name)),
+  ];
+  const blocked = (check: { readonly status: string }) =>
+    check.status === "failure" || check.status === "cancelled";
+  const required = checks.filter((check) => check.required === true);
+  const failed = required.filter(blocked);
+  if (failed.length > 0) return { kind: "refuse", names: namesOf(failed) };
+  const waiting = required.filter(
+    (check) => check.status === "pending" || check.status === "action-required",
+  );
+  if (waiting.length > 0) return { kind: "wait", names: namesOf(waiting) };
+  if (truncated) return { kind: "wait", names: ["CI"] };
+  if (checks.some((check) => typeof check.required === "boolean")) return { kind: "clear" };
+  const failedAny = checks.filter(blocked);
+  if (failedAny.length > 0) return { kind: "refuse", names: namesOf(failedAny) };
+  const waitingAny = checks.filter(
+    (check) => check.status === "pending" || check.status === "action-required",
+  );
+  if (waitingAny.length > 0) return { kind: "wait", names: namesOf(waitingAny) };
+  return { kind: "clear" };
+}
+
+/**
  * GitHub answers null only to a GitHub App installation, and no API says what an installation
  * may do, so null is granted and GitHub refuses whatever the app was not given.
  */

@@ -7968,6 +7968,7 @@
   "4f25d9cd0dc48d81": "Kunde inte inaktivera automatisk merge",
   "d9cc91f4d239a6ce": "Värden nekade. Kontrollera att du har skrivåtkomst och att basgrenen inte har divergerat på ett sätt som värden inte kan merga.",
   "9c4f7322e1443e70": "Värden nekade. Kontrollera att automatisk merge är aktiverat för det här repot och att du har skrivåtkomst.",
+  "99b31b42d0de0407": "Waiting for CI",
   "2202c977a2602b94": "Stängde {closed} av {total} pull requests",
   "14a07a8f2b0df4dc": "{closed, plural, one {Stängde {closed} pull request} other {Stängde {closed} pull requests}}",
   "48e3a799c1225e8d": "Det gick inte att uppdatera trådens pull request",

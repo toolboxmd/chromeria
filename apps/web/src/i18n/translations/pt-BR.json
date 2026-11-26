@@ -7962,6 +7962,7 @@
   "4f25d9cd0dc48d81": "Não foi possível desativar o merge automático",
   "d9cc91f4d239a6ce": "O host recusou. Verifique se você tem acesso de gravação e se o branch base não divergiu de um jeito que o host não consegue mesclar.",
   "9c4f7322e1443e70": "O host recusou. Verifique se o merge automático está ativado neste repositório e se você tem acesso de gravação.",
+  "99b31b42d0de0407": "Waiting for CI",
   "2202c977a2602b94": "{closed} de {total} pull requests fechados",
   "14a07a8f2b0df4dc": "{closed, plural, one {{closed} pull request fechado} other {{closed} pull requests fechados}}",
   "48e3a799c1225e8d": "Não foi possível atualizar o pull request da thread",

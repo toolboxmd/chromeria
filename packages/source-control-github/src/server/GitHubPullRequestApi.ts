@@ -114,6 +114,7 @@ import {
   buildLabelRequest,
   PULL_REQUEST_SEARCH_MAX_ROWS,
   gitHubReactionContent,
+  mergeCiGate,
   reviewThreadConversation,
   type GitHubPullRequestActivity,
   type GitHubPullRequestActivityPage,
@@ -286,6 +287,32 @@ export class GitHubWorkflowApprovalHeadChangedError extends Schema.TaggedError<G
   }
 }
 
+export class GitHubMergeChecksRefusedError extends Schema.TaggedError<GitHubMergeChecksRefusedError>()(
+  "GitHubMergeChecksRefusedError",
+  {
+    names: Schema.Array(Schema.String),
+  },
+) {
+  override get message(): string {
+    const named = this.names.join(", ");
+    return this.names.length === 1
+      ? `Required check failed: ${named}.`
+      : `Required checks failed: ${named}.`;
+  }
+}
+
+export class GitHubMergeWaitingError extends Schema.TaggedError<GitHubMergeWaitingError>()(
+  "GitHubMergeWaitingError",
+  {
+    names: Schema.Array(Schema.String),
+  },
+) {
+  override get message(): string {
+    const named = this.names.length > 0 ? this.names.join(", ") : "CI";
+    return `Waiting for CI: ${named}.`;
+  }
+}
+
 export class GitHubBranchDeletionRefusedError extends Schema.TaggedError<GitHubBranchDeletionRefusedError>()(
   "GitHubBranchDeletionRefusedError",
   {
@@ -316,6 +343,8 @@ export class GitHubBranchDeletionRefusedError extends Schema.TaggedError<GitHubB
 }
 
 export type GitHubPullRequestApiError =
+  | GitHubMergeChecksRefusedError
+  | GitHubMergeWaitingError
   | GitHubBranchDeletionRefusedError
   | GitHubStackActionError
   | GitHubRequestPolicy.GitHubApiError
@@ -1613,6 +1642,28 @@ export const make = Effect.gen(function* () {
     return { contexts, truncated: first.nextCursor === null || after !== null };
   });
 
+  const readMergeCi = Effect.fn("GitHubPullRequestApi.readMergeCi")(function* (
+    input: Parameters<GitHubPullRequestApi["Service"]["getPullRequestDetail"]>[0],
+  ) {
+    const { owner, name } = parseRepositorySelector(input.repository);
+    const target = { ...input, operation: "runPullRequestAction" as const, allowReserve: true };
+    const result = yield* client
+      .PullRequestCheckContexts({
+        owner,
+        name,
+        number: input.number,
+        required: asksRequired(input.host),
+      })
+      .pipe(graphql(target));
+    const first = toPullRequestCheckContextsPage(result);
+    if (first === null) return mergeCiGate([], false);
+    const page =
+      first.nextCursor === null
+        ? { contexts: first.contexts, truncated: false }
+        : yield* readAllCheckContexts(input, true, first);
+    return mergeCiGate(pullRequestChecksFromContexts(page.contexts).checks, page.truncated);
+  });
+
   // GitHub refuses a requested-reviewer list holding a team the viewer cannot see. Remember the
   // refusal so later reads of that pull request skip straight to the read without reviewers.
   const refusedReviewers = yield* Cache.make({
@@ -2809,34 +2860,78 @@ export const make = Effect.gen(function* () {
             Effect.provideService(SourceControlHost.SourceControlHost, sourceControlHost),
             Effect.provideService(FileSystem.FileSystem, fileSystem),
           );
-        if (input.action !== "enable-auto-merge") return stackAction(input.action);
-        const expectedHeadOid = input.expectedStackHeads?.find(
-          (layer) => layer.number === input.number,
-        )?.headSha;
-        return stackAction("enable-auto-merge").pipe(
-          Effect.andThen(pullRequestNodeId(target)),
-          Effect.flatMap((pullRequestId) =>
-            actionSummary(
-              client
-                .EnablePullRequestAutoMerge({
-                  input: {
-                    pullRequestId,
-                    mergeMethod: GRAPHQL_MERGE_METHODS[input.mergeMethod ?? "merge"] ?? "MERGE",
-                    ...(expectedHeadOid === undefined ? {} : { expectedHeadOid }),
-                    includeStack: true,
-                  },
-                })
-                .pipe(Effect.map((result) => result.enablePullRequestAutoMerge?.pullRequest)),
-            ).pipe(graphql(target)),
-          ),
-          // Like `gh pr merge --auto`: a stack that can merge now merges, re-pinned to its heads.
-          Effect.catchIf(
-            (error) =>
-              error._tag === "GitHubApiResponseError" &&
-              (error.githubErrors ?? []).some((message) => message.includes("already mergeable")),
-            () => stackAction("merge"),
-          ),
-        );
+        const alreadyMergeable = (error: {
+          readonly _tag: string;
+          readonly githubErrors?: ReadonlyArray<string>;
+        }) =>
+          error._tag === "GitHubApiResponseError" &&
+          (error.githubErrors ?? []).some((message) => message.includes("already mergeable"));
+        if (input.action !== "merge" && input.action !== "enable-auto-merge") {
+          return stackAction(input.action);
+        }
+        return Effect.gen(function* () {
+          // merge-async lands every open layer up to this one, so each of those heads is gated.
+          const layers = [
+            ...new Set([
+              input.number,
+              ...(input.expectedStackHeads?.map((layer) => layer.number) ?? []),
+            ]),
+          ];
+          const gates = yield* Effect.forEach(
+            layers,
+            (number) => readMergeCi({ ...input, number }),
+            { concurrency: 1 },
+          );
+          const refusedNames = [
+            ...new Set(gates.flatMap((gate) => (gate.kind === "refuse" ? gate.names : []))),
+          ];
+          const waitingNames = [
+            ...new Set(gates.flatMap((gate) => (gate.kind === "wait" ? gate.names : []))),
+          ];
+          const gate =
+            refusedNames.length > 0
+              ? { kind: "refuse" as const, names: refusedNames }
+              : waitingNames.length > 0
+                ? { kind: "wait" as const, names: waitingNames }
+                : { kind: "clear" as const, names: [] as ReadonlyArray<string> };
+          if (input.action === "merge" && gate.kind === "refuse") {
+            return yield* new GitHubMergeChecksRefusedError({ names: [...gate.names] });
+          }
+          // A stack GitHub calls mergeable can still be waiting on required CI. An admin merge
+          // would bypass that, so a pending or failed check never reaches merge-async.
+          const hold = gate.kind !== "clear";
+          if (input.action === "merge" && !hold) return yield* stackAction("merge");
+          const expectedHeadOid = input.expectedStackHeads?.find(
+            (layer) => layer.number === input.number,
+          )?.headSha;
+          const names = gate.kind === "clear" ? [] : [...gate.names];
+          const waitingError = new GitHubMergeWaitingError({ names });
+          const armed = stackAction("enable-auto-merge").pipe(
+            Effect.andThen(pullRequestNodeId(target)),
+            Effect.flatMap((pullRequestId) =>
+              actionSummary(
+                client
+                  .EnablePullRequestAutoMerge({
+                    input: {
+                      pullRequestId,
+                      mergeMethod: GRAPHQL_MERGE_METHODS[input.mergeMethod ?? "merge"] ?? "MERGE",
+                      ...(expectedHeadOid === undefined ? {} : { expectedHeadOid }),
+                      includeStack: true,
+                    },
+                  })
+                  .pipe(Effect.map((result) => result.enablePullRequestAutoMerge?.pullRequest)),
+              ).pipe(graphql(target)),
+            ),
+            // Like `gh pr merge --auto`: a stack that can merge now merges, re-pinned to its heads.
+            // Required CI still open must not take that path: the merge API would bypass it.
+            hold
+              ? Effect.catchIf(alreadyMergeable, () => Effect.fail(waitingError))
+              : Effect.catchIf(alreadyMergeable, () => stackAction("merge")),
+          );
+          return input.action === "merge" && hold
+            ? yield* armed.pipe(Effect.mapError(() => waitingError))
+            : yield* armed;
+        });
       }
       if (input.action === "revert") {
         return pullRequestNodeId({ ...input, operation: "revertPullRequest" }).pipe(
@@ -2994,9 +3089,20 @@ export const make = Effect.gen(function* () {
           }
         }
         // Merge queues always use auto-merge. A PR that became ready since detail loaded
-        // merges directly, matching `gh pr merge --auto`.
+        // merges directly, matching `gh pr merge --auto`, once required CI has passed.
+        // Repository admins bypass ruleset checks, so pending or failing required CI never
+        // reaches mergePullRequest.
+        const ci =
+          action === "merge" || action === "enable-auto-merge"
+            ? yield* readMergeCi(input)
+            : { kind: "clear" as const, names: [] as ReadonlyArray<string> };
+        if (action === "merge" && ci.kind === "refuse") {
+          return yield* new GitHubMergeChecksRefusedError({ names: [...ci.names] });
+        }
+        const holdForCi = ci.kind !== "clear";
         const auto =
           state.isMergeQueueEnabled === true ||
+          holdForCi ||
           (action === "enable-auto-merge" &&
             !IMMEDIATELY_MERGEABLE.has(state.mergeStateStatus?.toUpperCase() ?? ""));
         const merge = {
@@ -3007,7 +3113,7 @@ export const make = Effect.gen(function* () {
             : { expectedHeadOid: input.expectedHeadSha ?? expectedHead }),
           ...(body === undefined ? {} : { commitBody: body }),
         };
-        return yield* actionSummary(
+        const sent = actionSummary(
           auto
             ? client
                 .EnablePullRequestAutoMerge({ input: merge })
@@ -3016,6 +3122,12 @@ export const make = Effect.gen(function* () {
                 .MergePullRequest({ input: merge })
                 .pipe(Effect.map((result) => result.mergePullRequest?.pullRequest)),
         ).pipe(graphql(target));
+        // Arming auto-merge is the wait. If the repository cannot arm it, say so and do not merge.
+        return action === "merge" && ci.kind === "wait"
+          ? yield* sent.pipe(
+              Effect.mapError(() => new GitHubMergeWaitingError({ names: [...ci.names] })),
+            )
+          : yield* sent;
       });
     }),
 

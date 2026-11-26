@@ -7977,6 +7977,7 @@
   "4f25d9cd0dc48d81": "Could not disable auto-merge",
   "d9cc91f4d239a6ce": "The host refused it. Check that you have write access, and that the base branch has not diverged in a way the host cannot merge.",
   "9c4f7322e1443e70": "The host refused it. Check that auto-merge is enabled for this repository and that you have write access.",
+  "99b31b42d0de0407": "Waiting for CI",
   "2202c977a2602b94": "Closed {closed} of {total} pull requests",
   "14a07a8f2b0df4dc": "{closed, plural, one {Closed {closed} pull request} other {Closed {closed} pull requests}}",
   "48e3a799c1225e8d": "Unable to update the thread pull request",

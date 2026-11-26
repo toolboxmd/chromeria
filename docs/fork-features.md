@@ -303,7 +303,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/issues/956",
     "https://github.com/toolboxmd/chromeria/issues/963",
     "https://github.com/toolboxmd/chromeria/issues/965",
-    "https://github.com/toolboxmd/chromeria/issues/969"
+    "https://github.com/toolboxmd/chromeria/issues/969",
+    "https://github.com/toolboxmd/chromeria/issues/987"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/9",
@@ -319,7 +320,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/pull/725",
     "https://github.com/toolboxmd/chromeria/pull/804",
     "https://github.com/toolboxmd/chromeria/compare/main...fix/956-html-render-dialog-test-hang",
-    "https://github.com/toolboxmd/chromeria/compare/main...fix/963-desktop-cli-shim-flake"
+    "https://github.com/toolboxmd/chromeria/compare/main...fix/963-desktop-cli-shim-flake",
+    "https://github.com/toolboxmd/chromeria/pull/988"
   ],
   "newFiles": [
     ".github/workflows/fork.yml",
@@ -382,6 +384,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "packages/source-control-github/src/server/GitHubPullRequestApi.test.ts",
     "packages/source-control-github/src/server/GitHubPullRequestApi.ts",
     "packages/source-control-github/src/server/gitHubPullRequestJson.ts",
+    "apps/web/src/components/pullRequest/PullRequestDetailPanel.tsx",
+    "apps/web/src/components/pullRequest/usePullRequestActions.ts",
     "packages/source-control-github/src/server/pullRequestBatches.graphql",
     "packages/source-control-github/src/server/pullRequestBatches.graphql.ts",
     "packages/source-control-github/src/server/pullRequestListings.graphql",

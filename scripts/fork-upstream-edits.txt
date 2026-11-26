@@ -106,8 +106,10 @@ apps/web/src/components/T3Wordmark.tsx
 apps/web/src/components/chat/MessagesTimeline.browser.test.tsx
 apps/web/src/components/chat/MessagesTimeline.tsx
 apps/web/src/components/onboarding/WelcomePage.tsx
+apps/web/src/components/pullRequest/PullRequestDetailPanel.tsx
 apps/web/src/components/pullRequest/PullRequestListFilters.tsx
 apps/web/src/components/pullRequest/ThreadPullRequestsPanel.tsx
+apps/web/src/components/pullRequest/usePullRequestActions.ts
 apps/web/src/components/settings/IntegrationsSettings.tsx
 apps/web/src/components/settings/ProviderSettingsPanel.tsx
 apps/web/src/components/settings/ThemePreviewCircles.tsx

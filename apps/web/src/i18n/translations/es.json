@@ -7962,6 +7962,7 @@
   "4f25d9cd0dc48d81": "No se pudo desactivar la fusión automática",
   "d9cc91f4d239a6ce": "El host lo rechazó. Comprueba que tienes acceso de escritura y que la rama base no ha divergido de una forma que el host no puede fusionar.",
   "9c4f7322e1443e70": "El host lo rechazó. Comprueba que la fusión automática está activada para este repositorio y que tienes acceso de escritura.",
+  "99b31b42d0de0407": "Waiting for CI",
   "2202c977a2602b94": "Se cerraron {closed} de {total} pull requests",
   "14a07a8f2b0df4dc": "{closed, plural, one {Se cerró {closed} pull request} other {Se cerraron {closed} pull requests}}",
   "48e3a799c1225e8d": "No se puede actualizar la pull request del hilo",

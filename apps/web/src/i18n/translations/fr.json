@@ -7963,6 +7963,7 @@
   "4f25d9cd0dc48d81": "Impossible de désactiver la fusion automatique",
   "d9cc91f4d239a6ce": "L’hôte a refusé. Vérifiez que vous avez l’accès en écriture et que la branche de base n’a pas divergé d’une manière que l’hôte ne peut pas fusionner.",
   "9c4f7322e1443e70": "L’hôte a refusé. Vérifiez que la fusion automatique est activée pour ce dépôt et que vous avez l’accès en écriture.",
+  "99b31b42d0de0407": "Waiting for CI",
   "2202c977a2602b94": "{closed} pull requests fermées sur {total}",
   "14a07a8f2b0df4dc": "{closed, plural, one {{closed} pull request fermée} other {{closed} pull requests fermées}}",
   "48e3a799c1225e8d": "Impossible de mettre à jour la pull request du fil",
