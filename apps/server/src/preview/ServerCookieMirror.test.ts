@@ -162,8 +162,9 @@ describe("ServerCookieMirror", () => {
       ]);
     await withdraw();
     expect(jar.has("datadome")).toBe(false);
-    // A replay after a reconnect or resync is harmless.
+    // A replay after a lost acknowledgement leaves a verdict the profile earned since.
+    jar.set("datadome", { ...jar.get("own")!, name: "datadome", value: "earned-here" });
     await withdraw();
-    expect(jar.has("datadome")).toBe(false);
+    expect(state()).toMatchObject({ datadome: ["earned-here", -1] });
   });
 });

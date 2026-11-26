@@ -35,6 +35,8 @@ export class ServerCookieMirror {
     string,
     Map<string, { readonly sent: string; readonly stored: string | undefined }>
   >();
+  /** Verdict keys whose mirrored copy was already withdrawn, per profile. Process memory. */
+  private readonly withdrawn = new Map<string, Set<string>>();
   private readonly contexts: ServerBrowserContexts;
   /** Mirror batches and login imports touch the same jars, so they run one at a time. */
   private queue: Promise<unknown> = Promise.resolve();
@@ -126,6 +128,11 @@ export class ServerCookieMirror {
   private async applyBatch(batch: CookieMirrorBatch) {
     const context = await this.contexts.contextFor(batch.profile.id);
     const attached = await this.attach(context);
+    let withdrawn = this.withdrawn.get(batch.profile.id);
+    if (!withdrawn) {
+      withdrawn = new Set();
+      this.withdrawn.set(batch.profile.id, withdrawn);
+    }
     let mirrored = this.mirrored.get(batch.profile.id);
     if (!mirrored) {
       mirrored = new Map();
@@ -145,6 +152,14 @@ export class ServerCookieMirror {
       const mutations = batch.mutations.filter((mutation) => {
         // A desktop built before verdicts stopped travelling still sends them.
         if (mutation.type === "set" && isAntiBotVerdictCookie(mutation.cookie.name)) return false;
+        // The one-time withdrawal of a mirrored verdict is applied once; a replay after a lost
+        // acknowledgement must not delete a verdict the profile earned since.
+        if (mutation.type === "remove" && isAntiBotVerdictCookie(mutation.key.name)) {
+          const key = cookieMirrorKey(mutation.key);
+          if (withdrawn.has(key)) return false;
+          withdrawn.add(key);
+          return true;
+        }
         const key = cookieMirrorKey(mutation.type === "set" ? mutation.cookie : mutation.key);
         const last = mirrored.get(key);
         const changedHere =
