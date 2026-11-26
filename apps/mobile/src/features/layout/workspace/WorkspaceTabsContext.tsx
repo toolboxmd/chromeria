@@ -4,11 +4,10 @@ import { createContext, use, useState, type Dispatch, type ReactNode } from "rea
 
 import { mobilePreferencesAtom, saveMobilePreferences } from "../../../state/preferences";
 import { useAtomCommand } from "../../../state/use-atom-command";
+import { launchWorkspaceTab } from "./workspace-selection-store";
 import {
+  effectiveHiddenNavigationTabs,
   isSharedSlotTab,
-  sharedSlotAbsentee,
-  navigationCustomizationAvailable,
-  resolveHiddenNavigationTabs,
   resolveSelectedNavigationTab,
 } from "./navigation-tab-order";
 import {
@@ -46,12 +45,11 @@ function resolveWorkspaceTabsSelection(
 ): WorkspaceTabsState {
   const saved = AsyncResult.isSuccess(preferences) ? preferences.value : undefined;
   const order = resolveWorkspaceTabOrder(saved?.navigationTabOrder);
-  const hidden = [
-    ...(navigationCustomizationAvailable()
-      ? resolveHiddenNavigationTabs(saved?.hiddenNavigationTabs)
-      : []),
-    sharedSlotAbsentee(state.selectedTab, saved?.sharedSlotTab),
-  ];
+  const hidden = effectiveHiddenNavigationTabs({
+    savedHidden: saved?.hiddenNavigationTabs,
+    selected: state.selectedTab,
+    sharedSlotTab: saved?.sharedSlotTab,
+  });
   const selected = resolveSelectedNavigationTab(order, hidden, state.selectedTab);
   return selected && selected !== state.selectedTab
     ? workspaceTabsReducer(state, { type: "select", tab: selected })
@@ -64,6 +62,7 @@ function createWorkspaceTabsModel(selectedTab?: WorkspaceTab) {
   const stored = Atom.make(initialWorkspaceTabsState(selectedTab));
   const scrollOffsets: Record<WorkspaceSearchTab, number> = {
     threads: 0,
+    promachos: 0,
     pullRequests: 0,
     issues: 0,
     workflows: 0,
@@ -88,13 +87,19 @@ export function WorkspaceTabsProvider(props: {
   readonly initialTab?: WorkspaceTab;
 }) {
   const registry = use(RegistryContext);
-  const [model] = useState(() => createWorkspaceTabsModel(props.initialTab));
+  const [model] = useState(() =>
+    createWorkspaceTabsModel(props.initialTab ?? launchWorkspaceTab()),
+  );
   const state = useAtomValue(model.resolved);
   const savePreferences = useAtomCommand(saveMobilePreferences);
   const dispatch = (action: WorkspaceTabsAction) => {
+    const previous = registry.get(model.resolved).selectedTab;
     registry.set(model.stored, workspaceTabsReducer(registry.get(model.resolved), action));
     if (action.type === "select" && isSharedSlotTab(action.tab))
       void savePreferences({ sharedSlotTab: action.tab });
+    // Fork: a cold start reopens the tab used last (toolboxmd/chromeria#898).
+    if (action.type === "select" && action.tab !== previous)
+      void savePreferences({ lastWorkspaceTab: action.tab });
   };
   const context = {
     state,

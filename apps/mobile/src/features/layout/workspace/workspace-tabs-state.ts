@@ -38,6 +38,11 @@ function emptyTab(): WorkspaceTabState {
   return { query: "", searchMode: "resting", scrollOffset: 0, searchEntryOffset: 0 };
 }
 
+/** Usage, Workflows and the Promachos conversations have no search. */
+export function workspaceTabSearches(tab: WorkspaceSearchTab) {
+  return tab !== "usage" && tab !== "workflows" && tab !== "promachos";
+}
+
 /** The list a workspace page belongs to. */
 export function workspaceTabOf(routeName: string | undefined): WorkspaceTab {
   if (routeName === "Issue") return "issues";
@@ -52,6 +57,7 @@ export function initialWorkspaceTabsState(
     selectionRevision: 0,
     tabs: {
       threads: emptyTab(),
+      promachos: emptyTab(),
       pullRequests: emptyTab(),
       issues: emptyTab(),
       workflows: emptyTab(),
@@ -82,7 +88,7 @@ export function workspaceTabsReducer(
           selectionRevision: state.selectionRevision + 1,
         };
   const tab = action.tab ?? state.selectedTab;
-  if (tab === "usage" || tab === "workflows") return state;
+  if (!workspaceTabSearches(tab)) return state;
   const current = state.tabs[tab];
   let next: WorkspaceTabState;
   switch (action.type) {
