@@ -260,6 +260,30 @@ describe("evaluate authority", () => {
     ).rejects.toThrow("held");
     expect(sent).toEqual(["Runtime.evaluate"]);
   });
+
+  it("sends nothing when its authority ends before dispatch, and leaves no timer behind", async () => {
+    vi.useFakeTimers();
+    try {
+      const sent: string[] = [];
+      const cdp = { send: async (method: string) => (sent.push(method), {}) };
+      let calls = 0;
+      const authorize = async () => {
+        if (++calls === 2) throw new Error("revoked");
+      };
+      await expect(
+        ServerBrowserPage.evaluate(
+          cdp as unknown as Parameters<typeof ServerBrowserPage.evaluate>[0],
+          { expression: "1" },
+          1_000,
+          authorize,
+        ),
+      ).rejects.toThrow("revoked");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(sent).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("server browser element refs", () => {
