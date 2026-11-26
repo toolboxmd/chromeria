@@ -1961,10 +1961,21 @@ it.effect.each(["target", "environmentId"] as const)(
         // The box launched it in the project with the same repository.
         expect(yield* Ref.get(thread.launched)).toBe(delegated.remoteChild.threadId);
         // ...naming the parent here, so the thread there links back to it.
-        expect(yield* Ref.get(thread.delegatedFrom)).toMatchObject({
+        expect(yield* Ref.get(thread.delegatedFrom)).toEqual({
           environmentId: laptop.environmentId,
           threadId: parentThreadId,
           title: "Laptop parent",
+          purposeLaunch: {
+            environmentId: laptop.environmentId,
+            threadId: parentThreadId,
+            runId: parentRunId,
+            launchId: expect.any(String),
+            purpose: {
+              version: 1,
+              scope: { type: "unscoped", reason: "legacy_no_intent" },
+              provenance: { type: "parent_run", threadId: parentThreadId, runId: parentRunId },
+            },
+          },
         });
         // A retry with the same key launches nothing new and records nothing new.
         const retried = yield* delegateToBox(a);
