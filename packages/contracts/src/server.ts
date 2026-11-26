@@ -7,6 +7,7 @@ import {
   ServerSelfUpdateMethod,
 } from "./environment.ts";
 import { AuthClientPresentationMetadata, ServerAuthDescriptor } from "./auth.ts";
+import { BareSupport } from "./bareLaunch.ts";
 import {
   ForwardCompatibleArray,
   IsoDateTime,
@@ -270,6 +271,8 @@ export const ServerProvider = Schema.Struct({
   supportedRuntimeModes: Schema.optional(ForwardCompatibleArray(RuntimeMode)),
   supportsConversationRollback: Schema.optional(Schema.Boolean),
   supportsTextGeneration: Schema.optional(Schema.Boolean),
+  /** Fork: whether a new thread may start bare here (toolboxmd/chromeria#319). */
+  bare: Schema.optional(BareSupport),
   setup: Schema.optional(
     Schema.Struct({
       canAuthenticate: Schema.Boolean,
