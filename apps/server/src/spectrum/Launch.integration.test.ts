@@ -360,6 +360,35 @@ it.effect("refuses the ui lane for Colors and White", () =>
   }).pipe(Effect.provide(runtime)),
 );
 
+it.effect("a caller below full access cannot give a Color or fallback the agent's own mode", () =>
+  Effect.gen(function* () {
+    const caller = yield* setup;
+    yield* (yield* EventSink.EventSinkV2).write({
+      events: [
+        {
+          id: EventId.make("caller:supervised"),
+          type: "thread.metadata-updated",
+          threadId: caller.id,
+          occurredAt: NOW,
+          payload: { ...caller, runtimeMode: "approval-required" },
+        },
+      ],
+    });
+    const launch = yield* Launch.SpectrumLaunchService;
+    const yolo = { ...selection, options: [{ id: "_t3/session-mode", value: "yolo" }] };
+    for (const color of [
+      { label: "Blue", selection: yolo },
+      { label: "Blue", selection, fallbacks: [{ selection: yolo }] },
+    ]) {
+      const error = yield* Effect.flip(
+        launch.register({ ...input, colors: [color, { label: "Red", role: "reviewer" }] }),
+      );
+      assert.nestedPropertyVal(error, "cause.code", "runtime_mode_escalation_denied");
+      assert.include(String((error as { cause: { message: string } }).cause.message), "Blue");
+    }
+  }).pipe(Effect.provide(runtime)),
+);
+
 it.effect("legacy Color instance and model overrides keep Prism role instructions", () =>
   Effect.gen(function* () {
     yield* setup;

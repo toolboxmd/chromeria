@@ -5740,6 +5740,9 @@ describe("OrchestratorMcpService provider resolution", () => {
       const delegateFrom = (
         runtimeMode: "approval-required" | "full-access",
         held: ReadonlyArray<{ readonly id: string; readonly value: unknown }> | undefined,
+        kit?: ReadonlyArray<{
+          readonly options?: ReadonlyArray<{ readonly id: string; readonly value: string }>;
+        }>,
       ) => {
         const commands: Array<unknown> = [];
         const task = {
@@ -5779,7 +5782,23 @@ describe("OrchestratorMcpService provider resolution", () => {
                 } as never;
               }),
           }),
-          ServerSettings.layerTest(),
+          ServerSettings.layerTest(
+            kit === undefined
+              ? {}
+              : {
+                  prismRoles: {
+                    worker: {
+                      lanes: {
+                        medium: kit.map((color) => ({
+                          instanceId: agentId,
+                          model: "default",
+                          ...color,
+                        })),
+                      },
+                    },
+                  },
+                },
+          ),
           providerRegistryLayer([
             {
               ...providerSnapshot({
@@ -5821,9 +5840,9 @@ describe("OrchestratorMcpService provider resolution", () => {
           const outcome = yield* service
             .delegateTask(scope, {
               task: "Review the change.",
-              target: yield* decodeTarget({ options: mode }),
+              ...(kit === undefined ? { target: yield* decodeTarget({ options: mode }) } : {}),
               mode: "async",
-              clientRequestId: `mode-${runtimeMode}-${held === undefined ? "new" : "held"}`,
+              clientRequestId: `mode-${runtimeMode}-${held === undefined ? "new" : "held"}-${kit?.length ?? 0}`,
             })
             .pipe(Effect.exit);
           return { outcome, commands };
@@ -5846,6 +5865,22 @@ describe("OrchestratorMcpService provider resolution", () => {
           mode,
         );
       }
+
+      // A kit Color that sets the mode yields to the next Color instead of failing the task.
+      const skipped = yield* delegateFrom("approval-required", undefined, [{ options: mode }, {}]);
+      assert.isTrue(Exit.isSuccess(skipped.outcome), JSON.stringify(skipped.outcome));
+      assert.isUndefined(
+        (skipped.commands[0] as { modelSelection: { options?: unknown } }).modelSelection.options,
+      );
+      const allRefused = yield* delegateFrom("approval-required", undefined, [{ options: mode }]);
+      assert.include(JSON.stringify(allRefused.outcome), "_t3/session-mode=yolo");
+      assert.notInclude(JSON.stringify(allRefused.outcome), "leave it out");
+      assert.lengthOf(allRefused.commands, 0);
+      const fullAccess = yield* delegateFrom("full-access", undefined, [{ options: mode }, {}]);
+      assert.deepEqual(
+        (fullAccess.commands[0] as { modelSelection: { options: unknown } }).modelSelection.options,
+        mode,
+      );
     }),
   );
 
