@@ -6,6 +6,11 @@ import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import type { ToolCallDiffTarget } from "../../diffPanelStore";
 import { AudioPreviewUnmountContext } from "../files/AudioPreview";
+import { PromachosInlineCardHost, promachosScrollFollow } from "../promachos/PromachosChat";
+import {
+  promachosTimelineRows,
+  resolvePromachosTimelineDisclosures,
+} from "../promachos/promachosTimeline";
 import { ThreadFindTimelineContext } from "./ThreadFindProvider";
 import { MarkdownFindContext } from "./markdownFindContext";
 import { useChatCanvas } from "./ChatCanvasContext";
@@ -62,6 +67,7 @@ import {
   ArrowRightIcon,
   BotIcon,
   CircleAlertIcon,
+  FlameIcon,
   MessagesSquareIcon,
   Minimize2Icon,
   ChevronDownIcon,
@@ -180,7 +186,9 @@ function TimelineListFooter({
   composerInset,
   onGrow,
   children,
+  onInlineCardHost,
 }: {
+  readonly onInlineCardHost?: ((element: HTMLDivElement | null) => void) | undefined;
   readonly composerInset: number;
   readonly onGrow: (() => void) | undefined;
   readonly children?: ReactNode;
@@ -199,6 +207,7 @@ function TimelineListFooter({
   }, [onGrow]);
   return (
     <div>
+      {onInlineCardHost ? <PromachosInlineCardHost hostRef={onInlineCardHost} /> : null}
       <div ref={contentRef}>{children}</div>
       <div aria-hidden style={{ height: composerInset }} />
       <div aria-hidden className="h-3 sm:h-4" />
@@ -238,6 +247,8 @@ interface MessagesTimelineProps {
   respondingRequestIds?: TimelineRowSharedState["respondingRequestIds"];
   canOperateThread?: boolean;
   onRespondToApproval?: TimelineRowSharedState["onRespondToApproval"];
+  presentation?: "standard" | "promachos";
+  onInlineCardHost?: (element: HTMLDivElement | null) => void;
   citationRequest?: AssistantCitationRequest | null;
   citationHistory?: CitedHistory;
   onCiteAssistantText?: (
@@ -367,6 +378,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
   respondingRequestIds = EMPTY_RESPONDING_REQUEST_IDS,
   canOperateThread = false,
   onRespondToApproval,
+  presentation = "standard",
+  onInlineCardHost,
   citationRequest = null,
   citationHistory = CITED_HISTORY_LOADING,
   onCiteAssistantText,
@@ -662,8 +675,12 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const screenReaderAnnouncements = useClientSettings(
     (settings) => settings.screenReaderAnnouncements,
   );
-  const toolCallVisibility =
-    findActive && preferredToolCallVisibility === "zen" ? "hideAll" : preferredToolCallVisibility;
+  const promachos = presentation === "promachos";
+  const toolCallVisibility = promachos
+    ? "showAll"
+    : findActive && preferredToolCallVisibility === "zen"
+      ? "hideAll"
+      : preferredToolCallVisibility;
   const revealedMessageId = citationRequest?.citation.messageId ?? null;
   // Imported turns and post-steer work fold under synthetic keys, not the entries' run ids.
   const findFoldRunIds = findActive
@@ -761,14 +778,23 @@ const ConversationTimeline = memo(function ConversationTimeline({
   const pendingApprovalRequestIds = new Set(
     pendingApprovals.filter(isVisiblePendingApproval).map((approval) => approval.requestId),
   );
-  const rawRows = useIncrementalTimelineRows(`${listIdentityKey}\0${workspaceRoot ?? ""}`, {
+  const scrollFollow = promachosScrollFollow(
+    promachos,
+    TIMELINE_MAINTAIN_SCROLL_AT_END,
+    TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH,
+  );
+  const promachosDisclosures = resolvePromachosTimelineDisclosures(
+    { timelineEntries, latestRun, isWorking, runlessWorkActive, runningRunId },
+    promachos,
+  );
+  const projectedRows = useIncrementalTimelineRows(`${listIdentityKey}\0${workspaceRoot ?? ""}`, {
     timelineEntries,
     pendingApprovalRequestIds,
     latestRun,
     usageLimitRunId,
     runningRunId,
-    expandedRunIds: visibleExpandedRunIds,
-    expandedAttemptIds: visibleExpandedAttemptIds,
+    expandedRunIds: promachosDisclosures?.runs ?? visibleExpandedRunIds,
+    expandedAttemptIds: promachosDisclosures?.attempts ?? visibleExpandedAttemptIds,
     expandedWorkGroupIds,
     isWorking,
     runlessWorkActive,
@@ -781,6 +807,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     toolCallVisibility,
     revealedMessageId,
   });
+  const rawRows = promachos ? promachosTimelineRows(projectedRows) : projectedRows;
   const rows = useStableRows(rawRows, listIdentityKey);
   const matchedApprovalRequestIds = new Set<string>();
   for (const row of pendingApprovalRequestIds.size > 0 ? rows : []) {
@@ -797,7 +824,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
   );
   // Run status/timestamps change per stream event; keep them out of shared row context.
   const runs = useStableHandoffRuns(runsProp);
-  const minimapItems = deriveTimelineMinimapItems(rows);
+  const minimapItems = promachos ? [] : deriveTimelineMinimapItems(rows);
   const minimapRowIndices = minimapItems.map((item) => item.rowIndex);
   const restoreRowIndex =
     restoringThreadPosition && rememberedPosition?.atEnd === false
@@ -1133,6 +1160,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     respondingRequestIds,
     canOperateThread,
     onRespondToApproval,
+    promachos,
     citationRequest: readyCitationRequest,
     onReplyToResponse,
     listRef,
@@ -1428,6 +1456,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     <TimelineListFooter
       composerInset={anchoredEndSpace ? 0 : contentInsetEndAdjustment}
       onGrow={onFooterGrow}
+      onInlineCardHost={onInlineCardHost}
     >
       {footer}
       {unmatchedPendingApprovals.length > 0 ? (
@@ -1517,8 +1546,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
                 fullscreenAppRowId !== null
                   ? false
                   : isWorking && !syncing && !prefersReducedMotion && settlingListIdentity === null
-                    ? TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH
-                    : TIMELINE_MAINTAIN_SCROLL_AT_END
+                    ? scrollFollow.smooth
+                    : scrollFollow.normal
               }
               // A restore owns the scroll position until it lands. Anchoring would
               // move it for the previous thread's header as the list swaps threads.
@@ -1692,6 +1721,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
                   row.kind === "attempt-fold" ||
                   row.kind === "html-render" ||
                   row.kind === "sent-message" ||
+                  row.kind === "keep-warm" ||
                   row.kind === "mcp-app" ||
                   row.kind === "viewed-images"
                 ? "pb-2"
@@ -1735,6 +1765,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "turn-fold" ? <TurnFoldTimelineRow key={row.id} row={row} /> : null}
       {row.kind === "attempt-fold" ? <AttemptFoldTimelineRow row={row} /> : null}
       {row.kind === "context-compaction" ? <ContextCompactionTimelineRow row={row} /> : null}
+      {row.kind === "keep-warm" ? <KeepWarmTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "user" ? <UserMessageRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
@@ -1771,6 +1802,23 @@ function WorktreeSetupTimelineRow({
       }
       onOpenTerminal={onOpenTerminal}
     />
+  );
+}
+
+function KeepWarmTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "keep-warm" }> }) {
+  return (
+    <div
+      role="separator"
+      aria-label={row.label}
+      className="mx-auto flex w-full max-w-(--chat-content-max-width) items-center gap-3 py-1 text-xs text-muted-foreground"
+    >
+      <span className="h-px flex-1 bg-border/70" />
+      <span className="flex min-w-0 items-center gap-1.5">
+        <FlameIcon aria-hidden="true" className="size-3" />
+        {row.label}
+      </span>
+      <span className="h-px flex-1 bg-border/70" />
+    </div>
   );
 }
 

@@ -30,6 +30,8 @@ it("initializes React refresh before a shared UI chunk runs in bundled dev", asy
       "index.html",
       "src/bootstrap.ts",
       "src/lib/bootError.ts",
+      "src/branding.ts",
+      "src/branding.logic.ts",
       "src/lib/chunkReloadGuard.ts",
     ]) {
       await NodeFSP.copyFile(new URL(`../${file}`, import.meta.url), NodePath.join(root, file));
