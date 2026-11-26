@@ -54,7 +54,8 @@ to the environment's agent browser. To reuse logins from another browser:
 - Sending mirrored logins to another environment requires **Mirror desktop
   browser logins** permission on that connection.
 - A login you make inside an agent tab keeps its cookies until the desktop sends
-  a new value for them; signing out on the desktop does not remove them.
+  a new value for them; signing out on the desktop does not remove them. Anti-bot
+  cookies the mirror copied earlier are the exception: they are removed once.
 - For a one-time copy, open **Settings → Browser → Browser profiles →
   Add profile** and choose **Import from**.
 - An agent on another linked environment can copy one site's session from an

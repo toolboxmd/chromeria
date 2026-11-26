@@ -19,8 +19,11 @@ Anti-bot verdict cookies never move: `datadome`, `cf_clearance`, `__cf_bm`,
 `_abck`, `bm_sz`, `reese84`, and names starting with `_px` or `incap_ses_`. Sites
 issue them to the browser that passed their check, so a copy on another device
 can look like a mismatch and trigger a block. Mirroring, imports and copies skip
-them. Chromeria removes each one it copied before, once. Your Chrome keeps its
-own, and each agent browser keeps the ones it earns itself.
+them. Chromeria removes each one it copied before, once, even when the site has
+since refreshed it in the agent browser, because a refreshed verdict still
+carries the copied device's identity. The next visit to that site may then show
+a check. Your Chrome keeps its own, and after that removal each agent browser
+keeps the ones it earns itself.
 
 ## Agents on other machines
 
