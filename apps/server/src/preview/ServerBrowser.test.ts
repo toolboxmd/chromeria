@@ -45,7 +45,6 @@ import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
-import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
 import { settlementLayer, settleThread } from "./BrowserSettlement.testkit.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
@@ -397,9 +396,7 @@ function makeEncoderPage() {
 const contexts: ReturnType<typeof makeContext>[] = [];
 let encoderPageOverride: Page | undefined;
 let realContextOverride: BrowserContext | undefined;
-/** Messages the browser queued into threads, such as a cleared Site hold. */
-const threadMessages: Array<{ threadId: string; text: string; mode: string }> = [];
-let threadMessageSent: PromiseWithResolvers<void> = Promise.withResolvers();
+
 const encoderStreams: Array<{ frameRate: number | undefined; bitsPerSecond: number }> = [];
 let decodeGate: PromiseWithResolvers<void> | null = null;
 const contextRequests: Array<{ profileId: string; isolated: boolean }> = [];
@@ -479,15 +476,6 @@ const dependencies = Layer.mergeAll(
   }),
   Manager.layer,
   Layer.mock(SecretRequests.SecretRequests)({}),
-  Layer.mock(ThreadManagement.ThreadManagementService)({
-    getThreadShell: (threadId) => Effect.succeed({ id: threadId, projectId: "project" } as never),
-    sendToThread: (input) =>
-      Effect.sync(() => {
-        threadMessages.push({ threadId: input.threadId, text: input.text, mode: input.mode });
-        threadMessageSent.resolve();
-        return {} as never;
-      }),
-  }),
   Layer.succeed(ServerEnvironment.ServerEnvironment, {
     getEnvironmentId: Effect.succeed(scope.environmentId),
     getDescriptor: Effect.die("unused descriptor"),
@@ -625,8 +613,6 @@ const openDesktopViewer = Effect.gen(function* () {
 
 beforeEach(() => {
   contexts.length = 0;
-  threadMessages.length = 0;
-  threadMessageSent = Promise.withResolvers();
   encoderPageOverride = undefined;
   realContextOverride = undefined;
   encoderStreams.length = 0;
@@ -3595,7 +3581,7 @@ it.live(
         ).toMatchObject({ reason: "antiBotChallenge" });
         expect(
           yield* Effect.flip(
-            broker.invoke({
+            broker.invoke<PreviewAutomationStatus>({
               scope,
               operation: "open",
               input: { url: "https://shop.test/", reuseExistingTab: false, show: false },
@@ -3649,21 +3635,67 @@ it.live(
           "a clean navigation alone does not clear the hold",
         ).toBeDefined();
         yield* viewer.input({ type: "releaseControl" });
-        yield* Effect.promise(() => threadMessageSent.promise);
-        expect(threadMessages).toEqual([
-          {
-            threadId: scope.thread.threadId,
-            mode: "queue",
-            text: expect.stringContaining("The user passed the anti-bot check on shop.test"),
-          },
-        ]);
+        // The banner goes once the release verified the clean page.
+        let update = yield* PubSub.take(events);
+        while (update.type !== "navigated" || update.snapshot.siteHold !== undefined)
+          update = yield* PubSub.take(events);
         expect((yield* invoke("status", {})).siteHold).toBeUndefined();
         yield* invoke("navigate", { url: "https://api.shop.test/other" });
       }),
     ).pipe(Effect.provide(layer)),
 );
 
-it.live("clearing a hold on a page still showing its check reports a user override", () =>
+it.live("a check that a same-site API call answers holds the site without a navigation", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      yield* Effect.promise(() =>
+        context.route("https://shop.test/**", (route) =>
+          route.request().url().endsWith("/api/search")
+            ? route.fulfill({
+                status: 403,
+                contentType: "application/json",
+                headers: { "x-dd-b": "1" },
+                body: JSON.stringify({
+                  url: "https://geo.captcha-delivery.com/captcha/?initialCid=x",
+                }),
+              })
+            : route.fulfill({
+                status: 200,
+                contentType: "text/html",
+                body: "<title>Shop</title><button onclick=\"fetch('/api/search')\">Search</button>",
+              }),
+        ),
+      );
+      realContextOverride = context;
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const invoke = (operation: string, input: unknown) =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: operation as never,
+          input,
+          tabId,
+        });
+      yield* invoke("navigate", { url: "https://shop.test/" });
+      const events = yield* manager.subscribeEvents;
+      yield* Effect.ignore(invoke("click", { locator: "button" }));
+      let update = yield* PubSub.take(events);
+      while (update.type !== "navigated" || update.snapshot.siteHold === undefined)
+        update = yield* PubSub.take(events);
+      expect(update.snapshot.siteHold).toMatchObject({ site: "shop.test", vendor: "datadome" });
+      expect(yield* Effect.flip(invoke("evaluate", { expression: "1" }))).toMatchObject({
+        reason: "antiBotChallenge",
+      });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("clearing a hold on a page still showing its check clears it", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const chromiumBrowser = yield* Effect.acquireRelease(
@@ -3693,8 +3725,6 @@ it.live("clearing a hold on a page still showing its check reports a user overri
         }),
       );
       yield* manager.adjust({ threadId: scope.thread.threadId, tabId, clear: "siteHold" });
-      yield* Effect.promise(() => threadMessageSent.promise);
-      expect(threadMessages[0]?.text).toContain("was not verified clean");
       const [session] = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
       expect(session?.siteHold).toBeUndefined();
     }),

@@ -290,7 +290,7 @@ const dependencies = Layer.mergeAll(
 );
 const secretsLayer = SecretRequests.layer.pipe(
   Layer.provide(Layer.mock(SecretResolver.SecretResolver)({})),
-  Layer.provideMerge(Layer.mock(ThreadManagementService.ThreadManagementService)({})),
+  Layer.provide(Layer.mock(ThreadManagementService.ThreadManagementService)({})),
   Layer.provideMerge(ServerSecretStore.layer),
 );
 const browserLayer = (browser: typeof ServerBrowser.layer) =>

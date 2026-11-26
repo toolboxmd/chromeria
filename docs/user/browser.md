@@ -128,13 +128,12 @@ desktop tab.
 When a site answers an agent with an anti-bot check or block (DataDome,
 Cloudflare, Akamai, HUMAN or Imperva), agents stop acting on that site in that
 browser profile, and the tab opens for you with a banner. Agents never solve
-checks. To pass one, choose **Take control**, complete the check, then choose
-**Release control**. Agent actions on the site resume once the page is clear,
-and the thread gets a message so the agent continues.
+checks. To pass one, choose **Take control**, complete the check, choose
+**Release control**, and tell the agent to continue. Releasing on a page that
+still shows the check keeps the hold.
 
 Choose **Done** on the banner when you passed the check without taking
-control, or **Clear hold** after a block when the site works again. A hold on a
-page that still shows its check tells the agent the page was not verified.
+control, or **Clear hold** after a block when the site works again.
 Until the hold ends, agents cannot open or act on any page of the site in that
 profile, including from a new incognito tab. The tab stays open for you: agents
 cannot close it and a settling thread leaves it. Closing it yourself or

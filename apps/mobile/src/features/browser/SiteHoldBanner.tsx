@@ -37,7 +37,7 @@ export function SiteHoldBanner({
         message={
           hold.kind === "challenge"
             ? gt(
-                "{site} asks for a human check. Agents stopped acting on this site. Take control, pass the check, then release control.",
+                "{site} asks for a human check. Agents stopped acting on this site. Take control, pass the check, release control, then tell the agent to continue.",
                 { site: hold.site },
               )
             : gt("{site} blocked this browser. Agents stopped acting on this site.", {

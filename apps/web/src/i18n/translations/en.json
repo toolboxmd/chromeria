@@ -7143,7 +7143,7 @@
     },
     " blocked this browser"
   ],
-  "43a621bb23668f77": "Agents stopped acting on this site. Take control, pass the check, then release control. Agents continue once the page is clear.",
+  "e6abf335d3b6ffb6": "Agents stopped acting on this site. Take control, pass the check, release control, then tell the agent to continue.",
   "83b8cce0be4b3d8f": "Agents stopped acting on this site. Clear the hold when the site works again in this browser.",
   "e6d9f36e3b1ffb43": "Clear hold",
   "126d7b538224ff9a": "Device",

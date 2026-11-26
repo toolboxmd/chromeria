@@ -7132,7 +7132,7 @@
     },
     " bloqueó este navegador"
   ],
-  "43a621bb23668f77": "Los agentes dejaron de actuar en este sitio. Toma el control, supera la verificación y luego cede el control. Los agentes continúan cuando la página esté libre.",
+  "e6abf335d3b6ffb6": "Los agentes dejaron de actuar en este sitio. Toma el control, supera la verificación, cede el control y luego dile al agente que continúe.",
   "83b8cce0be4b3d8f": "Los agentes dejaron de actuar en este sitio. Quita la retención cuando el sitio vuelva a funcionar en este navegador.",
   "e6d9f36e3b1ffb43": "Quitar retención",
   "126d7b538224ff9a": "Dispositivo",

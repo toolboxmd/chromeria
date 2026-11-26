@@ -56,8 +56,6 @@ import {
   type PreviewAutomationUploadInput,
   type PreviewAutomationWaitForInput,
   PreviewClearProfileError,
-  CommandId,
-  MessageId,
   type PreviewNavStatus,
   type PreviewSessionSnapshot,
   type PreviewViewportSetting,
@@ -109,7 +107,6 @@ import { resolveRootCliCommand } from "../cli/invocation.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as PreviewAutomationBroker from "../mcp/PreviewAutomationBroker.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
-import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import { fillCredential, serverBrowserOnly } from "./CredentialFill.ts";
 import { CredentialVault, protocolLoggingEnabled } from "./CredentialVault.ts";
 import { saveSecret, saveSecretServerBrowserOnly } from "./SecretCapture.ts";
@@ -694,7 +691,7 @@ const siteHoldError = (hold: HeldSite) =>
     reason: hold.kind === "challenge" ? "antiBotChallenge" : "antiBotBlocked",
     message:
       hold.kind === "challenge"
-        ? `${hold.site} shows a ${SITE_HOLD_VENDOR_NAMES[hold.vendor]} anti-bot check. Agent actions on ${hold.site} are stopped in this browser profile, and the user was asked to pass it in this tab. Do not retry, reload, or open the site in another tab or profile. Tell the user and end your turn; a message arrives in this thread when the check is done.`
+        ? `${hold.site} shows a ${SITE_HOLD_VENDOR_NAMES[hold.vendor]} anti-bot check. Agent actions on ${hold.site} are stopped in this browser profile, and the user was asked to pass it in this tab. Do not retry, reload, or open the site in another tab or profile. Tell the user and end your turn; the user tells you when the check is done.`
         : `${hold.site} blocked this browser (${SITE_HOLD_VENDOR_NAMES[hold.vendor]}). Agent actions on ${hold.site} are stopped in this browser profile, and the user was told. Do not retry, reload, or open the site in another tab or profile. Tell the user and end your turn.`,
   });
 
@@ -938,7 +935,6 @@ const make = Effect.gen(function* () {
   const agentTurns = yield* (yield* PreviewAgentActivity.PreviewAgentActivity).changes;
   const vault = yield* CredentialVault;
   const secrets = yield* SecretRequests.SecretRequests;
-  const threadManagement = yield* ThreadManagement.ThreadManagementService;
   const protocolLogging = yield* protocolLoggingEnabled;
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
@@ -1801,7 +1797,30 @@ const make = Effect.gen(function* () {
           failed: false,
           timestamp: new Date().toISOString(),
         });
-        if (isMainNavigation(response.request())) {
+        const isDocument = isMainNavigation(response.request());
+        // A same-site API answer can itself be the check a page then shows without navigating.
+        if (
+          !isDocument &&
+          response.status() >= 400 &&
+          (response.headers()["cf-mitigated"] !== undefined ||
+            response.headers()["x-dd-b"] !== undefined ||
+            response.headers()["x-datadome"] !== undefined) &&
+          siteOf(response.url()) === siteOf(page.url())
+        ) {
+          const answer = { status: response.status(), headers: response.headers() };
+          tab.siteHoldCheck = Promise.all([
+            tab.siteHoldCheck,
+            response
+              .text()
+              .catch(() => "")
+              .then((body) => {
+                const verdict = classifyAntiBotPage({ ...answer, html: body.slice(0, 65_536) });
+                if (verdict) return raiseSiteHold(tab, verdict, page.url());
+              })
+              .catch(constVoid),
+          ]).then(constVoid);
+        }
+        if (isDocument) {
           const document = { status: response.status(), headers: response.headers() };
           tab.mainDocument = document;
           if (document.status >= 400 || document.headers["cf-mitigated"] !== undefined)
@@ -3487,12 +3506,16 @@ const make = Effect.gen(function* () {
   const settleSiteHold = async (tab: ServerTab, how: "release" | "clear") => {
     for (const [scope, hold] of siteHolds.heldBy(tab.tabId)) {
       await tab.siteHoldCheck;
-      // Only an observed main document on the held site, with no check on it, is verified clean.
+      // Only an observed main document on the held site, with no check on it, is verified
+      // clean; a navigation or control change during the read makes the result stale.
+      const generation = [tab.navigationGeneration, tab.control.generation] as const;
       const document = siteOf(tab.page.url()) === hold.site ? tab.mainDocument : null;
+      const html = document === null ? "" : await tab.page.content().catch(() => "");
       const verified =
         document !== null &&
-        classifyAntiBotPage({ ...document, html: await tab.page.content().catch(() => "") }) ===
-          undefined;
+        classifyAntiBotPage({ ...document, html }) === undefined &&
+        generation[0] === tab.navigationGeneration &&
+        generation[1] === tab.control.generation;
       if (!verified && how === "release") continue;
       if (!siteHolds.clear(scope, hold)) continue;
       runFork(Effect.logInfo("Site hold cleared", { site: hold.site, verified }));
@@ -3505,32 +3528,8 @@ const make = Effect.gen(function* () {
           })
           .pipe(Effect.ignore),
       );
-      await runPromise(notifySiteHoldCleared(hold, verified));
     }
   };
-
-  const notifySiteHoldCleared = Effect.fn("ServerBrowser.notifySiteHoldCleared")(
-    function* (hold: HeldSite, verified: boolean) {
-      const threadId = ThreadId.make(hold.threadId);
-      const thread = yield* threadManagement.getThreadShell(threadId);
-      if (!thread) return;
-      const identity = `site-hold:${hold.tabId}:${hold.site}:${hold.since}`;
-      yield* threadManagement.sendToThread({
-        projectId: thread.projectId,
-        threadId,
-        commandId: CommandId.make(identity),
-        messageId: MessageId.make(identity),
-        text: verified
-          ? `The user passed the anti-bot check on ${hold.site} in browser tab ${hold.tabId}, and agent actions on it work again. Take a fresh preview_snapshot, then continue the browser task.`
-          : `The user cleared the Site hold on ${hold.site} (browser tab ${hold.tabId}), but the page was not verified clean. Read preview_status before acting; if the check is still shown, stop and tell the user.`,
-        attachments: [],
-        mode: "queue",
-        createdBy: "system",
-        creationSource: "server",
-      });
-    },
-    Effect.catchCause((cause) => Effect.logWarning("Site hold message failed", { cause })),
-  );
 
   const runOperation = async (
     request: PreviewAutomationRequest,

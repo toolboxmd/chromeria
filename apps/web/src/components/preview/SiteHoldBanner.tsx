@@ -31,8 +31,8 @@ export function SiteHoldBanner({
       <AlertDescription>
         {hold.kind === "challenge" ? (
           <T>
-            Agents stopped acting on this site. Take control, pass the check, then release control.
-            Agents continue once the page is clear.
+            Agents stopped acting on this site. Take control, pass the check, release control, then
+            tell the agent to continue.
           </T>
         ) : (
           <T>

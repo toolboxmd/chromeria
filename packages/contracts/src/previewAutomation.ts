@@ -986,7 +986,7 @@ export class PreviewAutomationControlInterruptedError extends Schema.TaggedError
     if (this.reason === "tabLimit")
       return "Too many server browser tabs are open. Close one with t3_preview_close, or reuse a tabId from preview_status tabs.";
     if (this.reason === "antiBotChallenge")
-      return "This site shows an anti-bot check. Agent actions on it are stopped in this browser profile, and the user was asked to pass it in this tab. Do not retry, reload, or open the site in another tab or profile. Tell the user and end your turn; a message arrives in this thread when the check is done.";
+      return "This site shows an anti-bot check. Agent actions on it are stopped in this browser profile, and the user was asked to pass it in this tab. Do not retry, reload, or open the site in another tab or profile. Tell the user and end your turn; the user tells you when the check is done.";
     if (this.reason === "antiBotBlocked")
       return "This site blocked this browser. Agent actions on it are stopped in this browser profile, and the user was told. Do not retry, reload, or open the site in another tab or profile. Tell the user and end your turn.";
     if (this.reason === "closed") return "This browser tab is closed. Call preview_open.";
