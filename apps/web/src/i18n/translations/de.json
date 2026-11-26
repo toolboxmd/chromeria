@@ -7961,6 +7961,7 @@
   "4f25d9cd0dc48d81": "Auto-Merge konnte nicht deaktiviert werden",
   "d9cc91f4d239a6ce": "Der Host hat es abgelehnt. Prüfe, ob du Schreibzugriff hast und der Basis-Branch nicht so abgewichen ist, dass der Host nicht mergen kann.",
   "9c4f7322e1443e70": "Der Host hat es abgelehnt. Prüfe, ob Auto-Merge für dieses Repository aktiviert ist und du Schreibzugriff hast.",
+  "99b31b42d0de0407": "Waiting for CI",
   "2202c977a2602b94": "{closed} von {total} Pull Requests geschlossen",
   "14a07a8f2b0df4dc": "{closed, plural, one {{closed} Pull Request geschlossen} other {{closed} Pull Requests geschlossen}}",
   "48e3a799c1225e8d": "Der Pull Request des Threads kann nicht aktualisiert werden",

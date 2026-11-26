@@ -251,9 +251,12 @@ export function usePullRequestActionRunner({
       onFailure?.(action);
       return;
     }
+    const waitingForCi = action === "merge" && result.value?.state === "open";
     toastManager.add({
       type: "success",
-      title: actionSuccessLabels(changeRequestTermKind(terminology))[action],
+      title: waitingForCi
+        ? m(msg("Waiting for CI"))
+        : actionSuccessLabels(changeRequestTermKind(terminology))[action],
     });
     onSuccess?.(action, result.value);
   };

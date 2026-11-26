@@ -7977,6 +7977,7 @@
   "4f25d9cd0dc48d81": "无法关闭自动合并",
   "d9cc91f4d239a6ce": "托管平台拒绝了此操作。请确认你有写入权限，且基础分支没有以托管平台无法合并的方式分叉。",
   "9c4f7322e1443e70": "托管平台拒绝了此操作。请确认此仓库已允许自动合并，且你有写入权限。",
+  "99b31b42d0de0407": "Waiting for CI",
   "2202c977a2602b94": "已关闭 {total} 个 pull request 中的 {closed} 个",
   "14a07a8f2b0df4dc": "{closed, plural, other {已关闭 {closed} 个 pull request}}",
   "48e3a799c1225e8d": "无法更新会话的 pull request",
