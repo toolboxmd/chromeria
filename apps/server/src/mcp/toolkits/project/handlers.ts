@@ -581,6 +581,26 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                         ),
                       ),
                     }),
+                    // A kit Color may not set the agent's own mode for a caller below full access.
+                    Effect.tap((validated) =>
+                      providerRegistry.getProviders.pipe(
+                        Effect.flatMap((providers) =>
+                          refuseAgentModePick({
+                            callerRuntimeMode: context.limits.runtimeMode,
+                            picked: validated.options,
+                            descriptors: providerOptionDescriptors(
+                              OrchestrationMcp.withWorkspaceModels(providers, cwd).find(
+                                (provider) => provider.instanceId === validated.instanceId,
+                              ),
+                            ),
+                            held:
+                              inherited?.instanceId === validated.instanceId
+                                ? inherited.options
+                                : undefined,
+                          }),
+                        ),
+                      ),
+                    ),
                   ),
               });
               if (modelSelection === undefined)

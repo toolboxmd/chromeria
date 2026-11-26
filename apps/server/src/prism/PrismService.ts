@@ -317,8 +317,12 @@ const make = Effect.gen(function* () {
         const validated = yield* (
           input.validate ? input.validate(selection) : Effect.succeed(selection)
         ).pipe(
+          // A Color whose options set the agent's own mode is refused below full access; the next may start.
           Effect.catchIf(
-            (error) => error.code === "provider_unavailable" || error.code === "model_unavailable",
+            (error) =>
+              error.code === "provider_unavailable" ||
+              error.code === "model_unavailable" ||
+              error.code === "runtime_mode_escalation_denied",
             (error) => Effect.succeed(error.message),
           ),
         );
@@ -351,8 +355,10 @@ const make = Effect.gen(function* () {
         started.push(validated);
       }
       const [first, ...rest] = started;
-      if (first !== undefined)
+      if (first !== undefined) {
+        if (skipped.length > 0) yield* Effect.logInfo("Prism skipped Colors", { skipped });
         return { modelSelection: first, modelSelections: [first, ...rest], kitText };
+      }
       // Without a kit the inherited selection was the only candidate; name why it cannot run.
       if (preferences.length === 0 && input.inherited && input.validate)
         yield* input.validate(input.inherited);

@@ -557,6 +557,7 @@ const clientLaunchHarness = (input: {
   readonly refusedByCeiling?: true;
   /** The caller is another environment's peer link forwarding a launch. */
   readonly linked?: true;
+  readonly prismRoles?: NonNullable<Parameters<typeof ServerSettings.layerTest>[0]>["prismRoles"];
 }) => {
   const projectId = ProjectId.make("project:client-target");
   const modelSelection = {
@@ -590,6 +591,7 @@ const clientLaunchHarness = (input: {
           refreshWorkspaceSnapshot: () => Effect.succeed(input.providers ?? []),
         }),
     ServerSettings.layerTest({
+      ...(input.prismRoles === undefined ? {} : { prismRoles: input.prismRoles }),
       fallbackModelSelection: input.fallbackModel ?? null,
       ...(input.defaultRuntimeMode === undefined
         ? {}
@@ -1075,12 +1077,25 @@ it.effect(
 it.effect("only a full-access client may pick the agent's own mode at launch", () =>
   Effect.gen(function* () {
     const agent = ProviderInstanceId.make("acp-agent");
-    const launchAs = (runtimeModeCeiling: "approval-required" | "full-access") =>
+    const yolo = [{ id: "_t3/session-mode", value: "yolo" }];
+    const launchAs = (runtimeModeCeiling: "approval-required" | "full-access", viaKit = false) =>
       Effect.gen(function* () {
         const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
         const { projectId, dependencies } = clientLaunchHarness({
           runtimeModeCeiling,
           launched,
+          ...(viaKit
+            ? {
+                prismRoles: {
+                  planner: {
+                    models: [
+                      { instanceId: agent, model: "default", options: yolo },
+                      { instanceId: agent, model: "default" },
+                    ],
+                  },
+                },
+              }
+            : {}),
           providers: [
             {
               instanceId: agent,
@@ -1129,11 +1144,9 @@ it.effect("only a full-access client may pick the agent's own mode at launch", (
             projectId,
             title: "Fix",
             message: "Fix the bug",
-            modelSelection: {
-              instanceId: agent,
-              model: "default",
-              options: [{ id: "_t3/session-mode", value: "yolo" }],
-            },
+            ...(viaKit
+              ? {}
+              : { modelSelection: { instanceId: agent, model: "default", options: yolo } }),
           })
           .pipe(
             Stream.unwrap,
@@ -1149,9 +1162,15 @@ it.effect("only a full-access client may pick the agent's own mode at launch", (
     expect(supervised.launched).toHaveLength(0);
 
     const fullAccess = yield* launchAs("full-access");
-    expect(fullAccess.launched.map((launch) => launch.modelSelection.options)).toEqual([
-      [{ id: "_t3/session-mode", value: "yolo" }],
+    expect(fullAccess.launched.map((launch) => launch.modelSelection.options)).toEqual([yolo]);
+
+    // A kit Color that sets the mode yields to the next Color below full access.
+    const kitSupervised = yield* launchAs("approval-required", true);
+    expect(kitSupervised.launched.map((launch) => launch.modelSelection.options)).toEqual([
+      undefined,
     ]);
+    const kitFullAccess = yield* launchAs("full-access", true);
+    expect(kitFullAccess.launched.map((launch) => launch.modelSelection.options)).toEqual([yolo]);
   }),
 );
 

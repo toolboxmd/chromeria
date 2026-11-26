@@ -40,6 +40,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as Prism from "../prism/PrismService.ts";
+import { providerOptionDescriptors, refuseAgentModePick } from "../mcp/delegatedTaskModes.ts";
 import { colorModelSelection, invalidOptionSelections } from "../prism/modelOptions.ts";
 import { resolveSchedulerRun, schedulerRunOpenGuard } from "../scheduledTaskChecks/handoff.ts";
 import { spectrumTaskEvent, spectrumTaskId, spectrumTaskRow } from "./delegatedTask.ts";
@@ -256,6 +257,24 @@ const make = Effect.gen(function* () {
         provider?.driver,
       );
     });
+    // A member may not set the agent's own mode for a caller below full access.
+    const refuseModePick = (selection: ModelSelection) =>
+      providers.getProviders.pipe(
+        Effect.flatMap((all) =>
+          refuseAgentModePick({
+            callerRuntimeMode: caller.runtimeMode,
+            picked: selection.options,
+            descriptors: providerOptionDescriptors(
+              all.find((provider) => provider.instanceId === selection.instanceId),
+            ),
+            held:
+              caller.modelSelection.instanceId === selection.instanceId
+                ? caller.modelSelection.options
+                : undefined,
+          }),
+        ),
+        Effect.as(selection),
+      );
     const resolveMember = Effect.fn("LaunchService.resolveMember")(function* (
       color: SpectrumColorSpec,
       threadId: ThreadId,
@@ -287,6 +306,7 @@ const make = Effect.gen(function* () {
             Prism.validateLaunchSelection(selection, color.bare !== undefined).pipe(
               Effect.provideService(ProviderAdapters.ProviderAdapterRegistryV2, adapters),
               Effect.provideService(ProviderRegistry.ProviderRegistry, providers),
+              Effect.flatMap(refuseModePick),
             ),
         });
       const attempted: ModelSelection[] = [];
@@ -322,7 +342,17 @@ const make = Effect.gen(function* () {
       const { target, fallbacks } = yield* resolveFrom(
         explicit,
         yield* Effect.forEach(color.fallbacks ?? [], (fallback) =>
-          withOverrides(fallback.selection ?? caller.modelSelection, fallback),
+          withOverrides(fallback.selection ?? caller.modelSelection, fallback).pipe(
+            // Fallbacks start later without Prism, so their mode is checked now.
+            Effect.flatMap(refuseModePick),
+            Effect.mapError(
+              (error) =>
+                new OrchestratorMcpFailure({
+                  code: error.code,
+                  message: `${color.label} fallback was refused: ${error.message}`,
+                }),
+            ),
+          ),
         ),
       );
       const selection = target.modelSelection;
