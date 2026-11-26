@@ -2236,6 +2236,7 @@ sources and reasons.
     "apps/web/src/state/peerGrants.ts",
     "packages/client-runtime/src/state/peerGrants.ts",
     "packages/client-runtime/src/state/peerGrants.test.ts",
+    "packages/client-runtime/src/state/subagentIconDriver.test.ts",
     "apps/web/src/components/device/deviceStreamSession.browser.test.ts",
     "apps/web/src/state/previewStream.browser.test.tsx",
     "packages/shared/src/loadBalancing.ts",
