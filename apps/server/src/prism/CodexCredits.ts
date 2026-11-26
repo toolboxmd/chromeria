@@ -3,25 +3,20 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
-import * as Result from "effect/Result";
 import type { CodexAccountLimits } from "../provider/CodexProvider.ts";
 import type { ProviderDriverError } from "../provider/Errors.ts";
 
-const READ_BOUND = Duration.seconds(10);
-const REUSE_MS = 60_000;
+export const READ_BOUND = Duration.seconds(10);
 
 type CodexRateLimits = Extract<CodexAccountLimits, { readonly route: "native" }>["rateLimits"];
 
 type AccountLimitsRead = Effect.Effect<CodexAccountLimits, ProviderDriverError>;
 
-interface CreditRead {
-  readonly read: AccountLimitsRead;
-  last?: { readonly startedAt: number; readonly limits: CodexAccountLimits };
-}
-
 /** The account-limit read each local Codex instance registers for as long as it exists. */
-export class CodexCreditReads extends Context.Reference<Map<string, CreditRead>>(
+export class CodexCreditReads extends Context.Reference<Map<string, AccountLimitsRead>>(
   "t3/prism/CodexCreditReads",
   { defaultValue: () => new Map() },
 ) {}
@@ -31,13 +26,26 @@ export const registerCodexCreditRead = Effect.fn("Prism.registerCodexCreditRead"
   read: AccountLimitsRead,
 ) {
   const reads = yield* CodexCreditReads;
-  const entry: CreditRead = { read };
   yield* Effect.acquireRelease(
-    Effect.sync(() => reads.set(instanceId, entry)),
+    Effect.sync(() => reads.set(instanceId, read)),
     () =>
       Effect.sync(() => {
-        if (reads.get(instanceId) === entry) reads.delete(instanceId);
+        if (reads.get(instanceId) === read) reads.delete(instanceId);
       }),
+  );
+});
+
+/**
+ * Waits at most `READ_BOUND` for the read. The read runs on its own fiber, so its process
+ * teardown, or a spawn that cannot be interrupted, never holds the decision.
+ */
+export const withinReadBound = Effect.fn("Prism.withinReadBound")(function* <A, E>(
+  read: Effect.Effect<A, E>,
+) {
+  const fiber = yield* Effect.forkDetach(read);
+  return yield* Fiber.await(fiber).pipe(
+    Effect.timeoutOption(READ_BOUND),
+    Effect.ensuring(Effect.forkDetach(Fiber.interrupt(fiber))),
   );
 });
 
@@ -78,9 +86,9 @@ export const codexCreditAdmission = Effect.fn("Prism.codexCreditAdmission")(func
   now: number,
   getSettings: Effect.Effect<ServerSettings, ServerSettingsError>,
 ) {
-  const entry =
+  const read =
     provider.driver === "codex" ? (yield* CodexCreditReads).get(provider.instanceId) : undefined;
-  if (entry === undefined) return { admitted: false } satisfies CodexCreditAdmission;
+  if (read === undefined) return { admitted: false } satisfies CodexCreditAdmission;
   const exhausted = (provider.usageLimits?.windows ?? []).filter(
     (window) =>
       window.usedPercent >= 100 &&
@@ -98,18 +106,15 @@ export const codexCreditAdmission = Effect.fn("Prism.codexCreditAdmission")(func
   if (provider.usageLimits?.unavailable?.reason === "unsupported")
     return skipped("its route does not spend the Codex account's own quota");
 
-  let limits = entry.last && now - entry.last.startedAt < REUSE_MS ? entry.last.limits : undefined;
-  if (limits === undefined) {
-    const read = yield* entry.read.pipe(Effect.timeoutOption(READ_BOUND), Effect.result);
-    if (Result.isFailure(read)) {
-      yield* Effect.logWarning("Prism could not read Codex credits.", { cause: read.failure });
-      return skipped("the credit read failed");
-    }
-    if (Option.isNone(read.success))
-      return skipped(`the credit read timed out after ${Duration.format(READ_BOUND)}`);
-    limits = read.success.value;
-    entry.last = { startedAt: now, limits };
+  // Every decision reads for itself: a stored answer could belong to another login.
+  const exit = yield* withinReadBound(read);
+  if (Option.isNone(exit))
+    return skipped(`the credit read timed out after ${Duration.format(READ_BOUND)}`);
+  if (Exit.isFailure(exit.value)) {
+    yield* Effect.logWarning("Prism could not read Codex credits.", { cause: exit.value.cause });
+    return skipped("the credit read failed");
   }
+  const limits = exit.value.value;
   if (limits.route === "other")
     return skipped("its route does not spend the Codex account's own quota");
   const block = creditBlock(limits.rateLimits, now);

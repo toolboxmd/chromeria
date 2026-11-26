@@ -638,13 +638,17 @@ const codexProcessEnvironment = Effect.fn("codexProcessEnvironment")(function* (
   };
 });
 
-export const withCodexAppServerClient = Effect.fn("withCodexAppServerClient")(function* (input: {
-  readonly binaryPath: string;
-  readonly homePath?: string | undefined;
-  readonly launchArgs?: string | undefined;
-  readonly cwd: string;
-  readonly environment?: NodeJS.ProcessEnv | undefined;
-}) {
+export const withCodexAppServerClient = Effect.fn("withCodexAppServerClient")(function* (
+  input: {
+    readonly binaryPath: string;
+    readonly homePath?: string | undefined;
+    readonly launchArgs?: string | undefined;
+    readonly cwd: string;
+    readonly environment?: NodeJS.ProcessEnv | undefined;
+  },
+  // Runs with the spawn, uninterrupted, so a caller knows the process before any handshake.
+  onSpawn?: (pid: number) => void,
+) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const environment = yield* codexProcessEnvironment(input);
   const spawnCommand = yield* resolveSpawnCommand(
@@ -663,6 +667,8 @@ export const withCodexAppServerClient = Effect.fn("withCodexAppServerClient")(fu
       }),
     )
     .pipe(
+      Effect.tap((spawned) => Effect.sync(() => onSpawn?.(spawned.pid))),
+      Effect.uninterruptible,
       Effect.mapError(
         (cause) =>
           new CodexErrors.CodexAppServerSpawnError({
@@ -718,9 +724,9 @@ const withCodexProbeClient = Effect.fn("withCodexProbeClient")(function* (
           Effect.asVoid,
         ),
   );
-  const opened = yield* withCodexAppServerClient(input).pipe(Scope.provide(processScope));
-  pid = opened.pid;
-  return opened;
+  return yield* withCodexAppServerClient(input, (spawned) => (pid = spawned)).pipe(
+    Scope.provide(processScope),
+  );
 });
 
 /** The account's own limits, raw; `other` is a route whose usage is not this login's quota. */

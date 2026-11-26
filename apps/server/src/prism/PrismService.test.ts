@@ -17,7 +17,7 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
 import * as Settings from "../serverSettings.ts";
 import * as Prism from "./PrismService.ts";
-import { CodexCreditReads, registerCodexCreditRead } from "./CodexCredits.ts";
+import { CodexCreditReads, READ_BOUND, registerCodexCreditRead } from "./CodexCredits.ts";
 import type { CodexAccountLimits } from "../provider/CodexProvider.ts";
 import { ProviderDriverError } from "../provider/Errors.ts";
 import * as Adapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -799,11 +799,16 @@ describe("Codex on credits", () => {
       detail: "Codex could not read its account limits.",
     }),
   );
+  type Resolve = Effect.Effect<string>;
   const resolveOnCredits = Effect.fn("test.resolveOnCredits")(function* (input: {
-    readonly read: Effect.Effect<CodexAccountLimits, ProviderDriverError>;
+    /** The read for each call, numbered from 1. */
+    readonly read: (call: number) => Effect.Effect<CodexAccountLimits, ProviderDriverError>;
     readonly patch?: (p: ServerProvider) => ServerProvider;
     readonly useCredits?: boolean;
-    readonly resolves?: number;
+    readonly drive?: (
+      resolve: Resolve,
+      started: Deferred.Deferred<void>,
+    ) => Effect.Effect<Array<string>>;
   }) {
     const p = yield* provider;
     let reads = 0;
@@ -812,8 +817,8 @@ describe("Codex on credits", () => {
       yield* registerCodexCreditRead(
         instanceId,
         Effect.suspend(() => {
-          reads++;
-          return Deferred.succeed(started, undefined).pipe(Effect.andThen(input.read));
+          const call = ++reads;
+          return Deferred.succeed(started, undefined).pipe(Effect.andThen(input.read(call)));
         }),
       );
       const service = yield* Prism.PrismService;
@@ -821,19 +826,10 @@ describe("Codex on credits", () => {
         Effect.map((result) => `admitted ${result.modelSelection.instanceId}`),
         Effect.catch((error) => Effect.succeed(error.message)),
       );
-      const outcomes: Array<string> = [];
-      for (let index = 0; index < (input.resolves ?? 1); index++) {
-        if (input.read === Effect.never) {
-          const fiber = yield* Effect.forkChild(resolve);
-          yield* Deferred.await(started);
-          yield* TestClock.adjust("10 seconds");
-          outcomes.push(yield* Fiber.join(fiber));
-        } else {
-          outcomes.push(yield* resolve);
-          yield* TestClock.adjust("10 seconds");
-        }
-      }
-      return outcomes;
+      return yield* (input.drive ?? ((once) => Effect.map(once, (outcome) => [outcome])))(
+        resolve,
+        started,
+      );
     }).pipe(
       Effect.scoped,
       Effect.provideService(CodexCreditReads, new Map()),
@@ -860,6 +856,14 @@ describe("Codex on credits", () => {
     );
     return { outcomes, reads };
   });
+  // The decision must return when the bound passes, with no further clock movement.
+  const atTheBound = (resolve: Resolve, started: Deferred.Deferred<void>) =>
+    Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(resolve);
+      yield* Deferred.await(started);
+      yield* TestClock.adjust(READ_BOUND);
+      return [yield* Fiber.join(fiber)];
+    });
   const skippedFor = (reason: string) =>
     "No eligible model with usage headroom for this Prism role and lane. Skipped: " +
     `codex/configured: provider usage limit reached${reason ? `; credits cannot cover it: ${reason}` : ""}.`;
@@ -986,6 +990,14 @@ describe("Codex on credits", () => {
     {
       name: "a read that does not answer within the bound",
       read: Effect.never,
+      hangs: true,
+      expected: skippedFor("the credit read timed out after 10s"),
+      reads: 1,
+    },
+    {
+      name: "a read that cannot be interrupted, such as a stuck spawn",
+      read: Effect.uninterruptible(Effect.never),
+      hangs: true,
       expected: skippedFor("the credit read timed out after 10s"),
       reads: 1,
     },
@@ -1003,27 +1015,63 @@ describe("Codex on credits", () => {
       expected: skippedFor(""),
       reads: 0,
     },
-  ])("$name", ({ read, patch, useCredits, expected, reads }) =>
+  ])("$name", ({ read, patch, useCredits, hangs, expected, reads }) =>
     Effect.gen(function* () {
       const result = yield* resolveOnCredits({
-        read,
+        read: () => read,
         ...(patch ? { patch } : {}),
         ...(useCredits === undefined ? {} : { useCredits }),
+        ...(hangs ? { drive: atTheBound } : {}),
       });
       assert.deepStrictEqual(result, { outcomes: [expected], reads });
     }),
   );
 
-  it.effect("reuses one read briefly, by its own read time", () =>
+  it.effect("decides from its own read after the instance's login changes", () =>
     Effect.gen(function* () {
-      // Each resolve advances the clock by 10 seconds; the seventh starts 60 seconds after the first read.
       const result = yield* resolveOnCredits({
-        read: Effect.succeed(native({ credits: spendable })),
-        resolves: 7,
+        read: (call) =>
+          Effect.succeed(
+            call === 1
+              ? native({ credits: spendable })
+              : native({ credits: { hasCredits: false, unlimited: false } }),
+          ),
+        drive: (resolve) => Effect.all([resolve, resolve]),
       });
       assert.deepStrictEqual(result, {
-        outcomes: Array.from({ length: 7 }, () => "admitted codex"),
+        outcomes: ["admitted codex", skippedFor("the account has no credits")],
         reads: 2,
+      });
+    }),
+  );
+
+  it.effect("an older positive read finishing late never decides a newer call", () =>
+    Effect.gen(function* () {
+      const denial = native({ credits: { hasCredits: false, unlimited: false } });
+      const bothStarted = yield* Deferred.make<void>();
+      const result = yield* resolveOnCredits({
+        read: (call) =>
+          call === 1
+            ? Effect.sleep("2 seconds").pipe(Effect.as(native({ credits: spendable })))
+            : Deferred.succeed(bothStarted, undefined).pipe(Effect.as(denial)),
+        drive: (resolve) =>
+          Effect.gen(function* () {
+            const pair = yield* Effect.forkChild(
+              Effect.all([resolve, resolve], { concurrency: "unbounded" }),
+            );
+            yield* Deferred.await(bothStarted);
+            yield* TestClock.adjust("2 seconds");
+            return [...(yield* Fiber.join(pair)).toSorted(), yield* resolve];
+          }),
+      });
+      assert.deepStrictEqual(result, {
+        // Sorted: the concurrent pair, then the later call.
+        outcomes: [
+          skippedFor("the account has no credits"),
+          "admitted codex",
+          skippedFor("the account has no credits"),
+        ],
+        reads: 3,
       });
     }),
   );

@@ -3,6 +3,8 @@ import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
@@ -19,13 +21,17 @@ import {
   mapCodexModelCapabilities,
   readCodexAccountLimits,
 } from "./CodexProvider.ts";
+import { READ_BOUND, withinReadBound } from "../prism/CodexCredits.ts";
 
 function makeFakeCodexAppServers(
   input: {
     readonly results?: Readonly<Record<string, unknown>>;
     readonly startupWorkRunning?: () => boolean;
+    /** Completed when `initialize` arrives, which then gets no answer. */
+    readonly stallHandshake?: Deferred.Deferred<void>;
   } = {},
 ) {
+  const processGroupChecks: Array<string> = [];
   const helpers: Array<{
     readonly codexHome: unknown;
     readonly crash: Effect.Effect<void>;
@@ -36,6 +42,7 @@ function makeFakeCodexAppServers(
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.gen(function* () {
       if (command._tag === "StandardCommand" && command.command === "pgrep") {
+        processGroupChecks.push(String(command.args[1]));
         // Codex's own startup work runs in its process group beside the app-server.
         const group = input.startupWorkRunning?.() ? `${command.args[1]}\n4242\n` : "";
         return ChildProcessSpawner.makeHandle({
@@ -87,6 +94,8 @@ function makeFakeCodexAppServers(
                 readonly params?: { readonly cwds: ReadonlyArray<string> };
               };
               if (frame.id === undefined) return Effect.void;
+              if (frame.method === "initialize" && input.stallHandshake)
+                return Deferred.succeed(input.stallHandshake, undefined);
               if (frame.method === "initialize") {
                 return respond(frame.id, {
                   codexHome: "/codex-home",
@@ -126,7 +135,7 @@ function makeFakeCodexAppServers(
       });
     }),
   );
-  return { helpers, spawner };
+  return { helpers, spawner, processGroupChecks };
 }
 
 it.effect("reuses one Codex skills helper per launch until it idles out", () =>
@@ -219,6 +228,33 @@ it.effect("reads the account's own limits and leaves Codex's startup work to fin
     });
     assert.deepStrictEqual(yield* read(proxy.spawner), { route: "other" });
     assert.deepStrictEqual(proxy.helpers[0]!.methods, ["account/read", "config/read"]);
+  }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
+);
+
+it.effect("ends a read stalled before its handshake through the startup teardown", () =>
+  Effect.gen(function* () {
+    let startupWorkRunning = true;
+    const stallHandshake = yield* Deferred.make<void>();
+    const codex = makeFakeCodexAppServers({
+      stallHandshake,
+      startupWorkRunning: () => startupWorkRunning,
+    });
+    const decision = yield* Effect.forkChild(
+      withinReadBound(
+        readCodexAccountLimits({ binaryPath: "codex", cwd: "/", environment: {} }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, codex.spawner),
+        ),
+      ),
+    );
+    yield* Deferred.await(stallHandshake);
+    // The decision returns at the bound while Codex's startup work still runs.
+    yield* TestClock.adjust(READ_BOUND);
+    assert.isTrue(Option.isNone(yield* Fiber.join(decision)));
+    assert.deepStrictEqual(codex.processGroupChecks, [String(900_000_001)]);
+    assert.strictEqual(codex.helpers[0]!.closed, false);
+    startupWorkRunning = false;
+    yield* TestClock.adjust("500 millis");
+    assert.strictEqual(codex.helpers[0]!.closed, true);
   }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
 );
 
