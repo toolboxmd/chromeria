@@ -138,12 +138,13 @@ export function getThreadSortTimestamp(
   return getLatestUserMessageTimestamp(thread);
 }
 
-function activeThreadAnchorTimestampMs(thread: {
-  readonly createdAt: string;
-  readonly unsettledAt?: string | null | undefined;
-}): number {
+// A thread reopened from Settled rises to the top under either sort order.
+function activeThreadAnchorTimestampMs(
+  thread: ThreadSortInput & { readonly unsettledAt?: string | null | undefined },
+  sortOrder: SidebarThreadSortOrder,
+): number {
   return Math.max(
-    toSortableTimestamp(thread.createdAt) ?? 0,
+    getThreadSortTimestamp(thread, sortOrder),
     toSortableTimestamp(thread.unsettledAt ?? undefined) ?? 0,
   );
 }
@@ -263,15 +264,17 @@ const IMPLIED_KEY_MAX_MS = 26 ** IMPLIED_KEY_WIDTH - 1;
  * anchor time, newest first, in a tier ahead of every arranged key. A move then only writes
  * the moved thread, even beside threads whose server is offline.
  */
-export function activeThreadSortKey(thread: {
-  readonly createdAt: string;
-  readonly unsettledAt?: string | null | undefined;
-  readonly activeOrderKey?: string | null | undefined;
-}): string {
+export function activeThreadSortKey(
+  thread: ThreadSortInput & {
+    readonly unsettledAt?: string | null | undefined;
+    readonly activeOrderKey?: string | null | undefined;
+  },
+  sortOrder: SidebarThreadSortOrder = "created_at",
+): string {
   if (thread.activeOrderKey != null) return thread.activeOrderKey;
   let value =
     IMPLIED_KEY_MAX_MS -
-    Math.min(Math.max(activeThreadAnchorTimestampMs(thread), 0), IMPLIED_KEY_MAX_MS);
+    Math.min(Math.max(activeThreadAnchorTimestampMs(thread, sortOrder), 0), IMPLIED_KEY_MAX_MS);
   let digits = "";
   for (let index = 0; index < IMPLIED_KEY_WIDTH; index += 1) {
     digits = String.fromCharCode(97 + (value % 26)) + digits;
@@ -281,17 +284,17 @@ export function activeThreadSortKey(thread: {
   return `${LEADING_ORDER_TIER}${digits}n`;
 }
 
+/** Dragged threads keep their saved order; the rest lead it, newest first by `sortOrder`. */
 export function sortActiveThreadsByOrderKey<
-  T extends {
+  T extends ThreadSortInput & {
     readonly id: string;
-    readonly createdAt: string;
     readonly unsettledAt?: string | null | undefined;
     readonly activeOrderKey?: string | null | undefined;
     readonly environmentId?: string | undefined;
   },
->(threads: readonly T[]): T[] {
+>(threads: readonly T[], sortOrder: SidebarThreadSortOrder = "created_at"): T[] {
   if (threads.length < 2) return [...threads];
-  const keys = new Map(threads.map((thread) => [thread, activeThreadSortKey(thread)]));
+  const keys = new Map(threads.map((thread) => [thread, activeThreadSortKey(thread, sortOrder)]));
   return [...threads].sort((left, right) => {
     const leftKey = keys.get(left)!;
     const rightKey = keys.get(right)!;
