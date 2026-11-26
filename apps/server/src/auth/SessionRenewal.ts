@@ -99,6 +99,14 @@ export const make = Effect.gen(function* () {
     hash TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES auth_sessions(session_id),
     successor_hash TEXT NOT NULL
   )`;
+  // Legacy duplicates must retain every owner as their previous hashes age out.
+  yield* sql`CREATE TABLE IF NOT EXISTS auth_session_renewal_history (
+    hash TEXT NOT NULL, session_id TEXT NOT NULL REFERENCES auth_sessions(session_id),
+    successor_hash TEXT NOT NULL, PRIMARY KEY (hash, session_id)
+  )`;
+  yield* sql`CREATE VIEW IF NOT EXISTS auth_session_renewal_all_spent AS
+    SELECT hash, session_id, successor_hash FROM auth_session_renewal_spent
+    UNION ALL SELECT hash, session_id, successor_hash FROM auth_session_renewal_history`;
   yield* sql`CREATE TABLE IF NOT EXISTS auth_session_renewal_enrollment (
     enrollment_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES auth_sessions(session_id),
     commitment_hash TEXT NOT NULL UNIQUE, requested_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
@@ -117,11 +125,23 @@ export const make = Effect.gen(function* () {
     }
     return row.value;
   });
+  const commitmentOwners = (hash: string) => sql<{ sessionId: string }>`
+    SELECT session_id AS "sessionId" FROM auth_session_renewal WHERE current_hash = ${hash}
+    UNION SELECT session_id FROM auth_session_renewal WHERE previous_hash = ${hash}
+    UNION SELECT session_id FROM auth_session_renewal_all_spent WHERE hash = ${hash}
+    LIMIT 2`;
+  const rejectOtherOwner = Effect.fnUntraced(function* (hash: string, sessionId: AuthSessionId) {
+    const owners = yield* commitmentOwners(hash);
+    if (owners.some((owner) => owner.sessionId !== sessionId)) {
+      return yield* new RenewalRejected({});
+    }
+  });
   const enroll = Effect.fn("SessionRenewal.enroll")(
     function* (input: { sessionId: AuthSessionId; commitment: string; approved: boolean }) {
       yield* sql.withTransaction(
         Effect.gen(function* () {
           const row = yield* active(input.sessionId);
+          yield* rejectOtherOwner(input.commitment, input.sessionId);
           const renewAfter = DateTime.makeUnsafe(
             (row.issuedAt.epochMilliseconds + row.expiresAt.epochMilliseconds) / 2,
           );
@@ -144,6 +164,7 @@ export const make = Effect.gen(function* () {
       .withTransaction(
         Effect.gen(function* () {
           yield* active(input.sessionId);
+          yield* rejectOtherOwner(input.commitment, input.sessionId);
           const existing = yield* sql<{
             enrollmentId: string;
             state: string;
@@ -214,6 +235,7 @@ export const make = Effect.gen(function* () {
           const enrolled =
             yield* sql`SELECT 1 FROM auth_session_renewal WHERE session_id = ${sessionId}`;
           if (enrolled.length > 0) return yield* new RenewalConflict({});
+          yield* rejectOtherOwner(entry.commitment, sessionId);
           yield* sql`INSERT INTO auth_session_renewal (session_id, current_hash, renew_after, approved)
           VALUES (${sessionId}, ${entry.commitment}, ${DateTime.formatIso(yield* DateTime.now)}, 1)`;
           yield* sql`UPDATE auth_session_renewal_enrollment SET state = 'rejected' WHERE session_id = ${sessionId} AND enrollment_id <> ${id} AND state = 'pending'`;
@@ -239,20 +261,10 @@ export const make = Effect.gen(function* () {
       const result = yield* sql.withTransaction(
         Effect.gen(function* () {
           const hash = commitment(input.secret);
-          const rows = yield* sql<{
-            sessionId: string;
-            currentHash: string;
-            previousHash: string | null;
-            previousNextHash: string | null;
-            generation: number;
-            renewAfter: string;
-            approved: number;
-          }>`SELECT session_id AS "sessionId", current_hash AS "currentHash", previous_hash AS "previousHash",
-          previous_next_hash AS "previousNextHash", generation, renew_after AS "renewAfter", approved
-        FROM auth_session_renewal WHERE current_hash = ${hash} OR previous_hash = ${hash}
-        OR session_id IN (SELECT session_id FROM auth_session_renewal_spent WHERE hash = ${hash})`;
-          const renewal = rows[0];
-          if (!renewal) {
+          const owners = yield* commitmentOwners(hash);
+          if (owners.length > 1) return { kind: "rejected" } as const;
+          const owner = owners[0];
+          if (!owner) {
             const pending =
               yield* sql`SELECT 1 FROM auth_session_renewal_enrollment e JOIN auth_sessions s
           ON s.session_id = e.session_id WHERE e.commitment_hash = ${hash} AND e.state = 'pending'
@@ -260,15 +272,26 @@ export const make = Effect.gen(function* () {
             if (pending.length > 0) return { kind: "pending" } as const;
             return { kind: "rejected" } as const;
           }
-          if (renewal.approved !== 1) return { kind: "rejected" } as const;
-          const sessionId = AuthSessionId.make(renewal.sessionId);
+          const sessionId = AuthSessionId.make(owner.sessionId);
+          const [renewal] = yield* sql<{
+            currentHash: string;
+            previousHash: string | null;
+            previousNextHash: string | null;
+            generation: number;
+            renewAfter: string;
+            approved: number;
+          }>`SELECT current_hash AS "currentHash", previous_hash AS "previousHash",
+          previous_next_hash AS "previousNextHash", generation, renew_after AS "renewAfter", approved
+          FROM auth_session_renewal WHERE session_id = ${sessionId}`;
+          if (renewal?.approved !== 1) return { kind: "rejected" } as const;
           const row = yield* active(sessionId);
           const now = yield* DateTime.now;
           if (renewal.currentHash !== hash) {
             const spent = yield* sql<{
               successorHash: string;
-            }>`SELECT successor_hash AS "successorHash"
-          FROM auth_session_renewal_spent WHERE hash = ${hash} AND session_id = ${sessionId}`;
+            }>`SELECT DISTINCT successor_hash AS "successorHash"
+          FROM auth_session_renewal_all_spent WHERE hash = ${hash} AND session_id = ${sessionId}`;
+            if (spent.length > 1) return { kind: "rejected" } as const;
             const successor =
               renewal.previousHash === hash ? renewal.previousNextHash : spent[0]?.successorHash;
             if (successor !== input.next) {
@@ -293,15 +316,13 @@ export const make = Effect.gen(function* () {
               renewAfter: DateTime.makeUnsafe(renewal.renewAfter).epochMilliseconds,
             } as const;
           }
-          const reused =
-            yield* sql`SELECT 1 FROM auth_session_renewal WHERE current_hash = ${input.next} OR previous_hash = ${input.next}
-        UNION ALL SELECT 1 FROM auth_session_renewal_spent WHERE hash = ${input.next}`;
+          const reused = yield* commitmentOwners(input.next);
           if (reused.length > 0) return { kind: "rejected" } as const;
           const lifetime = row.expiresAt.epochMilliseconds - row.issuedAt.epochMilliseconds;
           const expiresAt = DateTime.makeUnsafe(now.epochMilliseconds + lifetime);
           const renewAfter = DateTime.makeUnsafe(now.epochMilliseconds + lifetime / 2);
           if (renewal.previousHash !== null && renewal.previousNextHash !== null) {
-            yield* sql`INSERT INTO auth_session_renewal_spent (hash, session_id, successor_hash)
+            yield* sql`INSERT INTO auth_session_renewal_history (hash, session_id, successor_hash)
           VALUES (${renewal.previousHash}, ${sessionId}, ${renewal.previousNextHash})`;
           }
           yield* sql`UPDATE auth_session_renewal SET previous_hash = current_hash, previous_next_hash = ${input.next},

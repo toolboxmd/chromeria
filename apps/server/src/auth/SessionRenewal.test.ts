@@ -11,6 +11,7 @@ import * as Fiber from "effect/Fiber";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Result from "effect/Result";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SessionStore from "./SessionStore.ts";
@@ -33,6 +34,101 @@ const testLayer = Layer.mergeAll(SessionStore.layer, SessionRenewal.layer).pipe(
 );
 
 it.layer(Layer.merge(NodeServices.layer, NodeCrypto.layer))("paired auth renewal", (it) => {
+  it.effect("refuses commitments owned by another session at enrollment and rotation", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const renewal = yield* SessionRenewal.SessionRenewal;
+      const sql = yield* SqlClient.SqlClient;
+      const issue = () =>
+        sessions.issue({ method: "bearer-access-token", ttl: Duration.minutes(10) });
+      const owner = yield* issue();
+      const applicant = yield* issue();
+      const rotating = yield* issue();
+      const hash = SessionRenewal.commitment;
+      const enroll = (sessionId: typeof owner.sessionId, commitment: string) =>
+        renewal.enroll({ sessionId, commitment, approved: true });
+      const request = (commitment: string) =>
+        renewal.requestEnrollment({
+          sessionId: applicant.sessionId,
+          commitment,
+          route: null,
+          ipAddress: null,
+        });
+      const pending = yield* request(hash("previous"));
+      yield* enroll(owner.sessionId, hash("current"));
+      yield* enroll(rotating.sessionId, hash("rotating"));
+      yield* sql`UPDATE auth_session_renewal SET previous_hash = ${hash("previous")},
+        previous_next_hash = ${hash("current")} WHERE session_id = ${owner.sessionId}`;
+      yield* sql`INSERT INTO auth_session_renewal_spent (hash, session_id, successor_hash)
+        VALUES (${hash("spent")}, ${owner.sessionId}, ${hash("previous")})`;
+      yield* TestClock.adjust("6 minutes");
+      for (const state of ["current", "previous", "spent"]) {
+        const commitment = hash(state);
+        const candidate = yield* issue();
+        expect
+          .soft(
+            yield* enroll(candidate.sessionId, commitment).pipe(Effect.result),
+            `enroll ${state}`,
+          )
+          .toMatchObject({ _tag: "Failure", failure: { _tag: "RenewalRejected" } });
+        expect
+          .soft(yield* request(commitment).pipe(Effect.result), `request ${state}`)
+          .toMatchObject({ _tag: "Failure", failure: { _tag: "RenewalRejected" } });
+        expect
+          .soft(
+            yield* renewal.renew({ secret: "rotating", next: commitment }).pipe(Effect.result),
+            `rotate to ${state}`,
+          )
+          .toMatchObject({ _tag: "Failure", failure: { _tag: "RenewalRejected" } });
+      }
+      expect(
+        yield* renewal
+          .approveEnrollment(pending.enrollmentId, pending.fingerprint)
+          .pipe(Effect.result),
+      ).toMatchObject({ _tag: "Failure", failure: { _tag: "RenewalRejected" } });
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects ambiguous legacy commitments without changing either session", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const renewal = yield* SessionRenewal.SessionRenewal;
+      const sql = yield* SqlClient.SqlClient;
+      const hash = SessionRenewal.commitment;
+      for (const secret of ["first-owner", "second-owner"]) {
+        const { sessionId } = yield* sessions.issue({
+          method: "bearer-access-token",
+          ttl: Duration.minutes(10),
+          renewalCommitment: hash(secret),
+        });
+        yield* sql`UPDATE auth_session_renewal SET previous_hash = ${hash("legacy-duplicate")},
+          previous_next_hash = ${hash(secret)} WHERE session_id = ${sessionId}`;
+      }
+      yield* TestClock.adjust("6 minutes");
+      const snapshot = Effect.gen(function* () {
+        return {
+          sessions:
+            yield* sql`SELECT session_id, issued_at, expires_at, revoked_at FROM auth_sessions ORDER BY session_id`,
+          renewals: yield* sql`SELECT * FROM auth_session_renewal ORDER BY session_id`,
+          spent: yield* sql`SELECT * FROM auth_session_renewal_spent ORDER BY hash`,
+        };
+      });
+      const before = yield* snapshot;
+      const rejectAmbiguous = renewal
+        .renew({ secret: "legacy-duplicate", next: hash("unused") })
+        .pipe(Effect.result);
+      expect
+        .soft(yield* rejectAmbiguous)
+        .toEqual(Result.fail(new SessionRenewal.RenewalRejected({})));
+      expect(yield* snapshot).toEqual(before);
+      for (const secret of ["first-owner", "second-owner"]) {
+        const rotated = yield* renewal.renew({ secret, next: hash(`${secret}-next`) });
+        expect(rotated.outcome).toBe("rotated");
+      }
+      expect(yield* rejectAmbiguous).toEqual(Result.fail(new SessionRenewal.RenewalRejected({})));
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("rejects renewal when expiry passes between validation and the guarded update", () =>
     Effect.gen(function* () {
       const sessions = yield* SessionStore.SessionStore;
