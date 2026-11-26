@@ -133,9 +133,11 @@ checks. To pass one, choose **Take control**, complete the check, choose
 still shows the check keeps the hold.
 
 Choose **Done** on the banner when you passed the check without taking
-control, or **Clear hold** after a block when the site works again.
+control, or **Clear hold** after a block when the site works again; either one
+ends every hold of that tab.
 Until the hold ends, agents cannot open or act on any page of the site in that
-profile, including from a new incognito tab. The tab stays open for you: agents
+profile, including from a new incognito tab. A link on another site that leads
+into the held site, or a request already on its way, can still reach it once. The tab stays open for you: agents
 cannot close it and a settling thread leaves it. Closing it yourself or
 restarting the server also ends the hold; the next check starts a new one.
 

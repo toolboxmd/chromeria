@@ -553,6 +553,13 @@ interface Recording {
   readonly authorize: () => Promise<void>;
 }
 
+interface MainDocumentRecord {
+  readonly status: number;
+  readonly headers: Record<string, string>;
+  readonly url: string;
+  readonly at: number;
+}
+
 interface ServerTab {
   readonly authorize: () => Promise<void>;
   readonly threadId: ThreadId;
@@ -574,12 +581,8 @@ interface ServerTab {
   readonly control: SessionControl;
   agentOperating: boolean;
   /** The latest main-frame document response; clearing a hold classifies the page with it. */
-  mainDocument: {
-    readonly status: number;
-    readonly headers: Record<string, string>;
-    readonly url: string;
-    readonly at: number;
-  } | null;
+  mainDocument: MainDocumentRecord | null;
+  pendingDocument: MainDocumentRecord | null;
   /** Classification of the latest error document, so an action can report the hold it caused. */
   siteHoldCheck: Promise<void>;
   fileChooserIntercepted: boolean;
@@ -682,6 +685,8 @@ const SITE_HOLD_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> =
   "evaluate",
   "watchStart",
 ]);
+
+const withoutHash = (url: string) => url.split("#", 1)[0]!;
 
 const SITE_HOLD_VENDOR_NAMES = {
   datadome: "DataDome",
@@ -1608,6 +1613,7 @@ const make = Effect.gen(function* () {
         control,
         agentOperating: false,
         mainDocument: null,
+        pendingDocument: null,
         siteHoldCheck: Promise.resolve(),
         fileChooserIntercepted: false,
         onFileChooser: (chooser) => {
@@ -1751,6 +1757,9 @@ const make = Effect.gen(function* () {
         if (!frame.parentId) for (const viewer of tab.viewers) withdrawSelectMenu(viewer);
       });
       page.on("framenavigated", (frame) => {
+        // Only a committed response is the document on screen.
+        if (frame === page.mainFrame() && tab.pendingDocument?.url === frame.url())
+          tab.mainDocument = tab.pendingDocument;
         const open = tab.fileChooser;
         if (open)
           void isFileChooserCurrent(open.chooser).then((current) => {
@@ -1843,7 +1852,7 @@ const make = Effect.gen(function* () {
             url: response.url(),
             at: Date.now(),
           };
-          tab.mainDocument = document;
+          tab.pendingDocument = document;
           if (document.status >= 400 || document.headers["cf-mitigated"] !== undefined)
             tab.siteHoldCheck = Promise.all([
               tab.siteHoldCheck,
@@ -1919,10 +1928,15 @@ const make = Effect.gen(function* () {
         if (initialUrl) initialUrl.hash = "";
         tab.pendingInitialRequestUrl = initialUrl?.href ?? null;
         const options = { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS } as const;
+        // An agent's first request is checked against holds raised while the tab was set up.
+        const held =
+          tab.control.agentId === null ? undefined : siteHoldOf(tab, snapshot.navStatus.url);
         tab.initialNavigation = (
-          (desktop || adopted) && page.url() === snapshot.navStatus.url
-            ? page.reload(options)
-            : page.goto(snapshot.navStatus.url, options)
+          held
+            ? Promise.reject(siteHoldError(held))
+            : (desktop || adopted) && page.url() === snapshot.navStatus.url
+              ? page.reload(options)
+              : page.goto(snapshot.navStatus.url, options)
         ).then(constVoid, (cause: unknown) => {
           throw ServerBrowserPage.toOperationError(cause, NAVIGATION_TIMEOUT_MS);
         });
@@ -3055,6 +3069,9 @@ const make = Effect.gen(function* () {
     const startedAt = performance.now();
     const remaining = () => Math.max(1, timeout - (performance.now() - startedAt));
     await leaveBusyPage(tab, tab.cdp, timeout / 2);
+    // The last check before the request leaves.
+    const held = siteHoldOf(tab, url);
+    if (held) throw siteHoldError(held);
     const navigation = tab.page.goto(url, { timeout: remaining(), waitUntil: "commit" });
     if (readiness === "none") {
       tab.control.track(navigation);
@@ -3510,7 +3527,11 @@ const make = Effect.gen(function* () {
     const met = async () => {
       await tab.siteHoldCheck;
       const hold = siteHoldOf(tab);
-      if (hold) throw siteHoldError(hold);
+      if (hold) {
+        // A watch that finished installing after the hold began stops too.
+        if (request.operation === "watchStart") stopTabWatches(tab, "revoked");
+        throw siteHoldError(hold);
+      }
     };
     let result: A;
     try {
@@ -3542,7 +3563,7 @@ const make = Effect.gen(function* () {
       const document =
         candidate !== null &&
         siteOf(tab.page.url()) === hold.site &&
-        candidate.url === tab.page.url() &&
+        withoutHash(candidate.url) === withoutHash(tab.page.url()) &&
         candidate.at >= Date.parse(hold.since)
           ? candidate
           : null;
@@ -3915,6 +3936,8 @@ const make = Effect.gen(function* () {
             tag: "PreviewAutomationExecutionError",
             message: "Select an existing tab in the requested persistent browser profile.",
           });
+        const held = siteHoldOf(tab, normalizePreviewUrl(read.url));
+        if (held) throw siteHoldError(held);
         const response = await tab.page.goto(normalizePreviewUrl(read.url), {
           waitUntil: "domcontentloaded",
           timeout: request.timeoutMs,
