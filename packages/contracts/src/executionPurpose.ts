@@ -144,7 +144,7 @@ export type PurposeIntent = typeof PurposeIntent.Type;
 
 export const DelegatedPurposeIntent = PurposeIntent.annotate({
   description:
-    "Version 1 execution purpose. Omit it, or choose inherit, to serve the calling run's purpose; an unscoped run gives an unscoped child. Choose reference for another Issue or PR, selection with its revision, or deliberate unscoped.",
+    "Version 1 execution purpose. Omit it to serve the calling run's purpose, or choose reference, selection with its revision, or deliberate unscoped.",
 });
 const encodePurposeIntent = Schema.encodeSync(Schema.fromJsonString(PurposeIntent));
 
