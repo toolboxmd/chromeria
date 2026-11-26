@@ -16,6 +16,7 @@ import {
   testHost,
 } from "./ChromeForTesting.testkit.ts";
 import {
+  greaseBrand,
   presentAsChrome,
   resizeAgentViewport,
   ServerBrowserContexts,
@@ -28,15 +29,23 @@ const PAGE = `<!doctype html><script src="/app.js"></script><script>
     const reply = (port) => new Promise((resolve) => (port.onmessage = (event) => resolve(event.data)));
     // Listen before any await: a worker's first message is lost without a listener.
     const dedicated = reply(new Worker("/dedicated.js"));
+    const framed = new Promise((resolve) => addEventListener("message", (event) => event.data?.frame && resolve(event.data.frame)));
+    const frame = document.createElement("iframe");
+    frame.src = location.href.replace("localhost", "127.0.0.1") + "frame";
+    document.documentElement.append(frame);
     const shared = reply(new SharedWorker("/shared.js").port);
     const service = new Promise((resolve) => (navigator.serviceWorker.onmessage = (event) => resolve(event.data)));
     await navigator.serviceWorker.register("/service.js");
     (await navigator.serviceWorker.ready).active.postMessage("ua");
-    const high = await navigator.userAgentData.getHighEntropyValues(["fullVersionList"]);
+    const high = await navigator.userAgentData.getHighEntropyValues(["fullVersionList", "uaFullVersion", "formFactors", "platformVersion"]);
     return {
       page: navigator.userAgent,
       brands: navigator.userAgentData.brands.map((brand) => brand.brand),
       fullVersionList: high.fullVersionList,
+      uaFullVersion: high.uaFullVersion,
+      formFactors: high.formFactors,
+      platformVersion: high.platformVersion,
+      frameBrands: await framed,
       dedicated: await dedicated,
       shared: await shared,
       service: await service,
@@ -45,10 +54,11 @@ const PAGE = `<!doctype html><script src="/app.js"></script><script>
 </script>`;
 const SCRIPTS: Record<string, string> = {
   "/app.js": "window.appLoaded = true;",
-  "/dedicated.js": "postMessage(navigator.userAgent);",
-  "/shared.js": "onconnect = (event) => event.ports[0].postMessage(navigator.userAgent);",
+  "/dedicated.js": "postMessage([navigator.userAgent, navigator.userAgentData.brands]);",
+  "/shared.js":
+    "onconnect = (event) => event.ports[0].postMessage([navigator.userAgent, navigator.userAgentData.brands]);",
   "/service.js":
-    "self.addEventListener('message', (event) => event.source.postMessage(navigator.userAgent));",
+    "self.addEventListener('message', (event) => event.source.postMessage([navigator.userAgent, navigator.userAgentData.brands]));",
 };
 
 let server: NodeHttp.Server;
@@ -64,7 +74,12 @@ beforeAll(async () => {
     requests.push({ path, headers: request.headers });
     const script = SCRIPTS[path];
     response.setHeader("Content-Type", script ? "text/javascript" : "text/html");
-    response.end(script ?? PAGE);
+    response.end(
+      script ??
+        (path === "/frame"
+          ? "<script>parent.postMessage({ frame: navigator.userAgentData.brands }, '*')</script>"
+          : PAGE),
+    );
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -197,7 +212,7 @@ describe.skipIf(!testChromium)("ServerBrowserContexts on Chrome for Testing", ()
             const frame = document.createElement("iframe");
             frame.allow = "publickey-credentials-get *; publickey-credentials-create *";
             frame.src = "https://" + host + ".test/frame";
-            document.body.append(frame);
+            document.documentElement.append(frame);
           }
         })()`);
           await page.waitForLoadState("load");
@@ -233,23 +248,48 @@ describe.skipIf(!testChromium)("ServerBrowserContexts on Chrome for Testing", ()
       requests.length = 0;
       await page.goto(origin);
       await expectFullChrome(page);
+      type Brands = Array<{ brand: string; version: string }>;
       const seen = await page.evaluate<{
         page: string;
         brands: string[];
-        fullVersionList: Array<{ brand: string; version: string }>;
-        dedicated: string;
-        shared: string;
-        service: string;
+        fullVersionList: Brands;
+        uaFullVersion: string;
+        formFactors: string[];
+        platformVersion: string;
+        frameBrands: Brands;
+        dedicated: [string, Brands];
+        shared: [string, Brands];
+        service: [string, Brands];
       }>("window.results");
       const userAgent = pool.identity.userAgent;
       expect(userAgent).toMatch(/ Chrome\/\d+\.0\.0\.0 Safari\/537\.36$/);
-      expect(seen).toMatchObject({
-        page: userAgent,
-        dedicated: userAgent,
-        shared: userAgent,
-        service: userAgent,
-      });
+      expect(seen.page).toBe(userAgent);
+      for (const [name, [workerAgent]] of Object.entries({
+        dedicated: seen.dedicated,
+        shared: seen.shared,
+        service: seen.service,
+      }))
+        expect(workerAgent, name).toBe(userAgent);
+      // Shared workers can start before Playwright reaches them, so their hints may stay native.
+      for (const [name, [, workerBrands]] of Object.entries({
+        dedicated: seen.dedicated,
+        service: seen.service,
+      }))
+        expect(
+          workerBrands.map((each) => each.brand),
+          name,
+        ).toEqual(seen.brands);
+      expect(
+        seen.frameBrands.map((each) => each.brand),
+        "a cross-origin frame shows the page's brands",
+      ).toEqual(seen.brands);
       expect(seen.brands).toContain("Google Chrome");
+      expect(seen.brands).toContain(greaseBrand(Number(testChromiumVersion.split(".")[0])).brand);
+      expect(seen).toMatchObject({
+        uaFullVersion: testChromiumVersion,
+        formFactors: ["Desktop"],
+        platformVersion: "",
+      });
       expect(seen.fullVersionList).toContainEqual({
         brand: "Google Chrome",
         version: testChromiumVersion,
@@ -266,6 +306,20 @@ describe.skipIf(!testChromium)("ServerBrowserContexts on Chrome for Testing", ()
       );
       expect(document.headers["sec-ch-ua"]).not.toContain("Headless");
     });
+  });
+
+  it("uses Chrome's own GREASE brand", async () => {
+    const browser = await chromium.launch({ executablePath: testChromium!, headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.goto(origin);
+      const native = await page.evaluate<Array<{ brand: string; version: string }>>(
+        "navigator.userAgentData.brands",
+      );
+      expect(native).toContainEqual(greaseBrand(Number(testChromiumVersion.split(".")[0])));
+    } finally {
+      await browser.close();
+    }
   });
 
   it("keeps a profile's session alive while its tabs close, and recreates the reserved page", async () => {

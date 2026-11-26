@@ -1502,12 +1502,12 @@ const make = Effect.gen(function* () {
         ));
       await authorize();
       if (adopted?.page.isClosed()) throw new Error("The popup closed before it opened.");
-      // The desktop page already has its own clipboard.
-      if (!desktop) await prepareContext(context);
       await authorize();
       const page = (pendingPage = adopted?.page ?? desktop?.page ?? (await context.newPage()));
       await authorize();
       const cdp = (pendingCdp = await context.newCDPSession(page));
+      // The desktop page already has its own clipboard.
+      if (!desktop) await prepareContext(context, cdp);
       await installPdfDocumentNavigation(cdp);
       await authorize();
       // The desktop's page is already a normal browser. A popup's first request went out
@@ -2234,10 +2234,17 @@ const make = Effect.gen(function* () {
   });
 
   const preparedContexts = new WeakSet<BrowserContext>();
-  const prepareContext = async (context: BrowserContext) => {
+  // grantPermissions would deny every other permission, and pages would read them all as
+  // "denied", which no person's browser shows. Only clipboard-write is granted.
+  const prepareContext = async (context: BrowserContext, cdp: CDPSession) => {
     if (preparedContexts.has(context)) return;
     preparedContexts.add(context);
-    await context.grantPermissions(["clipboard-write"]);
+    const { targetInfo } = await cdp.send("Target.getTargetInfo");
+    await cdp.send("Browser.setPermission", {
+      permission: { name: "clipboard-write" },
+      setting: "granted",
+      ...(targetInfo.browserContextId ? { browserContextId: targetInfo.browserContextId } : {}),
+    });
   };
 
   /** Records the copies made in each frame a session reaches. */
@@ -4151,6 +4158,8 @@ const make = Effect.gen(function* () {
             buttons: num(message.buttons),
             clickCount: num(message.clickCount, type === "mouseMoved" ? 0 : 1),
             modifiers,
+            // A pressed button has the W3C default pressure, as a mouse in Chrome reports.
+            ...(num(message.buttons) !== 0 || type === "mousePressed" ? { force: 0.5 } : {}),
           });
         } finally {
           if (guarded) {
@@ -4191,7 +4200,17 @@ const make = Effect.gen(function* () {
         const code = typeof message.code === "string" ? message.code : "";
         const text = typeof message.text === "string" ? message.text : undefined;
         if (message.action === "up") {
-          await session.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers });
+          await session.send("Input.dispatchKeyEvent", {
+            type: "keyUp",
+            key,
+            code,
+            modifiers,
+            // Pages read keyup.keyCode too; Chrome sends the same code as on keydown.
+            windowsVirtualKeyCode: num(
+              message.keyCode,
+              key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0,
+            ),
+          });
           viewer.pressedKeys.delete(code || key);
           return;
         }

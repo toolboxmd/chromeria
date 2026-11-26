@@ -121,6 +121,7 @@ function makeSession(
     detach: vi.fn(async () => {}),
     send: vi.fn(async (method: string, input?: unknown): Promise<Record<string, unknown>> => {
       if (method === "Page.getNavigationHistory") return { currentIndex: 0, entries: [{}] };
+      if (method === "Target.getTargetInfo") return { targetInfo: { browserContextId: "context" } };
       if (method === "Page.getLayoutMetrics") return { cssVisualViewport: { pageX: 0, pageY: 0 } };
       if (method === "Page.captureScreenshot") {
         if ((input as { format: string }).format === "jpeg" && heldStill) await heldStill();
@@ -295,7 +296,6 @@ function makeContext(onClose?: (context: BrowserContext) => void, initialUrl = "
     sessions,
     cssViewport,
     newPage: async () => page as unknown as Page,
-    grantPermissions: vi.fn(async () => {}),
     newCDPSession: async (target: unknown) => {
       const session = makeSession(
         target === page ? undefined : (target as ReturnType<typeof makeFrame>),
@@ -3162,6 +3162,32 @@ it.live("a click on a native select offers its options to the viewer and takes i
       expect(yield* chosen()).toEqual({ value: "Three", events: "" });
       yield* viewer.input({ type: "selectMenu", id: offers[0]!.id, index: 0 });
       expect(yield* chosen()).toEqual({ value: "One", events: "input change " });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a viewer's input looks like a person's, and only clipboard-write is granted", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { viewer, click, evaluate } = yield* realSelectPage(
+        `<input id="field" style="position: absolute; left: 40px; top: 20px; width: 200px">
+        <script>
+          window.seen = [];
+          for (const type of ["keydown", "keyup"])
+            addEventListener(type, (event) => seen.push(type + ":" + event.keyCode));
+          addEventListener("pointerdown", (event) => seen.push("pressure:" + event.pressure));
+        </script>`,
+      );
+      yield* click(140, 30);
+      yield* viewer.input({ type: "key", action: "down", key: "b", code: "KeyB", text: "b" });
+      yield* viewer.input({ type: "key", action: "up", key: "b", code: "KeyB" });
+      expect(yield* evaluate("seen")).toEqual(["pressure:0.5", "keydown:66", "keyup:66"]);
+      expect(
+        yield* evaluate(
+          `Promise.all(["notifications", "geolocation", "clipboard-write"].map((name) => navigator.permissions.query({ name }).then((state) => state.state)))`,
+        ),
+        "other permissions stay at their default",
+      ).toEqual(["prompt", "prompt", "granted"]);
     }),
   ).pipe(Effect.provide(layer)),
 );
