@@ -1,6 +1,9 @@
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
 import { createInboxReturnTracker } from "@t3tools/client-runtime/state/thread-inbox";
-import { presentThreadShell } from "@t3tools/client-runtime/state/models";
+import {
+  isThreadVisibleInNavigation,
+  presentThreadShell,
+} from "@t3tools/client-runtime/state/models";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
@@ -37,6 +40,7 @@ import {
   buildThreadListV2ListItems,
   getThreadListV2OrderedSection,
   layoutThreadListV2RowMenuActions,
+  isThreadListV2ListItem,
   resolveThreadListV2SnoozeMenuSelection,
   resolveThreadListV2SwipeActions,
   resolveThreadListV2SnoozePresets,
@@ -1337,6 +1341,88 @@ describe("cross-section thread drops", () => {
   });
 });
 
+it("finds destination children offline in qualified search and hides them again on clear", () => {
+  const destination = EnvironmentId.make("destination");
+  const otherDestination = EnvironmentId.make("other-destination");
+  const projectId = ProjectId.make("destination-project");
+  const id = ThreadId.make("same-id");
+  const raw = makeRawThreadShell({
+    id,
+    projectId,
+    title: "Remote audit",
+    delegatedFrom: {
+      environmentId: EnvironmentId.make("offline-parent"),
+      threadId: ThreadId.make("real-parent"),
+      title: "Real parent",
+    },
+  });
+  const child = presentThreadShell(destination, raw);
+  const otherChild = presentThreadShell(otherDestination, raw);
+  const linked = presentThreadShell(
+    destination,
+    makeRawThreadShell({
+      id: ThreadId.make("linked"),
+      projectId,
+      title: "Linked work",
+      linkOrigin: { sessionId: "link", label: "Other machine" },
+    }),
+  );
+  const fork = presentThreadShell(destination, {
+    ...raw,
+    id: ThreadId.make("fork"),
+    title: "Fork work",
+    lineage: {
+      parentThreadId: id,
+      rootThreadId: raw.lineage.rootThreadId,
+      relationshipToParent: "fork",
+    },
+    forkedFrom: { type: "run", threadId: id, runId: RunId.make("source-run") },
+  });
+  const all = [
+    child,
+    otherChild,
+    linked,
+    fork,
+    { ...child, id: ThreadId.make("archived"), archivedAt: NOW },
+    {
+      ...child,
+      id: ThreadId.make("local-child"),
+      delegatedFrom: undefined,
+      lineage: { ...child.lineage, relationshipToParent: "subagent" as const },
+    },
+    { ...child, id: ThreadId.make("other-project"), projectId: ProjectId.make("other-project") },
+  ];
+  const layout = (searchQuery: string, matchedThreadKeys?: ReadonlySet<string>) =>
+    buildThreadListV2Items({
+      threads: all.filter((thread) => isThreadVisibleInNavigation(thread, searchQuery)),
+      environmentId: null,
+      projectRefs: [{ environmentId: destination, projectId }],
+      searchQuery,
+      matchedThreadKeys,
+      now: NOW,
+    }).items.map((item) => item.thread);
+  expect(layout("").map((thread) => thread.id)).toEqual([fork.id, linked.id]);
+  expect(layout("Remote audit")).toEqual([child]);
+  expect(layout("Fork work")).toEqual([fork]);
+  expect(fork.delegatedFrom).toBe(raw.delegatedFrom);
+  expect(
+    layout(
+      "contents",
+      new Set([threadSearchMatchKey({ environmentId: destination, threadId: id })]),
+    ),
+  ).toEqual([child]);
+  expect(
+    layout(
+      "contents",
+      new Set([threadSearchMatchKey({ environmentId: otherDestination, threadId: id })]),
+    ),
+  ).toEqual([]);
+  expect(layout("   ").map((thread) => thread.id)).toEqual([fork.id, linked.id]);
+  expect(child.delegatedFrom).toBe(raw.delegatedFrom);
+  expect(child.lineage.parentThreadId).toBeNull();
+  expect(all).toHaveLength(7);
+});
+
 it("excludes subagents from navigation, search and ordering while retaining user forks", () => {
   const root = makeThread({ id: ThreadId.make("root"), title: "Root" });
   const child = makeThread({
@@ -1367,6 +1453,18 @@ it("excludes subagents from navigation, search and ordering while retaining user
 
 const BASE_MS = Date.parse(NOW);
 const isoAt = (ms: number) => new Date(ms).toISOString();
+
+function runningRuntime() {
+  return {
+    status: "running" as const,
+    providerName: "Codex",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    runtimeMode: "full-access" as const,
+    activeRunId: null,
+    lastError: null,
+    updatedAt: NOW,
+  };
+}
 const MINUTE_MS = 60_000;
 
 function buildTickList(
@@ -1891,5 +1989,359 @@ describe("queued messages keep a settled thread active", () => {
       ["settled", "slim"],
     ]);
     expect(layout.settledCount).toBe(1);
+  });
+});
+
+describe("Promachos shelf", () => {
+  const homeId = ProjectId.make("home");
+  const otherEnvironmentId = EnvironmentId.make("environment-2");
+  const promachosHomeRefs = [{ projectId: homeId, environmentId }];
+  const conversation = (id: string, fields: Partial<EnvironmentThreadShell> = {}) =>
+    makeThread({ id: ThreadId.make(id), title: id, projectId: homeId, ...fields });
+  const layout = (
+    threads: EnvironmentThreadShell[],
+    options: Partial<Parameters<typeof buildThreadListV2Items>[0]> = {},
+  ) =>
+    buildThreadListV2Items({
+      threads,
+      promachosHomeRefs,
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      ...options,
+    });
+  const ids = (value: ReturnType<typeof layout>) => value.items.map((item) => item.thread.id);
+
+  it("collapses only threads in a known Promachos home project", () => {
+    const hidden = conversation("hidden");
+    const other = conversation("other", { environmentId: otherEnvironmentId });
+    const unknown = conversation("unknown", { projectId: ProjectId.make("unknown") });
+    const normal = conversation("normal", {
+      projectId: ProjectId.make("normal"),
+      title: "Promachos",
+    });
+    const result = layout([hidden, other, unknown, normal]);
+    expect(result.promachosCount).toBe(1);
+    expect(new Set(ids(result))).toEqual(new Set([other.id, unknown.id, normal.id]));
+    expect(ids(layout([hidden], { promachosHomeRefs: [] }))).toEqual([hidden.id]);
+  });
+
+  it("keeps lifecycle and pins ahead of Promachos working and input threads", () => {
+    const pinned = conversation("pin", { pinnedAt: NOW });
+    const snoozed = conversation("snooze", {
+      pinnedAt: NOW,
+      settledOverride: "settled",
+      snoozedUntil: "2026-06-03T00:00:00.000Z",
+    });
+    const settled = conversation("settle", { pinnedAt: NOW, settledOverride: "settled" });
+    const busy = conversation("busy", {
+      runtime: runningRuntime(),
+    });
+    const input = conversation("input", { hasPendingUserInput: true });
+    const result = layout([pinned, snoozed, settled, busy, input], {
+      workingShelfEnabled: true,
+      promachosShelfExpanded: true,
+      snoozedShelfExpanded: true,
+    });
+    expect(result.promachosCount).toBe(2);
+    expect(result.workingCount).toBe(0);
+    expect(result.snoozedCount).toBe(1);
+    expect(result.settledCount).toBe(1);
+    expect(result.items.find((item) => item.thread === pinned)?.pinned).toBe(true);
+    expect(new Set(ids(result)).size).toBe(5);
+    expect(
+      result.items
+        .filter((item) => [busy, input].includes(item.thread))
+        .every((item) => item.variant === "card"),
+    ).toBe(true);
+  });
+
+  it("retains the selected Promachos row and reveals search matches without expansion", () => {
+    const selected = conversation("selected");
+    const hidden = conversation("hidden");
+    expect(
+      ids(layout([selected, hidden], { selectedThreadKey: `${environmentId}:selected` })),
+    ).toEqual([selected.id]);
+    expect(ids(layout([selected, hidden], { searchQuery: "hidden" }))).toEqual([hidden.id]);
+    expect(
+      ids(
+        layout([selected, hidden], {
+          searchQuery: "contents",
+          matchedThreadKeys: new Set([
+            threadSearchMatchKey({ environmentId, threadId: hidden.id }),
+          ]),
+        }),
+      ),
+    ).toEqual([hidden.id]);
+    expect(ids(layout([selected, hidden]))).toEqual([]);
+  });
+
+  it("honors scope, archived and child exclusions", () => {
+    const active = conversation("active");
+    const archived = conversation("archive", { archivedAt: NOW });
+    const child = conversation("child", {
+      lineage: { ...active.lineage, relationshipToParent: "subagent" },
+    });
+    expect(layout([active, archived, child]).promachosCount).toBe(1);
+    expect(layout([active], { environmentId: otherEnvironmentId }).promachosCount).toBe(0);
+    expect(
+      layout([active], { projectRefs: [{ environmentId, projectId: ProjectId.make("normal") }] })
+        .promachosCount,
+    ).toBe(0);
+  });
+
+  it("uses active order for full cards and excludes collapsed rows from shortcuts", () => {
+    const rows = [
+      conversation("later", { activeOrderKey: "c" }),
+      conversation("first", { activeOrderKey: "a" }),
+    ];
+    const result = layout(rows, { promachosShelfExpanded: true });
+    expect(ids(result)).toEqual([ThreadId.make("first"), ThreadId.make("later")]);
+    const list = buildThreadListV2ListItems({
+      ...result,
+      pendingTasks: [],
+      promachosShelfExpanded: true,
+    });
+    expect(list.map((item) => item.type)).toEqual(["v2-promachos-shelf", "v2-thread", "v2-thread"]);
+    expect(threadJumpTarget(list, "thread.jump.1")).toMatchObject({
+      item: { thread: { id: "first" } },
+    });
+    const collapsed = buildThreadListV2ListItems({ ...layout(rows), pendingTasks: [] });
+    expect(collapsed).toEqual([
+      {
+        type: "v2-promachos-shelf",
+        key: "v2-promachos-shelf",
+        count: 2,
+        expanded: false,
+        disabled: false,
+      },
+    ]);
+    expect(threadJumpTarget(collapsed, "thread.jump.1")).toBeNull();
+  });
+
+  it("places Promachos after Working and before Snoozed and Settled, including collapsed shelves", () => {
+    const normalId = ProjectId.make("normal");
+    const threads = [
+      conversation("inbox", { projectId: normalId }),
+      conversation("working", { projectId: normalId, runtime: runningRuntime() }),
+      conversation("scratch"),
+      conversation("snoozed", { snoozedUntil: "2026-06-03T00:00:00.000Z" }),
+      conversation("settled", { settledOverride: "settled" }),
+    ];
+    for (const expanded of [false, true]) {
+      const result = layout(threads, {
+        workingShelfEnabled: true,
+        workingShelfExpanded: expanded,
+        promachosShelfExpanded: expanded,
+        snoozedShelfExpanded: expanded,
+        settledShelfExpanded: expanded,
+      });
+      const list = buildThreadListV2ListItems({
+        ...result,
+        pendingTasks: [makePendingTask("pending")],
+        promachosShelfExpanded: expanded,
+        workingShelfExpanded: expanded,
+        snoozedShelfExpanded: expanded,
+        settledShelfExpanded: expanded,
+      });
+      expect(
+        list.map((entry) => (entry.type === "v2-thread" ? entry.item.thread.id : entry.type)),
+      ).toEqual(
+        expanded
+          ? [
+              "v2-pending",
+              "inbox",
+              "v2-working-shelf",
+              "working",
+              "v2-promachos-shelf",
+              "scratch",
+              "v2-snoozed-shelf",
+              "snoozed",
+              "v2-settled-shelf",
+              "settled",
+            ]
+          : [
+              "v2-pending",
+              "inbox",
+              "v2-working-shelf",
+              "v2-promachos-shelf",
+              "v2-snoozed-shelf",
+              "v2-settled-shelf",
+            ],
+      );
+    }
+    expect(buildThreadListV2ListItems({ ...layout([]), pendingTasks: [] })).toEqual([]);
+  });
+
+  it("preserves queued settlement override and capability gating within the Promachos home", () => {
+    const settled = conversation("settled", { settledOverride: "settled" });
+    const snoozed = conversation("snoozed", { snoozedUntil: "2026-06-03T00:00:00.000Z" });
+    const result = layout([settled, snoozed], {
+      settlementEnvironmentIds: new Set(),
+      snoozeEnvironmentIds: new Set(),
+    });
+    expect(result.promachosCount).toBe(2);
+    expect(result.settledCount).toBe(0);
+    expect(result.snoozedCount).toBe(0);
+    const queued = layout([settled], { queuedThreadKeys: new Set([`${environmentId}:settled`]) });
+    expect(queued.promachosCount).toBe(1);
+    expect(queued.settledCount).toBe(0);
+  });
+
+  it("keeps Promachos rows out of move neighbors while retaining pinned arrangement", () => {
+    const hidden = conversation("hidden", { activeOrderKey: "b" });
+    const pinned = conversation("pinned", { pinnedAt: NOW });
+    const normal = conversation("normal", {
+      projectId: ProjectId.make("real"),
+      activeOrderKey: "a",
+    });
+    const threads = [normal, hidden, pinned];
+    const ordered = getThreadListV2OrderedSection({
+      threads,
+      promachosHomeRefs,
+      section: "active",
+      now: NOW,
+    });
+    expect(ordered.map((thread) => thread.id)).toEqual([normal.id]);
+    const planner = createThreadMovePlanner({
+      ordered,
+      allThreads: threads,
+      section: "active",
+      reorderableEnvironmentIds: new Set([environmentId]),
+    });
+    expect(planner(`${environmentId}:normal`, "down")).toBeNull();
+    expect(planner(`${environmentId}:hidden`, "up")).toBeNull();
+    expect(
+      getThreadListV2OrderedSection({
+        threads,
+        promachosHomeRefs,
+        section: "pinned",
+        now: NOW,
+      }).map((thread) => thread.id),
+    ).toEqual([pinned.id]);
+  });
+
+  it.each([
+    ["pinned", { pinnedAt: NOW }],
+    ["snoozed", { snoozedUntil: "2026-06-03T00:00:00.000Z" }],
+    ["settled", { settledOverride: "settled" as const }],
+  ])("returns %s Promachos threads without an Active position or key writes", (_, state) => {
+    const source = conversation("source", state);
+    const normal = conversation("normal", {
+      projectId: ProjectId.make("real"),
+      activeOrderKey: null,
+    });
+    const shelf = conversation("existing", { activeOrderKey: "a" });
+    for (const existing of [[], [shelf]]) {
+      for (const promachosShelfExpanded of [false, true]) {
+        const threads = [source, normal, ...existing];
+        const ordered = getThreadListV2OrderedSection({
+          threads,
+          promachosHomeRefs,
+          section: "active",
+          now: NOW,
+        });
+        const planner = createThreadMovePlanner({
+          ordered,
+          allThreads: threads,
+          promachosHomeRefs,
+          section: "active",
+          reorderableEnvironmentIds: new Set([environmentId]),
+        });
+        for (const targetId of [null, `${environmentId}:normal`]) {
+          for (const placement of ["before", "after"] as const) {
+            // Empty assignments mean the lifecycle move is accepted, with no
+            // positional preview and no writes, even to keyless real neighbors.
+            expect(
+              planner(`${environmentId}:source`, {
+                section: "active",
+                targetId,
+                placement,
+              }),
+            ).toEqual([]);
+          }
+        }
+        const lifecycle = threadDropLifecycle(source, "active", NOW);
+        expect(lifecycle.unpin || lifecycle.unsettle || lifecycle.unsnooze).toBe(true);
+        const returned = { ...source, pinnedAt: null, settledOverride: null, snoozedUntil: null };
+        const result = layout([returned, normal, ...existing], { promachosShelfExpanded });
+        expect(result.promachosCount).toBe(existing.length + 1);
+        expect(ids(result).includes(source.id)).toBe(promachosShelfExpanded);
+        expect(
+          getThreadListV2OrderedSection({
+            threads: [returned, normal, ...existing],
+            promachosHomeRefs,
+            section: "active",
+            now: NOW,
+          }).map((thread) => thread.id),
+        ).toEqual([normal.id]);
+      }
+    }
+  });
+
+  it("accepts Promachos returns to an empty Active header but still respects reorder capability", () => {
+    const source = conversation("source", { pinnedAt: NOW });
+    const input = {
+      ordered: [],
+      allThreads: [source],
+      promachosHomeRefs,
+      section: "active" as const,
+    };
+    const destination = {
+      section: "active" as const,
+      targetId: null,
+      placement: "before" as const,
+    };
+    expect(
+      createThreadMovePlanner({ ...input, reorderableEnvironmentIds: new Set([environmentId]) })(
+        `${environmentId}:source`,
+        destination,
+      ),
+    ).toEqual([]);
+    expect(
+      createThreadMovePlanner({ ...input, reorderableEnvironmentIds: new Set() })(
+        `${environmentId}:source`,
+        destination,
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps positional planning for pins and unrecognized or other-environment homes", () => {
+    const source = conversation("source", { pinnedAt: NOW });
+    for (const section of ["pinned", "active"] as const) {
+      for (const knownHomes of [
+        promachosHomeRefs,
+        [],
+        [{ ...promachosHomeRefs[0]!, environmentId: otherEnvironmentId }],
+      ]) {
+        const plan = createThreadMovePlanner({
+          ordered: [],
+          allThreads: [source],
+          promachosHomeRefs: knownHomes,
+          section,
+          reorderableEnvironmentIds: new Set([environmentId]),
+        })(`${environmentId}:source`, { section, targetId: null, placement: "before" });
+        if (section === "active" && knownHomes === promachosHomeRefs) expect(plan).toEqual([]);
+        else {
+          expect(plan).toHaveLength(1);
+          expect(plan![0]!.id).toBe(`${environmentId}:source`);
+        }
+      }
+    }
+  });
+
+  it("invalidates recycled headers when expansion, count or load state changes", () => {
+    const header = {
+      type: "v2-promachos-shelf",
+      key: "v2-promachos-shelf",
+      count: 2,
+      expanded: false,
+      disabled: false,
+    } as const;
+    expect(isThreadListV2ListItem(header)).toBe(true);
+    expect(threadListV2ListItemsAreEqual(header, { ...header })).toBe(true);
+    for (const change of [{ count: 3 }, { expanded: true }, { disabled: true }]) {
+      expect(threadListV2ListItemsAreEqual(header, { ...header, ...change })).toBe(false);
+    }
   });
 });

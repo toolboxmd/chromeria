@@ -193,6 +193,18 @@ describe("mobile connection storage", () => {
     });
   });
 
+  it("keeps Promachos shelf expansion independent and persists collapse", async () => {
+    await savePreferencesPatch({
+      threadListPromachosShelfExpanded: true,
+      threadListSnoozedShelfExpanded: true,
+    });
+    await savePreferencesPatch({ threadListPromachosShelfExpanded: false });
+    await expect(loadPreferences()).resolves.toEqual({
+      threadListPromachosShelfExpanded: false,
+      threadListSnoozedShelfExpanded: true,
+    });
+  });
+
   it("reconciles fallback preferences after SQLite recovers", async () => {
     mocks.setPreferencesJson(JSON.stringify({ baseFontSize: 15 }), 10);
     await mocks.setItemAsync(

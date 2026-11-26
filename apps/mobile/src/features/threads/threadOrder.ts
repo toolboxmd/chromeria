@@ -6,7 +6,7 @@ import {
   planPinnedReorder,
 } from "@t3tools/client-runtime/state/thread-sort";
 import { effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
-import type { EnvironmentId } from "@t3tools/contracts";
+import type { EnvironmentId, ScopedProjectRef } from "@t3tools/contracts";
 import { msg } from "gt-react-native";
 
 import { m, type MessageResolver } from "../../i18n/messages";
@@ -56,6 +56,7 @@ export type OrderRow = Pick<
   | "pinOrderKey"
   | "activeOrderKey"
   | "createdAt"
+  | "updatedAt"
   | "unsettledAt"
   | "pinnedAt"
 >;
@@ -86,10 +87,22 @@ function rowOrder(row: OrderRow, section: PendingThreadOrder["section"]) {
 
 export function createThreadMovePlanner(input: {
   readonly ordered: readonly OrderRow[];
-  readonly allThreads?: readonly OrderRow[];
+  readonly allThreads?: readonly (OrderRow & Partial<Pick<EnvironmentThreadShell, "projectId">>)[];
+  readonly promachosHomeRefs?: ReadonlyArray<ScopedProjectRef>;
   readonly section: PendingThreadOrder["section"];
   readonly reorderableEnvironmentIds: ReadonlySet<EnvironmentId>;
 }) {
+  const promachosKeys = new Set(
+    input.promachosHomeRefs?.map((ref) => `${ref.environmentId}:${ref.projectId}`),
+  );
+  const promachosIds = new Set(
+    input.allThreads
+      ?.filter(
+        (row) =>
+          row.projectId !== undefined && promachosKeys.has(`${row.environmentId}:${row.projectId}`),
+      )
+      .map(rowId),
+  );
   const orderedIds = input.ordered.map(rowId);
   // Hidden rows keep their stored key: only stored keys can collide with a write.
   const keysById = new Map([
@@ -107,6 +120,7 @@ export function createThreadMovePlanner(input: {
     if (!writableIds.has(movedId)) return null;
     const nextIds = threadOrderAfterMove(orderedIds, movedId, direction);
     if (nextIds === null) return null;
+    if (input.section === "active" && promachosIds.has(movedId)) return [];
     const assignments = planPinnedReorder({ orderedIds: nextIds, keysById, movedId });
     return assignments === null ||
       assignments.length === 0 ||
