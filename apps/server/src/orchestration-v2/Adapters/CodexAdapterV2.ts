@@ -98,6 +98,7 @@ import type {
   ProviderTurnId,
   ProviderInstanceId,
   RuntimeMode,
+  ThreadBare,
 } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
@@ -1736,6 +1737,20 @@ const CODEX_T3_MCP_SERVERS: ReadonlySet<string> = new Set([
   CODEX_T3_DIRECT_MCP_SERVER,
 ]);
 const CODEX_DIRECT_ONLY_T3_TOOLS = ["t3_thread_wait", "delegate_task"];
+
+/** A named `t3-code` addition reaches Codex under both of T3's registrations. */
+export function codexBareMcpEvidence(
+  bare: ThreadBare,
+  servers: ReadonlyArray<string>,
+  nativeId: string | null,
+) {
+  return bareInventoryEvidence(
+    "mcp",
+    servers,
+    namesT3Mcp(bare) ? [...CODEX_T3_MCP_SERVERS] : [],
+    `Codex mcpServerStatus/list ${nativeId}`,
+  );
+}
 
 /** Names of the stdio MCP servers in a `config/read` config, the ones Codex starts per thread. */
 function codexStdioMcpServerNames(mcpServers: unknown): ReadonlyArray<string> {
@@ -9050,11 +9065,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       .pipe(Effect.option);
                     if (Option.isSome(status))
                       evidence.push(
-                        bareInventoryEvidence(
-                          "mcp",
+                        codexBareMcpEvidence(
+                          input.runtimePolicy.bare!,
                           status.value.data.map((server) => server.name),
-                          namesT3Mcp(input.runtimePolicy.bare!) ? ["t3-code"] : [],
-                          `Codex mcpServerStatus/list ${nativeId}`,
+                          nativeId,
                         ),
                       );
                     const skills = yield* client
