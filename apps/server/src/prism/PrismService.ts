@@ -1,5 +1,5 @@
 import { colorModelSelection, invalidOptionSelections } from "./modelOptions.ts";
-import { codexCreditAdmission } from "./CodexCredits.ts";
+import { codexCreditAdmission, type CodexCreditAdmission } from "./CodexCredits.ts";
 import { unsupportedBare } from "@t3tools/provider-core/server/bareLaunch";
 import {
   DEFAULT_PRISM_LANE,
@@ -296,6 +296,8 @@ const make = Effect.gen(function* () {
       const count = Math.max(1, input.count ?? 1);
       const started: Array<ModelSelection> = [];
       const skipped: Array<string> = [];
+      // One credit decision per instance for this call; nothing outlives it.
+      const creditAdmissions = new Map<string, CodexCreditAdmission>();
       const skip = (candidate: ModelSelection, reason: string) =>
         skipped.push(`${candidate.instanceId}/${candidate.model}: ${reason}`);
       for (const candidate of candidates) {
@@ -307,10 +309,19 @@ const make = Effect.gen(function* () {
         }
         const block = usageBlock(provider, failures, now);
         if (block !== undefined) {
-          // Credits cover only spent plan windows, never a recorded usage-limit failure.
-          const credits = failures.some((f) => f.provider_instance_id === candidate.instanceId)
-            ? { admitted: false as const }
-            : yield* codexCreditAdmission(provider, now, settings.getSettings);
+          // Credits cover only spent plan windows, never a recorded usage-limit failure, and
+          // are read only for a Color that could otherwise start.
+          const mayUseCredits =
+            !failures.some((f) => f.provider_instance_id === candidate.instanceId) &&
+            provider.availability !== "unavailable" &&
+            provider.models.some(
+              (m) => m.slug === candidate.model || m.aliases?.includes(candidate.model),
+            );
+          const credits: CodexCreditAdmission = mayUseCredits
+            ? (creditAdmissions.get(candidate.instanceId) ??
+              (yield* codexCreditAdmission(provider, now, settings.getSettings)))
+            : { admitted: false };
+          if (mayUseCredits) creditAdmissions.set(candidate.instanceId, credits);
           if (!credits.admitted) {
             skip(
               candidate,

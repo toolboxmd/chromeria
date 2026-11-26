@@ -805,6 +805,7 @@ describe("Codex on credits", () => {
     readonly read: (call: number) => Effect.Effect<CodexAccountLimits, ProviderDriverError>;
     readonly patch?: (p: ServerProvider) => ServerProvider;
     readonly useCredits?: boolean;
+    readonly colors?: ReadonlyArray<string>;
     readonly drive?: (
       resolve: Resolve,
       started: Deferred.Deferred<void>,
@@ -844,7 +845,14 @@ describe("Codex on credits", () => {
                 }),
               ]),
               Settings.layerTest({
-                prismRoles: { reviewer: { models: [selection] } },
+                prismRoles: {
+                  reviewer: {
+                    models: (input.colors ?? ["configured"]).map((model) => ({
+                      instanceId,
+                      model,
+                    })),
+                  },
+                },
                 ...(input.useCredits === undefined
                   ? {}
                   : { prismUseCredits: { [instanceId]: input.useCredits } }),
@@ -864,10 +872,16 @@ describe("Codex on credits", () => {
       yield* TestClock.adjust(READ_BOUND);
       return [yield* Fiber.join(fiber)];
     });
-  const skippedFor = (reason: string) =>
+  const skippedFor = (reason: string, colors: ReadonlyArray<string> = ["configured"]) =>
     "No eligible model with usage headroom for this Prism role and lane. Skipped: " +
-    "codex/configured: Weekly usage window is exhausted until 2026-12-01T00:00:00Z" +
-    `${reason ? `; credits cannot cover it: ${reason}` : ""}.`;
+    colors
+      .map(
+        (color) =>
+          `codex/${color}: Weekly usage window is exhausted until 2026-12-01T00:00:00Z` +
+          (reason ? `; credits cannot cover it: ${reason}` : ""),
+      )
+      .join("; ") +
+    ".";
 
   it.effect.each([
     {
@@ -1074,6 +1088,58 @@ describe("Codex on credits", () => {
         ],
         reads: 3,
       });
+    }),
+  );
+
+  const withSecondModel = (p: ServerProvider) => ({
+    ...p,
+    models: [...p.models, { ...p.models[0]!, slug: "second", name: "Second" }],
+  });
+
+  it.effect("two Colors on one instance share one read that never answers", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveOnCredits({
+        read: () => Effect.never,
+        patch: withSecondModel,
+        colors: ["configured", "second"],
+        drive: atTheBound,
+      });
+      assert.deepStrictEqual(result, {
+        outcomes: [skippedFor("the credit read timed out after 10s", ["configured", "second"])],
+        reads: 1,
+      });
+    }),
+  );
+
+  it.effect("two Colors on one instance share one read that finds no credits", () =>
+    Effect.gen(function* () {
+      const result = yield* resolveOnCredits({
+        read: () => Effect.succeed(native({ credits: { hasCredits: false, unlimited: false } })),
+        patch: withSecondModel,
+        colors: ["configured", "second"],
+      });
+      assert.deepStrictEqual(result, {
+        outcomes: [skippedFor("the account has no credits", ["configured", "second"])],
+        reads: 1,
+      });
+    }),
+  );
+
+  it.effect.each([
+    {
+      name: "an unavailable instance",
+      patch: (p: ServerProvider) => ({ ...p, availability: "unavailable" as const }),
+      colors: ["configured"],
+    },
+    { name: "a Color whose model is not advertised", colors: ["missing"] },
+  ])("$name makes no read and keeps the window reason", ({ patch, colors }) =>
+    Effect.gen(function* () {
+      const result = yield* resolveOnCredits({
+        read: () => Effect.succeed(native({ credits: spendable })),
+        ...(patch ? { patch } : {}),
+        colors,
+      });
+      assert.deepStrictEqual(result, { outcomes: [skippedFor("", colors)], reads: 0 });
     }),
   );
 });
