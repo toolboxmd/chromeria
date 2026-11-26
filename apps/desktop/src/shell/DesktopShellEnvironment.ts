@@ -3,6 +3,7 @@ import {
   applyShellEnvironment,
   buildEnvironmentCaptureCommand,
   listLoginShellCandidates,
+  LOGIN_SHELL_CAPTURE_TIMEOUT_MS,
   mergePathValues,
   readUserLoginShell,
   setWindowsPath,
@@ -34,6 +35,7 @@ interface ProbeBudget {
   readonly timeout: Duration.Duration;
   // One longer wait for the first login shell that times out.
   readonly slowTimeout?: Duration.Duration;
+  readonly windowsTimeout?: Duration.Duration;
   readonly terminateGrace: Duration.Duration;
 }
 
@@ -141,14 +143,16 @@ const LOCALE_ENV_NAMES = ["LANG", "LC_ALL", "LC_CTYPE"] as const;
 const ANDROID_SDK_ENV_NAMES = ["ANDROID_HOME", "ANDROID_SDK_ROOT"] as const;
 const FALLBACK_LC_CTYPE = "en_US.UTF-8";
 const WINDOWS_SHELL_CANDIDATES = ["pwsh.exe", "powershell.exe"] as const;
-const LOGIN_SHELL_TIMEOUT = Duration.seconds(5);
+const LOGIN_SHELL_TIMEOUT = Duration.millis(LOGIN_SHELL_CAPTURE_TIMEOUT_MS);
 // A profile can be slow only while the machine boots; one longer wait covers it.
 const SLOW_LOGIN_SHELL_TIMEOUT = Duration.seconds(20);
+const WINDOWS_SHELL_TIMEOUT = Duration.seconds(5);
 const LAUNCHCTL_TIMEOUT = Duration.seconds(2);
 const PROCESS_TERMINATE_GRACE = Duration.seconds(1);
 const STARTUP_PROBE: ProbeBudget = {
   timeout: LOGIN_SHELL_TIMEOUT,
   slowTimeout: SLOW_LOGIN_SHELL_TIMEOUT,
+  windowsTimeout: WINDOWS_SHELL_TIMEOUT,
   terminateGrace: PROCESS_TERMINATE_GRACE,
 };
 // Retries block nothing, so they outlast pyenv's 60 s wait on its rehash lock, and SIGTERM gets
@@ -416,7 +420,7 @@ const readWindowsEnvironment = Effect.fn("desktop.shellEnvironment.readWindowsEn
         command,
         args,
         env,
-        timeout: budget.timeout,
+        timeout: budget.windowsTimeout ?? budget.timeout,
         terminateGrace: budget.terminateGrace,
       }).pipe(orEmptyOnTimeout);
       const environment = extractEnvironment(output, names);
@@ -620,7 +624,8 @@ const installPosixEnvironment = Effect.fn("desktop.shellEnvironment.installPosix
       }
     }
 
-    const prepared = Option.isSome(trimNonEmpty(shellEnvironment.PATH));
+    // Only a login shell's PATH counts as discovered; a launchctl fallback alone does not.
+    const prepared = answeredBy !== undefined;
     return {
       prepared,
       fromUserShell: prepared && answeredBy !== undefined && userShells.includes(answeredBy),
