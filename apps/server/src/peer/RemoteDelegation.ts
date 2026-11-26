@@ -1128,6 +1128,7 @@ const make = Effect.gen(function* () {
         threadId: launched.threadId,
         runId: launched.runId,
         modelSelection: launched.modelSelection,
+        ...(launched.driver === undefined ? {} : { driver: launched.driver }),
       });
       sentLaunches.delete(taskId);
     },

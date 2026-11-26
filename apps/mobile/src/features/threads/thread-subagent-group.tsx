@@ -9,7 +9,10 @@ import {
   shouldShowInstanceBadge,
 } from "@t3tools/client-runtime/state/provider-instance-display";
 import { summarizeSubagentStatuses } from "@t3tools/client-runtime/state/subagent-display";
-import { isActiveSubagentStatus } from "@t3tools/client-runtime/state/subagentRuntime";
+import {
+  isActiveSubagentStatus,
+  subagentIconDriver,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import type {
   EnvironmentId,
   OrchestrationV2Subagent,
@@ -58,9 +61,6 @@ function SubagentAvatar(props: {
   const provider = providers.find(
     (candidate) => candidate.instanceId === props.item.providerInstanceId,
   );
-  // A remote task's own driver is only a "remote" label.
-  const driver =
-    provider?.driver ?? (props.item.remoteChild === undefined ? props.item.driver : undefined);
   const badgeEntries = providers.map((candidate) => {
     const rawConfig = props.config?.settings.providerInstances[candidate.instanceId]?.config;
     const instanceConfig =
@@ -81,6 +81,11 @@ function SubagentAvatar(props: {
     provider !== undefined &&
     badgeEntry !== undefined &&
     shouldShowInstanceBadge(badgeEntry, badgeEntries);
+  const iconDriver = subagentIconDriver({
+    remote: props.item.remoteChild,
+    driver: props.item.driver,
+    resolvedDriver: provider?.driver,
+  });
   return (
     <View
       accessible={false}
@@ -95,10 +100,10 @@ function SubagentAvatar(props: {
           accentColor={provider.accentColor}
           showBadge
         />
-      ) : driver === undefined ? (
+      ) : iconDriver === undefined ? (
         <SymbolView name="robot" size={13} tintColorClassName="accent-icon-muted" />
       ) : (
-        <ProviderIcon provider={driver} iconUrl={provider?.iconUrl} size={15} />
+        <ProviderIcon provider={iconDriver} iconUrl={provider?.iconUrl} size={15} />
       )}
     </View>
   );

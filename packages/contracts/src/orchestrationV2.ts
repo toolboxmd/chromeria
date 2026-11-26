@@ -1244,6 +1244,11 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
   /** The run there that carries the task; absent on tasks recorded before it was kept. */
   runId: Schema.optional(RunId),
   /**
+   * Provider kind the task runs as there, once its launch reports one. The task's own
+   * `driver` stays `remote`, which only routes the task.
+   */
+  driver: Schema.optional(ProviderDriverKind),
+  /**
    * Nothing is left to stop there: a stop reached the remote thread, was refused for good, or the
    * thread or link is gone. A run that ended there by itself also sets it, unless the task here was
    * cancelled or stopped, which still owes a stop that its follower keeps sending across restarts.
@@ -4394,6 +4399,8 @@ const OrchestrationV2InternalCommand = Schema.Union([
     threadId: ThreadId,
     runId: Schema.NullOr(RunId),
     modelSelection: ModelSelection,
+    /** Destination provider kind. Recorded for the icon; it does not replace the task's `remote` driver. */
+    driver: Schema.optional(ProviderDriverKind),
   }),
   /**
    * Completes a delegated task that ran in a linked environment, with what its

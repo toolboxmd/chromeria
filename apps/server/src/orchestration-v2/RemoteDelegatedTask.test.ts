@@ -1335,6 +1335,78 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
         assert.deepEqual(yield* Ref.get(offers), offersBefore);
       }),
   );
+
+  it.effect(
+    "records the destination provider kind on attach and keeps the remote routing driver",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const parent = yield* seedLiveParent("attach-driver");
+        const commandId = (name: string) => CommandId.make(`command:attach-driver:${name}`);
+        const pending = {
+          environmentId: remoteChild.environmentId,
+          label: remoteChild.label,
+          launch: {
+            requestNamespace: "original-session",
+            clientRequestId: "attach-driver",
+            linkIdentity: "original-grant",
+            projectId: ProjectId.make("project:remote"),
+            title: "Remote task",
+            delegatedFrom: {
+              environmentId: EnvironmentId.make("environment:source"),
+              threadId: parent.threadId,
+              title: "Parent",
+            },
+          },
+        };
+        const recorded = yield* orchestrator.dispatch({
+          type: "delegated_task.remote.request",
+          commandId: commandId("request"),
+          parentThreadId: parent.threadId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.rootNodeId,
+          task: "Run there.",
+          driver: ProviderDriverKind.make("remote"),
+          remoteChild: pending,
+        });
+        const taskEvent = recorded.storedEvents.find(
+          (stored) => stored.event.type === "subagent.updated",
+        );
+        assert.isTrue(taskEvent?.event.type === "subagent.updated");
+        if (taskEvent?.event.type !== "subagent.updated") return;
+        const taskId = taskEvent.event.payload.id;
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.launch",
+          commandId: commandId("launch"),
+          parentThreadId: parent.threadId,
+          taskId,
+        });
+        const there = ProviderDriverKind.make("claudeAgent");
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.attach",
+          commandId: commandId("attach"),
+          parentThreadId: parent.threadId,
+          taskId,
+          environmentId: pending.environmentId,
+          threadId: remoteChild.threadId,
+          runId: RunId.make("run:there"),
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: "claude-opus",
+          },
+          driver: there,
+        });
+        const task = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents.find(
+          (candidate) => candidate.id === taskId,
+        );
+        const item = (yield* orchestrator.getThreadProjection(parent.threadId)).turnItems.find(
+          (candidate) => candidate.type === "subagent" && candidate.subagentId === taskId,
+        );
+        assert.equal(task?.driver, "remote");
+        assert.equal(task?.remoteChild?.driver, there);
+        assert.equal(item?.type === "subagent" ? item.remoteChild?.driver : undefined, there);
+      }),
+  );
 });
 
 it.effect(

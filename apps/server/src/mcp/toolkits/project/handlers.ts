@@ -731,11 +731,22 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           );
         const thread = result.projection.thread;
         const run = result.projection.runs.find((run) => run.userMessageId === messageId);
+        const modelSelection = run?.modelSelection ?? thread.modelSelection;
+        const driver = yield* ProviderRegistry.ProviderRegistry.pipe(
+          Effect.flatMap((registry) => registry.getProviders),
+          Effect.map(
+            (providers) =>
+              providers.find((provider) => provider.instanceId === modelSelection.instanceId)
+                ?.driver,
+          ),
+          Effect.orElseSucceed(() => undefined),
+        );
         return {
           threadId: thread.id,
           link: McpInvocationContext.threadLinkFor(scope, thread.id, thread.title),
           projectId: thread.projectId,
-          modelSelection: run?.modelSelection ?? thread.modelSelection,
+          modelSelection,
+          ...(driver === undefined || driver === "remote" ? {} : { driver }),
           runId: run?.id ?? null,
           ...(run === undefined
             ? {}

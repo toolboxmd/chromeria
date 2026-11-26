@@ -12284,6 +12284,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
     }
     const now = yield* DateTime.now;
+    const reportedDriver =
+      command.type === "delegated_task.remote.attach" &&
+      command.driver !== undefined &&
+      command.driver !== "remote"
+        ? command.driver
+        : undefined;
     const remoteChild =
       command.type === "delegated_task.remote.launch"
         ? { ...remote, launchStarted: true }
@@ -12291,6 +12297,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ...remote,
             threadId: command.threadId,
             ...(command.runId === null ? {} : { runId: command.runId }),
+            ...(reportedDriver === undefined ? {} : { driver: reportedDriver }),
           };
     const status =
       command.type === "delegated_task.remote.attach" && task.result === null

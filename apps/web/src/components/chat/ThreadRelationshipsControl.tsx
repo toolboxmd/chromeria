@@ -12,6 +12,7 @@ import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environ
 import {
   deriveWorkflowGroups,
   projectedSubagentsToRuntime,
+  subagentIconDriver,
   type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import { formatSubagentDisplayTitle } from "@t3tools/client-runtime/state/subagent-display";
@@ -380,8 +381,10 @@ function RemoteSubagentRow(props: {
           }
         >
           <ThreadRelationshipIcon
-            // The task's own driver here is only a "remote" label.
-            driver={props.provider?.driver}
+            driver={subagentIconDriver({
+              remote: remoteChild,
+              resolvedDriver: props.provider?.driver,
+            })}
             provider={props.provider}
             anyInstanceBadge={props.anyInstanceBadge}
             fallbackIcon={BotIcon}
@@ -959,6 +962,18 @@ export function ThreadRelationshipsPanel(props: {
         entry.instanceId === (agent?.providerInstanceId ?? node?.thread?.providerInstanceId),
     );
     const providerDriver = agent?.driver ?? provider?.driver;
+    const remoteProvider =
+      agent?.remoteChild === undefined
+        ? undefined
+        : providersByEnvironment
+            .get(agent.remoteChild.environmentId)
+            ?.find((entry) => entry.instanceId === agent.providerInstanceId);
+    const iconDriver = subagentIconDriver({
+      remote: agent?.remoteChild,
+      driver: agent?.driver,
+      resolvedDriver: agent?.remoteChild === undefined ? provider?.driver : remoteProvider?.driver,
+    });
+    const iconProvider = agent?.remoteChild === undefined ? provider : remoteProvider;
     const canStopWorkflow =
       canOperateWorkflow &&
       workflowGroup?.workflow.status === "running" &&
@@ -1034,9 +1049,9 @@ export function ThreadRelationshipsPanel(props: {
           providerInstanceId={agent.providerInstanceId}
           origin={agent.origin}
           modelSelection={agent.modelSelection}
-          provider={provider}
-          providers={providers}
-          driver={providerDriver}
+          provider={iconProvider}
+          providers={agent?.remoteChild === undefined ? providers : undefined}
+          driver={iconDriver}
           elapsed={<AgentElapsed agent={agent} />}
           status={agent.status}
           presentationStatus={threadRelationshipLiveStatus(node?.thread, agent.remoteChild)}
@@ -1055,8 +1070,8 @@ export function ThreadRelationshipsPanel(props: {
     const relationshipContent = (
       <>
         <ThreadRelationshipIcon
-          driver={isSubagent && !isParent ? providerDriver : undefined}
-          provider={provider}
+          driver={isSubagent && !isParent ? iconDriver : undefined}
+          provider={iconProvider}
           providerEntries={providerEntries}
           fallbackIcon={RelationshipIcon}
           status={rowStatus}
