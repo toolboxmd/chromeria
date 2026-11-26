@@ -3269,6 +3269,7 @@ sources and reasons.
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/377",
     "https://github.com/toolboxmd/chromeria/issues/909",
+    "https://github.com/toolboxmd/chromeria/issues/982",
     "https://github.com/toolboxmd/chromeria/issues/983"
   ],
   "prs": [
@@ -3291,6 +3292,11 @@ sources and reasons.
   ],
   "upstreamFiles": [
     "apps/mobile/src/features/threads/useStartSideChat.ts",
+    "apps/server/src/provider/ClaudeTurnTokenUsage.ts",
+    "apps/server/src/provider/CodexTurnTokenUsage.ts",
+    "apps/server/src/provider/TurnTokenUsage.test.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/claude_idle_resume/output.ts",
+    "packages/contracts/src/orchestrationV2.test.ts",
     "apps/web/src/components/chat/useMultipleModelSend.ts",
     "apps/web/src/components/chat/useSideChat.ts",
     "apps/mobile/src/state/threadOutboxDelivery.ts",
@@ -3391,7 +3397,7 @@ sources and reasons.
     "packages/provider-opencode/src/server/adapter.ts",
     "packages/provider-opencode/src/server/v2/adapter.ts"
   ],
-  "keywords": ["purposeIntent", "nativeSegments", "executionPurposeVersions"]
+  "keywords": ["purposeIntent", "nativeSegments", "executionPurposeVersions", "usageClosure"]
 }
 ```
 

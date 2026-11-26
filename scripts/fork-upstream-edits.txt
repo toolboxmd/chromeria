@@ -892,3 +892,8 @@ apps/web/src/hooks/useThreadActionMenu.ts
 apps/web/src/components/Sidebar.browser.test.tsx
 apps/desktop/src/preview/BrowserImport/BrowserImport.test.ts
 apps/web/src/components/chat/McpAppFrame.browser.test.tsx
+apps/server/src/provider/ClaudeTurnTokenUsage.ts
+apps/server/src/provider/CodexTurnTokenUsage.ts
+apps/server/src/provider/TurnTokenUsage.test.ts
+packages/contracts/src/orchestrationV2.test.ts
+apps/server/src/orchestration-v2/testkit/fixtures/claude_idle_resume/output.ts

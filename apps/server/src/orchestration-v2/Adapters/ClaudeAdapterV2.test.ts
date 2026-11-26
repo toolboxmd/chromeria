@@ -13156,6 +13156,400 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
   );
 
+  describe("usage closure", () => {
+    type Counters = readonly [
+      input: number,
+      cacheRead: number,
+      cacheCreation: number,
+      output: number,
+    ];
+    const usageOf = ([input, cacheRead, cacheCreation, output]: Counters) => ({
+      input_tokens: input,
+      output_tokens: output,
+      cache_read_input_tokens: cacheRead,
+      cache_creation_input_tokens: cacheCreation,
+    });
+    const ledgerOf = (byModel: Record<string, Counters>) =>
+      Object.fromEntries(
+        Object.entries(byModel).map(([model, [input, cacheRead, cacheCreation, output]]) => [
+          model,
+          {
+            inputTokens: input,
+            outputTokens: output,
+            cacheReadInputTokens: cacheRead,
+            cacheCreationInputTokens: cacheCreation,
+            webSearchRequests: 0,
+            costUSD: 0,
+            contextWindow: 200_000,
+            maxOutputTokens: 32_000,
+          },
+        ]),
+      );
+    const closed = {
+      version: 1,
+      state: "main_agent_only",
+      witness: "process_ledger",
+      uncountedCompactions: 0,
+    } as const;
+    const terminalTurns = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
+      events.flatMap((event) =>
+        event.type === "provider_turn.updated" && event.providerTurn.turnTokenUsage !== undefined
+          ? [event.providerTurn]
+          : [],
+      );
+    const SONNET = "claude-sonnet-4-6";
+    const startClosureTurn = Effect.fnUntraced(function* (
+      harness: Effect.Success<ReturnType<typeof makeWakeHarnessWithOptions>>,
+      attempt: string,
+      providerTurnOrdinal = 1,
+    ) {
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make(attempt),
+          text: "Measure this turn.",
+          attachments: [],
+          providerTurnOrdinal,
+        }),
+      );
+    });
+    const layer = Layer.mergeAll(
+      IdAllocator.layer,
+      McpProviderSessions.layer,
+      Layer.merge(NodeServices.layer, NodeCrypto.layer),
+      NodeCrypto.layer,
+    );
+
+    it.effect.each([
+      {
+        name: "the ledger Claude restored",
+        restored: [3, 200, 100, 5] as Counters,
+        otherUsage: { inputTokens: 0, outputTokens: 0 },
+        closure: closed,
+      },
+      {
+        name: "an older ledger record",
+        restored: [1, 100, 50, 2] as Counters,
+        otherUsage: undefined,
+        closure: { version: 1, state: "open", reason: "ledger_baseline_unproven" } as const,
+      },
+    ])("measures the first turn after a restart against $name", (scenario) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const configDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-claude-restored-ledger-",
+        });
+        const harness = yield* makeWakeHarnessWithOptions({
+          freshQueueOnReopen: true,
+          environment: { CLAUDE_CONFIG_DIR: configDir },
+        });
+        yield* startClosureTurn(harness, "attempt-ledger-before-restart");
+        yield* harness.offerAndWait(
+          makeAssistantTextFrame({ uuid: "00000000-0000-4000-8000-000000009001", text: "One." }),
+        );
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000009002",
+            result: "One.",
+            usage: usageOf([3, 200, 100, 5]),
+            modelUsage: ledgerOf({ [SONNET]: [3, 200, 100, 5] }),
+          }),
+        );
+        yield* harness.awaitTerminal(1);
+        // Claude records the session's ledger in its transcript and restores it on resume.
+        const projectDir = path.join(configDir, "projects", "-workspace");
+        yield* fileSystem.makeDirectory(projectDir, { recursive: true });
+        yield* fileSystem.writeFileString(
+          path.join(projectDir, `${WAKE_NATIVE_SESSION}.jsonl`),
+          `${JSON.stringify({
+            type: "cost-state",
+            sessionId: WAKE_NATIVE_SESSION,
+            totalCostUSD: 0,
+            modelUsage: ledgerOf({ [SONNET]: scenario.restored }),
+          })}\n`,
+        );
+        yield* Queue.shutdown(harness.processQueues[0]!);
+        yield* Deferred.await(harness.processExits[0]!);
+
+        yield* startClosureTurn(harness, "attempt-ledger-after-restart", 2);
+        assert.equal(harness.processQueues.length, 2);
+        yield* harness.offerAndWait(
+          makeAssistantTextFrame({ uuid: "00000000-0000-4000-8000-000000009003", text: "Two." }),
+        );
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000009004",
+            result: "Two.",
+            usage: usageOf([1, 300, 20, 7]),
+            modelUsage: ledgerOf({ [SONNET]: [4, 500, 120, 12] }),
+          }),
+        );
+        yield* harness.awaitTerminal(2);
+        const [first, second] = terminalTurns(harness.events);
+        // The restored ledger holds the earlier session's usage, which is never other usage.
+        assert.deepEqual(second?.turnTokenUsage?.otherUsage, scenario.otherUsage);
+        assert.deepEqual(first?.usageClosure, closed);
+        assert.deepEqual(first?.nativeResponseIds, ["msg_00000000-0000-4000-8000-000000009001"]);
+        assert.deepEqual(second?.usageClosure, scenario.closure);
+        assert.deepEqual(second?.nativeResponseIds, ["msg_00000000-0000-4000-8000-000000009003"]);
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+
+    it.effect("closes a steered turn over the ledger growth of both segments", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const attemptId = RunAttemptId.make("attempt-closure-steer");
+        const input = makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId,
+          text: "Run the build.",
+          attachments: [],
+        });
+        yield* harness.runtime.startTurn(input);
+        yield* harness.runtime.steerTurn({
+          threadId: harness.threadId,
+          runId: input.runId,
+          providerThread: harness.providerThread,
+          providerTurnId: idAllocator.derive.providerTurn({
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeTurnId: `turn:${attemptId}`,
+          }),
+          message: {
+            createdBy: "user",
+            creationSource: "web",
+            messageId: MessageId.make("message-closure-steer"),
+            text: "Steer",
+            attachments: [],
+          },
+        });
+        yield* harness.offerAndWait(
+          makeAssistantTextFrame({ uuid: "00000000-0000-4000-8000-000000009011", text: "Built." }),
+        );
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            ...makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000009012",
+              result: "Built.",
+              usage: usageOf([2, 10, 30, 4]),
+              modelUsage: ledgerOf({ [SONNET]: [2, 10, 30, 4] }),
+            }),
+            user_message_uuid: harness.promptUuid(0),
+          }),
+        );
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "command_lifecycle",
+            command_uuid: harness.promptUuid(1),
+            state: "started",
+            uuid: "00000000-0000-4000-8000-000000009013",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* harness.offerAndWait(
+          makeAssistantTextFrame({ uuid: "00000000-0000-4000-8000-000000009014", text: "Done." }),
+        );
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            ...makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000009015",
+              result: "Done.",
+              usage: usageOf([1, 40, 5, 6]),
+              modelUsage: ledgerOf({ [SONNET]: [3, 50, 35, 10] }),
+            }),
+            user_message_uuid: harness.promptUuid(1),
+          }),
+        );
+        yield* harness.awaitTerminal(1);
+        const [turn] = terminalTurns(harness.events);
+        assert.deepEqual(turn?.usageClosure, closed);
+        assert.deepEqual(turn?.nativeResponseIds, [
+          "msg_00000000-0000-4000-8000-000000009011",
+          "msg_00000000-0000-4000-8000-000000009014",
+        ]);
+        assert.equal(turn?.turnTokenUsage?.inputTokens, 88);
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+
+    it.effect("lists every main-agent response around an input Claude injects mid-turn", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* startClosureTurn(harness, "attempt-closure-injected");
+        yield* harness.offerAndWait(wakeTaskStarted);
+        yield* harness.offerAndWait(
+          makeAssistantTextFrame({
+            uuid: "00000000-0000-4000-8000-000000009021",
+            text: "Waiting.",
+          }),
+        );
+        yield* harness.offerAndWait(wakeNotification);
+        yield* harness.offerAndWait(
+          makeAssistantTextFrame({ uuid: "00000000-0000-4000-8000-000000009022", text: "Done." }),
+        );
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000009023",
+            result: "Done.",
+            usage: usageOf([2, 20, 10, 3]),
+            modelUsage: ledgerOf({ [SONNET]: [2, 20, 10, 3] }),
+          }),
+        );
+        yield* harness.awaitTerminal(1);
+        const [turn] = terminalTurns(harness.events);
+        assert.deepEqual(turn?.nativeResponseIds, [
+          "msg_00000000-0000-4000-8000-000000009021",
+          "msg_00000000-0000-4000-8000-000000009022",
+        ]);
+        // A finished shell command on the roster calls no model.
+        assert.deepEqual(turn?.usageClosure, closed);
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+
+    it.effect("leaves a turn open when it starts a subagent, and lists only root responses", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* startClosureTurn(harness, "attempt-closure-subagent");
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: "agent-closure",
+            tool_use_id: "toolu_closure_agent",
+            description: "Explore",
+            task_type: "local_agent",
+            uuid: "00000000-0000-4000-8000-000000009031",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            ...makeAssistantTextFrame({
+              uuid: "00000000-0000-4000-8000-000000009032",
+              text: "Child reply.",
+            }),
+            parent_tool_use_id: "toolu_closure_agent",
+          }),
+        );
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_notification",
+            task_id: "agent-closure",
+            tool_use_id: "toolu_closure_agent",
+            status: "completed",
+            output_file: "",
+            summary: "Explored.",
+            uuid: "00000000-0000-4000-8000-000000009033",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* harness.offerAndWait(
+          makeAssistantTextFrame({ uuid: "00000000-0000-4000-8000-000000009034", text: "Done." }),
+        );
+        // Even a ledger that matches cannot speak for a child whose usage Claude may not report yet.
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000009035",
+            result: "Done.",
+            usage: usageOf([2, 0, 0, 3]),
+            modelUsage: ledgerOf({ [SONNET]: [2, 0, 0, 3] }),
+          }),
+        );
+        yield* harness.awaitTerminal(1);
+        const [turn] = terminalTurns(harness.events);
+        assert.deepEqual(turn?.usageClosure, {
+          version: 1,
+          state: "open",
+          reason: "native_child_observed",
+        });
+        assert.deepEqual(turn?.nativeResponseIds, ["msg_00000000-0000-4000-8000-000000009034"]);
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+
+    it.effect.each([
+      {
+        name: "a task of unknown type",
+        task: { task_id: "roster-only-task", description: "Unknown work" },
+        closure: { version: 1, state: "open", reason: "native_child_running" } as const,
+      },
+      {
+        name: "a shell command",
+        task: { task_id: "roster-only-bash", task_type: "local_bash", description: "sleep 60" },
+        closure: closed,
+      },
+    ])("judges a roster-only entry that is $name", (scenario) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* startClosureTurn(harness, "attempt-closure-roster");
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "system",
+            subtype: "background_tasks_changed",
+            tasks: [scenario.task],
+            uuid: "00000000-0000-4000-8000-000000009041",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* harness.offerAndWait(
+          makeAssistantTextFrame({ uuid: "00000000-0000-4000-8000-000000009043", text: "Done." }),
+        );
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000009042",
+            result: "Done.",
+            usage: usageOf([2, 0, 0, 3]),
+            modelUsage: ledgerOf({ [SONNET]: [2, 0, 0, 3] }),
+          }),
+        );
+        yield* harness.awaitTerminal(1);
+        assert.deepEqual(terminalTurns(harness.events)[0]?.usageClosure, scenario.closure);
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+
+    it.effect.each([
+      {
+        name: "compaction or auxiliary work",
+        ledger: { [SONNET]: [2, 0, 900, 40] as Counters },
+        reason: "ledger_mismatch" as const,
+      },
+      {
+        name: "another model",
+        ledger: {
+          [SONNET]: [2, 0, 0, 3] as Counters,
+          "claude-haiku-4-5": [1, 0, 0, 1] as Counters,
+        },
+        reason: "ledger_growth_outside_root_model" as const,
+      },
+    ])("leaves a turn open when the ledger grew by $name", (scenario) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* startClosureTurn(harness, "attempt-closure-ledger");
+        yield* harness.offerAndWait(
+          makeAssistantTextFrame({ uuid: "00000000-0000-4000-8000-000000009051", text: "Done." }),
+        );
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000009052",
+            result: "Done.",
+            usage: usageOf([2, 0, 0, 3]),
+            modelUsage: ledgerOf(scenario.ledger),
+          }),
+        );
+        yield* harness.awaitTerminal(1);
+        assert.deepEqual(terminalTurns(harness.events)[0]?.usageClosure, {
+          version: 1,
+          state: "open",
+          reason: scenario.reason,
+        });
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+  });
+
   it.effect("shows automatic compaction before its boundary and completes the same item", () =>
     Effect.gen(function* () {
       const harness = yield* makeWakeHarness;
@@ -18873,6 +19267,18 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             (event) => event.type === "message.updated" && event.message.text === WAKE_RESULT_TEXT,
           ),
         );
+        // A woken turn offers no prompt to echo; its response ids are its membership witness.
+        const wakeTurn = harness.events.findLast(
+          (event) =>
+            event.type === "provider_turn.updated" &&
+            event.providerTurn.turnTokenUsage !== undefined,
+        );
+        assert.deepEqual(
+          wakeTurn?.type === "provider_turn.updated"
+            ? wakeTurn.providerTurn.nativeResponseIds
+            : undefined,
+          [`msg_${wakeAssistant.uuid}`],
+        );
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -22516,6 +22922,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           interruptedTurn?.type === "provider_turn.updated" &&
             interruptedTurn.providerTurn.turnTokenUsage?.usageStatus,
           "partial",
+        );
+        assert.deepEqual(
+          interruptedTurn?.type === "provider_turn.updated"
+            ? interruptedTurn.providerTurn.usageClosure
+            : undefined,
+          { version: 1, state: "open", reason: "turn_not_completed" },
         );
 
         yield* harness.runtime.startTurn(

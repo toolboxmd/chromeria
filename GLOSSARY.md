@@ -196,6 +196,12 @@ One native child start, resume, workflow member attempt or background operation
 and its initiating execution. Assigning its responses also requires a proved
 native input or turn boundary.
 
+**Usage closure**:
+A finished turn's statement of whether its root agent's counters are all of
+the model usage the turn caused: closed, with the native witness that proves
+it, or open, with the reason. A turn without one makes no statement.
+_Avoid_: usage completeness
+
 **Queue**:
 Runs waiting on a thread (`t3_queue_*`).
 _Avoid_: inbox

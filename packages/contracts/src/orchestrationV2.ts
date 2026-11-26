@@ -1,6 +1,6 @@
 import { RemoteSecretDestination } from "./remoteSecret.ts";
 import { ThreadTools, ThreadToolsRequest } from "./threadTools.ts";
-import { NativeInputEvidence, NativeExecutionSegment } from "./nativeExecution.ts";
+import { NativeInputEvidence, NativeExecutionSegment, UsageClosure } from "./nativeExecution.ts";
 import { PeerTaskObservation, PeerTaskResult, PeerTaskSnapshot, PeerTaskStop } from "./peerTask.ts";
 import { PeerCeiling } from "./peerAuthority.ts";
 import { BareLaunchRequest, ThreadBare, BareReceipt } from "./bareLaunch.ts";
@@ -1630,6 +1630,9 @@ export const OrchestrationV2ProviderTurn = Schema.Struct({
   completedAt: Schema.NullOr(Schema.DateTimeUtc),
   tokenUsage: Schema.optional(OrchestrationV2ProviderTurnTokenUsage),
   turnTokenUsage: Schema.optional(TurnTokenUsage),
+  /** Native ids of the model responses the turn's main agent streamed. A membership witness, like nativeInputs. */
+  nativeResponseIds: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  usageClosure: Schema.optional(UsageClosure),
   /** The model the provider reported running this turn's root agent, which can differ from the requested one. */
   model: Schema.optional(TrimmedNonEmptyString),
   /** True when the provider dropped this turn's request before persisting it to native history. */

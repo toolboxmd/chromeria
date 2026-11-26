@@ -1488,6 +1488,8 @@ interface ActiveCodexTurnContext {
   readonly subagent: CodexSubagentThreadContext | null;
   readonly startedAt: DateTime.Utc;
   readonly runningCompactionItemIds: Set<string>;
+  // Every context compaction in the turn; Codex reports no usage for them.
+  readonly compactionItemIds: Set<string>;
   readonly runningWebSearchItems: Map<string, CodexWebSearchItem>;
   // Modern approval requests omit paths; keep the kinds without retaining patch bodies.
   readonly fileChangeKindsByItem: Map<string, CodexFileChangeKinds>;
@@ -2932,6 +2934,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             messagePhases: new Map(),
             asyncMessageIds: new Set(),
             runningCompactionItemIds: new Set(),
+            compactionItemIds: new Set(),
             runningWebSearchItems: new Map(),
           };
           const nativeThreadId = input.turnInput.providerThread.nativeThreadRef?.nativeId;
@@ -3665,6 +3668,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               messagePhases: new Map(),
               asyncMessageIds: new Set(),
               runningCompactionItemIds: new Set(),
+              compactionItemIds: new Set(),
               runningWebSearchItems: new Map(),
             };
             cutIn?.targets.set(turn.nativeTurnId, activeContext);
@@ -6018,6 +6022,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             nativeItemId,
             updatedAt,
           );
+          context.compactionItemIds.add(nativeItemId);
           if (status === "running") context.runningCompactionItemIds.add(nativeItemId);
           else context.runningCompactionItemIds.delete(nativeItemId);
           yield* emitProviderEvent({
@@ -7863,6 +7868,27 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 (goalsByNativeThread.get(nativeThreadId)?.status === "active" ||
                   (activation !== undefined && !activation.stopped));
               const executedModel = reportedTurnModel(nativeThreadId ?? "", input.nativeTurnId);
+              const { turnTokenUsage, usageClosure } = completeCodexTurnTokenUsage(
+                usageStateForThread(nativeThreadId ?? String(input.context.providerThread.id)),
+                input.nativeTurnId,
+                input.status === "completed",
+                executedModel,
+                {
+                  childThreadActive:
+                    (yield* Ref.get(pendingSubagentTurns)).size > 0 ||
+                    [...(yield* Ref.get(subagentThreads)).values()].some(
+                      (subagent) =>
+                        subagent.task.status === "running" &&
+                        subagent.parentContext.providerThread.id ===
+                          input.context.providerThread.id,
+                    ),
+                  promptSampling:
+                    input.context.subagent === null &&
+                    !isDelegatedAppThread(input.context.input.appThread) &&
+                    (yield* promptSuggestionsEnabled),
+                  compactions: input.context.compactionItemIds.size,
+                },
+              );
               const completedTurn: OrchestrationV2ProviderTurn = {
                 id: input.context.providerTurnId,
                 providerThreadId: input.context.providerThread.id,
@@ -7886,15 +7912,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 status: input.status,
                 startedAt: input.context.startedAt,
                 completedAt: input.completedAt,
-                turnTokenUsage: completeCodexTurnTokenUsage(
-                  usageStateForThread(
-                    input.context.providerThread.nativeThreadRef?.nativeId ??
-                      String(input.context.providerThread.id),
-                  ),
-                  input.nativeTurnId,
-                  input.status === "completed",
-                  executedModel,
-                ),
+                turnTokenUsage,
+                usageClosure,
                 ...(executedModel === undefined ? {} : { model: executedModel }),
               };
               if (!holdsForGoal && !withheld) {
@@ -8432,6 +8451,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             messagePhases: new Map(),
             asyncMessageIds: new Set(),
             runningCompactionItemIds: new Set(),
+            compactionItemIds: new Set(),
             runningWebSearchItems: new Map(),
           };
           const providerTurn = {
