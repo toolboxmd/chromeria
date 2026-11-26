@@ -3691,6 +3691,15 @@ it.live("a check that a same-site API call answers holds the site without a navi
       expect(yield* Effect.flip(invoke("evaluate", { expression: "1" }))).toMatchObject({
         reason: "antiBotChallenge",
       });
+      const viewer = yield* (yield* ServerBrowser.ServerBrowser).attachViewer(
+        viewerInput(tabId, true),
+      );
+      yield* viewer.input({ type: "takeControl" });
+      yield* viewer.input({ type: "releaseControl" });
+      expect(
+        (yield* invoke("status", {})).siteHold,
+        "releasing on the page that loaded before the check keeps the hold",
+      ).toBeDefined();
     }),
   ).pipe(Effect.provide(layer)),
 );

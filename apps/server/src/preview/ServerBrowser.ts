@@ -574,7 +574,12 @@ interface ServerTab {
   readonly control: SessionControl;
   agentOperating: boolean;
   /** The latest main-frame document response; clearing a hold classifies the page with it. */
-  mainDocument: { readonly status: number; readonly headers: Record<string, string> } | null;
+  mainDocument: {
+    readonly status: number;
+    readonly headers: Record<string, string>;
+    readonly url: string;
+    readonly at: number;
+  } | null;
   /** Classification of the latest error document, so an action can report the hold it caused. */
   siteHoldCheck: Promise<void>;
   fileChooserIntercepted: boolean;
@@ -1399,6 +1404,17 @@ const make = Effect.gen(function* () {
     Effect.promise(async () => {
       const tab = tabs.get(tabKey(threadId, tabId));
       if (tab) await settleSiteHold(tab, "clear", authorize);
+      else {
+        // A detached tab can still be cleared by the person.
+        await authorize?.();
+        for (const [scope, hold] of siteHolds.heldBy(tabId))
+          if (hold.threadId === threadId) siteHolds.clear(scope, hold);
+        await runPromise(
+          manager
+            .setSiteHold({ threadId: ThreadId.make(threadId), tabId, siteHold: undefined })
+            .pipe(Effect.ignore),
+        );
+      }
     }),
   );
   yield* manager.registerBeforeClose((snapshots) =>
@@ -1815,13 +1831,18 @@ const make = Effect.gen(function* () {
               .catch(() => "")
               .then((body) => {
                 const verdict = classifyAntiBotPage({ ...answer, html: body.slice(0, 65_536) });
-                if (verdict) return raiseSiteHold(tab, verdict, page.url());
+                if (verdict) return raiseSiteHold(tab, verdict, response.url());
               })
               .catch(constVoid),
           ]).then(constVoid);
         }
         if (isDocument) {
-          const document = { status: response.status(), headers: response.headers() };
+          const document = {
+            status: response.status(),
+            headers: response.headers(),
+            url: response.url(),
+            at: Date.now(),
+          };
           tab.mainDocument = document;
           if (document.status >= 400 || document.headers["cf-mitigated"] !== undefined)
             tab.siteHoldCheck = Promise.all([
@@ -3457,7 +3478,8 @@ const make = Effect.gen(function* () {
     if (!siteHolds.create(siteHoldScope(tab), hold)) return;
     runFork(Effect.logInfo("Site hold raised", { site, vendor: hold.vendor, kind: hold.kind }));
     // Page watches run caller code on the page, so they stop with the agent.
-    stopTabWatches(tab, "revoked");
+    for (const covered of tabs.values())
+      if (covered === tab || siteHoldOf(covered) === hold) stopTabWatches(covered, "revoked");
     const target = { threadId: tab.threadId, tabId: tab.tabId };
     await runPromise(
       manager.setSiteHold({ ...target, siteHold: publicSiteHold(hold) }).pipe(Effect.ignore),
@@ -3515,7 +3537,15 @@ const make = Effect.gen(function* () {
       // Only an observed main document on the held site, with no check on it, is verified
       // clean; a navigation or control change during the read makes the result stale.
       const generation = [tab.navigationGeneration, tab.control.generation] as const;
-      const document = siteOf(tab.page.url()) === hold.site ? tab.mainDocument : null;
+      // The document must be the one on screen and must have loaded after the check appeared.
+      const candidate = tab.mainDocument;
+      const document =
+        candidate !== null &&
+        siteOf(tab.page.url()) === hold.site &&
+        candidate.url === tab.page.url() &&
+        candidate.at >= Date.parse(hold.since)
+          ? candidate
+          : null;
       // A page that cannot be read is not proof of a clean one.
       const html = document === null ? null : await tab.page.content().catch(() => null);
       const verified =
@@ -4289,6 +4319,10 @@ const make = Effect.gen(function* () {
       // A closed session is a closed page; a detached desktop page is not.
       if (event.type === "closed" && !tab && pendingTabs.has(key)) closedPendingTabs.add(key);
       if (event.type === "closed") tabAuthorizations.delete(key);
+      // A detached tab's session closing ends its holds too; nothing else could clear them.
+      if (event.type === "closed" && !tab)
+        for (const [scope, hold] of siteHolds.heldBy(event.tabId))
+          if (hold.threadId === event.threadId) siteHolds.clear(scope, hold);
       if (!tab) return;
       if (event.type === "closed") {
         closedSessions.add(key);
