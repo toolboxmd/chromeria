@@ -1,5 +1,5 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ThreadId, type ScopedProjectRef } from "@t3tools/contracts";
 import type { Atom } from "effect/reactivity";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -13,6 +13,7 @@ import {
 } from "./thread-order";
 import { environmentServerConfigsAtom } from "./server";
 import { steadyNavigationThreadShellsAtom } from "./threads";
+import { promachosHomeRefsAtom } from "./promachos-home";
 
 vi.mock("./atom-registry", async () => {
   const { AtomRegistry } = await import("effect/reactivity");
@@ -23,6 +24,10 @@ vi.mock("./threads", async () => {
   return {
     steadyNavigationThreadShellsAtom: Atom.make([]).pipe(Atom.keepAlive),
   };
+});
+vi.mock("./promachos-home", async () => {
+  const { Atom } = await import("effect/reactivity");
+  return { promachosHomeRefsAtom: Atom.make([]).pipe(Atom.keepAlive) };
 });
 vi.mock("./server", async () => {
   const { Atom } = await import("effect/reactivity");
@@ -41,10 +46,20 @@ const shellsAtom = steadyNavigationThreadShellsAtom as Atom.Writable<
   readonly EnvironmentThreadShell[]
 >;
 
+const homeRefsAtom = promachosHomeRefsAtom as unknown as Atom.Writable<
+  readonly ScopedProjectRef[],
+  readonly ScopedProjectRef[]
+>;
+const home = {
+  environmentId: EnvironmentId.make("env"),
+  projectId: ProjectId.make("project-test"),
+};
+
 function fixture() {
   const rows = ["a", "b"].map((id, index) =>
     makeThreadShellFixture({
       id: ThreadId.make(id),
+      projectId: ProjectId.make("project-test"),
       environmentId: EnvironmentId.make("env"),
       createdAt: `2026-06-01T0${2 - index}:00:00.000Z`,
     }),
@@ -107,6 +122,22 @@ describe("shared mobile pending move", () => {
     move.cancel();
     expect(next.isPending()).toBe(true);
     next.cancel();
+  });
+
+  it("keeps an Active move for a colliding remote project, then cancels when its own project becomes the Promachos home", () => {
+    const { start } = fixture();
+    appAtomRegistry.set(homeRefsAtom, []);
+    const move = start();
+    appAtomRegistry.set(homeRefsAtom, [{ ...home, environmentId: EnvironmentId.make("other") }]);
+    expect(move.isPending()).toBe(true);
+    expect(appAtomRegistry.get(pendingThreadOrderAtom)).not.toBeNull();
+
+    appAtomRegistry.set(homeRefsAtom, [home]);
+    expect(appAtomRegistry.get(pendingThreadOrderAtom)).toBeNull();
+    expect(move.isPending()).toBe(false);
+    move.complete();
+    appAtomRegistry.set(homeRefsAtom, []);
+    expect(getPendingThreadOrder()).toBeNull();
   });
 
   it("stops remaining writes when a canonical membership change invalidates the move", () => {
