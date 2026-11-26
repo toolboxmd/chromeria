@@ -26,18 +26,33 @@ const helium = BROWSER_IMPORT_SOURCES.find((source) => source.id === "helium")!;
 const decodeImportSource = Schema.decodeEffect(BrowserImportSource);
 const chromiumKeychainSecret = "fixture-chromium-keychain-secret";
 
-vi.mock("@napi-rs/keyring", () => ({
-  AsyncEntry: class {
-    readonly getPassword: () => Promise<string | undefined>;
-
-    constructor(service: string, account: string) {
-      this.getPassword = async () =>
-        service === "Chromium Safe Storage" && account === "Chromium"
-          ? chromiumKeychainSecret
-          : undefined;
-    }
-  },
-}));
+// The fork reads the Keychain on a worker (ChromiumKeys.ts); this answers as that worker would.
+vi.mock("node:worker_threads", async () => {
+  const { EventEmitter } = await import("node:events");
+  return {
+    Worker: class extends EventEmitter {
+      constructor(
+        _path: string,
+        options: { readonly workerData: { readonly service: string; readonly account: string } },
+      ) {
+        super();
+        const { service, account } = options.workerData;
+        queueMicrotask(() =>
+          this.emit(
+            "message",
+            service === "Chromium Safe Storage" && account === "Chromium"
+              ? { secret: chromiumKeychainSecret }
+              : { reason: "keychainItemMissing" },
+          ),
+        );
+      }
+      unref() {}
+      async terminate() {
+        return 0;
+      }
+    },
+  };
+});
 
 const cookie = {
   url: "https://rejected.example/path",
