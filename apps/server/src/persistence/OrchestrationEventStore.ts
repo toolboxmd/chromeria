@@ -132,6 +132,7 @@ const ProjectEventType = Schema.Literals([
   "project.created",
   "project.meta-updated",
   "project.deleted",
+  "project.restored",
 ]);
 const ActorKind = Schema.Literals(["client", "server", "provider"]);
 
@@ -389,7 +390,9 @@ const makeEventStore = Effect.gen(function* () {
       occurredAt: event.occurredAt,
       commandId: event.commandId,
       payloadJson:
-        event.type === "project.deleted" || !event.payload.projectIcon
+        event.type === "project.deleted" ||
+        event.type === "project.restored" ||
+        !event.payload.projectIcon
           ? event.payload
           : { ...event.payload, projectIcon: encodeProjectIcon(event.payload.projectIcon) },
       metadataJson: event.metadata,
