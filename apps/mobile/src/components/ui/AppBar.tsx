@@ -168,6 +168,9 @@ export function AppBar(props: AppBarProps) {
           ...(props.guardBack ? { gestureEnabled: false } : undefined),
           title: props.title,
           unstable_headerSubtitle: props.subtitle || undefined,
+          ...(props.centerTitleContent && props.titleContent
+            ? { headerTitle: () => props.titleContent, headerTitleAlign: "center" as const }
+            : undefined),
           ...(props.matchSearchSurface
             ? { contentStyle: { backgroundColor: themeVariables["--color-sheet-solid"] } }
             : undefined),

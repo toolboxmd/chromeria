@@ -36,6 +36,11 @@ export function whenRootNavigationReady(navigate: () => void): void {
   pendingUntilReady.push(navigate);
 }
 
+/** Fork: whether a page waits for navigation to be ready, such as a launch's notification. */
+export function rootNavigationPending(): boolean {
+  return pendingUntilReady.length > 0;
+}
+
 /** Wired to the container's `onReady`. */
 export function flushRootNavigationQueue(): void {
   for (const navigate of pendingUntilReady.splice(0)) {

@@ -232,10 +232,12 @@ export const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryA
   hideCompactToggle: boolean;
   keepFullHistory: boolean;
   onToggleKeepFullHistory: () => void;
+  plainSend?: boolean;
 }) {
   return (
     <>
       <ComposerPrimaryActions
+        plainSend={props.plainSend === true}
         compact={props.compact}
         canOperateThread={props.canOperateThread}
         pendingAction={props.pendingAction}

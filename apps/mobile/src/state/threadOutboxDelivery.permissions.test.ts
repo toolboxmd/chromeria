@@ -531,6 +531,31 @@ describe("queued task operation access", () => {
   );
 });
 
+describe("queued Promachos first send", () => {
+  it("launches with Prism picking the model even when the placeholder is unavailable", async () => {
+    setOperateGrant("secondary", true);
+    state.modelUnavailable.mockReturnValue(true);
+    await state.manager.enqueue(
+      message({
+        threadId: ThreadId.make("promachos-thread"),
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "retired-model" },
+        creation: {
+          projectId: ProjectId.make("project"),
+          projectCwd: "/repo",
+          workspaceMode: "local",
+          branch: null,
+          worktreePath: null,
+          prismRole: "promachos",
+        },
+      }),
+    );
+    await runDrain();
+    expect(state.start).toHaveBeenCalledOnce();
+    expect(state.start.mock.calls[0]?.[0].input).toMatchObject({ prismRole: "promachos" });
+    expect(remaining()).toEqual([]);
+  });
+});
+
 describe("queued task whose launch reply is lost", () => {
   const queuedTask = (creation: Partial<NonNullable<QueuedThreadMessage["creation"]>> = {}) =>
     message({
@@ -571,14 +596,17 @@ describe("queued task whose launch reply is lost", () => {
     await settled.promise.finally(release);
   }
 
-  it("resends an unedited launch instead of handing its text back", async () => {
-    await loseLaunchReply(queuedTask());
+  it("resends an unedited launch with its queued purpose instead of handing its text back", async () => {
+    const purposeIntent = { version: 1, intent: { type: "unscoped" } } as const;
+    await loseLaunchReply({ ...queuedTask(), purposeIntent });
     await fireRetry();
 
     expect(state.draftText).toBe("Keep this draft separate");
     // The resend reuses the launch's command and message ids, so the server replays it.
     const [first, resent] = state.start.mock.calls.map(([call]) => call.input);
     expect(state.start).toHaveBeenCalledTimes(2);
+    expect(first.purposeIntent).toEqual(purposeIntent);
+    expect(resent.purposeIntent).toEqual(purposeIntent);
     expect(resent.commandId).toBe(first.commandId);
     expect(resent.message.messageId).toBe(first.message.messageId);
     expect(remaining()).toEqual([]);

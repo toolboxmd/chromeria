@@ -587,7 +587,12 @@ function AdaptiveWorkspaceLayoutContent(
       setFileInspectorPreferredVisible(false);
       setInspectorSheetRoute(null);
       if (layout.variant === "medium") setPrimarySidebarVisible(false);
-      workspace?.dispatch({ type: "select", tab: workspaceTabOf(detail.name) });
+      // Fork: a conversation opened from the Promachos tab stays in it (toolboxmd/chromeria#898).
+      const promachos = detail.name === "Thread" && workspace?.isTabActive("promachos") === true;
+      workspace?.dispatch({
+        type: "select",
+        tab: promachos ? "promachos" : workspaceTabOf(detail.name),
+      });
       startOpeningDetail(detail);
       navigation.dispatch(selectWorkspaceDetail(detail, sheet));
     });

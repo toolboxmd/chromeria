@@ -78,6 +78,8 @@ export interface AppBarProps {
   readonly title: string;
   /** Android: replaces the title text, such as the brand title. iOS ignores it. */
   readonly titleContent?: ReactNode;
+  /** Fork: iOS also draws `titleContent`, centered, in place of the title (toolboxmd/chromeria#898). */
+  readonly centerTitleContent?: boolean;
   readonly subtitle?: string | null;
   readonly actions?: ReadonlyArray<AppBarAction>;
   /**

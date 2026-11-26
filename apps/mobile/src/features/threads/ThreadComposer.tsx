@@ -128,6 +128,8 @@ import {
   useThreadSettingsSheetPresentation,
   type NavigationWithFinishTransitioning,
 } from "./use-thread-settings-sheet-presentation";
+import { promachosPicksModel } from "@t3tools/client-runtime/promachos/start";
+import { usePromachosChatModels, usePromachosDraftModels } from "../promachos/promachosHome";
 
 export const COMPOSER_COLLAPSED_CHROME = 60;
 export const THREAD_COMPOSER_BOTTOM_GUTTER = COMPOSER_BOTTOM_GUTTER;
@@ -218,6 +220,7 @@ function SendActionButton(props: {
   readonly presentation: ComposerSendPresentation;
   readonly disabled: boolean;
   readonly onSend: (followUp?: ActiveTurnComposerAction) => void;
+  readonly variant?: "primary" | "neutral";
 }) {
   const { presentation } = props;
   const gt = useGT();
@@ -227,7 +230,7 @@ function SendActionButton(props: {
       accessibilityLabel={props.accessibilityLabel}
       size={props.size}
       icon={presentation.icon}
-      variant="primary"
+      variant={props.variant ?? "primary"}
       disabled={props.disabled}
       onPress={() => props.onSend()}
     />
@@ -258,6 +261,17 @@ function SendActionButton(props: {
 }
 
 export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps) {
+  // Fork: a Promachos chat keeps model and history controls out of the composer; a draft is his
+  // only when started on the Promachos tab, and then Prism, not the placeholder, picks its model.
+  const promachosProject = {
+    environmentId: props.environmentId,
+    projectId: props.selectedThread.projectId,
+  };
+  const promachosChatModels = usePromachosChatModels(promachosProject);
+  const promachosDraftModels = usePromachosDraftModels(promachosProject);
+  const promachosModels = props.isDraft ? promachosDraftModels : promachosChatModels;
+  const promachos = promachosModels !== null;
+  const prismPicksModel = props.isDraft === true && promachosPicksModel(promachosModels);
   const gt = useGT();
   const messages = useMessages();
   const project = useProject(scopeProjectRef(props.environmentId, props.selectedThread.projectId));
@@ -341,6 +355,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     });
   const currentModelSelection = props.selectedThread.modelSelection;
   const modelUnavailable =
+    !prismPicksModel &&
     props.connectionState === "connected" &&
     isModelSelectionUnavailable(
       props.serverConfig,
@@ -1041,8 +1056,8 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                   className="min-w-0 shrink flex-row items-center"
                   entering={compactEditor.toolbarControlsEntering}
                 >
-                  {compactControl}
-                  {modelControl}
+                  {promachos ? null : compactControl}
+                  {promachos ? null : modelControl}
                 </Animated.View>
                 <ComposerDictationStartAction
                   size={usesLargeControls ? "large" : "regular"}
@@ -1076,6 +1091,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                     presentation={sendPresentation}
                     disabled={!canSend}
                     onSend={handleSend}
+                    variant={promachos ? "neutral" : "primary"}
                   />
                 )}
               </View>
@@ -1144,6 +1160,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                       presentation={sendPresentation}
                       disabled={!canSend}
                       onSend={handleSend}
+                      variant={promachos ? "neutral" : "primary"}
                     />
                   ) : null}
                 </View>
