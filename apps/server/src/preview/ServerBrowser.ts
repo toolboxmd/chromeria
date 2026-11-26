@@ -558,6 +558,8 @@ interface MainDocumentRecord {
   readonly headers: Record<string, string>;
   readonly url: string;
   readonly at: number;
+  /** When its request left; only a commit after that can be this document's. */
+  readonly requestedAt: number;
 }
 
 interface ServerTab {
@@ -583,6 +585,7 @@ interface ServerTab {
   /** The latest main-frame document response; clearing a hold classifies the page with it. */
   mainDocument: MainDocumentRecord | null;
   pendingDocument: MainDocumentRecord | null;
+  lastCommit: { readonly url: string; readonly at: number } | null;
   /** Classification of the latest error document, so an action can report the hold it caused. */
   siteHoldCheck: Promise<void>;
   fileChooserIntercepted: boolean;
@@ -1614,6 +1617,7 @@ const make = Effect.gen(function* () {
         agentOperating: false,
         mainDocument: null,
         pendingDocument: null,
+        lastCommit: null,
         siteHoldCheck: Promise.resolve(),
         fileChooserIntercepted: false,
         onFileChooser: (chooser) => {
@@ -1715,6 +1719,22 @@ const make = Effect.gen(function* () {
         frame(): unknown;
       }) => appLinkUrl(request.url()) === null && isMainFrameNavigation(request);
       const navigationGenerations = new WeakMap<object, number>();
+      const requestedAt = new WeakMap<object, number>();
+      // Only a committed response is the document on screen; a 204 or a history change
+      // commits none. The commit and the response arrive on different sessions, in either order.
+      const promoteDocument = () => {
+        const pending = tab.pendingDocument;
+        const commit = tab.lastCommit;
+        if (
+          pending === null ||
+          commit === null ||
+          commit.at < pending.requestedAt ||
+          withoutHash(commit.url) !== withoutHash(pending.url)
+        )
+          return;
+        tab.mainDocument = pending;
+        tab.pendingDocument = null;
+      };
       page.on("request", (request) => {
         if (appLinkUrl(request.url()) !== null && isMainFrameNavigation(request)) {
           // A redirect into an app link ends the navigation that led there.
@@ -1724,6 +1744,7 @@ const make = Effect.gen(function* () {
           return;
         }
         if (!isMainNavigation(request)) return;
+        requestedAt.set(request, Date.now());
         stopTabWatches(tab, "navigation");
         // Playwright can deliver the first request after Stop has already settled its navigation.
         const stoppedInitialRequest =
@@ -1757,9 +1778,8 @@ const make = Effect.gen(function* () {
         if (frame.parentId) return;
         for (const viewer of tab.viewers) withdrawSelectMenu(viewer);
         // Only a committed response is the document on screen; a 204 or a history change commits none.
-        if (tab.pendingDocument && withoutHash(tab.pendingDocument.url) === withoutHash(frame.url))
-          tab.mainDocument = tab.pendingDocument;
-        tab.pendingDocument = null;
+        tab.lastCommit = { url: frame.url, at: Date.now() };
+        promoteDocument();
       });
       // Server tabs turn the Page domain on with their viewport; a desktop tab needs it for commits.
       if (desktop) await cdp.send("Page.enable").catch(constVoid);
@@ -1855,8 +1875,11 @@ const make = Effect.gen(function* () {
             headers: response.headers(),
             url: response.url(),
             at: Date.now(),
+            // A popup's first request can predate the listener.
+            requestedAt: requestedAt.get(response.request()) ?? 0,
           };
           tab.pendingDocument = document;
+          promoteDocument();
           if (document.status >= 400 || document.headers["cf-mitigated"] !== undefined)
             tab.siteHoldCheck = Promise.all([
               tab.siteHoldCheck,
