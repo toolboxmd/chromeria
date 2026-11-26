@@ -216,7 +216,6 @@ apps/mobile/src/features/layout/workspace/navigation-tab-order.ts
 apps/mobile/src/features/layout/workspace/navigation-tabs.ts
 apps/mobile/src/features/layout/workspace/workspace-selection-store.test.ts
 apps/mobile/src/features/layout/workspace/workspace-selection-store.ts
-apps/mobile/src/features/layout/workspace/workspace-tab-navigation.ts
 apps/mobile/src/features/layout/workspace/workspace-tabs-state.test.ts
 apps/mobile/src/features/layout/workspace/workspace-tabs-state.ts
 apps/mobile/src/features/threads/ThreadFeed.tsx
@@ -302,7 +301,6 @@ apps/web/src/components/files/BrowserDocumentFrame.tsx
 
 # Peer links: upstream port and fork hooks (#164, #380)
 apps/mobile/src/features/home/HomeRouteScreen.tsx
-apps/mobile/src/features/threads/useSidebarRowThreadKey.ts
 apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx
 packages/client-runtime/src/state/commandPermissions.test.ts
 apps/server/src/auth/McpOAuth.ts
@@ -855,13 +853,9 @@ packages/provider-opencode/src/server/v2/OpenCode2Server.test.ts
 packages/provider-opencode/src/server/OpenCodeServerOwner.test.ts
 packages/client-runtime/src/userMessage.test.ts
 packages/client-runtime/src/userMessage.ts
-apps/mobile/src/features/threads/ThreadFeed.tsx
 apps/mobile/src/features/threads/ThreadQueueControl.tsx
 apps/web/src/components/chat/QueuedRunsControl.tsx
 packages/contracts/src/composerContext.ts
-
-# Browser history test simulates tabs with store instances, not iframes (#876).
-apps/web/src/browserHistoryStore.browser.test.ts
 
 # HTML render dialog test uses a local frame and the default viewport (#956).
 apps/web/src/components/chat/HtmlRenderDialog.browser.test.tsx
