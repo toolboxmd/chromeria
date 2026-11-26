@@ -6,6 +6,7 @@ import {
   type OrchestrationV2ServerCommand as OrchestrationCommand,
   PullRequestOperationError,
   type OrchestrationProjectShell,
+  type OrchestrationV2ThreadShell,
   type PullRequestActionInput,
   type PullRequestDiffResult,
   type PullRequestSubmitReviewInput,
@@ -148,6 +149,7 @@ function makeLink(
 
 interface HarnessOptions {
   readonly thread?: PullRequestTestThread | null;
+  readonly purposeDeliveries?: OrchestrationV2ThreadShell["purposeDeliveries"];
   readonly project?: OrchestrationProjectShell | null;
   readonly reject?: (command: OrchestrationCommand) => string | null;
   readonly projects?: ReadonlyArray<OrchestrationProjectShell>;
@@ -209,7 +211,16 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({
       getThreadShell: (id) =>
-        Effect.succeed(id === thread?.id ? v2PullRequestThread(thread) : null),
+        Effect.succeed(
+          id === thread?.id
+            ? {
+                ...v2PullRequestThread(thread),
+                ...(options.purposeDeliveries === undefined
+                  ? {}
+                  : { purposeDeliveries: options.purposeDeliveries }),
+              }
+            : null,
+        ),
       dispatch,
     }),
     Layer.mock(PullRequestService.PullRequestService)({
@@ -270,10 +281,11 @@ describe("pull request toolkit handlers", () => {
       const error = yield* harness
         .call("link_pull_request", { threadId: bareId, number: 123 })
         .pipe(Effect.flip);
-      expect(error.message).toBe(
-        `Thread ${bareId} was not found. Did you mean \`mcp:${bareId}\`? Thread ids belong to one environment: for a thread on a linked one, find it with \`t3_environment_links\` and pass its \`environmentId\` to a tool that takes one.`,
-      );
-      expect(error).toMatchObject({ _tag: "OrchestratorMcpFailure", code: "thread_not_found" });
+      expect(error).toMatchObject({
+        _tag: "OrchestratorMcpFailure",
+        code: "thread_not_found",
+        message: `Thread ${bareId} was not found. Did you mean \`mcp:${bareId}\`? Thread ids belong to one environment: for a thread on a linked one, find it with \`t3_environment_links\` and pass its \`environmentId\` to a tool that takes one.`,
+      });
       expect(yield* Ref.get(harness.commands)).toEqual([]);
     }),
   );
@@ -300,6 +312,32 @@ describe("pull request toolkit handlers", () => {
           number: 123,
           source: "agent",
         },
+      ]);
+    }),
+  );
+
+  it.effect("an already linked PR can declare a purpose without using the thread selection", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ thread: makeThread([makeLink(123)]) });
+      const purpose = {
+        host: "GitHub.com",
+        repository: "Other/Outcome",
+        kind: "issue" as const,
+        number: 11,
+      };
+      const result = yield* harness.call("link_pull_request", {
+        url: "https://github.com/t3tools/t3code/pull/123",
+        purposeDelivery: { version: 1, purpose },
+      });
+      expect(result).toMatchObject({
+        alreadyLinked: true,
+        purposeDelivery: {
+          version: 1,
+          purpose: { ...purpose, host: "github.com", repository: "other/outcome" },
+        },
+      });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request.link", purposeDelivery: { version: 1, purpose } },
       ]);
     }),
   );
@@ -374,6 +412,7 @@ describe("pull request toolkit handlers", () => {
         repository: "group/sub/project",
         number: 42,
       });
+      if ("type" in result) throw new Error("Unkeyed calls keep their legacy result.");
       expect(result.url).toBe("https://gitlab.com/group/sub/project/-/merge_requests/42");
       expect(result.host).toBe("gitlab.com");
       const other = yield* harness.call("link_pull_request", {
@@ -381,12 +420,14 @@ describe("pull request toolkit handlers", () => {
         repository: "team/repo",
         number: 7,
       });
+      if ("type" in other) throw new Error("Unkeyed calls keep their legacy result.");
       expect(other.url).toBe("https://gitlab.example.test/team/repo/-/merge_requests/7");
       const onGitHub = yield* harness.call("link_pull_request", {
         host: "github.com",
         repository: "acme/web",
         number: 9,
       });
+      if ("type" in onGitHub) throw new Error("Unkeyed calls keep their legacy result.");
       expect(onGitHub.url).toBe("https://github.com/acme/web/pull/9");
     }),
   );
@@ -431,8 +472,10 @@ describe("pull request toolkit handlers", () => {
       const error = yield* harness
         .call("link_pull_request", { repository: "github.com/org/repo", number: 1 })
         .pipe(Effect.flip);
-      expect(error).toMatchObject({ _tag: "PullRequestRepositoryInvalidError" });
-      expect(error.message).toContain("owner/repo");
+      expect(error).toMatchObject({
+        _tag: "PullRequestRepositoryInvalidError",
+        message: expect.stringContaining("owner/repo"),
+      });
       expect(yield* Ref.get(harness.commands)).toEqual([]);
     }),
   );
@@ -447,6 +490,7 @@ describe("pull request toolkit handlers", () => {
       const result = yield* harness.call("link_pull_request", {
         url: "https://github.com/t3tools/t3code/pull/123",
       });
+      if ("type" in result) throw new Error("Unkeyed calls keep their legacy result.");
       expect(result.alreadyLinked).toBe(true);
     }),
   );
@@ -473,6 +517,7 @@ describe("pull request toolkit handlers", () => {
       const missing = yield* harness.call("unlink_pull_request", {
         url: "https://github.com/t3tools/t3code/pull/9",
       });
+      if ("type" in missing) throw new Error("Unkeyed calls keep their legacy result.");
       expect(missing.wasLinked).toBe(false);
       expect(yield* Ref.get(harness.commands)).toMatchObject([
         { type: "thread.pull-request.unlink", number: 5 },
@@ -480,18 +525,33 @@ describe("pull request toolkit handlers", () => {
     }),
   );
 
-  it.effect("reports a dismissed stack member as not linked and leaves it dismissed", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeHarness({
-        thread: makeThread([makeLink(9, { source: "stack-dismissed" })]),
-      });
-      const result = yield* harness.call("unlink_pull_request", {
-        repository: "t3tools/t3code",
-        number: 9,
-      });
-      expect(result.wasLinked).toBe(false);
-      expect(yield* Ref.get(harness.commands)).toEqual([]);
-    }),
+  it.effect(
+    "reports a dismissed stack member as not linked but still withdraws a stale delivery",
+    () =>
+      Effect.gen(function* () {
+        const delivered = (number: number) =>
+          ({
+            version: 1 as const,
+            purpose: { host: "github.com", repository: "t3tools/t3code", kind: "issue", number: 1 },
+            pullRequest: { host: "github.com", repository: "t3tools/t3code", kind: "pr", number },
+            declaredAt: "2026-08-20T00:00:00.000Z",
+          }) as const;
+        const harness = yield* makeHarness({
+          thread: makeThread([makeLink(9, { source: "stack-dismissed" })]),
+          purposeDeliveries: [delivered(7)],
+        });
+        for (const number of [9, 7]) {
+          const result = yield* harness.call("unlink_pull_request", {
+            repository: "t3tools/t3code",
+            number,
+          });
+          if ("type" in result) throw new Error("Unkeyed calls keep their legacy result.");
+          expect(result.wasLinked).toBe(false);
+        }
+        expect(yield* Ref.get(harness.commands)).toMatchObject([
+          { type: "thread.pull-request.unlink", number: 7 },
+        ]);
+      }),
   );
 
   it.effect("links several pull requests in one call", () =>
@@ -1058,7 +1118,7 @@ describe("source control tools", () => {
       const invalid = yield* harness
         .call("pull_request_read", { cursor: "not-a-cursor" })
         .pipe(Effect.flip);
-      expect(invalid._tag).toBe("PullRequestCursorInvalidError");
+      expect(invalid).toMatchObject({ _tag: "PullRequestCursorInvalidError" });
     }),
   );
 
@@ -1066,7 +1126,7 @@ describe("source control tools", () => {
     Effect.gen(function* () {
       const harness = yield* makeHarness();
       const error = yield* harness.call("pull_request_read", {}).pipe(Effect.flip);
-      expect(error._tag).toBe("PullRequestBranchHasNoneError");
+      expect(error).toMatchObject({ _tag: "PullRequestBranchHasNoneError" });
     }),
   );
 
@@ -1089,7 +1149,7 @@ describe("source control tools", () => {
       // Before sync, the host says which branch it came from; another branch's is not this one.
       const moved = yield* opened("old");
       const unsynced = yield* moved.call("pull_request_read", {}).pipe(Effect.flip);
-      expect(unsynced._tag).toBe("PullRequestBranchHasNoneError");
+      expect(unsynced).toMatchObject({ _tag: "PullRequestBranchHasNoneError" });
 
       // After a switch to another branch, the PR opened from the old one is not the branch's.
       const switched = yield* makeHarness({
@@ -1101,7 +1161,7 @@ describe("source control tools", () => {
       const error = yield* switched
         .call("pull_request_update", { title: "New title" })
         .pipe(Effect.flip);
-      expect(error._tag).toBe("PullRequestBranchHasNoneError");
+      expect(error).toMatchObject({ _tag: "PullRequestBranchHasNoneError" });
     }),
   );
 
@@ -1188,7 +1248,7 @@ describe("source control tools", () => {
       const unpinned = yield* harness
         .call("pull_request_merge", { expectedHeadSha: "ccc", stack: true })
         .pipe(Effect.flip);
-      expect(unpinned._tag).toBe("PullRequestForgeError");
+      expect(unpinned).toMatchObject({ _tag: "PullRequestForgeError" });
       expect(actions).toHaveLength(2);
     }),
   );
@@ -2099,11 +2159,11 @@ describe("source control tools", () => {
           resolved: true,
         })
         .pipe(Effect.flip);
-      expect(partial.message).toContain("The reply was posted");
+      expect(partial).toMatchObject({ message: expect.stringContaining("The reply was posted") });
       const error = yield* harness
         .call("pull_request_respond", { body: "Done", resolved: true })
         .pipe(Effect.flip);
-      expect(error._tag).toBe("PullRequestNothingToDoError");
+      expect(error).toMatchObject({ _tag: "PullRequestNothingToDoError" });
     }),
   );
 
@@ -2162,7 +2222,9 @@ describe("source control tools", () => {
           comments: [{ path: "a.ts", line: 40, body: "Here?" }],
         })
         .pipe(Effect.flip);
-      expect(error.message).toContain("a.ts line 40 (new side) is not in this PR's diff");
+      expect(error).toMatchObject({
+        message: expect.stringContaining("a.ts line 40 (new side) is not in this PR's diff"),
+      });
       expect(reviews).toHaveLength(1);
 
       // A range whose start the diff shows names its end, the line that is missing.
@@ -2172,7 +2234,9 @@ describe("source control tools", () => {
           comments: [{ path: "b.ts", line: 40, startLine: 9, body: "Here?" }],
         })
         .pipe(Effect.flip);
-      expect(rangeError.message).toContain("b.ts line 40 (new side) is not in this PR's diff");
+      expect(rangeError).toMatchObject({
+        message: expect.stringContaining("b.ts line 40 (new side) is not in this PR's diff"),
+      });
 
       // A range whose end the diff shows still names its start.
       const startError = yield* harness
@@ -2181,7 +2245,9 @@ describe("source control tools", () => {
           comments: [{ path: "b.ts", line: 10, startLine: 2, body: "Here?" }],
         })
         .pipe(Effect.flip);
-      expect(startError.message).toContain("b.ts line 2 (new side) is not in this PR's diff");
+      expect(startError).toMatchObject({
+        message: expect.stringContaining("b.ts line 2 (new side) is not in this PR's diff"),
+      });
       expect(reviews).toHaveLength(1);
     }),
   );
@@ -2204,7 +2270,7 @@ describe("source control tools", () => {
       const error = yield* harness
         .call("pull_request_review", { verdict: "approve" })
         .pipe(Effect.flip);
-      expect(error.message).toContain("expectedHeadSha");
+      expect(error).toMatchObject({ message: expect.stringContaining("expectedHeadSha") });
       expect(reviews).toHaveLength(1);
 
       yield* harness.call("pull_request_review", { verdict: "comment", body: "A question." });
@@ -2268,7 +2334,9 @@ describe("source control tools", () => {
       const unknown = yield* harness
         .call("pull_request_update", { requestReviewers: ["nobody"] })
         .pipe(Effect.flip);
-      expect(unknown.message).toContain("No reviewer named nobody");
+      expect(unknown).toMatchObject({
+        message: expect.stringContaining("No reviewer named nobody"),
+      });
     }),
   );
 });

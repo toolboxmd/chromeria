@@ -1,4 +1,5 @@
 import type {
+  EnvironmentId,
   OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderThread,
   OrchestrationV2Run,
@@ -169,6 +170,14 @@ type PendingBackgroundWorkTurnItem = {
   readonly monitor?: boolean | undefined;
   readonly prompt?: string | undefined;
   readonly childThreadId?: ThreadId | null;
+  readonly remoteChild?:
+    | {
+        readonly environmentId: EnvironmentId;
+        readonly threadId?: ThreadId | undefined;
+        readonly label?: string | undefined;
+      }
+    | null
+    | undefined;
 };
 
 function isLatestRunSettledForBackgroundWait(
@@ -215,15 +224,22 @@ function pendingTaskFromTurnItem(
   const description = descriptionFromTurnItem(item);
   const named = { taskId, ...(description === undefined ? {} : { description }) };
   switch (item.type) {
-    case "subagent":
+    case "subagent": {
+      // A remote delegated task has no local child thread; its thread lives
+      // in the linked environment named by remoteChild once attached.
+      const childThreadId = item.childThreadId ?? item.remoteChild?.threadId ?? null;
       return {
         ...named,
         kind: "subagent",
         ...(item.owningProviderInstanceId === undefined
           ? {}
           : { providerInstanceId: item.owningProviderInstanceId }),
-        ...(item.childThreadId == null ? {} : { childThreadId: item.childThreadId }),
+        ...(childThreadId === null ? {} : { childThreadId }),
+        ...(item.childThreadId == null && item.remoteChild?.threadId !== undefined
+          ? { childEnvironmentId: item.remoteChild.environmentId }
+          : {}),
       };
+    }
     case "command_execution":
       return { ...named, kind: item.monitor === true ? "monitor" : "command" };
     default:
@@ -320,11 +336,13 @@ export function derivePendingBackgroundWork(input: {
   for (const task of pullRequestWatchTasks(input.pullRequests)) byTaskId.set(task.taskId, task);
 
   // Follow-up tasks can share a child thread; the pending list counts agents, not messages.
-  const childThreadIds = new Set<ThreadId>();
+  // A remote child is its thread in its own environment, so both name it.
+  const childThreads = new Set<string>();
   return Array.from(byTaskId.values()).filter((task) => {
     if (task.kind !== "subagent" || task.childThreadId == null) return true;
-    if (childThreadIds.has(task.childThreadId)) return false;
-    childThreadIds.add(task.childThreadId);
+    const child = `${task.childEnvironmentId ?? ""}\u0000${task.childThreadId}`;
+    if (childThreads.has(child)) return false;
+    childThreads.add(child);
     return true;
   });
 }

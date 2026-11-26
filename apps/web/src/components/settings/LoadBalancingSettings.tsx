@@ -1,11 +1,8 @@
 import { resolveEnvironmentMachineKind } from "@t3tools/contracts";
 import { msg, T, useGT, useMessages } from "gt-react";
 
-import {
-  useClientSettings,
-  useClientSettingsHydrated,
-  updateClientSettings,
-} from "~/hooks/useSettings";
+import { useAutoBalance } from "~/hooks/useAutoBalance";
+import { useClientSettingsHydrated } from "~/hooks/useSettings";
 import type { MessageResolver } from "~/i18n/messages";
 import type { EnvironmentPresentation } from "~/state/environments";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
@@ -55,11 +52,13 @@ export function LoadBalancingSettings({
   environments: ReadonlyArray<EnvironmentPresentation>;
 }) {
   const searchableSetting = useSearchableSetting();
-  const settings = useClientSettings((current) => ({
-    loadBalancingEnabled: current.loadBalancingEnabled,
-    loadBalancingWeights: current.loadBalancingWeights,
-  }));
-  const settingsHydrated = useClientSettingsHydrated();
+  // Fork: saved on this app's primary machine, whose agents' delegations balance with it too.
+  const { autoBalance, ready, update } = useAutoBalance();
+  const settings = {
+    loadBalancingEnabled: autoBalance.enabled,
+    loadBalancingWeights: autoBalance.weights,
+  };
+  const settingsHydrated = useClientSettingsHydrated() && ready;
   const gt = useGT();
   const m = useMessages();
   const items = preferences.map((entry) => ({ ...entry, label: m(entry.label) }));
@@ -81,14 +80,14 @@ export function LoadBalancingSettings({
           aria-label={gt("Automatically balance load")}
           checked={settings.loadBalancingEnabled}
           disabled={!settingsHydrated}
-          onCheckedChange={(loadBalancingEnabled) => updateClientSettings({ loadBalancingEnabled })}
+          onCheckedChange={(enabled) => update({ enabled })}
         />
       }
     >
       <p className="px-3 py-2.5 text-xs text-muted-foreground sm:px-4">
         <T>
-          New threads in shared projects start on the machine with the most free CPU and memory,
-          weighted by each machine's preference.
+          New threads in shared projects, and agents' worktree tasks with a pushed branch, start on
+          the machine with the most free CPU and memory, weighted by each machine's preference.
         </T>
       </p>
       {environments.map((environment) => (
@@ -106,11 +105,8 @@ export function LoadBalancingSettings({
             disabled={!settingsHydrated || !settings.loadBalancingEnabled}
             onValueChange={(value) => {
               if (value === null) return;
-              updateClientSettings({
-                loadBalancingWeights: {
-                  ...settings.loadBalancingWeights,
-                  [environment.environmentId]: value,
-                },
+              update({
+                weights: { ...settings.loadBalancingWeights, [environment.environmentId]: value },
               });
             }}
           >

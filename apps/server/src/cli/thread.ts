@@ -1028,7 +1028,8 @@ const threadSendCommand = Command.make("send", {
             { threadId, message, mode: "queue", ...output },
             OrchestratorMcpThreadSendResult,
           );
-          if (flags.wait) {
+          // A pending cross-environment send has no run to wait on yet.
+          if (flags.wait && sent.runId !== null) {
             return yield* finishRun(tools, {
               threadId,
               runId: sent.runId,

@@ -3,6 +3,7 @@ import {
   MessageId,
   type ModelSelection,
   NodeId,
+  type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
   type OrchestrationV2ThreadProjection,
@@ -76,7 +77,25 @@ function makeProjection(input: {
       lastVisitedAt: null,
       deletedAt: null,
     },
-    runs: [],
+    runs: [
+      {
+        id: runId,
+        threadId: input.threadId,
+        ordinal: 1,
+        providerInstanceId,
+        modelSelection,
+        providerThreadId: input.providerThread.id,
+        userMessageId: MessageId.make("message:restart-session"),
+        rootNodeId: nodeId,
+        activeAttemptId: RunAttemptId.make("attempt:replacement"),
+        status: "starting",
+        requestedAt: input.now,
+        startedAt: input.now,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      },
+    ],
     attempts: [
       {
         id: input.attemptId,
@@ -128,6 +147,7 @@ function makeProjection(input: {
 
 function layerProjectionStore(
   getProviderControlContext: ProjectionStore.ProjectionStoreV2["Service"]["getProviderControlContext"],
+  overrides: Partial<ProjectionStore.ProjectionStoreV2["Service"]> = {},
 ) {
   return Layer.succeed(
     ProjectionStore.ProjectionStoreV2,
@@ -198,6 +218,8 @@ function layerProjectionStore(
       getThreadSnapshot: () => Effect.die("unused getThreadSnapshot"),
       getThreadSnapshotWindow: () => Effect.die("unused getThreadSnapshotWindow"),
       getPullRequestSnapshot: () => Effect.die("unused getPullRequestSnapshot"),
+      getUnresolvedRestartCuts: () => Effect.die("unused getUnresolvedRestartCuts"),
+      ...overrides,
     }),
   );
 }
@@ -267,6 +289,12 @@ it.effect(
         makeProjection({ now, threadId, providerThread, providerTurnId, attemptId }),
       );
       const interruptedThread = yield* Ref.make<OrchestrationV2ProviderThread | null>(null);
+      const endedHold = yield* Ref.make<"cut-in" | "descendants" | undefined>(undefined);
+      const interrupts = yield* Ref.make<
+        ReadonlyArray<
+          Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["interruptTurn"]>[0]
+        >
+      >([]);
       const providerSession = {
         id: oldSessionId,
         driver,
@@ -285,14 +313,16 @@ it.effect(
         providerSessionId: oldSessionId,
         providerSession,
         events: Stream.empty,
+        endedTurnHold: () => Ref.get(endedHold),
         ensureThread: () => Effect.die("unused ensureThread"),
         resumeThread: () => Effect.die("unused resumeThread"),
         startTurn: () => Effect.die("unused startTurn"),
         steerTurn: () => Effect.die("unused steerTurn"),
-        interruptTurn: ({ providerThread: target }) =>
+        interruptTurn: (target) =>
           Effect.all(
             [
-              Ref.set(interruptedThread, target),
+              Ref.set(interruptedThread, target.providerThread),
+              Ref.update(interrupts, (current) => [...current, target]),
               Ref.update(projection, (current) => ({
                 ...current,
                 providerTurns: current.providerTurns.map((turn) =>
@@ -309,18 +339,20 @@ it.effect(
         rollbackThread: () => Effect.die("unused rollbackThread"),
         forkThread: () => Effect.die("unused forkThread"),
       };
-      const layerProjection = layerProjectionStore((_threadId, target) =>
-        Ref.get(projection).pipe(
-          Effect.map((current) => ({
-            providerThread: current.providerThreads.find(
-              (thread) => thread.id === target.providerThreadId,
-            ),
-            providerTurn: current.providerTurns.find((turn) => turn.id === target.providerTurnId),
-            attempt: current.attempts.find((attempt) => attempt.id === target.attemptId),
-            message: undefined,
-            run: undefined,
-          })),
-        ),
+      const layerProjection = layerProjectionStore(
+        (_threadId, target) =>
+          Ref.get(projection).pipe(
+            Effect.map((current) => ({
+              providerThread: current.providerThreads.find(
+                (thread) => thread.id === target.providerThreadId,
+              ),
+              providerTurn: current.providerTurns.find((turn) => turn.id === target.providerTurnId),
+              attempt: current.attempts.find((attempt) => attempt.id === target.attemptId),
+              message: undefined,
+              run: undefined,
+            })),
+          ),
+        { getRuntimeRecoveryProjection: () => Ref.get(projection) },
       );
       const layerSessionManager = layerSessions(oldSessionId, runtime);
       const layerControl = ProviderTurnControlService.layer.pipe(
@@ -378,10 +410,181 @@ it.effect(
       assert.equal(interrupted?.providerSessionId, oldSessionId);
       assert.equal(interrupted?.id, providerThreadId);
       assert.equal(interrupted?.nativeThreadRef?.nativeId, "native-thread:restart-session");
+
+      // Ordinary restarts remain soft. Explicit cut-ins carry Stop scope and
+      // wait for success before delivery; Stop itself carries no replacement.
+      assert.isUndefined((yield* Ref.get(interrupts))[0]?.requestRuntimeRestart);
+      assert.isUndefined((yield* Ref.get(interrupts))[0]?.replacementFollows);
+      const restart = (interruption?: "stop") =>
+        Effect.gen(function* () {
+          const control = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+          yield* control.interruptAndAwaitTerminal({
+            threadId,
+            providerSessionId: oldSessionId,
+            replacementProviderSessionId: replacementSessionId,
+            providerThreadId,
+            providerTurnId,
+            interruptedAttemptId: attemptId,
+            ...(interruption === undefined ? {} : { interruption }),
+          });
+        }).pipe(Effect.provide(layerControl));
+      const setTargetStatus = (status: "running" | "completed" | "failed" | "interrupted") =>
+        Ref.update(projection, (current) => ({
+          ...current,
+          providerTurns: current.providerTurns.map((turn) =>
+            turn.id === providerTurnId ? { ...turn, status } : turn,
+          ),
+        }));
+      yield* setTargetStatus("running");
+      yield* restart("stop");
+      assert.equal((yield* Ref.get(interrupts)).length, 2);
+      assert.isTrue((yield* Ref.get(interrupts))[1]?.requestRuntimeRestart);
+      assert.isTrue((yield* Ref.get(interrupts))[1]?.replacementFollows);
+
+      yield* setTargetStatus("completed");
+      yield* restart();
+      assert.equal((yield* Ref.get(interrupts)).length, 2);
+      yield* restart("stop");
+      assert.equal((yield* Ref.get(interrupts)).length, 3);
+      assert.isTrue((yield* Ref.get(interrupts))[2]?.replacementFollows);
+
+      // A native interruption has already retired the old ingestor. Never stop
+      // a newer turn, or send an obsolete cut-in after its run stopped starting.
+      yield* setTargetStatus("interrupted");
+      yield* restart("stop");
+      assert.equal((yield* Ref.get(interrupts)).length, 3);
+      yield* setTargetStatus("completed");
+      yield* Ref.update(projection, (current) => ({
+        ...current,
+        providerTurns: [
+          ...current.providerTurns.map((turn) => ({ ...turn, ordinal: 2 })),
+          {
+            ...current.providerTurns[0]!,
+            id: ProviderTurnId.make("provider-turn:older-held"),
+            runAttemptId: RunAttemptId.make("attempt:older-held"),
+            ordinal: 1,
+            status: "running" as const,
+          },
+        ],
+      }));
+      yield* restart("stop");
+      assert.equal(
+        (yield* Ref.get(interrupts)).length,
+        4,
+        "An older held turn must not hide the captured completed cut-in target.",
+      );
+      assert.equal((yield* Ref.get(interrupts)).at(-1)?.providerTurnId, providerTurnId);
+      yield* Ref.update(projection, (current) => ({
+        ...current,
+        providerTurns: [
+          ...current.providerTurns.filter((turn) => turn.id === providerTurnId),
+          {
+            ...current.providerTurns[0]!,
+            id: ProviderTurnId.make("provider-turn:newer"),
+            runAttemptId: RunAttemptId.make("attempt:newer-unrelated"),
+            ordinal: 3,
+            status: "running" as const,
+          },
+        ],
+      }));
+      yield* setTargetStatus("completed");
+      yield* restart("stop");
+      assert.equal((yield* Ref.get(interrupts)).length, 4);
+      yield* Ref.update(projection, (current) => ({
+        ...current,
+        providerTurns: current.providerTurns.map((turn) =>
+          turn.id === providerTurnId ? turn : { ...turn, runAttemptId: attemptId },
+        ),
+      }));
+      yield* restart("stop");
+      assert.equal(
+        (yield* Ref.get(interrupts)).length,
+        5,
+        "The target attempt's own goal continuation belongs to the same stop scope.",
+      );
+      yield* Ref.update(projection, (current) => ({
+        ...current,
+        providerTurns: current.providerTurns.filter((turn) => turn.id === providerTurnId),
+        runs: current.runs.map((run) => ({ ...run, status: "interrupted" as const })),
+      }));
+      yield* restart("stop");
+      assert.equal((yield* Ref.get(interrupts)).length, 5);
+
+      // Restore the recorded binding for an ordinary Stop on the settled turn.
+      yield* Ref.update(projection, (current) => ({
+        ...current,
+        providerThreads: [{ ...providerThread, providerSessionId: oldSessionId }],
+      }));
+      yield* Effect.gen(function* () {
+        const control = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+        yield* control.interrupt({
+          threadId,
+          providerSessionId: oldSessionId,
+          providerThreadId,
+          providerTurnId,
+        });
+      }).pipe(Effect.provide(layerControl));
+      assert.equal((yield* Ref.get(interrupts)).length, 6);
+      assert.isTrue((yield* Ref.get(interrupts))[5]?.requestRuntimeRestart);
+      assert.isUndefined((yield* Ref.get(interrupts))[5]?.replacementFollows);
+
+      // A non-completed root may still own a live native cohort. Only the
+      // runtime can distinguish that from a fully retired historical turn.
+      yield* Ref.update(projection, (current) => ({
+        ...current,
+        providerThreads: [providerThread],
+        runs: current.runs.map((run) => ({ ...run, status: "starting" as const })),
+      }));
+      for (const status of ["failed", "interrupted"] as const) {
+        for (const hold of [undefined, "descendants", "cut-in"] as const) {
+          yield* setTargetStatus(status);
+          yield* Ref.set(endedHold, hold);
+          const before = (yield* Ref.get(interrupts)).length;
+          yield* restart();
+          assert.equal((yield* Ref.get(interrupts)).length, before, "routine restart stays soft");
+          yield* restart("stop");
+          assert.equal(
+            (yield* Ref.get(interrupts)).length,
+            before + (hold === undefined ? 0 : 1),
+            `${status} root with ${hold ?? "no"} native owner`,
+          );
+        }
+      }
+      const stopCaptured = (replacement: ProviderSessionId) =>
+        Effect.gen(function* () {
+          const control = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+          yield* control.interrupt({
+            threadId,
+            providerSessionId: oldSessionId,
+            replacementProviderSessionId: replacement,
+            providerThreadId,
+            providerTurnId,
+          });
+        }).pipe(Effect.provide(layerControl));
+      const beforeCapturedStop = (yield* Ref.get(interrupts)).length;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(stopCaptured(unrelatedSessionId))));
+      assert.equal((yield* Ref.get(interrupts)).length, beforeCapturedStop);
+      yield* stopCaptured(replacementSessionId);
+      assert.equal((yield* Ref.get(interrupts)).length, beforeCapturedStop + 1);
+      assert.equal(
+        (yield* Ref.get(interrupts)).at(-1)?.providerThread.providerSessionId,
+        oldSessionId,
+      );
+      assert.isUndefined((yield* Ref.get(interrupts)).at(-1)?.replacementFollows);
+      yield* Ref.update(projection, (current) => ({
+        ...current,
+        providerThreads: [{ ...providerThread, providerSessionId: unrelatedSessionId }],
+      }));
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(stopCaptured(replacementSessionId))));
+      assert.equal((yield* Ref.get(interrupts)).length, beforeCapturedStop + 1);
     }),
 );
 
-it.effect("steers a running turn with its sender and the thread's MCP app model context", () =>
+it.effect.each([
+  { name: "carries", bare: false },
+  // Fork: a bare thread's steered turn stays as bare as its start.
+  { name: "leaves out", bare: true },
+])("steering a running turn with its sender $name the thread's MCP app model context", ({ bare }) =>
   Effect.gen(function* () {
     const now = yield* DateTime.now;
     const threadId = ThreadId.make("thread:steer-app-context");
@@ -406,27 +609,35 @@ it.effect("steers a running turn with its sender and the thread's MCP app model 
     const layerControl = ProviderTurnControlService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
-          layerProjectionStore(() =>
-            Effect.succeed({
-              providerThread,
-              providerTurn: projection.providerTurns[0],
-              attempt: projection.attempts[0],
-              message: {
-                id: MessageId.make("message:steer-app-context"),
-                text: "What did the app report?",
-                attachments: [],
-                createdBy: "agent",
-                creationSource: "mcp",
-                senderThreadId: ThreadId.make("thread:steer-sender"),
-              } as unknown as NonNullable<
-                ProjectionStore.ProjectionProviderControlContext["message"]
-              >,
-              run: {
-                id: RunId.make("run:steer-app-context"),
-                status: "running",
-                activeAttemptId: attemptId,
-              } as OrchestrationV2Run,
-            }),
+          layerProjectionStore(
+            () =>
+              Effect.succeed({
+                providerThread,
+                providerTurn: projection.providerTurns[0],
+                attempt: projection.attempts[0],
+                message: {
+                  id: MessageId.make("message:steer-app-context"),
+                  text: "What did the app report?",
+                  attachments: [],
+                  createdBy: "agent",
+                  creationSource: "mcp",
+                  senderThreadId: ThreadId.make("thread:steer-sender"),
+                } as unknown as NonNullable<
+                  ProjectionStore.ProjectionProviderControlContext["message"]
+                >,
+                run: {
+                  id: RunId.make("run:steer-app-context"),
+                  status: "running",
+                  activeAttemptId: attemptId,
+                } as OrchestrationV2Run,
+              }),
+            {
+              getThread: () =>
+                Effect.succeed({
+                  ...projection.thread,
+                  ...(bare ? { bare: { additions: [{ type: "mcp", server: "tools" }] } } : {}),
+                } as OrchestrationV2AppThread),
+            },
           ),
           layerSessions(sessionId, runtime),
           Layer.mock(EventSink.EventSinkV2)({}),
@@ -460,14 +671,21 @@ it.effect("steers a running turn with its sender and the thread's MCP app model 
     assert.equal(steered.length, 1);
     assert.equal(
       steered[0]!.message.text,
-      '[T3 Code: the agent in T3 thread "thread:steer-sender" sent this message, not the user.]\n\nWhat did the app report?',
+      bare
+        ? "What did the app report?"
+        : '[T3 Code: the agent in T3 thread "thread:steer-sender" sent this message, not the user.]\n\nWhat did the app report?',
     );
-    assert.deepEqual("appContext" in steered[0]! ? steered[0].appContext : undefined, [
-      {
-        key: "mcp_app_turn-item_call-1",
-        text: "Pressed: blue",
-        updatedAt: "2026-11-23T14:02:17.000Z",
-      },
-    ]);
+    assert.deepEqual(
+      "appContext" in steered[0]! ? steered[0].appContext : undefined,
+      bare
+        ? undefined
+        : [
+            {
+              key: "mcp_app_turn-item_call-1",
+              text: "Pressed: blue",
+              updatedAt: "2026-11-23T14:02:17.000Z",
+            },
+          ],
+    );
   }),
 );
