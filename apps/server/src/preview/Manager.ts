@@ -85,6 +85,7 @@ export class PreviewManager extends Context.Service<
       handler: (input: {
         readonly threadId: string;
         readonly tabId: string;
+        readonly authorize?: Authorize;
       }) => Effect.Effect<void>,
     ) => Effect.Effect<void, never, Scope.Scope>;
     /** Runs before closed events publish, while clients still own their page surfaces. */
@@ -174,7 +175,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
       () => Effect.sync(() => beforeClose.delete(handler)),
     ).pipe(Effect.asVoid);
   const siteHoldClears = new Set<
-    (input: { readonly threadId: string; readonly tabId: string }) => Effect.Effect<void>
+    Parameters<PreviewManager["Service"]["registerSiteHoldClear"]>[0]
   >();
   const registerSiteHoldClear: PreviewManager["Service"]["registerSiteHoldClear"] = (handler) =>
     Effect.acquireRelease(
@@ -435,7 +436,12 @@ export const make = Effect.gen(function* PreviewManagerMake() {
       if (clear === "siteHold")
         yield* Effect.forEach(
           [...siteHoldClears],
-          (handler) => handler({ threadId: rawInput.threadId, tabId: rawInput.tabId }),
+          (handler) =>
+            handler({
+              threadId: rawInput.threadId,
+              tabId: rawInput.tabId,
+              ...(authorize === undefined ? {} : { authorize }),
+            }),
           { discard: true },
         );
       const input: Omit<PreviewAdjustInput, "clear"> & {

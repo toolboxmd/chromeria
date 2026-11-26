@@ -1395,10 +1395,10 @@ const make = Effect.gen(function* () {
   };
 
   const unloadingTabs = new WeakMap<ServerTab, Promise<void>>();
-  yield* manager.registerSiteHoldClear(({ threadId, tabId }) =>
+  yield* manager.registerSiteHoldClear(({ threadId, tabId, authorize }) =>
     Effect.promise(async () => {
       const tab = tabs.get(tabKey(threadId, tabId));
-      if (tab) await settleSiteHold(tab, "clear");
+      if (tab) await settleSiteHold(tab, "clear", authorize);
     }),
   );
   yield* manager.registerBeforeClose((snapshots) =>
@@ -3417,8 +3417,7 @@ const make = Effect.gen(function* () {
   const isolatedScopes = new WeakMap<object, string>();
   /** One scope per cookie jar: a persistent profile per runtime, or one isolated context. */
   const siteHoldScope = (tab: ServerTab) => {
-    if (!tab.isolatedContext)
-      return `${tab.desktop ? "desktop" : "server"}:${tab.profileId ?? DEFAULT_BROWSER_PROFILE_ID}`;
+    if (!tab.isolatedContext) return `profile:${tab.profileId ?? DEFAULT_BROWSER_PROFILE_ID}`;
     const context = tab.page.context();
     let scope = isolatedScopes.get(context);
     if (scope === undefined) {
@@ -3427,10 +3426,11 @@ const make = Effect.gen(function* () {
     }
     return scope;
   };
-  // A fresh isolated context must not become a way around its thread's hold.
+  // A profile's hold covers its desktop and server tabs; a thread's hold also covers its
+  // other tabs, so a fresh incognito tab or a popup is no way around it.
   const siteHoldOf = (tab: ServerTab, url = tab.page.url()) =>
     siteHolds.get(siteHoldScope(tab), siteOf(url)) ??
-    (tab.isolatedContext ? siteHolds.forThread(tab.threadId, siteOf(url)) : undefined);
+    siteHolds.forThread(tab.threadId, siteOf(url));
   const publicSiteHold = ({ site, vendor, kind, url, since }: HeldSite) => ({
     site,
     vendor,
@@ -3481,6 +3481,8 @@ const make = Effect.gen(function* () {
     } catch {
       // The operation reports its own input error.
     }
+    // A check still being classified must not let the next action through.
+    await tab.siteHoldCheck;
     const before = siteHoldOf(tab, target);
     if (before) throw siteHoldError(before);
     const met = async () => {
@@ -3503,7 +3505,11 @@ const make = Effect.gen(function* () {
    * A human release clears the tab's hold only on a verified clean page; Clear hold
    * clears it either way. The hold stays set until classification ends.
    */
-  const settleSiteHold = async (tab: ServerTab, how: "release" | "clear") => {
+  const settleSiteHold = async (
+    tab: ServerTab,
+    how: "release" | "clear",
+    authorize: () => Promise<void> = async () => {},
+  ) => {
     for (const [scope, hold] of siteHolds.heldBy(tab.tabId)) {
       await tab.siteHoldCheck;
       // Only an observed main document on the held site, with no check on it, is verified
@@ -3519,6 +3525,8 @@ const make = Effect.gen(function* () {
         generation[0] === tab.navigationGeneration &&
         generation[1] === tab.control.generation;
       if (!verified && how === "release") continue;
+      // The person's access is checked again right before the hold goes.
+      await authorize();
       if (!siteHolds.clear(scope, hold)) continue;
       runFork(Effect.logInfo("Site hold cleared", { site: hold.site, verified }));
       // Another site this tab still holds keeps its banner.
@@ -3619,7 +3627,8 @@ const make = Effect.gen(function* () {
             ? siteHoldOf(existing, url)
             : profileId === undefined || profileId === INCOGNITO_BROWSER_PROFILE_ID
               ? siteHolds.forThread(request.threadId, siteOf(url))
-              : siteHolds.get(`server:${profileId}`, siteOf(url));
+              : (siteHolds.get(`profile:${profileId}`, siteOf(url)) ??
+                siteHolds.forThread(request.threadId, siteOf(url)));
           if (held) throw siteHoldError(held);
         }
         if (!existing) await authorize();
@@ -3655,7 +3664,12 @@ const make = Effect.gen(function* () {
                 reason: "dialogPending",
               });
             if (existing) {
-              if (url) await navigate(tab, url, "load", navigationTimeout);
+              if (url) {
+                // A hold may have been raised while this open waited for the tab.
+                const held = siteHoldOf(tab, url);
+                if (held) throw siteHoldError(held);
+                await navigate(tab, url, "load", navigationTimeout);
+              }
             } else {
               // A failed open returns no tabId; a leftover hidden tab would block later reuse.
               await Promise.resolve(tab.initialNavigation)
