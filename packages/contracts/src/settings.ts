@@ -1459,6 +1459,10 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SPECTRUM_SETTINGS)),
   ),
   prismRoles: PrismRoleKits.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  /** Codex instances Prism may run on credits once their plan windows are spent; absent means on. */
+  prismUseCredits: Schema.Record(ProviderInstanceId, Schema.Boolean).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   worktreeCleanup: WorktreeCleanup.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   storageCleanup: StorageCleanupSettings.pipe(
     Schema.withDecodingDefault(Effect.succeed(Schema.decodeSync(StorageCleanupSettings)({}))),
@@ -1942,6 +1946,7 @@ export const ServerSettingsPatch = Schema.Struct({
     }),
   ),
   prismRoles: Schema.optionalKey(PrismRoleKitsPatch),
+  prismUseCredits: Schema.optionalKey(Schema.Record(ProviderInstanceId, Schema.Boolean)),
   spectrum: Schema.optionalKey(SpectrumSettings),
   threadIdleModes: Schema.optionalKey(Schema.Record(ThreadId, Schema.NullOr(ThreadIdleMode))),
   // Applied under the settings write lock, only to an entry that is still the `expected` activation.

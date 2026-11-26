@@ -1,4 +1,5 @@
 import { colorModelSelection, invalidOptionSelections } from "./modelOptions.ts";
+import { codexCreditAdmission } from "./CodexCredits.ts";
 import { unsupportedBare } from "@t3tools/provider-core/server/bareLaunch";
 import {
   DEFAULT_PRISM_LANE,
@@ -306,8 +307,14 @@ const make = Effect.gen(function* () {
         }
         const block = usageBlock(provider, failures, now);
         if (block !== undefined) {
-          skip(candidate, block);
-          continue;
+          // Credits cover only spent plan windows, never a recorded usage-limit failure.
+          const credits = failures.some((f) => f.provider_instance_id === candidate.instanceId)
+            ? { admitted: false as const }
+            : yield* codexCreditAdmission(provider, now, settings.getSettings);
+          if (!credits.admitted) {
+            skip(candidate, credits.reason ? `${block}; credits cannot cover it: ${credits.reason}` : block);
+            continue;
+          }
         }
         // A validator can re-probe stale unavailable snapshots before refusing the candidate.
         const rechecking = provider.availability === "unavailable" && input.validate !== undefined;

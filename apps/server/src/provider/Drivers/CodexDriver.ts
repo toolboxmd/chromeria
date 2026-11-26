@@ -30,8 +30,10 @@ import {
   checkCodexProviderStatus,
   makePendingCodexProvider,
   makeCodexSkillsProbe,
+  readCodexAccountLimits,
   withCodexAppServerClient,
 } from "../CodexProvider.ts";
+import { registerCodexCreditRead } from "../../prism/CodexCredits.ts";
 import { resolveCodexLaunchArgs } from "../codexLaunchArgs.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
@@ -404,6 +406,28 @@ export const CodexDriver: ProviderDriver<
             ),
           ),
         );
+
+    yield* registerCodexCreditRead(
+      instanceId,
+      readCodexAccountLimits({
+        binaryPath: effectiveConfig.binaryPath,
+        homePath: effectiveConfig.homePath,
+        launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+        cwd: process.cwd(),
+        environment: processEnv,
+      }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.mapError(
+          (cause) =>
+            new ProviderDriverError({
+              driver: DRIVER_KIND,
+              instanceId,
+              detail: "Codex could not read its account limits.",
+              cause,
+            }),
+        ),
+      ),
+    );
 
     // `codex login` and `codex logout` rewrite auth.json outside T3.
     if (effectiveConfig.enabled) {

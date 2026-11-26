@@ -7,13 +7,19 @@ import {
   type ServerProvider,
   type ProviderOptionSelection,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 import * as Database from "../persistence/Sqlite.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
 import * as Settings from "../serverSettings.ts";
 import * as Prism from "./PrismService.ts";
+import { CodexCreditReads, registerCodexCreditRead } from "./CodexCredits.ts";
+import type { CodexAccountLimits } from "../provider/CodexProvider.ts";
+import { ProviderDriverError } from "../provider/Errors.ts";
 import * as Adapters from "../orchestration-v2/ProviderAdapterRegistry.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
@@ -771,3 +777,254 @@ it.effect(
       );
     }),
 );
+
+describe("Codex on credits", () => {
+  const weekly = {
+    id: "secondary",
+    kind: "weekly" as const,
+    label: "Weekly",
+    usedPercent: 100,
+    resetsAt: "2026-12-01T00:00:00Z",
+  };
+  const plan = { secondary: { usedPercent: 100, resetsAt: 1_796_083_200 } };
+  const spendable = { hasCredits: true, unlimited: false, balance: "60011" };
+  const native = (rateLimits: object): CodexAccountLimits => ({
+    route: "native",
+    rateLimits: { ...plan, ...rateLimits },
+  });
+  const failedRead = Effect.fail(
+    new ProviderDriverError({
+      driver: ProviderDriverKind.make("codex"),
+      instanceId,
+      detail: "Codex could not read its account limits.",
+    }),
+  );
+  const resolveOnCredits = Effect.fn("test.resolveOnCredits")(function* (input: {
+    readonly read: Effect.Effect<CodexAccountLimits, ProviderDriverError>;
+    readonly patch?: (p: ServerProvider) => ServerProvider;
+    readonly useCredits?: boolean;
+    readonly resolves?: number;
+  }) {
+    const p = yield* provider;
+    let reads = 0;
+    const started = yield* Deferred.make<void>();
+    const outcomes = yield* Effect.gen(function* () {
+      yield* registerCodexCreditRead(
+        instanceId,
+        Effect.suspend(() => {
+          reads++;
+          return Deferred.succeed(started, undefined).pipe(Effect.andThen(input.read));
+        }),
+      );
+      const service = yield* Prism.PrismService;
+      const resolve = service.resolve({ projectId, role: "reviewer" }).pipe(
+        Effect.map((result) => `admitted ${result.modelSelection.instanceId}`),
+        Effect.catch((error) => Effect.succeed(error.message)),
+      );
+      const outcomes: Array<string> = [];
+      for (let index = 0; index < (input.resolves ?? 1); index++) {
+        if (input.read === Effect.never) {
+          const fiber = yield* Effect.forkChild(resolve);
+          yield* Deferred.await(started);
+          yield* TestClock.adjust("10 seconds");
+          outcomes.push(yield* Fiber.join(fiber));
+        } else {
+          outcomes.push(yield* resolve);
+          yield* TestClock.adjust("10 seconds");
+        }
+      }
+      return outcomes;
+    }).pipe(
+      Effect.scoped,
+      Effect.provideService(CodexCreditReads, new Map()),
+      Effect.provide(
+        Prism.layer.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              registry([
+                (input.patch ?? ((value) => value))({
+                  ...p,
+                  usageLimits: { checkedAt: "2026-11-26T00:00:00Z", windows: [weekly] },
+                }),
+              ]),
+              Settings.layerTest({
+                prismRoles: { reviewer: { models: [selection] } },
+                ...(input.useCredits === undefined
+                  ? {}
+                  : { prismUseCredits: { [instanceId]: input.useCredits } }),
+              }),
+            ),
+          ),
+        ),
+      ),
+    );
+    return { outcomes, reads };
+  });
+  const skippedFor = (reason: string) =>
+    "No eligible model with usage headroom for this Prism role and lane. Skipped: " +
+    `codex/configured: provider usage limit reached${reason ? `; credits cannot cover it: ${reason}` : ""}.`;
+
+  it.effect.each([
+    {
+      name: "spendable credits cover a spent weekly window",
+      read: Effect.succeed(native({ credits: spendable })),
+      expected: "admitted codex",
+      reads: 1,
+    },
+    {
+      name: "unlimited credits cover it",
+      read: Effect.succeed(native({ credits: { hasCredits: false, unlimited: true } })),
+      expected: "admitted codex",
+      reads: 1,
+    },
+    {
+      name: "the switch off skips without a read",
+      read: Effect.succeed(native({ credits: spendable })),
+      useCredits: false,
+      expected: skippedFor("Use credits is off for this instance"),
+      reads: 0,
+    },
+    {
+      name: "the switch on explicitly admits",
+      read: Effect.succeed(native({ credits: spendable })),
+      useCredits: true,
+      expected: "admitted codex",
+      reads: 1,
+    },
+    {
+      name: "no credits reported",
+      read: Effect.succeed(native({})),
+      expected: skippedFor("Codex reported no credits"),
+      reads: 1,
+    },
+    {
+      name: "hasCredits false",
+      read: Effect.succeed(native({ credits: { hasCredits: false, unlimited: false } })),
+      expected: skippedFor("the account has no credits"),
+      reads: 1,
+    },
+    {
+      name: "spend control reached",
+      read: Effect.succeed(native({ credits: spendable, spendControlReached: true })),
+      expected: skippedFor("spend control is reached"),
+      reads: 1,
+    },
+    {
+      name: "workspace credits depleted",
+      read: Effect.succeed(
+        native({
+          credits: spendable,
+          rateLimitReachedType: "workspace_member_credits_depleted",
+        }),
+      ),
+      expected: skippedFor("the workspace reports workspace_member_credits_depleted"),
+      reads: 1,
+    },
+    {
+      name: "the read's monthly credit cap is spent",
+      read: Effect.succeed(
+        native({
+          credits: spendable,
+          individualLimit: {
+            limit: "100",
+            used: "100",
+            remainingPercent: 0,
+            resetsAt: 1_796_083_200,
+          },
+        }),
+      ),
+      expected: skippedFor("the monthly credit cap is spent until 2026-12-01T00:00:00.000Z"),
+      reads: 1,
+    },
+    {
+      name: "the snapshot's monthly credit cap is spent, without a read",
+      read: Effect.succeed(native({ credits: spendable })),
+      patch: (p: ServerProvider) => ({
+        ...p,
+        usageLimits: {
+          checkedAt: "2026-11-26T00:00:00Z",
+          windows: [
+            weekly,
+            {
+              ...weekly,
+              id: "individual",
+              kind: "monthly" as const,
+              label: "Monthly credit limit",
+            },
+          ],
+        },
+      }),
+      expected: skippedFor("the monthly credit cap is spent until 2026-12-01T00:00:00Z"),
+      reads: 0,
+    },
+    {
+      name: "a proxy route in the snapshot skips without a read",
+      read: Effect.succeed(native({ credits: spendable })),
+      patch: (p: ServerProvider) => ({
+        ...p,
+        usageLimits: {
+          checkedAt: "2026-11-26T00:00:00Z",
+          windows: [weekly],
+          unavailable: { reason: "unsupported" as const },
+        },
+      }),
+      expected: skippedFor("its route does not spend the Codex account's own quota"),
+      reads: 0,
+    },
+    {
+      name: "a route the read finds is not the account's own",
+      read: Effect.succeed({ route: "other" } satisfies CodexAccountLimits),
+      expected: skippedFor("its route does not spend the Codex account's own quota"),
+      reads: 1,
+    },
+    {
+      name: "a failed read",
+      read: failedRead,
+      expected: skippedFor("the credit read failed"),
+      reads: 1,
+    },
+    {
+      name: "a read that does not answer within the bound",
+      read: Effect.never,
+      expected: skippedFor("the credit read timed out after 10s"),
+      reads: 1,
+    },
+    {
+      name: "a Codex instance with headroom makes no read",
+      read: Effect.succeed(native({ credits: spendable })),
+      patch: (p: ServerProvider) => ({ ...p, usageLimits: { ...p.usageLimits!, windows: [] } }),
+      expected: "admitted codex",
+      reads: 0,
+    },
+    {
+      name: "another driver keeps main's skip and makes no read",
+      read: Effect.succeed(native({ credits: spendable })),
+      patch: (p: ServerProvider) => ({ ...p, driver: ProviderDriverKind.make("claudeAgent") }),
+      expected: skippedFor(""),
+      reads: 0,
+    },
+  ])("$name", ({ read, patch, useCredits, expected, reads }) =>
+    Effect.gen(function* () {
+      const result = yield* resolveOnCredits({
+        read,
+        ...(patch ? { patch } : {}),
+        ...(useCredits === undefined ? {} : { useCredits }),
+      });
+      assert.deepStrictEqual(result, { outcomes: [expected], reads });
+    }),
+  );
+
+  it.effect("reuses one read briefly, by its own read time", () =>
+    Effect.gen(function* () {
+      // Each resolve advances the clock by 10 seconds; the seventh starts 60 seconds after the first read.
+      const result = yield* resolveOnCredits({
+        read: Effect.succeed(native({ credits: spendable })),
+        resolves: 7,
+      });
+      assert.deepStrictEqual(result, {
+        outcomes: Array.from({ length: 7 }, () => "admitted codex"),
+        reads: 2,
+      });
+    }),
+  );
+});
