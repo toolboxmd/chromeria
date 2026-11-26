@@ -105,21 +105,6 @@ describe("classifyAntiBotPage", () => {
   });
 });
 
-describe("classifyAntiBotPage without a status", () => {
-  it("judges a page whose response was not observed by its content", () => {
-    expect(
-      classifyAntiBotPage({
-        status: undefined,
-        headers: {},
-        html: `<iframe src="https://geo.captcha-delivery.com/captcha/"></iframe>`,
-      }),
-    ).toEqual({ vendor: "datadome", kind: "challenge" });
-    expect(
-      classifyAntiBotPage({ status: undefined, headers: {}, html: "<p>Results</p>" }),
-    ).toBeUndefined();
-  });
-});
-
 describe("siteOf", () => {
   it("holds a registrable domain, so subdomains share one hold", () => {
     expect(siteOf("https://www.allegro.pl/listing?string=x")).toBe("allegro.pl");

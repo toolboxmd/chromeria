@@ -3595,10 +3595,26 @@ it.live(
         ).toMatchObject({ reason: "antiBotChallenge" });
         expect(requests.length, "a held site gets no request").toBe(sent);
 
+        yield* Effect.promise(() =>
+          context.route("https://elsewhere.test/**", (route) =>
+            route.fulfill({
+              status: 200,
+              contentType: "text/html",
+              body: "<title>Elsewhere</title>",
+            }),
+          ),
+        );
         const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+        const page = context.pages()[0]!;
+        yield* viewer.input({ type: "takeControl" });
+        yield* Effect.promise(() => page.goto("https://elsewhere.test/"));
+        yield* viewer.input({ type: "releaseControl" });
+        expect(
+          (yield* manager.list({ threadId: scope.thread.threadId })).sessions[0]?.siteHold,
+          "a release on another site proves nothing about the held one",
+        ).toBeDefined();
         yield* viewer.input({ type: "takeControl" });
         challenged = false;
-        const page = context.pages()[0]!;
         yield* Effect.promise(() => page.goto("https://www.shop.test/search?q=cat+food"));
         expect(
           (yield* invoke("status", {})).siteHold,

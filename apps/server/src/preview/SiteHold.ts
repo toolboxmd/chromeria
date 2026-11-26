@@ -8,8 +8,7 @@ export interface AntiBotVerdict {
 }
 
 export interface MainDocument {
-  /** Undefined when the response was not observed, such as after a reconnect: judge by content. */
-  readonly status: number | undefined;
+  readonly status: number;
   /** Lower-case names, as Playwright reports them. */
   readonly headers: Readonly<Record<string, string>>;
   readonly html: string;
@@ -23,7 +22,7 @@ export interface MainDocument {
 export const classifyAntiBotPage = (page: MainDocument): AntiBotVerdict | undefined => {
   const { status, headers, html } = page;
   if (headers["cf-mitigated"] === "challenge") return { vendor: "cloudflare", kind: "challenge" };
-  if (status !== undefined && status < 400) return undefined;
+  if (status < 400) return undefined;
   if (/captcha-delivery\.com/.test(html))
     // DataDome's page config marks a ban as `'t':'bv'`; anything else can be passed.
     return {
@@ -45,7 +44,7 @@ export const classifyAntiBotPage = (page: MainDocument): AntiBotVerdict | undefi
     /errors\.edgesuite\.net/.test(html)
   )
     return { vendor: "akamai", kind: "blocked" };
-  if (headers.server === "cloudflare" || status === undefined) {
+  if (headers.server === "cloudflare") {
     if (/cf-chl-|challenge-platform|_cf_chl_opt/.test(html))
       return { vendor: "cloudflare", kind: "challenge" };
     // Cloudflare's 5xx pages share `cf-error-details`; only the firewall block says this.

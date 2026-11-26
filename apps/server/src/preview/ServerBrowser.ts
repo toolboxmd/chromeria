@@ -3480,20 +3480,15 @@ const make = Effect.gen(function* () {
   const settleSiteHold = async (tab: ServerTab, how: "release" | "clear") => {
     for (const [scope, hold] of siteHolds.heldBy(tab.tabId)) {
       await tab.siteHoldCheck;
-      const html = await tab.page.content().catch(() => "");
-      const verdict =
-        siteOf(tab.page.url()) === hold.site
-          ? classifyAntiBotPage({
-              status: tab.mainDocument?.status,
-              headers: tab.mainDocument?.headers ?? {},
-              html,
-            })
-          : undefined;
-      if (verdict && how === "release") continue;
+      // Only an observed main document on the held site, with no check on it, is verified clean.
+      const document = siteOf(tab.page.url()) === hold.site ? tab.mainDocument : null;
+      const verified =
+        document !== null &&
+        classifyAntiBotPage({ ...document, html: await tab.page.content().catch(() => "") }) ===
+          undefined;
+      if (!verified && how === "release") continue;
       if (!siteHolds.clear(scope, hold)) continue;
-      runFork(
-        Effect.logInfo("Site hold cleared", { site: hold.site, verified: verdict === undefined }),
-      );
+      runFork(Effect.logInfo("Site hold cleared", { site: hold.site, verified }));
       await runPromise(
         manager
           .setSiteHold({
@@ -3503,7 +3498,7 @@ const make = Effect.gen(function* () {
           })
           .pipe(Effect.ignore),
       );
-      await runPromise(notifySiteHoldCleared(hold, verdict === undefined));
+      await runPromise(notifySiteHoldCleared(hold, verified));
     }
   };
 
