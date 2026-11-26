@@ -90,6 +90,8 @@ export class ResetRedemptions extends Context.Service<
     /**
      * A reset redeemed for this login elsewhere: refresh the instance's usage, then void the
      * failures that block it now. Refreshing first keeps a stale window from admitting it.
+     * Runs to its end once started, even if the caller stops waiting; the provider's own refresh
+     * timeout bounds it.
      */
     readonly clearRedeemed: (
       instance: { readonly instanceId: ProviderInstanceId; readonly driver: ProviderDriverKind },
@@ -191,7 +193,7 @@ const make = Effect.gen(function* () {
           ? "unread"
           : "exhausted",
     } satisfies ProviderClearRedeemedResetResult;
-  });
+  }, Effect.uninterruptible);
   return ResetRedemptions.of({ redeem, clearRedeemed });
 });
 

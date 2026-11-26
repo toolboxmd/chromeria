@@ -8,12 +8,17 @@ import {
   type ProviderConsumeResetCreditOutcome,
   type ServerProvider,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import { Atom, AtomRegistry } from "effect/reactivity";
 import * as TestClock from "effect/testing/TestClock";
 import { EnvironmentRpcUnavailableError } from "../rpc/client.ts";
-import { redeemResetCreditCommand, type RedeemedResetEnvironment } from "./redeemedReset.ts";
+import {
+  redeemResetCreditCommand,
+  redeemedResetLineText,
+  type RedeemedResetEnvironment,
+} from "./redeemedReset.ts";
 
 const bestia = EnvironmentId.make("bestia");
 const rocky = EnvironmentId.make("rocky");
@@ -168,11 +173,24 @@ describe("redeemResetCreditCommand", () => {
         yield* TestClock.adjust("10 seconds");
         const result = yield* Fiber.join(fiber);
         expect(result.outcome).toBe("reset");
-        expect(result.machines.map(({ label, reach }) => [label, reach])).toEqual([
-          ["bestia · Claude work", "cleared"],
-          ["rocky", "notReached"],
-          ["cavallo", "notReached"],
+        expect(result.machines.map((line) => redeemedResetLineText(line))).toEqual([
+          "bestia · Claude work: cleared.",
+          "rocky: not reached, so its old block remains.",
+          "cavallo: no answer within 10 seconds; it clears itself if it received the call.",
         ]);
       }),
+  );
+
+  it.effect("waits for machines that do not answer side by side, not one after another", () =>
+    Effect.gen(function* () {
+      const { run } = setup("reset", { rocky: "hangs", cavallo: "hangs" });
+      const fiber = yield* run(redeemClaude).pipe(
+        Effect.andThen(Clock.currentTimeMillis),
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("10 seconds");
+      yield* TestClock.adjust("10 seconds");
+      expect(yield* Fiber.join(fiber)).toBe(10_000);
+    }),
   );
 });

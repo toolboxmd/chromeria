@@ -14,7 +14,9 @@ import {
   type ProviderConsumeResetCreditOutcome,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
@@ -510,6 +512,28 @@ describe("Prism capacity from durable run failures", () => {
       }).pipe(Effect.provide(withRedemptions(deps)));
     },
   );
+
+  it.effect("finishes a reset redeemed elsewhere after the caller stops waiting", () => {
+    const deps = dependencies(false, [limited]);
+    return Effect.gen(function* () {
+      yield* seed();
+      const refreshing = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const refresh = Deferred.succeed(refreshing, undefined).pipe(
+        Effect.andThen(Deferred.await(release)),
+      );
+      const clearing = yield* clearRedeemed(refresh).pipe(Effect.forkChild);
+      yield* Deferred.await(refreshing);
+      // Starts at once, so the interrupt is sent before the slow refresh ends.
+      const caller = yield* Fiber.interrupt(clearing).pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(caller);
+      assert.deepStrictEqual(yield* voided, [{ turn_item_id: errorFor(recoveryRun).id }]);
+      assert.deepStrictEqual((yield* resolve()).modelSelection, limited);
+    }).pipe(Effect.provide(withRedemptions(deps)));
+  });
 
   it.effect.each([
     { case: "the fresh read is still exhausted", readFailed: false, usage: "exhausted" },

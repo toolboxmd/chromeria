@@ -16,7 +16,7 @@ import type { MFunctionType } from "gt-i18n/types";
 import type * as EnvironmentRegistry from "../connection/registry.ts";
 import { type AtomCommand, createEnvironmentRpcCommand } from "./runtime.ts";
 
-/** How long the redemption's answer waits for the other machines; the slowest is "not reached". */
+/** How long the redemption's answer waits for the other machines; a server that got the call still finishes. */
 const REDEEMED_RESET_ANSWER_TIMEOUT = "10 seconds";
 
 export interface RedeemedResetEnvironment {
@@ -71,7 +71,7 @@ function instancesWithRedeemedLogin(
   });
 }
 
-export type RedeemedResetReach = "cleared" | "exhausted" | "unread" | "notReached";
+export type RedeemedResetReach = "cleared" | "exhausted" | "unread" | "noAnswer" | "notReached";
 
 export interface RedeemedResetLine extends RedeemedResetHolder {
   readonly reach: RedeemedResetReach;
@@ -134,7 +134,7 @@ export function redeemResetCreditCommand<E, C>(options: {
                   Effect.map((answer): RedeemedResetLine => ({
                     ...holder,
                     reach: Option.match(answer, {
-                      onNone: () => "notReached",
+                      onNone: () => "noAnswer",
                       onSome: ({ usage }) => REACH[usage],
                     }),
                   })),
@@ -178,6 +178,12 @@ export function redeemedResetLineText(
     case "unread":
       return resolve(
         msg("{machine}: usage could not be read, so its old exhausted window still blocks it.", {
+          machine,
+        }),
+      );
+    case "noAnswer":
+      return resolve(
+        msg("{machine}: no answer within 10 seconds; it clears itself if it received the call.", {
           machine,
         }),
       );
