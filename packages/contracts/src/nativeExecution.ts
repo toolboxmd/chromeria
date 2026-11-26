@@ -1,6 +1,13 @@
 import * as Schema from "effect/Schema";
 
-import { IsoDateTime, NodeId, RunId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  IsoDateTime,
+  NodeId,
+  NonNegativeInt,
+  RunId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import { ExecutionPurpose } from "./executionPurpose.ts";
 
 /** Native evidence is separate from display cursors and inferred turn references. */
@@ -15,6 +22,38 @@ export const NativeInputEvidence = Schema.Struct({
   ]),
 });
 export type NativeInputEvidence = typeof NativeInputEvidence.Type;
+
+/** Why a provider turn's main-agent counters may not be all of its model usage. */
+export const UsageClosureOpenReason = Schema.Literals([
+  "turn_not_completed",
+  "usage_incomplete",
+  "native_child_observed",
+  "native_child_running",
+  "ledger_baseline_unproven",
+  "ledger_growth_outside_root_model",
+  "ledger_mismatch",
+  "usage_stream_broken",
+  "usage_unattributed",
+  "prompt_suggestion_sampled",
+]);
+export type UsageClosureOpenReason = typeof UsageClosureOpenReason.Type;
+
+/** Whether a provider turn's main-agent counters are all of the model usage the turn caused. */
+export const UsageClosure = Schema.Union([
+  Schema.Struct({
+    version: Schema.Literal(1),
+    state: Schema.Literal("main_agent_only"),
+    witness: Schema.Literals(["process_ledger", "event_stream"]),
+    /** In-turn compactions whose usage turnTokenUsage leaves out. */
+    uncountedCompactions: NonNegativeInt,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    state: Schema.Literal("open"),
+    reason: UsageClosureOpenReason,
+  }),
+]);
+export type UsageClosure = typeof UsageClosure.Type;
 
 export const NativeExecutionSegment = Schema.Struct({
   version: Schema.Literal(1),

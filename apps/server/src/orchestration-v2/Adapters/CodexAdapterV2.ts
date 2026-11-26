@@ -347,6 +347,13 @@ const decodeCodexBackgroundTerminalsListResponse = Schema.decodeUnknownEffect(
 );
 // Initialize normally answers in under a second; leave room for a slow first launch.
 const CODEX_INITIALIZE_TIMEOUT = "30 seconds";
+// Collab calls that make an existing child do model work.
+const CODEX_CHILD_WORK_TOOLS: ReadonlySet<string> = new Set([
+  "sendInput",
+  "resumeAgent",
+  "sendMessage",
+  "followupTask",
+]);
 const CodexThreadSampleResponse = Schema.Struct({ text: Schema.NullOr(Schema.String) });
 const decodeCodexThreadSampleResponse = Schema.decodeUnknownEffect(CodexThreadSampleResponse);
 export const CODEX_PROMPT_SUGGESTION_PROMPT =
@@ -1488,6 +1495,8 @@ interface ActiveCodexTurnContext {
   readonly subagent: CodexSubagentThreadContext | null;
   readonly startedAt: DateTime.Utc;
   readonly runningCompactionItemIds: Set<string>;
+  // Every context compaction in the turn; Codex reports no usage for them.
+  readonly compactionItemIds: Set<string>;
   readonly runningWebSearchItems: Map<string, CodexWebSearchItem>;
   // Modern approval requests omit paths; keep the kinds without retaining patch bodies.
   readonly fileChangeKindsByItem: Map<string, CodexFileChangeKinds>;
@@ -2487,6 +2496,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             context.nativeTurnId,
           ).hasSubagents = true;
         };
+        // A retried response's usage reaches no usage notification.
+        const markUsageStreamBroken = (context: ActiveCodexTurnContext) => {
+          const nativeThreadId = context.providerThread.nativeThreadRef?.nativeId;
+          if (!nativeThreadId) return;
+          getCodexTurnAccumulator(
+            usageStateForThread(nativeThreadId),
+            context.nativeTurnId,
+          ).streamBroken = true;
+        };
         const pendingRootTurns = yield* Ref.make(
           new Map<string, ProviderAdapter.ProviderAdapterV2TurnInput>(),
         );
@@ -2932,6 +2950,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             messagePhases: new Map(),
             asyncMessageIds: new Set(),
             runningCompactionItemIds: new Set(),
+            compactionItemIds: new Set(),
             runningWebSearchItems: new Map(),
           };
           const nativeThreadId = input.turnInput.providerThread.nativeThreadRef?.nativeId;
@@ -3665,6 +3684,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               messagePhases: new Map(),
               asyncMessageIds: new Set(),
               runningCompactionItemIds: new Set(),
+              compactionItemIds: new Set(),
               runningWebSearchItems: new Map(),
             };
             cutIn?.targets.set(turn.nativeTurnId, activeContext);
@@ -5909,6 +5929,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }).pipe(turnTerminalizationPermit.withPermits(1)),
         );
 
+        // Codex reviews auto-mode approvals with a subagent whose usage the turn's stream may omit.
+        yield* client.handleServerNotification("item/autoApprovalReview/started", (payload) =>
+          Effect.gen(function* () {
+            const context = (yield* Ref.get(activeTurns)).get(payload.turnId);
+            if (context !== undefined) markSubagentUsage(context);
+          }),
+        );
+
         yield* client.handleServerNotification("error", (payload) =>
           Effect.gen(function* () {
             const context = yield* awaitActiveTurn(payload.turnId);
@@ -5937,6 +5965,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               };
               return;
             }
+            markUsageStreamBroken(context);
             const updatedAt = yield* DateTime.now;
             const previous = (yield* Ref.get(providerRetries)).get(context.providerTurnId);
             const progress = parseCodexRetryProgress(payload.error.message);
@@ -6018,6 +6047,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             nativeItemId,
             updatedAt,
           );
+          context.compactionItemIds.add(nativeItemId);
           if (status === "running") context.runningCompactionItemIds.add(nativeItemId);
           else context.runningCompactionItemIds.delete(nativeItemId);
           yield* emitProviderEvent({
@@ -6260,6 +6290,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return;
             }
             if (payload.item.type === "collabAgentToolCall" && payload.item.tool !== "spawnAgent") {
+              if (
+                CODEX_CHILD_WORK_TOOLS.has(payload.item.tool) &&
+                payload.item.receiverThreadIds.length > 0
+              ) {
+                const owner = yield* resolveItemEventContext(payload.turnId);
+                if (owner !== undefined) markSubagentUsage(owner.context);
+              }
               if (payload.item.tool === "resumeAgent" || payload.item.tool === "sendInput") {
                 const owner = yield* resolveItemEventContext(payload.turnId);
                 if (owner !== undefined) {
@@ -7863,6 +7900,27 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 (goalsByNativeThread.get(nativeThreadId)?.status === "active" ||
                   (activation !== undefined && !activation.stopped));
               const executedModel = reportedTurnModel(nativeThreadId ?? "", input.nativeTurnId);
+              const { turnTokenUsage, usageClosure } = completeCodexTurnTokenUsage(
+                usageStateForThread(nativeThreadId ?? String(input.context.providerThread.id)),
+                input.nativeTurnId,
+                input.status === "completed",
+                executedModel,
+                {
+                  childThreadActive:
+                    (yield* Ref.get(pendingSubagentTurns)).size > 0 ||
+                    [...(yield* Ref.get(subagentThreads)).values()].some(
+                      (subagent) =>
+                        subagent.task.status === "running" &&
+                        subagent.parentContext.providerThread.id ===
+                          input.context.providerThread.id,
+                    ),
+                  promptSampling:
+                    input.context.subagent === null &&
+                    !isDelegatedAppThread(input.context.input.appThread) &&
+                    (yield* promptSuggestionsEnabled),
+                  compactions: input.context.compactionItemIds.size,
+                },
+              );
               const completedTurn: OrchestrationV2ProviderTurn = {
                 id: input.context.providerTurnId,
                 providerThreadId: input.context.providerThread.id,
@@ -7886,15 +7944,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 status: input.status,
                 startedAt: input.context.startedAt,
                 completedAt: input.completedAt,
-                turnTokenUsage: completeCodexTurnTokenUsage(
-                  usageStateForThread(
-                    input.context.providerThread.nativeThreadRef?.nativeId ??
-                      String(input.context.providerThread.id),
-                  ),
-                  input.nativeTurnId,
-                  input.status === "completed",
-                  executedModel,
-                ),
+                turnTokenUsage,
+                usageClosure,
                 ...(executedModel === undefined ? {} : { model: executedModel }),
               };
               if (!holdsForGoal && !withheld) {
@@ -8432,6 +8483,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             messagePhases: new Map(),
             asyncMessageIds: new Set(),
             runningCompactionItemIds: new Set(),
+            compactionItemIds: new Set(),
             runningWebSearchItems: new Map(),
           };
           const providerTurn = {

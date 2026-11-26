@@ -41,9 +41,12 @@ import {
   claudeLedgerDelta,
   claudeModelLedger,
   claudeReportedContextWindows,
+  claudeTranscriptRestoredLedger,
+  claudeUsageClosure,
   normalizeClaudeTurnTokenUsage,
   type ClaudeLedgerUsage,
   type ClaudeModelLedger,
+  type ClaudeUsageCounters,
 } from "../../provider/ClaudeTurnTokenUsage.ts";
 import { toMcpElicitationResponse } from "../../provider/CodexMcpElicitation.ts";
 import {
@@ -5636,6 +5639,11 @@ interface ActiveClaudeTurnContext {
   // Ledger growth of the steered segments; undefined once any segment's growth is unknown.
   steeredLedgerUsage: ClaudeLedgerUsage | undefined;
   readonly rootModels: Set<string>;
+  // Native ids of the responses the main agent streamed, including after injected inputs.
+  readonly nativeResponseIds: Set<string>;
+  // The session's count of model-capable native task starts when this turn began.
+  readonly nativeChildStartsBefore: number;
+  readonly promptSuggestions: boolean;
   readonly subagentsByTaskId: Map<string, ActiveClaudeSubagent>;
   readonly subagentsByToolUseId: Map<string, ActiveClaudeSubagent>;
   readonly promptUuid: string | null;
@@ -5734,8 +5742,11 @@ interface ClaudeLiveQueryContext {
   readonly subagentsFromEarlierProcesses: ReadonlySet<ActiveClaudeSubagent>;
   // Subagents this process still ran when a replacement took over; only its exit can end them.
   handedOffSubagents: ReadonlySet<ActiveClaudeSubagent>;
-  // The SDK's per-process model ledger at the last result; a new process starts at zero.
-  modelLedger: ClaudeModelLedger | undefined;
+  // Suggestions run after a result, so their model call is outside the turn that caused it.
+  readonly promptSuggestions: boolean;
+  // The SDK's per-process model ledger at the last result. A resumed process starts from the
+  // ledger Claude restores, which only an exact match with the main agent's usage proves.
+  modelLedger: { readonly ledger: ClaudeModelLedger; readonly restored: boolean } | undefined;
   // Per process, not per session: a relative temp dir follows the cwd this CLI
   // was launched in, and a later turn's cwd can differ.
   readonly taskOutputRoot: string | undefined;
@@ -6546,6 +6557,46 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const queryContext = yield* Ref.make<ClaudeLiveQueryContext | null>(null);
         // Wake buffers replay result frames, so ledger growth is measured once on arrival.
         const resultLedgerUsage = new WeakMap<SDKMessage, ClaudeLedgerUsage>();
+        // Native tasks that can call a model, by session: every one not known to be a shell
+        // command, until its notification or a roster that no longer lists it.
+        const nativeChildTasks = new Map<
+          string,
+          { starts: number; readonly live: Map<string, string | null> }
+        >();
+        const nativeChildTasksFor = (nativeThreadId: string) => {
+          let tasks = nativeChildTasks.get(nativeThreadId);
+          if (tasks === undefined) {
+            tasks = { starts: 0, live: new Map() };
+            nativeChildTasks.set(nativeThreadId, tasks);
+          }
+          return tasks;
+        };
+        const observeNativeChildTask = (nativeThreadId: string, message: SDKMessage) => {
+          if (message.type === "system" && message.subtype === "task_started") {
+            if (isClaudeNonSubagentTask(message)) return;
+            const tasks = nativeChildTasksFor(nativeThreadId);
+            tasks.starts += 1;
+            tasks.live.set(message.task_id, claudeTaskTypeFromSdkMessage(message));
+          } else if (message.type === "system" && message.subtype === "task_notification") {
+            nativeChildTasks.get(nativeThreadId)?.live.delete(message.task_id);
+          } else if (isClaudeBackgroundTasksChangedMessage(message)) {
+            const roster = Reflect.get(message, "tasks");
+            if (!Array.isArray(roster)) return;
+            const live = nativeChildTasksFor(nativeThreadId).live;
+            live.clear();
+            for (const entry of roster) {
+              if (entry === null || typeof entry !== "object") continue;
+              const taskId = Reflect.get(entry, "task_id");
+              const taskType = Reflect.get(entry, "task_type");
+              if (
+                typeof taskId !== "string" ||
+                (typeof taskType === "string" && isClaudeOpaqueBackgroundTaskType(taskType))
+              )
+                continue;
+              live.set(taskId, typeof taskType === "string" ? taskType : null);
+            }
+          }
+        };
         const resultsReportingNewContextWindow = new WeakSet<SDKMessage>();
         // A worktree handoff changes the project settings even within one session.
         let bypassCache: { cwd: string | null; availability: ClaudeBypassAvailability } | null =
@@ -10649,6 +10700,40 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
           const threadDisposition = input.threadDisposition ?? "reusable";
           const backgroundWorkEnded = input.status !== "completed" && liveQuery === null;
+          const hasSubagents =
+            input.context.subagentsByTaskId.size > 0 || input.context.subagentsByToolUseId.size > 0;
+          const turnLedgerUsage =
+            input.result === undefined
+              ? undefined
+              : addClaudeLedgerUsage(
+                  input.context.steeredLedgerUsage,
+                  resultLedgerUsage.get(input.result),
+                );
+          const turnTokenUsage = normalizeClaudeTurnTokenUsage(
+            result,
+            hasSubagents,
+            input.status,
+            input.context.steeredSegmentUsage,
+            {
+              rootModels: input.context.rootModels,
+              ...(turnLedgerUsage === undefined ? {} : { ledger: turnLedgerUsage }),
+            },
+          );
+          const nativeChildTasksNow = nativeChildTasksFor(input.context.nativeThreadId);
+          const usageClosure = claudeUsageClosure({
+            terminalStatus: input.status,
+            usage: turnTokenUsage,
+            ledger: turnLedgerUsage,
+            rootModels: input.context.rootModels,
+            nativeChildObserved:
+              hasSubagents || nativeChildTasksNow.starts > input.context.nativeChildStartsBefore,
+            nativeChildRunning:
+              nativeChildTasksNow.live.size > 0 ||
+              [...(yield* Ref.get(sessionSubagentsByTaskId)).values()].some(
+                (subagent) => subagent.task.status === "running",
+              ),
+            promptSuggestions: input.context.promptSuggestions,
+          });
           const terminalEvent: ProviderAdapter.ProviderAdapterV2Event =
             input.status === "failed"
               ? {
@@ -10694,24 +10779,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     status: input.status,
                     completedAt: input.completedAt,
                   }),
-                  turnTokenUsage: normalizeClaudeTurnTokenUsage(
-                    result,
-                    input.context.subagentsByTaskId.size > 0 ||
-                      input.context.subagentsByToolUseId.size > 0,
-                    input.status,
-                    input.context.steeredSegmentUsage,
-                    {
-                      rootModels: input.context.rootModels,
-                      ...(input.result === undefined
-                        ? {}
-                        : {
-                            ledger: addClaudeLedgerUsage(
-                              input.context.steeredLedgerUsage,
-                              resultLedgerUsage.get(input.result),
-                            ),
-                          }),
-                    },
-                  ),
+                  turnTokenUsage,
+                  ...(input.context.nativeResponseIds.size === 0
+                    ? {}
+                    : { nativeResponseIds: [...input.context.nativeResponseIds] }),
+                  usageClosure,
                 },
               }),
               // Emit the roster before root settlement so writeFinalRunEvents preserves it.
@@ -12327,6 +12399,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               // CLI notices and API errors arrive as assistant messages from "<synthetic>".
               if (message.message.model && message.message.model !== "<synthetic>") {
                 context.rootModels.add(message.message.model);
+                context.nativeResponseIds.add(message.message.id);
                 context.executedModel = resolveClaudeReportedModelSlug(
                   modelCatalog,
                   message.message.model,
@@ -14329,6 +14402,43 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           return newest?.path;
         });
 
+        const readClaudeTranscriptTail = (transcriptPath: string, maxBytes: number) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const handle = yield* fileSystem.open(transcriptPath, { flag: "r" });
+              const size = Number((yield* handle.stat).size);
+              const start = Math.max(0, size - maxBytes);
+              yield* handle.seek(BigInt(start), "start");
+              const bytes = yield* handle.readAlloc(size - start);
+              const lines = (
+                Option.isSome(bytes) ? new TextDecoder().decode(bytes.value) : ""
+              ).split("\n");
+              // The last piece is empty or a line Claude is still writing; a cut tail starts
+              // mid-line.
+              lines.pop();
+              if (start > 0) lines.shift();
+              return { lines, wholeFile: start === 0 };
+            }),
+          );
+
+        // Claude restores a resumed session's ledger from the transcript's last cost-state record.
+        const readClaudeRestoredLedger = Effect.fnUntraced(
+          function* (nativeThreadId: string) {
+            const transcriptPath = yield* locateClaudeTranscript(nativeThreadId);
+            if (transcriptPath === undefined) return undefined;
+            for (const maxBytes of [
+              CLAUDE_TRANSCRIPT_TAIL_BYTES,
+              CLAUDE_TRANSCRIPT_WIDE_TAIL_BYTES,
+            ]) {
+              const tail = yield* readClaudeTranscriptTail(transcriptPath, maxBytes);
+              const restored = claudeTranscriptRestoredLedger(tail.lines, nativeThreadId);
+              if (restored !== undefined || tail.wholeFile) return restored;
+            }
+            return undefined;
+          },
+          Effect.orElseSucceed(() => undefined),
+        );
+
         // A failed read keeps the process: replacing it is only right when the file proves a miss.
         const liveProcessMissedTranscriptMessages = Effect.fn(
           "ClaudeAdapterV2.liveProcessMissedTranscriptMessages",
@@ -14338,29 +14448,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             live.transcriptPath ??= yield* locateClaudeTranscript(live.nativeThreadId);
             const transcriptPath = live.transcriptPath;
             if (transcriptPath === undefined) return false;
-            const readTail = (maxBytes: number) =>
-              Effect.scoped(
-                Effect.gen(function* () {
-                  const handle = yield* fileSystem.open(transcriptPath, { flag: "r" });
-                  const size = Number((yield* handle.stat).size);
-                  const start = Math.max(0, size - maxBytes);
-                  yield* handle.seek(BigInt(start), "start");
-                  const bytes = yield* handle.readAlloc(size - start);
-                  const lines = (
-                    Option.isSome(bytes) ? new TextDecoder().decode(bytes.value) : ""
-                  ).split("\n");
-                  // The last piece is empty or a line Claude is still writing; a cut tail starts
-                  // mid-line.
-                  lines.pop();
-                  if (start > 0) lines.shift();
-                  return { lines, wholeFile: start === 0 };
-                }),
-              );
             for (const maxBytes of [
               CLAUDE_TRANSCRIPT_TAIL_BYTES,
               CLAUDE_TRANSCRIPT_WIDE_TAIL_BYTES,
             ]) {
-              const tail = yield* readTail(maxBytes);
+              const tail = yield* readClaudeTranscriptTail(transcriptPath, maxBytes);
               const missed = claudeTranscriptHasUnseenMessages(
                 tail.lines,
                 live.emittedMessageUuids,
@@ -14676,6 +14768,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const resolvedTurnCwd = yield* fileSystem
             .realPath(turnInput.runtimePolicy.cwd ?? ".")
             .pipe(Effect.orElseSucceed(() => turnInput.runtimePolicy.cwd));
+          // A replaced process's tasks end with it; one still running stays a session subagent.
+          nativeChildTasksFor(nativeThreadId).live.clear();
+          // Before opening, so the record read is the one the new process restores.
+          const restoredLedger = shouldResume
+            ? yield* readClaudeRestoredLedger(nativeThreadId)
+            : new Map<string, ClaudeUsageCounters>();
           // Read right before opening so an update during startup counts too.
           const openQueryRuntime = readProgram.pipe(
             Effect.flatMap((program) =>
@@ -14756,7 +14854,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 (subagent) => subagent.task.status === "running",
               ),
             ),
-            modelLedger: new Map(),
+            promptSuggestions: queryOptions.promptSuggestions === true,
+            modelLedger:
+              restoredLedger === undefined
+                ? undefined
+                : { ledger: restoredLedger, restored: shouldResume },
             taskOutputRoot: claudeTaskOutputRoot(
               adapterOptions.environment,
               path,
@@ -14832,15 +14934,21 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   ) {
                     context.permissionMode = message.permissionMode;
                   }
+                  observeNativeChildTask(context.nativeThreadId, message);
                   if (message.type === "result") {
                     const ledger = claudeModelLedger(message.modelUsage);
-                    const growth = claudeLedgerDelta(context.modelLedger, ledger);
+                    const growth = claudeLedgerDelta(
+                      context.modelLedger?.ledger,
+                      ledger,
+                      context.modelLedger?.restored,
+                    );
                     if (growth !== undefined) resultLedgerUsage.set(message, growth);
                     // A ledger that went backwards cannot anchor the next turn's growth.
                     context.modelLedger =
-                      growth === undefined && context.modelLedger !== undefined
+                      ledger === undefined ||
+                      (growth === undefined && context.modelLedger !== undefined)
                         ? undefined
-                        : ledger;
+                        : { ledger, restored: false };
                     for (const [model, window] of claudeReportedContextWindows(
                       message.modelUsage,
                     )) {
@@ -15144,8 +15252,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               nativeSessionTitle: null,
               steeredSegmentUsage: [],
               steersClosed: false,
-              steeredLedgerUsage: { inputTokens: 0, outputTokens: 0 },
+              steeredLedgerUsage: { byModel: new Map(), restoredBaseline: false },
               rootModels: new Set(),
+              nativeResponseIds: new Set(),
+              nativeChildStartsBefore: nativeChildTasksFor(nativeThreadId).starts,
+              promptSuggestions: querySession.promptSuggestions,
               subagentsByTaskId: new Map(),
               subagentsByToolUseId: new Map(),
               promptUuid,

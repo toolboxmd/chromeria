@@ -706,6 +706,37 @@ function makeCodexReplayTurn(input: {
   };
 }
 
+function codexUsageFrame(input: {
+  readonly nativeThreadId: string;
+  readonly turnId: string;
+  readonly total: number;
+  readonly last: number;
+}): CodexReplay.CodexAppServerReplayEntry {
+  const breakdown = (inputTokens: number) => ({
+    totalTokens: inputTokens + 1,
+    inputTokens,
+    cachedInputTokens: 0,
+    outputTokens: 1,
+    reasoningOutputTokens: 0,
+  });
+  return {
+    type: "emit_inbound",
+    label: `usage ${input.turnId} ${input.total}`,
+    frame: {
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: input.nativeThreadId,
+        turnId: input.turnId,
+        tokenUsage: {
+          total: breakdown(input.total),
+          last: breakdown(input.last),
+          modelContextWindow: 200_000,
+        },
+      },
+    },
+  };
+}
+
 function codexReplayPreamble(input: {
   readonly nativeThreadId: string;
   readonly nativeTurnId: string;
@@ -3524,6 +3555,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         scenario: "prompt-suggestion",
         entries: [
           ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
+          codexUsageFrame({ nativeThreadId, turnId: nativeTurnId, total: 10, last: 10 }),
           {
             type: "emit_inbound",
             label: "turn/completed",
@@ -3586,6 +3618,17 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       yield* harness.until(() =>
         harness.events.some((event) => event.type === "prompt_suggestion.updated"),
       );
+      // The sample is its own billed response, after this turn's counter was final.
+      const sampledTurn = harness.events.find(
+        (event) =>
+          event.type === "provider_turn.updated" && event.providerTurn.status === "completed",
+      );
+      assert.deepEqual(
+        sampledTurn?.type === "provider_turn.updated"
+          ? sampledTurn.providerTurn.usageClosure
+          : undefined,
+        { version: 1, state: "open", reason: "prompt_suggestion_sampled" },
+      );
       assert.deepEqual(
         harness.events.filter((event) => event.type === "prompt_suggestion.updated"),
         [
@@ -3618,6 +3661,216 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ): event is Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "message.updated" }> =>
         event.type === "message.updated" && event.message.role === "assistant",
     );
+
+  it.effect.each([
+    {
+      name: "counts the turn's context compactions in a closed turn",
+      frames: (nativeThreadId: string, nativeTurnId: string) => [
+        ...(["item/started", "item/completed"] as const).map((method) => ({
+          type: "emit_inbound" as const,
+          label: method,
+          frame: {
+            method,
+            params: {
+              threadId: nativeThreadId,
+              turnId: nativeTurnId,
+              item: { type: "contextCompaction", id: "closure-compaction" },
+            },
+          },
+        })),
+        codexUsageFrame({ nativeThreadId, turnId: nativeTurnId, total: 10, last: 10 }),
+      ],
+      closure: {
+        version: 1,
+        state: "main_agent_only",
+        witness: "event_stream",
+        uncountedCompactions: 1,
+      } as const,
+    },
+    {
+      name: "leaves a turn open when the thread total goes backwards mid-turn",
+      frames: (nativeThreadId: string, nativeTurnId: string) => [
+        codexUsageFrame({ nativeThreadId, turnId: nativeTurnId, total: 100, last: 100 }),
+        codexUsageFrame({ nativeThreadId, turnId: nativeTurnId, total: 40, last: 40 }),
+      ],
+      closure: { version: 1, state: "open", reason: "usage_stream_broken" } as const,
+    },
+    {
+      name: "leaves a turn open when the thread's usage grows under another turn",
+      frames: (nativeThreadId: string, nativeTurnId: string) => [
+        codexUsageFrame({ nativeThreadId, turnId: nativeTurnId, total: 10, last: 10 }),
+        codexUsageFrame({ nativeThreadId, turnId: "unrelated-turn", total: 30, last: 20 }),
+        codexUsageFrame({ nativeThreadId, turnId: nativeTurnId, total: 35, last: 5 }),
+      ],
+      closure: { version: 1, state: "open", reason: "usage_unattributed" } as const,
+    },
+    {
+      name: "leaves a turn open when it starts a child thread",
+      frames: (nativeThreadId: string, nativeTurnId: string) => [
+        {
+          type: "emit_inbound" as const,
+          label: "child started",
+          frame: {
+            method: "item/completed",
+            params: {
+              item: {
+                type: "subAgentActivity",
+                id: "closure-child-call",
+                kind: "started",
+                agentThreadId: "closure-child-thread",
+                agentPath: "/root/explore",
+              },
+              threadId: nativeThreadId,
+              turnId: nativeTurnId,
+              completedAtMs: 1782622441000,
+            },
+          },
+        },
+        codexUsageFrame({ nativeThreadId, turnId: nativeTurnId, total: 10, last: 10 }),
+      ],
+      closure: { version: 1, state: "open", reason: "native_child_observed" } as const,
+    },
+    {
+      name: "leaves a turn open when Codex reconnects to retry a response",
+      frames: (nativeThreadId: string, nativeTurnId: string) => [
+        codexUsageFrame({ nativeThreadId, turnId: nativeTurnId, total: 10, last: 10 }),
+        {
+          type: "emit_inbound" as const,
+          label: "error/retry",
+          frame: {
+            method: "error",
+            params: {
+              threadId: nativeThreadId,
+              turnId: nativeTurnId,
+              willRetry: true,
+              error: {
+                message: "Reconnecting... 1/5",
+                additionalDetails: "The response stream disconnected.",
+                codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 529 } },
+              },
+            },
+          },
+        },
+        codexUsageFrame({ nativeThreadId, turnId: nativeTurnId, total: 25, last: 15 }),
+      ],
+      closure: { version: 1, state: "open", reason: "usage_stream_broken" } as const,
+    },
+    {
+      name: "leaves a turn open when it sends input to an existing child thread",
+      frames: (nativeThreadId: string, nativeTurnId: string) => [
+        {
+          type: "emit_inbound" as const,
+          label: "send input",
+          frame: {
+            method: "item/completed",
+            params: {
+              threadId: nativeThreadId,
+              turnId: nativeTurnId,
+              item: {
+                type: "collabAgentToolCall",
+                id: "closure-send-input",
+                tool: "sendInput",
+                status: "completed",
+                senderThreadId: nativeThreadId,
+                receiverThreadIds: ["closure-existing-child"],
+                agentsStates: {
+                  "closure-existing-child": { status: "completed", message: null },
+                },
+              },
+            },
+          },
+        },
+        codexUsageFrame({ nativeThreadId, turnId: nativeTurnId, total: 10, last: 10 }),
+      ],
+      closure: { version: 1, state: "open", reason: "native_child_observed" } as const,
+    },
+    {
+      name: "leaves a turn open when Codex reviews an approval with its auto reviewer",
+      frames: (nativeThreadId: string, nativeTurnId: string) => [
+        {
+          type: "emit_inbound" as const,
+          label: "auto review started",
+          frame: {
+            method: "item/autoApprovalReview/started",
+            params: {
+              threadId: nativeThreadId,
+              turnId: nativeTurnId,
+              reviewId: "closure-review",
+              startedAtMs: 1782622441000,
+              targetItemId: "closure-command",
+              action: { type: "command", command: "git push", cwd: "/repo", source: "shell" },
+              review: { status: "inProgress" },
+            },
+          },
+        },
+        codexUsageFrame({ nativeThreadId, turnId: nativeTurnId, total: 10, last: 10 }),
+      ],
+      closure: { version: 1, state: "open", reason: "native_child_observed" } as const,
+    },
+    {
+      name: "leaves an interrupted turn open",
+      status: "interrupted" as const,
+      frames: (nativeThreadId: string, nativeTurnId: string) => [
+        codexUsageFrame({ nativeThreadId, turnId: nativeTurnId, total: 10, last: 10 }),
+      ],
+      closure: { version: 1, state: "open", reason: "turn_not_completed" } as const,
+    },
+  ])("$name", (scenario) =>
+    Effect.gen(function* () {
+      const nativeThreadId = "closure-thread";
+      const nativeTurnId = "closure-turn";
+      const transcript = makeCodexReplayTranscript({
+        scenario: "usage-closure",
+        entries: [
+          ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Measure this." }),
+          ...scenario.frames(nativeThreadId, nativeTurnId),
+          {
+            type: "emit_inbound",
+            label: "complete",
+            frame: {
+              method: "turn/completed",
+              params: {
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({
+                  id: nativeTurnId,
+                  status: "status" in scenario ? scenario.status : "completed",
+                }),
+              },
+            },
+          },
+        ],
+      });
+      const harness = yield* makeCodexReplayHarness(transcript);
+      yield* harness.runtime.startTurn(
+        makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("closure-attempt"),
+          text: "Measure this.",
+        }),
+      );
+      yield* harness.firstTerminal;
+      const terminal = harness.events.find(
+        (event) =>
+          event.type === "provider_turn.updated" && event.providerTurn.usageClosure !== undefined,
+      );
+      assert.deepEqual(
+        terminal?.type === "provider_turn.updated" ? terminal.providerTurn.usageClosure : null,
+        scenario.closure,
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          Layer.merge(NodeServices.layer, NodeCrypto.layer),
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
 
   it.effect("keeps an asynchronous Codex question actionable after the turn completes", () =>
     Effect.scoped(
@@ -3749,6 +4002,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             cachedInputTokens: 2,
             outputTokens: 5,
             reasoningTokens: 1,
+          });
+          assert.deepEqual(completed.providerTurn.usageClosure, {
+            version: 1,
+            state: "main_agent_only",
+            witness: "event_stream",
+            uncountedCompactions: 0,
           });
         }
         assert.isEmpty(assistantMessages(harness.events));
