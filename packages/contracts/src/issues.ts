@@ -157,6 +157,11 @@ export const GitHubIssueListResult = Schema.Struct({
   linkedPullRequests: Schema.Array(IssuePullRequest),
   /** Where each search carries on; absent once it has nothing more. */
   nextCursors: GitHubIssueListCursors,
+  /**
+   * How many Issues GitHub says each search read here matches, which can exceed what its pages
+   * return. Absent from servers that predate it: the reader then cannot tell a list is complete.
+   */
+  matchCounts: Schema.optional(Schema.Record(TrimmedNonEmptyString, NonNegativeInt)),
 });
 export type GitHubIssueListResult = typeof GitHubIssueListResult.Type;
 

@@ -19,6 +19,8 @@ test(
     });
     const retry = screen.getByRole("button", "Retry", { exact: true });
     const total = (text: string) => screen.getByText(text, { exact: true });
+    // The total can only grow while a page is missing; a group count can also fall.
+    const group = browser.locator("button[aria-expanded] .tabular-nums");
 
     await t3.open("/pull-requests?view=issues");
     await screen
@@ -26,6 +28,7 @@ test(
       .waitFor({ timeout: 60_000 });
     await expect(screen.getByText("Open Issue 3", { exact: true })).toBeVisible();
     await expect(total("2+ Issues")).toBeVisible();
+    await expect(group).toHaveText("~2");
     await app.screenshot("failed-read");
 
     await retry.tap();
@@ -36,6 +39,7 @@ test(
 
     await retry.tap();
     await expect(total("3 Issues")).toBeVisible();
+    await expect(group).toHaveText("3");
     await expect(screen.getByText("Open Issue 1", { exact: true })).toBeVisible();
   },
 );

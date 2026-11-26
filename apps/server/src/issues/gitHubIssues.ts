@@ -274,6 +274,7 @@ export function issueSearchGraphQlDocument(input: {
     shared: { q: ["String!", input.q], after: ["String", input.after ?? null] },
     rest: `  viewer { login }
   search(query: $q, type: ISSUE, first: ${first}, after: $after) {
+    issueCount
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on Issue {
@@ -380,6 +381,7 @@ const IssueSearchJson = Schema.Struct({
   data: Schema.Struct({
     viewer: Schema.Struct({ login: Schema.String }),
     search: Schema.Struct({
+      issueCount: Schema.Number,
       pageInfo: Schema.Struct({
         hasNextPage: Schema.Boolean,
         endCursor: Schema.NullOr(Schema.String),

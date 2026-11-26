@@ -92,7 +92,7 @@ describe("linkedPullRequestsOf", () => {
     const raw = JSON.stringify({
       data: {
         viewer: { login: "lukemaj" },
-        search: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+        search: { issueCount: 0, pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
         linked0: node,
         // Gone, or not a pull request.
         linked1: null,

@@ -31,7 +31,7 @@ const emptyPage = (viewer: string) =>
   JSON.stringify({
     data: {
       viewer: { login: viewer },
-      search: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+      search: { issueCount: 0, pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
     },
   });
 
@@ -39,7 +39,11 @@ const page = (endCursor: string | null) =>
   JSON.stringify({
     data: {
       viewer: { login: "viewer" },
-      search: { pageInfo: { hasNextPage: endCursor !== null, endCursor }, nodes: [] },
+      search: {
+        issueCount: 120,
+        pageInfo: { hasNextPage: endCursor !== null, endCursor },
+        nodes: [],
+      },
     },
   });
 
@@ -92,6 +96,8 @@ describe("IssueService.list", () => {
       const first = yield* issues.list({ state: "open" });
       expect(yield* Ref.get(requests)).toEqual([null]);
       expect(first.nextCursors).toEqual({ "github.com#0": "cursor-1" });
+      // GitHub's own match count rides along, so a reader can tell a search that stopped short.
+      expect(first.matchCounts).toEqual({ "github.com#0": 120 });
 
       const next = yield* issues.list({ state: "open", cursors: first.nextCursors });
       expect(yield* Ref.get(requests)).toEqual([null, "cursor-1"]);

@@ -111,8 +111,12 @@ describe("mergeIssueLists", () => {
       environmentId: ENV_A,
       input: { state: "open", limit: 1, cursors: { "github.com#0": "c1" } },
     } as const;
-    const pageOne = result([strip(entry(3))], { nextCursors: { "github.com#0": "c1" } });
-    const pageTwo = result([strip(entry(2))], { nextCursors: {} });
+    const matchCounts = { "github.com#0": 2 };
+    const pageOne = result([strip(entry(3))], {
+      nextCursors: { "github.com#0": "c1" },
+      matchCounts,
+    });
+    const pageTwo = result([strip(entry(2))], { nextCursors: {}, matchCounts });
     const answers = new Map([[JSON.stringify(listing), pageOne]]);
     const answerOf = (target: unknown) => answers.get(JSON.stringify(target)) ?? null;
 
@@ -149,7 +153,7 @@ describe("mergeIssueLists", () => {
           ? { "github.com#0": "stuck", "github.com#1": "next" }
           : { "github.com#0": "stuck" };
     const pages = issueListPages([listingA, listingB], (target) =>
-      result([], { nextCursors: cursorsOf(target) }),
+      result([], { nextCursors: cursorsOf(target), matchCounts: {} }),
     );
     expect(pages.targets).toEqual([
       listingA,
@@ -162,19 +166,29 @@ describe("mergeIssueLists", () => {
     expect(pages.rows).toBe("truncated");
   });
 
-  it("is truncated when a search ends exactly at GitHub's 1,000-result ceiling", () => {
+  it("calls a list truncated only when GitHub matched more Issues than it returned", () => {
     const listing = { environmentId: ENV_A, input: { state: "all", limit: 100 } } as const;
-    // Ten full pages: the tenth carries no cursor however many more Issues match.
-    const lastPage = (pages: number) =>
+    const rows = (count: number) => Array.from({ length: count }, () => strip(entry(1)));
+    // One search read page by page: `sizes` rows per page, against GitHub's match count.
+    const walk = (sizes: ReadonlyArray<number>, matchCounts: Record<string, number> | undefined) =>
       issueListPages([listing], (target) => {
-        const read = Number(target.input.cursors?.["github.com#0"] ?? 1);
-        return result([], {
-          nextCursors: read < pages ? { "github.com#0": String(read + 1) } : {},
+        const page = Number(target.input.cursors?.["github.com#0"] ?? 0);
+        return result(rows(sizes[page] ?? 0), {
+          nextCursors: page + 1 < sizes.length ? { "github.com#0": String(page + 1) } : {},
+          ...(matchCounts === undefined ? {} : { matchCounts }),
         });
-      });
-    expect(lastPage(9)).toMatchObject({ rows: "complete" });
-    expect(lastPage(10).targets).toHaveLength(10);
-    expect(lastPage(10).rows).toBe("truncated");
+      }).rows;
+    const full = (pages: number) => Array.from({ length: pages }, () => 100);
+
+    // 901 matches end on a short tenth page: all read.
+    expect(walk([...full(9), 1], { "github.com#0": 901 })).toBe("complete");
+    // GitHub stops after 1,000 rows however many match.
+    expect(walk(full(10), { "github.com#0": 1500 })).toBe("truncated");
+    // The same cut-off search beside a second search read in full: its 50 rows hide nothing.
+    expect(walk([150, ...full(9)], { "github.com#0": 1500, "github.com#1": 50 })).toBe("truncated");
+    expect(walk([150, ...full(9)], { "github.com#0": 1000, "github.com#1": 50 })).toBe("complete");
+    // A server that predates match counts cannot say either way.
+    expect(walk([100, 20], undefined)).toBe("unknown");
   });
 
   it("counts each repository on another forge once, across pages and servers", () => {

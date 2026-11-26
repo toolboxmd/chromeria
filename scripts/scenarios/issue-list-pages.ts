@@ -32,6 +32,10 @@ export function answerIssueListPages(
         projectId: "demo",
         projectTitle: "demo",
       };
+      // GitHub's match count for the search: every Issue the plan holds.
+      const matches = new Set(
+        Object.values(answersByPage).flatMap((answers) => answers.flatMap(({ issues }) => issues)),
+      ).size;
       const taken = new Map<string, number>();
       let threadReads = 0;
       const send = WebSocket.prototype.send;
@@ -101,6 +105,7 @@ export function answerIssueListPages(
                     closingPullRequests: [],
                   })),
                   nextCursors: answer.next === undefined ? {} : { [SEARCH]: answer.next },
+                  matchCounts: answer.failure === "github" ? {} : { [SEARCH]: matches },
                 },
               },
         );

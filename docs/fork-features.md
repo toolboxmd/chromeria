@@ -685,6 +685,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/server/src/issues/gitHubDocuments.ts",
     "scripts/scenarios/issue-list-pages.ts",
     "scripts/scenarios/issues-view-counts-every-page.e2e.ts",
+    "scripts/scenarios/issues-view-empty-list-states-its-total.e2e.ts",
     "scripts/scenarios/issues-view-failed-page-keeps-rows.e2e.ts",
     "scripts/scenarios/issues-view-failed-thread-read-marks-counts.e2e.ts"
   ],

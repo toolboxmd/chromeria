@@ -86,28 +86,28 @@ export interface IssueListTarget {
   readonly input: GitHubIssueListInput;
 }
 
-/** GitHub returns at most this many results for one search, however many match. */
-const SEARCH_RESULT_CEILING = 1000;
-/** The server's page size when a listing names none. */
-const DEFAULT_PAGE_SIZE = 50;
-
 /**
  * Every page to read: each server's listing, then each answered page's continuation. Group counts
- * are totals only when `rows` is `complete`: `pending` while a page has no answer, `truncated` when
- * a search repeated a cursor (never read twice) or ended exactly at GitHub's result ceiling.
+ * are totals only when `rows` is `complete`: `pending` while a page has no answer, `truncated`
+ * when GitHub matched more Issues than it returned, `unknown` when a server gives no match counts.
  */
 export function issueListPages(
   listings: ReadonlyArray<IssueListTarget>,
-  answerOf: (target: IssueListTarget) => Pick<GitHubIssueListResult, "nextCursors"> | null,
+  answerOf: (
+    target: IssueListTarget,
+  ) => Pick<GitHubIssueListResult, "entries" | "nextCursors" | "matchCounts"> | null,
 ): {
   readonly targets: ReadonlyArray<IssueListTarget>;
-  readonly rows: "complete" | "pending" | "truncated";
+  readonly rows: "complete" | "pending" | "truncated" | "unknown";
 } {
   const targets: Array<IssueListTarget> = [];
-  /** Per server and search: the cursors already read from, which is also its pages after the first. */
+  /** Per server and search: the cursors already read from. */
   const read = new Map<string, Set<string>>();
+  /** Per server: the raw rows its pages returned, and GitHub's latest match count per search. */
+  const returned = new Map<EnvironmentId, { rows: number; matches: Map<string, number> }>();
   let pending = false;
   let truncated = false;
+  let unknown = false;
   // Page by page across servers, so a page that arrives later adds its rows after the ones shown.
   let round = listings;
   while (round.length > 0) {
@@ -119,18 +119,19 @@ export function issueListPages(
         pending = true;
         continue;
       }
-      const pageSize = target.input.limit ?? DEFAULT_PAGE_SIZE;
-      for (const search of Object.keys(target.input.cursors ?? {})) {
-        const pages = 1 + (read.get(`${target.environmentId} ${search}`)?.size ?? 0);
-        if (!(search in answer.nextCursors) && pages * pageSize >= SEARCH_RESULT_CEILING) {
-          truncated = true;
-        }
+      const server = returned.get(target.environmentId) ?? { rows: 0, matches: new Map() };
+      returned.set(target.environmentId, server);
+      server.rows += answer.entries.length;
+      if (answer.matchCounts === undefined) unknown = true;
+      for (const [search, count] of Object.entries(answer.matchCounts ?? {})) {
+        server.matches.set(search, count);
       }
       const cursors: Record<string, string> = {};
       for (const [search, cursor] of Object.entries(answer.nextCursors)) {
         const key = `${target.environmentId} ${search}`;
         const seen = read.get(key) ?? new Set<string>();
         read.set(key, seen);
+        // A search answering with a cursor it was read from would be read forever.
         if (seen.has(cursor)) {
           truncated = true;
           continue;
@@ -144,7 +145,15 @@ export function issueListPages(
     }
     round = next;
   }
-  return { targets, rows: pending ? "pending" : truncated ? "truncated" : "complete" };
+  // A search never returns more rows than it matches, so a server whose rows fall short of its
+  // searches' matches has a search GitHub cut off, however many other searches it read in full.
+  for (const { rows, matches } of returned.values()) {
+    if (rows < [...matches.values()].reduce((sum, count) => sum + count, 0)) truncated = true;
+  }
+  return {
+    targets,
+    rows: pending ? "pending" : truncated ? "truncated" : unknown ? "unknown" : "complete",
+  };
 }
 
 /**

@@ -230,17 +230,20 @@ export function IssuesView() {
   const linkEnvironments = new Set(environmentIdsWithCapability(environments, "issueLinks"));
   const rowThreads = useIssueRowThreads(data?.entries ?? [], linkEnvironments);
   const { threadsByIssue, working } = rowThreads;
-  // Status is computed from every row and its threads, so a count is a total only once all of
-  // both are read. Missing rows can only add to it. A row whose threads are unread sits in the
-  // wrong group and fails the status and linked filters, so those counts can fall as well.
+  // Status is computed from every row, the pull requests every page carries and every row's
+  // threads, so a group count can move either way until all of them are read. The total only
+  // grows while rows are missing, unless a status or linked filter ties it to those facts too.
   const rowsComplete =
     data !== null && list.rows === "complete" && list.error === null && data.errors.length === 0;
-  const threadsRead = !rowThreads.loading && rowThreads.error === null;
-  const groupCounts = countCertainty(rowsComplete, threadsRead);
-  const totalCount = countCertainty(
-    rowsComplete,
-    threadsRead || ((filters.statuses?.length ?? 0) === 0 && filters.linked === undefined),
-  );
+  const groupsFinal = rowsComplete && !rowThreads.loading && rowThreads.error === null;
+  const totalCount =
+    (filters.statuses?.length ?? 0) > 0 || filters.linked !== undefined
+      ? groupsFinal
+        ? "final"
+        : "unsettled"
+      : rowsComplete
+        ? "final"
+        : "floor";
   const facts = (() => {
     const byKey = new Map<string, IssueRowFacts>();
     for (const entry of data?.entries ?? []) {
@@ -351,6 +354,20 @@ export function IssuesView() {
       ? null
       : issueMarkdownCwd(projects, selected.environmentId, selected.reference);
 
+  const total = (
+    <p className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground">
+      {totalCount === "final"
+        ? gt("{count, plural, one {{count} Issue} other {{count} Issues}}", {
+            count: visible.length,
+          })
+        : totalCount === "floor"
+          ? gt("{count}+ Issues", { count: visible.length })
+          : gt("~{count} Issues", { count: visible.length })}
+      {(list.isPending && !rowsComplete) || rowThreads.loading ? (
+        <Spinner size="xs" aria-label={gt("Loading more Issues")} />
+      ) : null}
+    </p>
+  );
   let body: ReactNode;
   if (environmentIds.length === 0) {
     body = (
@@ -375,24 +392,21 @@ export function IssuesView() {
       </EmptyState>
     );
   } else if (visible.length === 0) {
-    body = (
-      <EmptyState>{list.isPending ? <Spinner aria-hidden /> : gt("No Issues match.")}</EmptyState>
+    // A list read to its end with nothing in it still states its total.
+    body = list.isPending ? (
+      <EmptyState>
+        <Spinner aria-hidden />
+      </EmptyState>
+    ) : (
+      <>
+        {total}
+        <EmptyState>{gt("No Issues match.")}</EmptyState>
+      </>
     );
   } else {
     body = (
       <>
-        <p className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground">
-          {totalCount === "final"
-            ? gt("{count, plural, one {{count} Issue} other {{count} Issues}}", {
-                count: visible.length,
-              })
-            : totalCount === "floor"
-              ? gt("{count}+ Issues", { count: visible.length })
-              : gt("~{count} Issues", { count: visible.length })}
-          {(list.isPending && !rowsComplete) || rowThreads.loading ? (
-            <Spinner size="xs" aria-label={gt("Loading more Issues")} />
-          ) : null}
-        </p>
+        {total}
         <ul className="flex flex-col">
           {tree === null
             ? (statusGroups ?? []).map((group) => (
@@ -400,7 +414,7 @@ export function IssuesView() {
                   key={group.status}
                   status={group.status}
                   count={group.entries.length}
-                  certainty={groupCounts}
+                  final={groupsFinal}
                   collapsed={collapsed.has(group.status)}
                   onToggle={() =>
                     setCollapsed((previous) => {
@@ -550,10 +564,17 @@ export function IssuesView() {
                   </Button>
                 </div>
               ) : null}
-              {data !== null && list.rows === "truncated" ? (
+              {data !== null && data.errors.length === 0 && list.rows === "truncated" ? (
                 <p className="text-xs text-muted-foreground">
                   {gt(
-                    "GitHub did not return every matching Issue, so the counts are lower bounds.",
+                    "GitHub returned fewer Issues than a search matched (it returns at most 1,000 per search), so some are missing from this list.",
+                  )}
+                </p>
+              ) : null}
+              {data !== null && list.rows === "unknown" ? (
+                <p className="text-xs text-muted-foreground">
+                  {gt(
+                    "A connected server is too old to say whether this list is complete, so the total is not final.",
                   )}
                 </p>
               ) : null}
@@ -592,17 +613,6 @@ export function IssuesView() {
   );
 }
 
-/**
- * How far a count can be trusted: `floor` while rows are missing (it can only grow), `unsettled`
- * while thread facts are missing (rows can still move between groups, so it can fall too).
- */
-type CountCertainty = "final" | "floor" | "unsettled";
-
-function countCertainty(rowsComplete: boolean, threadsSettled: boolean): CountCertainty {
-  if (!threadsSettled) return "unsettled";
-  return rowsComplete ? "final" : "floor";
-}
-
 function EmptyState({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-40 items-center justify-center text-sm text-muted-foreground">
@@ -614,14 +624,15 @@ function EmptyState({ children }: { children: ReactNode }) {
 function IssueStatusGroup({
   status,
   count,
-  certainty,
+  final,
   collapsed,
   onToggle,
   children,
 }: {
   status: IssueStatus;
   count: number;
-  certainty: CountCertainty;
+  /** False while a fact that can move a row between groups is unread: the count may rise or fall. */
+  final: boolean;
   collapsed: boolean;
   onToggle: () => void;
   children: ReactNode;
@@ -642,9 +653,8 @@ function IssueStatusGroup({
         <IssueStatusGlyph status={status} className="size-3.5" />
         <span>{messages(ISSUE_STATUS_PRESENTATION[status].label)}</span>
         <span className="tabular-nums">
-          {certainty === "unsettled" ? "~" : null}
+          {final ? null : "~"}
           {count}
-          {certainty === "floor" ? "+" : null}
         </span>
       </button>
       {collapsed ? null : <ul className="flex flex-col">{children}</ul>}
