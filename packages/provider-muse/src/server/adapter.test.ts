@@ -207,9 +207,16 @@ const makeHarness = Effect.fnUntraced(function* (
   replacement?: Effect.Success<ReturnType<typeof makeFakeMuse>>,
   existingProviderThread?: OrchestrationV2ProviderThread,
   policy = runtimePolicy,
-  overrides: Pick<
-    MuseAdapterV2Options,
-    "createHost" | "nativeEventLogger" | "modelCatalog" | "continuationRequests" | "onUsageLimits"
+  overrides: Partial<
+    Pick<
+      MuseAdapterV2Options,
+      | "createHost"
+      | "environment"
+      | "nativeEventLogger"
+      | "modelCatalog"
+      | "continuationRequests"
+      | "onUsageLimits"
+    >
   > = {},
 ) {
   let hostCount = 0;
@@ -402,7 +409,24 @@ describe("MuseAdapterV2", () => {
         yield* sessions.set(config);
         const fake = yield* makeFakeMuse();
         fake.host.initializeResult.grantedCapabilities.push("sessionMcp");
-        const harness = yield* makeHarness(fake, INSTANCE_ID, nativeId);
+        let launchEnvironment: NodeJS.ProcessEnv | undefined;
+        const harness = yield* makeHarness(
+          fake,
+          INSTANCE_ID,
+          nativeId,
+          undefined,
+          undefined,
+          runtimePolicy,
+          {
+            environment: { PATH: "/fake/bin", T3CODE_THREAD_ID: "stale-parent-thread" },
+            createHost: async (options) => {
+              launchEnvironment = options.environment;
+              return fake.host;
+            },
+          },
+        );
+        assert.equal(launchEnvironment?.T3CODE_THREAD_ID, THREAD_ID);
+        assert.equal(launchEnvironment?.PATH, "/fake/bin");
         const call = yield* fake.takeCall(nativeId ? "session/resume" : "session/start");
         assert.deepStrictEqual(call.params.config, {
           mcpServers: {
