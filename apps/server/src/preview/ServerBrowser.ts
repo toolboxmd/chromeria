@@ -3510,21 +3510,25 @@ const make = Effect.gen(function* () {
       // clean; a navigation or control change during the read makes the result stale.
       const generation = [tab.navigationGeneration, tab.control.generation] as const;
       const document = siteOf(tab.page.url()) === hold.site ? tab.mainDocument : null;
-      const html = document === null ? "" : await tab.page.content().catch(() => "");
+      // A page that cannot be read is not proof of a clean one.
+      const html = document === null ? null : await tab.page.content().catch(() => null);
       const verified =
         document !== null &&
+        html !== null &&
         classifyAntiBotPage({ ...document, html }) === undefined &&
         generation[0] === tab.navigationGeneration &&
         generation[1] === tab.control.generation;
       if (!verified && how === "release") continue;
       if (!siteHolds.clear(scope, hold)) continue;
       runFork(Effect.logInfo("Site hold cleared", { site: hold.site, verified }));
+      // Another site this tab still holds keeps its banner.
+      const [remaining] = siteHolds.heldBy(tab.tabId);
       await runPromise(
         manager
           .setSiteHold({
             threadId: ThreadId.make(hold.threadId),
             tabId: hold.tabId,
-            siteHold: undefined,
+            siteHold: remaining ? publicSiteHold(remaining[1]) : undefined,
           })
           .pipe(Effect.ignore),
       );

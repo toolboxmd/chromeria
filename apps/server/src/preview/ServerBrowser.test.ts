@@ -3695,6 +3695,55 @@ it.live("a check that a same-site API call answers holds the site without a navi
   ).pipe(Effect.provide(layer)),
 );
 
+it.live("releasing one site keeps the banner of another site the tab still holds", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      let shopChallenged = true;
+      const challenge = {
+        status: 403,
+        contentType: "text/html",
+        body: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+      };
+      yield* Effect.promise(() =>
+        context.route("https://*/**", (route) => {
+          const url = route.request().url();
+          if (url.startsWith("https://other.test/") || shopChallenged)
+            return route.fulfill(challenge);
+          return route.fulfill({ status: 200, contentType: "text/html", body: "<p>ok</p>" });
+        }),
+      );
+      realContextOverride = context;
+      const { browser, broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "https://shop.test/" },
+          tabId,
+        }),
+      );
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      const page = context.pages()[0]!;
+      yield* viewer.input({ type: "takeControl" });
+      yield* Effect.promise(() => page.goto("https://other.test/"));
+      shopChallenged = false;
+      yield* Effect.promise(() => page.goto("https://shop.test/"));
+      const events = yield* manager.subscribeEvents;
+      yield* viewer.input({ type: "releaseControl" });
+      let update = yield* PubSub.take(events);
+      while (update.type !== "navigated" || update.snapshot.siteHold?.site !== "other.test")
+        update = yield* PubSub.take(events);
+      expect(update.snapshot.siteHold).toMatchObject({ site: "other.test" });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live("clearing a hold on a page still showing its check clears it", () =>
   Effect.scoped(
     Effect.gen(function* () {
