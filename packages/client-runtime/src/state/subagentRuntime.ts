@@ -6,6 +6,7 @@ import type {
   OrchestrationV2Subagent,
   OrchestrationV2SubagentWorkflow,
   OrchestrationV2TurnItem,
+  ProviderDriverKind,
 } from "@t3tools/contracts";
 import { isOrchestrationV2WorkActive, isProviderNativeSubagentThread } from "@t3tools/contracts";
 import { mFallback, msg } from "gt-i18n";
@@ -86,6 +87,23 @@ const TERMINAL_STATUSES: ReadonlySet<RuntimeSubagentStatus> = new Set([
   "cancelled",
   "interrupted",
 ]);
+
+/**
+ * Provider kind to draw for a subagent. A remote task uses the kind its destination
+ * reported, then a provider this client resolved in the environment that owns the
+ * instance. `"remote"` only routes the task and is never a brand.
+ */
+export function subagentIconDriver(input: {
+  readonly driver?: ProviderDriverKind | null | undefined;
+  readonly remote?: { readonly driver?: ProviderDriverKind | null | undefined } | null | undefined;
+  readonly resolvedDriver?: ProviderDriverKind | null | undefined;
+}): ProviderDriverKind | undefined {
+  const kind =
+    input.remote == null
+      ? (input.resolvedDriver ?? input.driver)
+      : (input.remote.driver ?? input.resolvedDriver);
+  return kind != null && kind !== "remote" ? kind : undefined;
+}
 
 export function isTerminalSubagentStatus(status: RuntimeSubagentStatus): boolean {
   return TERMINAL_STATUSES.has(status);
@@ -218,6 +236,7 @@ export function projectedSubagentsToRuntime(
     readonly title: string | null;
     readonly prompt: string;
     readonly model: string | null;
+    readonly remoteChild?: OrchestrationV2Subagent["remoteChild"];
     readonly status: OrchestrationV2Subagent["status"];
     readonly progress?: string | undefined;
     readonly childThreadId?: string | null | undefined;
@@ -241,7 +260,11 @@ export function projectedSubagentsToRuntime(
       role: null,
       model: subagent.model,
       effort: null,
-      status: subagent.status,
+      status:
+        subagent.remoteChild?.snapshot !== undefined &&
+        subagent.remoteChild.snapshot.workState !== "result_available"
+          ? "running"
+          : (subagent.remoteChild?.latestResult?.status ?? subagent.status),
       activationCount: 1,
       usage: workflow === undefined ? null : workflowUsage(workflow),
       progress: subagent.progress ?? null,

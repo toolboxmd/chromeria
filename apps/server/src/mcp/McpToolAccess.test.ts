@@ -123,6 +123,15 @@ const ProbeToolkit = Toolkit.make(
     McpSchema.EnabledWhen,
     McpInvocationContext.hiddenFromOutsideClients,
   ),
+  Tool.make("acts_on_resource", probe).annotate(
+    McpSchema.EnabledWhen,
+    McpInvocationContext.hiddenFromOutsideClients,
+  ),
+  Tool.make("stages_attachments", probe),
+  Tool.make("inspects_attachments", probe).annotate(
+    McpSchema.EnabledWhen,
+    McpInvocationContext.hiddenFromOutsideClients,
+  ),
   Tool.make("writes", probe),
   Tool.make("writes_with_capability", probe),
   Tool.make("writes_threads", {
@@ -144,6 +153,11 @@ const probeHandlers: McpToolAccess.Handlers<typeof ProbeToolkit.tools> = {
   reads: McpToolAccess.reads(() => ran),
   reads_as_caller: McpToolAccess.readsAsCaller(() => ran),
   acts_as_caller: McpToolAccess.actsAsCaller(() => ran),
+  acts_on_resource: McpToolAccess.actsOnResource("preview", () => ran),
+  stages_attachments: McpToolAccess.stagesAttachments(() => ran),
+  inspects_attachments: McpToolAccess.readsAsCaller(() =>
+    McpToolAccess.recheckAttachmentStaging.pipe(Effect.as({ ran: "ran" })),
+  ),
   writes: McpToolAccess.writes(() => ran),
   writes_with_capability: McpToolAccess.writesWithCapability(() => ran),
   writes_threads: McpToolAccess.writesThreads(
@@ -191,6 +205,9 @@ export const refusedAtCompileTime = () => {
       reads: unchecked,
       reads_as_caller: unchecked,
       acts_as_caller: unchecked,
+      acts_on_resource: unchecked,
+      stages_attachments: unchecked,
+      inspects_attachments: unchecked,
       writes: unchecked,
       writes_with_capability: unchecked,
       writes_threads: unchecked,
@@ -268,12 +285,69 @@ it.effect.each([
   ["reads", supervisedClient, {}, "ran"],
   ["reads", readOnlyClient, {}, "ran"],
 
+  ["inspects_attachments", fullAccess, {}, "ran"],
+  ["inspects_attachments", background, {}, "ran"],
+  ["inspects_attachments", ended, {}, "parent_not_active"],
+  ["inspects_attachments", { ...supervised, client: readOnlyClient.client }, {}, "ran"],
+  [
+    "inspects_attachments",
+    { ...fullAccess, client: { ...fullAccessClient.client!, linked: true } },
+    {},
+    "ran",
+  ],
+  [
+    "inspects_attachments",
+    { ...ended, client: { ...fullAccessClient.client!, linked: true } },
+    {},
+    "parent_not_active",
+  ],
+  ["stages_attachments", fullAccess, {}, "ran"],
+  ["stages_attachments", background, {}, "ran"],
+  ["stages_attachments", ended, {}, "parent_not_active"],
+  ["stages_attachments", mismatchedProvider, {}, "parent_not_active"],
+  ["stages_attachments", archivedBackground, {}, "parent_not_active"],
+  ["stages_attachments", readOnlyClient, {}, "capability_denied"],
+  ["stages_attachments", fullAccessClient, {}, "ran"],
+  [
+    "stages_attachments",
+    { ...fullAccessClient, client: { ...fullAccessClient.client!, linked: true } },
+    {},
+    "ran",
+  ],
+  [
+    "stages_attachments",
+    { ...ended, client: { ...fullAccessClient.client!, linked: true } },
+    {},
+    "parent_not_active",
+  ],
+  ["stages_attachments", previewOnly, {}, "capability_denied"],
   ["writes", readOnlyClient, {}, "capability_denied"],
   ["writes_threads", readOnlyClient, { threadId: supervisedThreadId }, "capability_denied"],
   ["starts_threads", readOnlyClient, {}, "capability_denied"],
   ["writes_environment", readOnlyClient, {}, "capability_denied"],
 
   ["reads_as_caller", ended, {}, "ran"],
+  ["acts_on_resource", supervised, {}, "ran"],
+  ["acts_on_resource", previewOnly, {}, "ran"],
+  ["acts_on_resource", ended, {}, "parent_not_active"],
+  ["acts_on_resource", background, {}, "ran"],
+  [
+    "acts_on_resource",
+    { ...background, client: { ...fullAccessClient.client!, linked: true } },
+    {},
+    "ran",
+  ],
+  [
+    "acts_on_resource",
+    { ...ended, client: { ...fullAccessClient.client!, linked: true } },
+    {},
+    "parent_not_active",
+  ],
+  ["acts_on_resource", oldProviderBackground, {}, "parent_not_active"],
+  ["acts_on_resource", mismatchedProvider, {}, "parent_not_active"],
+  ["acts_on_resource", archivedBackground, {}, "parent_not_active"],
+  ["acts_on_resource", unknownOwnerBackground, {}, "parent_not_active"],
+  ["acts_on_resource", { ...fullAccess, client: readOnlyClient.client }, {}, "capability_denied"],
   ["acts_as_caller", supervised, {}, "ran"],
   ["acts_as_caller", ended, {}, "parent_not_active"],
   ["acts_as_caller", background, {}, "ran"],
@@ -332,6 +406,7 @@ it.effect.each([
   ["writes_environment", supervised, {}, "capability_denied"],
   ["writes_environment", plan, {}, "capability_denied"],
   ["writes_environment", fullAccessClient, {}, "ran"],
+  ["writes_environment", fullAccessLinkedClient, {}, "ran"],
   ["writes_environment", supervisedClient, {}, "capability_denied"],
 
   ["writes_owner_work", fullAccess, {}, "ran"],
@@ -400,12 +475,18 @@ const linkedProbe = {
   }),
 };
 const LinkedProbeToolkit = Toolkit.make(
+  Tool.make("acts_as_caller", linkedProbe).annotate(
+    McpSchema.EnabledWhen,
+    McpInvocationContext.hiddenFromOutsideClients,
+  ),
   Tool.make("reads", linkedProbe),
   Tool.make("writes", linkedProbe),
   Tool.make("writes_with_capability", linkedProbe),
   Tool.make("writes_threads", linkedProbe),
   Tool.make("starts_threads", linkedProbe),
   Tool.make("writes_environment", linkedProbe),
+  Tool.make("t3_environment_link", linkedProbe),
+  Tool.make("t3_environment_unlink", linkedProbe),
 );
 /** Runs here, and tells whether `environmentId` reached the handler. */
 const ranHere = <P extends object>(params: P) =>
@@ -414,12 +495,15 @@ const ranHere = <P extends object>(params: P) =>
 const linkedProbeServer = McpHttpServer.toolkitRegistration(
   LinkedProbeToolkit,
   McpToolAccess.toLayer(LinkedProbeToolkit, {
+    acts_as_caller: McpToolAccess.actsAsCaller(ranHere),
     reads: McpToolAccess.reads(ranHere),
     writes: McpToolAccess.writes(ranHere),
     writes_with_capability: McpToolAccess.writesWithCapability(ranHere),
     writes_threads: McpToolAccess.writesThreads((input) => [input.threadId], ranHere),
     starts_threads: McpToolAccess.startsThreads((input) => input, ranHere, "stamped"),
     writes_environment: McpToolAccess.writesEnvironment(ranHere),
+    t3_environment_link: McpToolAccess.writesEnvironment(ranHere),
+    t3_environment_unlink: McpToolAccess.writesEnvironment(ranHere),
   }),
 ).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
@@ -462,6 +546,18 @@ it.effect.each([
     "writes_environment in environment-box",
   ],
   ["writes_environment", fullAccess, { environmentId: here }, "here"],
+  ["t3_environment_link", fullAccess, { environmentId: box }, "saw environmentId"],
+  ["t3_environment_link", fullAccess, { environmentId: here }, "saw environmentId"],
+  ["t3_environment_unlink", fullAccess, { environmentId: box }, "saw environmentId"],
+  ["t3_environment_unlink", fullAccess, { environmentId: here }, "saw environmentId"],
+  ["t3_environment_link", supervised, { environmentId: box }, "capability_denied"],
+  ["t3_environment_unlink", supervised, { environmentId: box }, "capability_denied"],
+  ["t3_environment_link", linkedClient, { environmentId: box }, "capability_denied"],
+  ["t3_environment_unlink", linkedClient, { environmentId: box }, "capability_denied"],
+  ["t3_environment_link", fullAccessLinkedClient, { environmentId: box }, "capability_denied"],
+  ["t3_environment_link", fullAccessLinkedClient, { environmentId: here }, "capability_denied"],
+  ["t3_environment_unlink", fullAccessLinkedClient, { environmentId: box }, "capability_denied"],
+  ["t3_environment_unlink", fullAccessLinkedClient, { environmentId: here }, "capability_denied"],
 
   // A thread id names a thread where the call runs, and is checked there.
   [
@@ -485,25 +581,16 @@ it.effect.each([
 
 it.effect("refuses a linked environment to a tool that acts as its calling thread", () =>
   Effect.gen(function* () {
-    const CallerToolkit = Toolkit.make(
-      Tool.make("acts_as_caller", linkedProbe).annotate(
-        McpSchema.EnabledWhen,
-        McpInvocationContext.hiddenFromOutsideClients,
-      ),
-    );
-    const built = yield* Layer.build(
-      McpToolAccess.HandlersLayer.layer(
-        McpToolAccess.toLayer(CallerToolkit, {
-          acts_as_caller: McpToolAccess.actsAsCaller(ranHere),
-        }),
-      ),
-    ).pipe(Effect.scoped, Effect.exit);
-    expect(Exit.isFailure(built) && Cause.hasDies(built.cause)).toBe(true);
-  }),
+    for (const scope of [linkedClient, fullAccessLinkedClient]) {
+      expect(
+        yield* call("acts_as_caller", scope, { environmentId: EnvironmentId.make("other") }),
+      ).toBe("thread_credential_required");
+    }
+  }).pipe(Effect.provide(linkedProbeServer)),
 );
 
 // Discovery hides these tools. The handler must refuse on its own if that ever changes.
-it.effect.each(["reads_as_caller", "acts_as_caller"] as const)(
+it.effect.each(["reads_as_caller", "acts_as_caller", "acts_on_resource"] as const)(
   "%s refuses an outside client behind discovery",
   (tool) =>
     Effect.gen(function* () {

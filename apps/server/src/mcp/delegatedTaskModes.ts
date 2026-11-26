@@ -1,4 +1,5 @@
 import {
+  delegatedRoleLine,
   type ModelSelection,
   OrchestratorMcpFailure,
   type OrchestratorMcpDelegateTaskInput,
@@ -126,13 +127,6 @@ export function refuseAgentModePick(input: {
       );
 }
 
-/** `options` without the agent's own mode, for work that starts where only full access may pick one. */
-export const withoutAgentModePicks = (
-  options: ReadonlyArray<ProviderOptionSelection> | undefined,
-  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
-): ReadonlyArray<ProviderOptionSelection> | undefined =>
-  options?.filter((selection) => !isAgentModePick(selection, descriptors));
-
 /** Every option a provider instance advertises, across its models. */
 export const providerOptionDescriptors = (
   provider:
@@ -150,7 +144,9 @@ export const providerOptionDescriptors = (
 
 /** The task as its child receives it, with the role the caller asked for. */
 export function taskPrompt(input: OrchestratorMcpDelegateTaskInput): string {
-  return input.role === undefined || input.role === "general"
+  // Fork: browser guidance delegates driving by default, so the computer-use child must know it is the driver.
+  const role = input.prismRole === "computer-use" ? input.prismRole : input.role;
+  return input.bare !== undefined || role === undefined || role === "general"
     ? input.task
-    : `Act as the ${input.role} sub-agent for this task.\n\n${input.task}`;
+    : `${delegatedRoleLine(role)}${input.task}`;
 }

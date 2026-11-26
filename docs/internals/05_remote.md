@@ -45,6 +45,28 @@ side lists and revokes it in Sharing & access like any other session, and owns i
   [`PeerThreadRelay`](../../apps/server/src/peer/PeerThreadRelay.ts) proxies the same stream format
   read-only so there is no second transcript schema to maintain.
 
+### Peer link invariants (Chromeria)
+
+- **Request identity outlives credentials.** A request belongs to its verified originating thread
+  or persisted client and its grant generation, not its current credential
+  ([`requestIdentity.ts`](../../apps/server/src/mcp/requestIdentity.ts)). Rotating a credential
+  cannot create a second acceptance, and a replaced grant cannot replay protected old work
+  ([`McpRequestReceipts.ts`](../../apps/server/src/mcp/McpRequestReceipts.ts)).
+- **`outcome_unknown` is final for that request.** A stage that started without a recorded result
+  may have taken effect, so retrying the same request reports `outcome_unknown` instead of running
+  it again. The caller inspects the destination and chooses a new request key.
+- **One-use secrets keep a known gap.** Consuming a webhook `secretRef` cannot share the scheduler's
+  SQLite transaction, so a failure between consumption and schedule acceptance stays
+  `outcome_unknown` and the secret is never consumed twice
+  ([`mutationReceipts.ts`](../../apps/server/src/scheduledTasks/mutationReceipts.ts)).
+  [#385](https://github.com/toolboxmd/chromeria/issues/385) owns closing it.
+- **Scheduled tasks keep their link origin.** A task's `linkOrigin` is immutable through edits and
+  ordinary or checked launches, binding rechecks thread ownership
+  ([`ScheduledTaskService.ts`](../../apps/server/src/scheduledTasks/ScheduledTaskService.ts),
+  [`ScheduledTaskChecks.ts`](../../apps/server/src/scheduledTaskChecks/ScheduledTaskChecks.ts)), and
+  a link's `created-work` restriction applies to its schedules like its threads
+  ([`PeerAuthority.ts`](../../apps/server/src/peer/PeerAuthority.ts)).
+
 ## Hosted web is a client
 
 The hosted web app stores its connection catalog in the browser and connects directly to each

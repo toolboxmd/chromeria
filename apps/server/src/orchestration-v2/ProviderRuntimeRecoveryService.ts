@@ -9,6 +9,7 @@ import {
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   isOrchestrationV2WorkActive,
+  type RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -24,17 +25,19 @@ import * as EventSink from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import {
-  restartContinuationBlocked,
-  restartContinuationRun,
-  restartStopRequested,
-} from "./RestartContinuation.ts";
 import { isBufferedProviderNotification } from "./NotificationMailbox.ts";
 import { queuedRunsInDeliveryOrder } from "./QueuedRunOrder.ts";
 import {
   endOrphanedNativeSubagent,
   endRunlessRootTurns,
 } from "@t3tools/provider-core/server/subagentProjection";
+import {
+  restartContinuationBlocked,
+  restartContinuationRun,
+  restartCutDecision,
+  restartStopRequested,
+} from "./RestartContinuation.ts";
+import { RESTART_CUT_REASONS } from "@t3tools/shared/restartCut";
 import {
   awaitingProviderThreadId,
   cancelledRosterTaskWork,
@@ -256,7 +259,7 @@ export const make = Effect.gen(function* () {
     function* (
       stored: ProjectionStore.ProjectionRuntimeRecoveryState,
       trigger: "startup" | "shutdown",
-      continueAfterRestart: boolean,
+      continueAfterRestart: boolean | undefined,
       stoppedThisPass: ReadonlyMap<string, RecoverySession> = new Map(),
     ) {
       const now = yield* DateTime.now;
@@ -306,6 +309,38 @@ export const make = Effect.gen(function* () {
           !isProviderNativeSubagentThread(projection.thread),
       );
       const recoveredRequestIds = new Set(questions.map((request) => request.id));
+      const restartProjection = {
+        ...projection,
+        providerSessions: sessionsLiveAtStart(projection, stoppedThisPass),
+      };
+      const decision = restartCutDecision(
+        restartProjection,
+        new Set(runs.map((run) => run.id)),
+        continueAfterRestart,
+        now,
+      );
+      const captured =
+        decision === undefined
+          ? false
+          : yield* outbox.get(`effect:restart-continuation:${decision.run.id}`).pipe(
+              Effect.map(
+                Option.exists(
+                  (effect) =>
+                    effect.threadId === projection.thread.id &&
+                    effect.request.type === "provider-runtime.continue" &&
+                    effect.request.sourceRunId === decision.run.id &&
+                    (effect.status === "pending" || effect.status === "running"),
+                ),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new ProviderRuntimeRecoveryError({
+                    operation: "reconcile",
+                    threadId: projection.thread.id,
+                    cause,
+                  }),
+              ),
+            );
       const messageRequestNodeIds = new Set(
         pendingRequests
           .filter(
@@ -682,7 +717,20 @@ export const make = Effect.gen(function* () {
           runId: run.id,
           providerInstanceId: run.providerInstanceId,
           occurredAt: now,
-          payload: { ...run, status: "cancelled", queuePosition: null, completedAt: now },
+          payload: {
+            ...run,
+            status: "cancelled",
+            queuePosition: null,
+            completedAt: now,
+            restartCut: {
+              ...(decision === undefined || run.id !== decision.run.id
+                ? { continuation: "declined" as const, reason: RESTART_CUT_REASONS.SUPERSEDED }
+                : captured
+                  ? { continuation: "scheduled" as const }
+                  : decision.cut),
+              cutAt: now,
+            },
+          },
         });
         for (const attempt of projection.attempts.filter(
           (candidate) =>
@@ -764,12 +812,7 @@ export const make = Effect.gen(function* () {
             // So does a feedback card, answered from what it recorded.
             candidate.type !== "feedback_request" &&
             // The orchestrator queues a steer the provider never reported reading.
-            !(
-              candidate.type === "user_message" &&
-              candidate.status === "pending" &&
-              (candidate.inputIntent === "steer" ||
-                candidate.inputIntent === "promoted_queued_to_steer")
-            ) &&
+            !(candidate.status === "pending" && ProjectionStore.isSteerTurnItem(candidate)) &&
             (candidate.status === "pending" ||
               candidate.status === "running" ||
               candidate.status === "waiting"),
@@ -913,6 +956,13 @@ export const make = Effect.gen(function* () {
         })),
       );
       for (const providerThread of projection.providerThreads ?? []) {
+        // Parent task rows borrow their child's provider-thread id. Only its
+        // owning thread can clean it up, or the child's recovery sees stale liveness.
+        if (
+          providerThread.appThreadId !== null &&
+          providerThread.appThreadId !== projection.thread.id
+        )
+          continue;
         const needsIdle = providerThread.status === "active";
         const needsRosterClear = providerThreadHasPendingBackgroundTasks(providerThread);
         if (!needsIdle && !needsRosterClear) {
@@ -988,12 +1038,11 @@ export const make = Effect.gen(function* () {
         });
       }
       const continuationRun =
-        continueAfterRestart && trigger === "startup"
-          ? restartContinuationRun(
-              { ...projection, providerSessions: sessionsLiveAtStart(projection, stoppedThisPass) },
-              now,
-            )
-          : undefined;
+        decision?.cut.continuation === "scheduled" && !captured
+          ? decision.run
+          : decision === undefined && continueAfterRestart && trigger === "startup"
+            ? restartContinuationRun(restartProjection, now)
+            : undefined;
       let processLossCount = 1;
       // Normal upgrades must not exhaust an unfinished turn's crash allowance.
       if (
@@ -1102,6 +1151,53 @@ export const make = Effect.gen(function* () {
           (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
         ),
       );
+    // A steer no worker ever claimed never reached the provider, so it is unread like one the provider
+    // holds. Marked before its effect is cancelled below, so a crash in between marks it again.
+    const unsentSteers = yield* outbox.unsentSteers.pipe(
+      Effect.mapError(
+        (cause) => new ProviderRuntimeRecoveryError({ operation: "drain-outbox", cause }),
+      ),
+    );
+    for (const effect of unsentSteers) {
+      if (effect.request.type !== "provider-turn.steer") continue;
+      const threadId = effect.threadId;
+      const item = yield* projections
+        .getTurnItem({
+          threadId,
+          itemId: ids.derive.userTurnItem({ messageId: effect.request.messageId }),
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderRuntimeRecoveryError({ operation: "read-projections", threadId, cause }),
+          ),
+        );
+      if (item === null || item.status !== "completed" || !ProjectionStore.isSteerTurnItem(item)) {
+        continue;
+      }
+      const now = yield* DateTime.now;
+      const commandId = CommandId.make(`command:unsent-steer:${effect.id}`);
+      yield* Effect.gen(function* () {
+        yield* eventSink.write({
+          commandId,
+          events: [
+            {
+              id: yield* ids.allocate.event({ threadId, commandId }),
+              type: "turn-item.updated",
+              threadId,
+              ...(item.runId === null ? {} : { runId: item.runId }),
+              ...(item.nodeId === null ? {} : { nodeId: item.nodeId }),
+              occurredAt: now,
+              payload: { ...item, status: "pending", completedAt: null, updatedAt: now },
+            },
+          ],
+        });
+      }).pipe(
+        Effect.mapError(
+          (cause) => new ProviderRuntimeRecoveryError({ operation: "reconcile", threadId, cause }),
+        ),
+      );
+    }
     let terminalizedRuns = 0;
     let stoppedSessions = 0;
     let closedRequests = 0;
@@ -1126,9 +1222,10 @@ export const make = Effect.gen(function* () {
             ),
           );
           const enabled =
-            continueAfterRestart !== null &&
-            resolveProjectSettings(continueAfterRestart, projection.thread.projectId).settings
-              .continueThreadsAfterServerUpdate;
+            continueAfterRestart === null
+              ? undefined
+              : resolveProjectSettings(continueAfterRestart, projection.thread.projectId).settings
+                  .continueThreadsAfterServerUpdate;
           const result = yield* reconcileProjection(projection, trigger, enabled, stoppedThisPass);
           for (const session of projection.providerSessions) {
             if (session.status !== "stopped" && session.status !== "error") {
@@ -1168,6 +1265,57 @@ export const make = Effect.gen(function* () {
             (cause) => new ProviderRuntimeRecoveryError({ operation: "reconcile", cause }),
           ),
         );
+    }
+    if (trigger === "startup") {
+      let afterRunId: RunId | undefined;
+      while (true) {
+        const cuts = yield* projections
+          .getUnresolvedRestartCuts(afterRunId, 100)
+          .pipe(
+            Effect.mapError(
+              (cause) => new ProviderRuntimeRecoveryError({ operation: "read-projections", cause }),
+            ),
+          );
+        for (const cut of cuts) {
+          const commandId = CommandId.make(`command:restart-cut-decline:${cut.runId}`);
+          const eventId = yield* ids.allocate.event({ threadId: cut.threadId, commandId }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderRuntimeRecoveryError({
+                  operation: "reconcile",
+                  threadId: cut.threadId,
+                  cause,
+                }),
+            ),
+          );
+          yield* eventSink
+            .commitCommand({
+              commandId,
+              threadId: cut.threadId,
+              commandType: "run.restart-cut.decline",
+              acceptedAt: yield* DateTime.now,
+              events: [],
+              effects: [],
+              restartCutDecline: {
+                runId: cut.runId,
+                eventId,
+                reason: RESTART_CUT_REASONS.NO_CONTINUATION,
+              },
+            })
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderRuntimeRecoveryError({
+                    operation: "reconcile",
+                    threadId: cut.threadId,
+                    cause,
+                  }),
+              ),
+            );
+        }
+        afterRunId = cuts.at(-1)?.runId;
+        if (cuts.length < 100) break;
+      }
     }
     return {
       terminalizedRuns,
