@@ -495,11 +495,12 @@ describe("Prism capacity from durable run failures", () => {
       const deps = dependencies(true, [limited], window);
       return Effect.gen(function* () {
         yield* seed();
+        const sql = yield* SqlClient.SqlClient;
         let voidedAtRefresh: ReadonlyArray<unknown> | undefined;
         const refresh = Effect.gen(function* () {
           voidedAtRefresh = yield* voided;
           window.usedPercent = 10;
-        }).pipe(Effect.orDie);
+        }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
         assert.deepStrictEqual(yield* clearRedeemed(refresh), { voided: 1, usage: "headroom" });
         assert.deepStrictEqual(voidedAtRefresh, []);
         assert.deepStrictEqual((yield* resolve()).modelSelection, limited);
