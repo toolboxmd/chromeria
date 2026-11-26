@@ -1,9 +1,11 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no createHmac.
 import * as NodeCrypto from "node:crypto";
 
 import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import {
+  ProjectId,
   type ManagedPolicyDocument,
   ScheduledTaskUpsertInput,
   ScheduledTaskWebhookDeliveryId,
@@ -31,6 +33,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
+import { ScheduledTaskDispatchPolicy } from "../scheduledTaskChecks/DispatchPolicy.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
 import { renderWebhookPrompt } from "./webhookTemplate.ts";
 import { RelayClientTracer, withRelayClientTracing } from "@t3tools/shared/relayTracing";
@@ -125,6 +128,7 @@ type LaunchInput = ThreadLaunchService.ThreadLaunchInput;
 
 const webhookTaskInput = (overrides: Record<string, unknown> = {}) =>
   decodeUpsertInput({
+    purposeIntent: { version: 1, intent: { type: "unscoped" } },
     id: "scheduled-task:hook",
     title: "Review PRs",
     prompt: "Review this PR: {{body.pull_request.url}}",
@@ -165,6 +169,7 @@ const withService = <A, E>(
     readonly secretsByRef: Map<string, string>;
   }) => Effect.Effect<A, E, never>,
   options: {
+    readonly beforeAdmission?: Effect.Effect<void>;
     readonly onFrame?: () => void;
     readonly frameGate?: {
       readonly started: Deferred.Deferred<void>;
@@ -257,6 +262,11 @@ const withService = <A, E>(
         Effect.succeed({ relayHookBaseUrl: options.relayHookBaseUrl ?? null }),
       ),
       ManagedPolicy.layerTest(options.policy),
+      Layer.succeed(ScheduledTaskDispatchPolicy, {
+        beforeDefinitionChange: () => Effect.void,
+        decide: () =>
+          (options.beforeAdmission ?? Effect.void).pipe(Effect.as({ _tag: "upstream" as const })),
+      }),
     );
     return yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
@@ -264,7 +274,12 @@ const withService = <A, E>(
       return yield* body({ service, launches, sql, secretsByRef });
     }).pipe(
       Effect.provide(
-        Layer.fresh(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))),
+        Layer.fresh(
+          ScheduledTaskService.layer.pipe(
+            Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
+            Layer.provide(layerDependencies),
+          ),
+        ),
       ),
     );
   }).pipe(
@@ -274,6 +289,72 @@ const withService = <A, E>(
         : Layer.succeed(SqlClient.SqlClient, options.sql),
     ),
   );
+
+it.effect.each(["immediate", "coalesced"] as const)(
+  "dispatches an accepted %s webhook in the destination if a move wins admission",
+  (kind) =>
+    Effect.gen(function* () {
+      const admission = yield* Deferred.make<void>();
+      const moved = yield* Deferred.make<void>();
+      const workers = new Map<string, Effect.Effect<void>>();
+      const destination = ProjectId.make("webhook-destination");
+      yield* withService(
+        ({ service, launches, sql }) =>
+          Effect.gen(function* () {
+            yield* sql`
+              INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+              VALUES (${destination}, 'Destination', '/projects/webhook-destination', '[]', '2026-10-08T00:00:00.000Z', '2026-10-08T00:00:00.000Z')
+            `;
+            const input = yield* webhookTaskInput({
+              schedule:
+                kind === "immediate"
+                  ? { type: "webhook" }
+                  : {
+                      type: "webhook",
+                      dedupe: { coalesceKey: "{{body}}", coalesceWindowSeconds: 10 },
+                    },
+            });
+            const { task } = yield* service.upsert(input);
+            const request = service.triggerWebhook(requestFor(task));
+            const delivery = yield* (
+              kind === "immediate"
+                ? waitForSpan(request, "ScheduledTaskService.runWebhookDelivery")
+                : request.pipe(
+                    Effect.tap((result) =>
+                      Effect.sync(() => assert.equal(result._tag, "accepted")),
+                    ),
+                    Effect.andThen(TestClock.adjust("11 seconds")),
+                    Effect.andThen(drainPendingDispatch(workers)),
+                  )
+            ).pipe(Effect.forkScoped);
+
+            yield* Deferred.await(admission);
+            const saved = yield* service.upsert({ ...input, projectId: destination });
+            assert.equal(saved.task.projectId, destination);
+            yield* Deferred.succeed(moved, undefined);
+            yield* Fiber.join(delivery);
+
+            const queued = yield* Queue.clear(launches);
+            assert.deepEqual(
+              queued.map((launch) => launch.projectId),
+              [destination],
+            );
+            assert.equal((yield* service.list()).tasks[0]?.runCount, 1);
+            const history = yield* service.listWebhookDeliveries({ id: task.id });
+            assert.deepEqual(
+              history.deliveries.map((entry) => entry.outcome),
+              ["accepted"],
+            );
+          }).pipe(Effect.scoped),
+        {
+          workers,
+          beforeAdmission: Deferred.succeed(admission, undefined).pipe(
+            Effect.andThen(Deferred.await(moved)),
+          ),
+        },
+      );
+    }),
+);
 
 it.effect("dispatches exactly the rendered prompt and logs the delivery", () =>
   withService(({ service, launches }) =>
@@ -307,7 +388,10 @@ it.effect("dispatches exactly the rendered prompt and logs the delivery", () =>
         deliveryId: deliveries[0]!.id,
       });
       assert.equal(delivery.body, new TextDecoder().decode(pullRequestBody));
-      assert.equal(delivery.renderedPrompt, launched.initialMessage?.text);
+      assert.equal(
+        delivery.renderedPrompt,
+        launched.initialMessage?.text.split("\n\n[T3 Code scheduled run]")[0],
+      );
 
       yield* service.triggerWebhook(requestFor(task));
       const next = framed.exec((yield* Queue.take(launches)).initialMessage?.text ?? "")?.[1];
@@ -1107,7 +1191,7 @@ it.effect("a coalesced window dispatches the prompt saved after it opened", () =
         yield* TestClock.adjust("10 seconds");
         yield* workers.get("webhook-coalescing")!;
         const launched = yield* Queue.take(launches);
-        assert.equal(launched.initialMessage?.text, "Use the updated instructions.");
+        assert.match(launched.initialMessage?.text ?? "", /^Use the updated instructions\.\n\n/);
         const owner = (yield* service.listWebhookDeliveries({ id: task.id })).deliveries[0]!;
         const { delivery } = yield* service.getWebhookDelivery({
           id: task.id,
@@ -1138,7 +1222,7 @@ it.effect("retrying a running window keeps the prompt it was dispatched with", (
         yield* TestClock.adjust("10 seconds");
         yield* drainPendingDispatch(workers);
         const launched = yield* Queue.take(launches);
-        assert.equal(launched.initialMessage?.text, "Prompt at dispatch");
+        assert.match(launched.initialMessage?.text ?? "", /^Prompt at dispatch\n\n/);
         yield* save("Prompt saved after dispatch");
         yield* sql`DROP TRIGGER fail_completion`;
         yield* drainPendingDispatch(workers);
@@ -1596,7 +1680,7 @@ it.effect("keeps replay keys when dispatch succeeds but completion bookkeeping f
   ),
 );
 
-it.effect.each([119_000, 120_000])(
+it.effect.each([119_000, 119_750, 120_000])(
   "bounds coalesced prompt logs and checks trimmed length for %i body characters",
   (length) => {
     const workers = new Map<string, Effect.Effect<void>>();
@@ -1620,10 +1704,12 @@ it.effect.each([119_000, 120_000])(
           yield* TestClock.adjust("10 seconds");
           yield* drainPendingDispatch(workers);
           const delivery = (yield* service.listWebhookDeliveries({ id: task.id })).deliveries[0]!;
-          if (length === 119_000) {
+          if (length < 120_000) {
+            assert.equal(delivery.outcome, "accepted");
             const launch = yield* Queue.take(launches);
             assert.isAbove(launch.initialMessage!.text.length, 120_000);
-            assert.equal(delivery.outcome, "accepted");
+            if (length === 119_750)
+              assert.isAbove(launch.initialMessage!.text.trim().length, 120_000);
             const detail = yield* service.getWebhookDelivery({
               id: task.id,
               deliveryId: delivery.id,
