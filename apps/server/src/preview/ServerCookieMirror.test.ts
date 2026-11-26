@@ -156,9 +156,14 @@ describe("ServerCookieMirror", () => {
     await send([desktop("datadome", "desktop-verdict"), desktop("_px3", "desktop-verdict")]);
     expect(state()).toMatchObject({ datadome: ["mirrored-earlier", -1] });
     expect(jar.has("_px3")).toBe(false);
-    await send([
-      { type: "remove", key: { name: "datadome", domain: ".dash.example.test", path: "/" } },
-    ]);
+    const withdraw = () =>
+      send([
+        { type: "remove", key: { name: "datadome", domain: ".dash.example.test", path: "/" } },
+      ]);
+    await withdraw();
+    expect(jar.has("datadome")).toBe(false);
+    // A replay after a reconnect or resync is harmless.
+    await withdraw();
     expect(jar.has("datadome")).toBe(false);
   });
 });

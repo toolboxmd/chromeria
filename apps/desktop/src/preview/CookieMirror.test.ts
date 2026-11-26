@@ -349,8 +349,17 @@ describe("one-way mirror service seam", () => {
       { type: "remove", key: key("datadome") },
       { type: "remove", key: key("_abck") },
     ]);
+    // A delivery lost to a disconnect or resync is sent again, also after a desktop restart.
     await carried.prepareDelivery("env", profile.id, withdrawal);
+    expect(carried.snapshot("env")[0]!.mutations).toEqual(withdrawal);
+    const restarted = new CookieMirror({ metadata: carried.metadata() });
+    await restarted.addPartition("partition", "env", profile, desktop);
+    expect(restarted.snapshot("env")[0]!.mutations).toEqual(withdrawal);
     await carried.acknowledge("env", profile.id, withdrawal);
+    await restarted.acknowledge("env", profile.id, withdrawal);
+    expect(restarted.snapshot("env")[0]!.mutations, "the acknowledgement ends it").toEqual([
+      { type: "set", cookie: login },
+    ]);
     desktop.apply.mockClear();
     await source(carried, [login, verdict("datadome", "chrome-verdict")]);
     desktop.cookies.set(cookieMirrorKey(key("datadome")), verdict("datadome", "earned-here"));
