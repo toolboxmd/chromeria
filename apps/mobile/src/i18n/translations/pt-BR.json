@@ -865,7 +865,7 @@
   "d0dd6aac0b64641c": "{machine}: liberado.",
   "b06a246927c977cd": "{machine}: ainda mostra uma janela de uso esgotada.",
   "ebce05a7530903b9": "{machine}: não foi possível ler o uso, então a antiga janela esgotada ainda o bloqueia.",
-  "d50514c55e2b5292": "{machine}: sem resposta em 10 segundos; ele se libera sozinho se recebeu a chamada.",
+  "64cc91273f7d4617": "{machine}: sem resposta em 10 segundos; se recebeu a chamada, ele limpa as falhas de limite registradas.",
   "364d513fa84a2c60": "{machine}: não alcançado, então o bloqueio antigo continua.",
   "0847ede923170e3b": "Parado porque o Chromeria reiniciou. Continuação iniciada (execução {run}, {status}).",
   "6695acbcb50d6b99": "Parado porque o Chromeria reiniciou. Continuação pendente.",

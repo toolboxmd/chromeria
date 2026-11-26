@@ -38,6 +38,7 @@ import { Button } from "../ui/button";
 import { OpenAI } from "../Icons";
 import { Alert, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { PrismUseCredits } from "./PrismUseCredits";
 import {
   PaceIcon,
   RedeemedResetLines,
@@ -241,6 +242,12 @@ function SegmentPopover({
             </span>
           ))}
         </div>
+      ) : null}
+      {account.driver === "codex" && account.redeem && "instanceId" in account.redeem.input ? (
+        <PrismUseCredits
+          environmentId={account.redeem.environmentId}
+          instanceId={account.redeem.input.instanceId}
+        />
       ) : null}
     </div>
   );

@@ -865,7 +865,7 @@
   "d0dd6aac0b64641c": "{machine} : débloqué.",
   "b06a246927c977cd": "{machine} : affiche encore une fenêtre d’utilisation épuisée.",
   "ebce05a7530903b9": "{machine} : l’utilisation n’a pas pu être lue, son ancienne fenêtre épuisée le bloque donc toujours.",
-  "d50514c55e2b5292": "{machine} : pas de réponse en 10 secondes ; il se débloque de lui-même s’il a reçu l’appel.",
+  "64cc91273f7d4617": "{machine} : pas de réponse en 10 secondes ; s’il a reçu l’appel, il efface ses échecs de limite enregistrés.",
   "364d513fa84a2c60": "{machine} : non joint, son ancien blocage reste en place.",
   "0847ede923170e3b": "Arrêté car Chromeria a redémarré. Continuation lancée (exécution {run}, {status}).",
   "6695acbcb50d6b99": "Arrêté car Chromeria a redémarré. Continuation en attente.",

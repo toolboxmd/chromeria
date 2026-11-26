@@ -901,9 +901,13 @@ apps/server/src/orchestration-v2/testkit/fixtures/claude_idle_resume/output.ts
 # Hidden OpenCode tools and undeferred T3 tools for OpenCode 2 (#1013, #1018).
 apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.integration.test.ts
 apps/server/src/orchestration-v2/testkit/fixtures/opencode2_fork/opencode_transcript.ndjson
+
+# Prism runs Codex on credits once its plan windows are spent (#1012).
 apps/server/src/provider/CodexProvider.ts
 apps/server/src/provider/CodexProvider.test.ts
 apps/server/src/provider/Drivers/CodexDriver.ts
+
+# Fork notes on an upstream user page (fork-maintenance).
 docs/user/browser.md
 
 # A redeemed reset reaches the same login on other machines (#1020).

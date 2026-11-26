@@ -865,7 +865,7 @@
   "d0dd6aac0b64641c": "{machine}: desbloqueado.",
   "b06a246927c977cd": "{machine}: sigue mostrando una ventana de uso agotada.",
   "ebce05a7530903b9": "{machine}: no se pudo leer el uso, así que su antigua ventana agotada sigue bloqueándolo.",
-  "d50514c55e2b5292": "{machine}: sin respuesta en 10 segundos; se desbloquea solo si recibió la llamada.",
+  "64cc91273f7d4617": "{machine}: sin respuesta en 10 segundos; si recibió la llamada, borra sus fallos de límite registrados.",
   "364d513fa84a2c60": "{machine}: no se pudo contactar, su bloqueo anterior sigue.",
   "0847ede923170e3b": "Se detuvo porque Chromeria se reinició. Continuación iniciada (ejecución {run}, {status}).",
   "6695acbcb50d6b99": "Se detuvo porque Chromeria se reinició. Continuación pendiente.",

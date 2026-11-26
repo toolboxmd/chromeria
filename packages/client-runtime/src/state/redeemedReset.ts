@@ -183,9 +183,10 @@ export function redeemedResetLineText(
       );
     case "noAnswer":
       return resolve(
-        msg("{machine}: no answer within 10 seconds; it clears itself if it received the call.", {
-          machine,
-        }),
+        msg(
+          "{machine}: no answer within 10 seconds; if it received the call, it clears its recorded limit failures.",
+          { machine },
+        ),
       );
     case "notReached":
       return resolve(msg("{machine}: not reached, so its old block remains.", { machine }));

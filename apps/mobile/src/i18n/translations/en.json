@@ -865,7 +865,7 @@
   "d0dd6aac0b64641c": "{machine}: cleared.",
   "b06a246927c977cd": "{machine}: still shows an exhausted usage window.",
   "ebce05a7530903b9": "{machine}: usage could not be read, so its old exhausted window still blocks it.",
-  "d50514c55e2b5292": "{machine}: no answer within 10 seconds; it clears itself if it received the call.",
+  "64cc91273f7d4617": "{machine}: no answer within 10 seconds; if it received the call, it clears its recorded limit failures.",
   "364d513fa84a2c60": "{machine}: not reached, so its old block remains.",
   "0847ede923170e3b": "Stopped because Chromeria restarted. Continuation started (run {run}, {status}).",
   "6695acbcb50d6b99": "Stopped because Chromeria restarted. Continuation pending.",

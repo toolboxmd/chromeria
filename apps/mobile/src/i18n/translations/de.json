@@ -865,7 +865,7 @@
   "d0dd6aac0b64641c": "{machine}: freigegeben.",
   "b06a246927c977cd": "{machine}: zeigt weiterhin ein ausgeschöpftes Nutzungsfenster.",
   "ebce05a7530903b9": "{machine}: Die Nutzung konnte nicht gelesen werden, daher blockiert das alte ausgeschöpfte Fenster weiterhin.",
-  "d50514c55e2b5292": "{machine}: keine Antwort innerhalb von 10 Sekunden; die Sperre wird dort aufgehoben, falls der Aufruf angekommen ist.",
+  "64cc91273f7d4617": "{machine}: keine Antwort innerhalb von 10 Sekunden; falls der Aufruf angekommen ist, werden dort die erfassten Limit-Fehler gelöscht.",
   "364d513fa84a2c60": "{machine}: nicht erreicht, die alte Sperre bleibt bestehen.",
   "0847ede923170e3b": "Gestoppt, weil Chromeria neu gestartet wurde. Fortsetzung gestartet (Lauf {run}, {status}).",
   "6695acbcb50d6b99": "Gestoppt, weil Chromeria neu gestartet wurde. Fortsetzung ausstehend.",

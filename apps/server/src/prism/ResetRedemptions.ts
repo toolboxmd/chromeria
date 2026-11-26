@@ -88,10 +88,10 @@ export class ResetRedemptions extends Context.Service<
       consume: Effect.Effect<ProviderConsumeResetCreditOutcome, E, R>,
     ) => Effect.Effect<ProviderConsumeResetCreditOutcome, E, R>;
     /**
-     * A reset redeemed for this login elsewhere: refresh the instance's usage, then void the
-     * failures that block it now. Refreshing first keeps a stale window from admitting it.
-     * Runs to its end once started, even if the caller stops waiting; the provider's own refresh
-     * timeout bounds it.
+     * A reset redeemed for this login elsewhere: refresh its usage, then void the failures that
+     * block it now, so a stale window cannot admit it. Runs to its end once started: its bound is
+     * the sum of the provider's checks (Claude about a minute, two behind a running check). A
+     * server stop inside it waits for it; the desktop ends its backend after 5 s, clear undone.
      */
     readonly clearRedeemed: (
       instance: { readonly instanceId: ProviderInstanceId; readonly driver: ProviderDriverKind },
