@@ -24,6 +24,7 @@ import * as Settings from "../serverSettings.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Prism from "./PrismService.ts";
 import * as ResetRedemptions from "./ResetRedemptions.ts";
+import { CodexCreditReads, registerCodexCreditRead } from "./CodexCredits.ts";
 import { errorFor, recoveryEvents, recoveryRun, recoveryTestLayer } from "./recovery.testkit.ts";
 
 const limited = recoveryRun.modelSelection;
@@ -214,6 +215,30 @@ describe("Prism capacity from durable run failures", () => {
       }).pipe(Effect.provide(Layer.mergeAll(deps, Prism.layer.pipe(Layer.provide(deps)))));
     },
   );
+
+  it.effect("keeps a recorded limit even when Codex credits could pay", () => {
+    const deps = dependencies();
+    let reads = 0;
+    return Effect.gen(function* () {
+      yield* seed();
+      yield* registerCodexCreditRead(
+        limited.instanceId,
+        Effect.sync(() => {
+          reads++;
+          return {
+            route: "native" as const,
+            rateLimits: { credits: { hasCredits: true, unlimited: false } },
+          };
+        }),
+      );
+      assert.deepStrictEqual((yield* resolve()).modelSelection, spare);
+      assert.strictEqual(reads, 0);
+    }).pipe(
+      Effect.scoped,
+      Effect.provideService(CodexCreditReads, new Map()),
+      Effect.provide(Layer.mergeAll(deps, Prism.layer.pipe(Layer.provide(deps)))),
+    );
+  });
 
   it.effect("does not escape configured candidates when all are exhausted", () => {
     const deps = dependencies(false, [limited]);

@@ -638,13 +638,17 @@ const codexProcessEnvironment = Effect.fn("codexProcessEnvironment")(function* (
   };
 });
 
-export const withCodexAppServerClient = Effect.fn("withCodexAppServerClient")(function* (input: {
-  readonly binaryPath: string;
-  readonly homePath?: string | undefined;
-  readonly launchArgs?: string | undefined;
-  readonly cwd: string;
-  readonly environment?: NodeJS.ProcessEnv | undefined;
-}) {
+export const withCodexAppServerClient = Effect.fn("withCodexAppServerClient")(function* (
+  input: {
+    readonly binaryPath: string;
+    readonly homePath?: string | undefined;
+    readonly launchArgs?: string | undefined;
+    readonly cwd: string;
+    readonly environment?: NodeJS.ProcessEnv | undefined;
+  },
+  // Runs with the spawn, uninterrupted, so a caller knows the process before any handshake.
+  onSpawn?: (pid: number) => void,
+) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const environment = yield* codexProcessEnvironment(input);
   const spawnCommand = yield* resolveSpawnCommand(
@@ -663,6 +667,8 @@ export const withCodexAppServerClient = Effect.fn("withCodexAppServerClient")(fu
       }),
     )
     .pipe(
+      Effect.tap((spawned) => Effect.sync(() => onSpawn?.(spawned.pid))),
+      Effect.uninterruptible,
       Effect.mapError(
         (cause) =>
           new CodexErrors.CodexAppServerSpawnError({
@@ -702,6 +708,55 @@ const stopCodexAfterStartupWork = (pid: number, processScope: Scope.Closeable) =
     Effect.ensuring(Scope.close(processScope, Exit.void)),
   );
 
+/** A short-lived client whose caller's scope ends without waiting for Codex's startup work. */
+const withCodexProbeClient = Effect.fn("withCodexProbeClient")(function* (
+  input: Parameters<typeof withCodexAppServerClient>[0],
+) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const processScope = yield* Scope.make();
+  let pid: number | undefined;
+  yield* Effect.addFinalizer(() =>
+    pid === undefined
+      ? Scope.close(processScope, Exit.void)
+      : stopCodexAfterStartupWork(pid, processScope).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.forkDetach,
+          Effect.asVoid,
+        ),
+  );
+  return yield* withCodexAppServerClient(input, (spawned) => (pid = spawned)).pipe(
+    Scope.provide(processScope),
+  );
+});
+
+/** The account's own limits, raw; `other` is a route whose usage is not this login's quota. */
+export type CodexAccountLimits =
+  | { readonly route: "other" }
+  | {
+      readonly route: "native";
+      readonly rateLimits: CodexSchema.V2GetAccountRateLimitsResponse["rateLimits"];
+    };
+
+export const readCodexAccountLimits = Effect.fn("readCodexAccountLimits")(function* (
+  input: Parameters<typeof withCodexAppServerClient>[0],
+) {
+  const { client } = yield* withCodexProbeClient({
+    ...input,
+    environment: providerProbeEnvironment(input.environment ?? process.env),
+  });
+  const [account, config] = yield* Effect.all(
+    [client.request("account/read", {}), client.request("config/read", { includeLayers: false })],
+    { concurrency: "unbounded" },
+  );
+  if (!codexRoutesSpendNativeQuota(account, config.config))
+    return { route: "other" } satisfies CodexAccountLimits;
+  const response = yield* client.request("account/rateLimits/read", null);
+  return {
+    route: "native",
+    rateLimits: response.rateLimitsByLimitId?.codex ?? response.rateLimits,
+  } satisfies CodexAccountLimits;
+}, Effect.scoped);
+
 // Usage is an enrichment: a failure or a slow answer degrades to "no usage this
 // probe" rather than costing the account and models.
 const readCodexRateLimits = (
@@ -736,22 +791,8 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
   readonly skipNativeUsage?: boolean;
 }) {
   const spawnedAtMs = DateTime.toEpochMillis(yield* DateTime.now);
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const processScope = yield* Scope.make();
-  let pid: number | undefined;
   // Returning the snapshot must not wait for Codex's own startup work.
-  yield* Effect.addFinalizer(() =>
-    pid === undefined
-      ? Scope.close(processScope, Exit.void)
-      : stopCodexAfterStartupWork(pid, processScope).pipe(
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          Effect.forkDetach,
-          Effect.asVoid,
-        ),
-  );
-  const opened = yield* withCodexAppServerClient(input).pipe(Scope.provide(processScope));
-  pid = opened.pid;
-  const { client, initialize } = opened;
+  const { client, initialize } = yield* withCodexProbeClient(input);
 
   const versionMatch = initialize.userAgent.match(/\/([^\s]+)/);
   const version = versionMatch ? versionMatch[1] : undefined;

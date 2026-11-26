@@ -3,6 +3,8 @@ import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
@@ -17,17 +19,46 @@ import {
   codexRoutesSpendNativeQuota,
   makeCodexSkillsProbe,
   mapCodexModelCapabilities,
+  readCodexAccountLimits,
 } from "./CodexProvider.ts";
+import { READ_BOUND, withinReadBound } from "../prism/CodexCredits.ts";
 
-function makeFakeCodexAppServers() {
+function makeFakeCodexAppServers(
+  input: {
+    readonly results?: Readonly<Record<string, unknown>>;
+    readonly startupWorkRunning?: () => boolean;
+    /** Completed when `initialize` arrives, which then gets no answer. */
+    readonly stallHandshake?: Deferred.Deferred<void>;
+  } = {},
+) {
+  const processGroupChecks: Array<string> = [];
   const helpers: Array<{
     readonly codexHome: unknown;
     readonly crash: Effect.Effect<void>;
     readonly requests: Array<unknown>;
+    readonly methods: Array<string>;
     closed: boolean;
   }> = [];
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.gen(function* () {
+      if (command._tag === "StandardCommand" && command.command === "pgrep") {
+        processGroupChecks.push(String(command.args[1]));
+        // Codex's own startup work runs in its process group beside the app-server.
+        const group = input.startupWorkRunning?.() ? `${command.args[1]}\n4242\n` : "";
+        return ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(4243),
+          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          unref: Effect.succeed(Effect.void),
+          stdin: Sink.drain,
+          stdout: Stream.make(new TextEncoder().encode(group)),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        });
+      }
       const output = yield* Queue.unbounded<Uint8Array, Cause.Done>();
       const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
       const crash = Deferred.succeed(exited, ChildProcessSpawner.ExitCode(1)).pipe(
@@ -38,6 +69,7 @@ function makeFakeCodexAppServers() {
         codexHome: command._tag === "StandardCommand" ? command.options.env?.CODEX_HOME : undefined,
         crash,
         requests: [] as Array<unknown>,
+        methods: [] as Array<string>,
         closed: false,
       };
       helpers.push(helper);
@@ -62,6 +94,8 @@ function makeFakeCodexAppServers() {
                 readonly params?: { readonly cwds: ReadonlyArray<string> };
               };
               if (frame.id === undefined) return Effect.void;
+              if (frame.method === "initialize" && input.stallHandshake)
+                return Deferred.succeed(input.stallHandshake, undefined);
               if (frame.method === "initialize") {
                 return respond(frame.id, {
                   codexHome: "/codex-home",
@@ -70,6 +104,9 @@ function makeFakeCodexAppServers() {
                   userAgent: "codex/0.0.0",
                 });
               }
+              helper.methods.push(frame.method);
+              if (input.results && frame.method in input.results)
+                return respond(frame.id, input.results[frame.method]);
               helper.requests.push(frame.params);
               return respond(frame.id, {
                 data: (frame.params?.cwds ?? []).map((cwd) => ({
@@ -98,7 +135,7 @@ function makeFakeCodexAppServers() {
       });
     }),
   );
-  return { helpers, spawner };
+  return { helpers, spawner, processGroupChecks };
 }
 
 it.effect("reuses one Codex skills helper per launch until it idles out", () =>
@@ -142,6 +179,82 @@ it.effect("reuses one Codex skills helper per launch until it idles out", () =>
 
     yield* Scope.close(providerScope, Exit.void);
     assert.strictEqual(helpers[3]!.closed, true);
+  }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
+);
+
+it.effect("reads the account's own limits and leaves Codex's startup work to finish", () =>
+  Effect.gen(function* () {
+    let startupWorkRunning = true;
+    const rateLimits = {
+      limitId: "codex",
+      secondary: { usedPercent: 100, resetsAt: 1_796_083_200 },
+      credits: { hasCredits: true, unlimited: false, balance: "60011" },
+    };
+    const results = (config: unknown) => ({
+      "account/read": {
+        account: { type: "chatgpt", email: "a@example.com", planType: "pro" },
+        requiresOpenaiAuth: true,
+      },
+      "config/read": { config, origins: {} },
+      "account/rateLimits/read": {
+        rateLimits: { limitId: "codex" },
+        rateLimitsByLimitId: { codex: rateLimits },
+      },
+    });
+    const native = makeFakeCodexAppServers({
+      results: results({}),
+      startupWorkRunning: () => startupWorkRunning,
+    });
+    const read = (spawner: ChildProcessSpawner.ChildProcessSpawner["Service"]) =>
+      readCodexAccountLimits({ binaryPath: "codex", cwd: "/", environment: {} }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      );
+
+    assert.deepStrictEqual(yield* read(native.spawner), { route: "native", rateLimits });
+    assert.deepStrictEqual(native.helpers[0]!.methods, [
+      "account/read",
+      "config/read",
+      "account/rateLimits/read",
+    ]);
+    // The answer returns at once, but stopping Codex mid-fetch would strand its ssh.
+    yield* TestClock.adjust("30 seconds");
+    assert.strictEqual(native.helpers[0]!.closed, false);
+    startupWorkRunning = false;
+    yield* TestClock.adjust("500 millis");
+    assert.strictEqual(native.helpers[0]!.closed, true);
+
+    const proxy = makeFakeCodexAppServers({
+      results: results({ openai_base_url: "http://127.0.0.1:8317/v1" }),
+    });
+    assert.deepStrictEqual(yield* read(proxy.spawner), { route: "other" });
+    assert.deepStrictEqual(proxy.helpers[0]!.methods, ["account/read", "config/read"]);
+  }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
+);
+
+it.effect("ends a read stalled before its handshake through the startup teardown", () =>
+  Effect.gen(function* () {
+    let startupWorkRunning = true;
+    const stallHandshake = yield* Deferred.make<void>();
+    const codex = makeFakeCodexAppServers({
+      stallHandshake,
+      startupWorkRunning: () => startupWorkRunning,
+    });
+    const decision = yield* Effect.forkChild(
+      withinReadBound(
+        readCodexAccountLimits({ binaryPath: "codex", cwd: "/", environment: {} }).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, codex.spawner),
+        ),
+      ),
+    );
+    yield* Deferred.await(stallHandshake);
+    // The decision returns at the bound while Codex's startup work still runs.
+    yield* TestClock.adjust(READ_BOUND);
+    assert.isTrue(Option.isNone(yield* Fiber.join(decision)));
+    assert.deepStrictEqual(codex.processGroupChecks, [String(900_000_001)]);
+    assert.strictEqual(codex.helpers[0]!.closed, false);
+    startupWorkRunning = false;
+    yield* TestClock.adjust("500 millis");
+    assert.strictEqual(codex.helpers[0]!.closed, true);
   }).pipe(Effect.provideService(HostProcess.Platform, "linux")),
 );
 

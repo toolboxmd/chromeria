@@ -4133,3 +4133,28 @@ sources and reasons.
   "keywords": ["T3CODE_THREAD_ID", "38855", "34032"]
 }
 ```
+
+## prism-codex-credits
+
+```json
+{
+  "id": "prism-codex-credits",
+  "purpose": "Let Prism admit a Codex instance whose plan windows are spent when its own account/rateLimits/read, made for that decision and bounded off the decision's path, shows credits that can pay. The credit rule is upstream's codexCreditBlocks, applied to the raw response without its snapshot merge. The per-instance prismUseCredits setting, on when absent, turns it off. Drop this feature when upstream ships credit continuation that Prism's window check uses.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/1001"],
+  "prs": ["https://github.com/pingdotgg/t3code/pull/36341"],
+  "newFiles": ["apps/server/src/prism/CodexCredits.ts"],
+  "upstreamFiles": [
+    "apps/server/src/provider/CodexProvider.ts",
+    "apps/server/src/provider/CodexProvider.test.ts",
+    "apps/server/src/provider/Drivers/CodexDriver.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/prism/PrismService.ts",
+    "apps/server/src/prism/PrismService.test.ts",
+    "apps/server/src/prism/PrismCapacity.integration.test.ts",
+    "packages/contracts/src/settings.ts",
+    "apps/server/src/provider/codexUsageLimits.ts"
+  ],
+  "keywords": ["continuesOnCredits", "codexCreditBlocks", "prismUseCredits", "hasCredits"]
+}
+```

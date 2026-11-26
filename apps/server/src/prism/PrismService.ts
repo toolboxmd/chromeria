@@ -1,4 +1,5 @@
 import { colorModelSelection, invalidOptionSelections } from "./modelOptions.ts";
+import { codexCreditAdmission, type CodexCreditAdmission } from "./CodexCredits.ts";
 import { unsupportedBare } from "@t3tools/provider-core/server/bareLaunch";
 import {
   DEFAULT_PRISM_LANE,
@@ -295,6 +296,8 @@ const make = Effect.gen(function* () {
       const count = Math.max(1, input.count ?? 1);
       const started: Array<ModelSelection> = [];
       const skipped: Array<string> = [];
+      // One credit decision per instance for this call; nothing outlives it.
+      const creditAdmissions = new Map<string, CodexCreditAdmission>();
       const skip = (candidate: ModelSelection, reason: string) =>
         skipped.push(`${candidate.instanceId}/${candidate.model}: ${reason}`);
       for (const candidate of candidates) {
@@ -306,8 +309,26 @@ const make = Effect.gen(function* () {
         }
         const block = usageBlock(provider, failures, now);
         if (block !== undefined) {
-          skip(candidate, block);
-          continue;
+          // Credits cover only spent plan windows, never a recorded usage-limit failure. No read
+          // for an unavailable instance or a Color whose model the provider does not advertise.
+          const mayUseCredits =
+            !failures.some((f) => f.provider_instance_id === candidate.instanceId) &&
+            provider.availability !== "unavailable" &&
+            provider.models.some(
+              (m) => m.slug === candidate.model || m.aliases?.includes(candidate.model),
+            );
+          const credits: CodexCreditAdmission = mayUseCredits
+            ? (creditAdmissions.get(candidate.instanceId) ??
+              (yield* codexCreditAdmission(provider, now, settings.getSettings)))
+            : { admitted: false };
+          if (mayUseCredits) creditAdmissions.set(candidate.instanceId, credits);
+          if (!credits.admitted) {
+            skip(
+              candidate,
+              credits.reason ? `${block}; credits cannot cover it: ${credits.reason}` : block,
+            );
+            continue;
+          }
         }
         // A validator can re-probe stale unavailable snapshots before refusing the candidate.
         const rechecking = provider.availability === "unavailable" && input.validate !== undefined;
