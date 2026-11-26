@@ -3593,7 +3593,35 @@ it.live(
           yield* Effect.flip(invoke("close", {})),
           "the agent cannot end the hold by closing its tab",
         ).toMatchObject({ reason: "antiBotChallenge" });
+        expect(
+          yield* Effect.flip(
+            broker.invoke({
+              scope,
+              operation: "open",
+              input: { url: "https://shop.test/", reuseExistingTab: false, show: false },
+            }),
+          ),
+          "a fresh isolated tab cannot retry the held site",
+        ).toMatchObject({ reason: "antiBotChallenge" });
         expect(requests.length, "a held site gets no request").toBe(sent);
+
+        // A persistent-profile tab, so closing it leaves the shared test context open.
+        const spare = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false, profileId: "default" },
+        });
+        const events = yield* manager.subscribeEvents;
+        yield* settleThread(scope.thread.threadId);
+        let closedEvent = yield* PubSub.take(events);
+        while (closedEvent.type !== "closed") closedEvent = yield* PubSub.take(events);
+        expect(closedEvent.tabId, "settlement closes the spare tab").toBe(spare.tabId);
+        expect(
+          (yield* manager.list({ threadId: scope.thread.threadId })).sessions.map(
+            (each) => each.tabId,
+          ),
+          "and keeps the tab that holds its site for the person",
+        ).toContain(tabId);
 
         yield* Effect.promise(() =>
           context.route("https://elsewhere.test/**", (route) =>

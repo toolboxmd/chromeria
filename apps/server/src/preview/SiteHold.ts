@@ -84,6 +84,16 @@ export class SiteHolds {
     return site === undefined ? undefined : this.holds.get(scope)?.get(site);
   }
 
+  /** Any hold this thread's tabs met on the site, whatever the cookie jar. */
+  forThread(threadId: string, site: string | undefined): HeldSite | undefined {
+    if (site === undefined) return undefined;
+    for (const sites of this.holds.values()) {
+      const hold = sites.get(site);
+      if (hold?.threadId === threadId) return hold;
+    }
+    return undefined;
+  }
+
   heldBy(tabId: string): ReadonlyArray<readonly [scope: string, hold: HeldSite]> {
     return [...this.holds].flatMap(([scope, sites]) =>
       [...sites.values()]

@@ -977,11 +977,14 @@ const make = Effect.gen(function* () {
   /** Sessions closed while their tab was still opening; the open discards its page. */
   const closedPendingTabs = new Set<string>();
   const adoptedPages = new Map<string, { readonly page: Page; readonly openerTabId: string }>();
+  const siteHolds = new SiteHolds();
+  // A tab holding its site waits for the person, so no automatic cleanup closes it.
   const mayCloseSettledTab = (tab: ServerTab) =>
     tab.control.agentId !== null &&
     tab.control.controller === null &&
     tab.viewers.size === 0 &&
-    tab.watches.size === 0;
+    tab.watches.size === 0 &&
+    siteHolds.heldBy(tab.tabId).length === 0;
   const closedSessions = new Set<string>();
   let hostConnectionId: string | null = null;
   let viewerResizeOrder = 0;
@@ -2579,6 +2582,7 @@ const make = Effect.gen(function* () {
         !reclaimingTabs.has(tab) &&
         !isVisible(tab) &&
         tab.watches.size === 0 &&
+        siteHolds.heldBy(tab.tabId).length === 0 &&
         tab.usedAt < cutoff,
     );
   };
@@ -3391,7 +3395,6 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const siteHolds = new SiteHolds();
   const isolatedScopes = new WeakMap<object, string>();
   /** One scope per cookie jar: a persistent profile per runtime, or one isolated context. */
   const siteHoldScope = (tab: ServerTab) => {
@@ -3405,8 +3408,10 @@ const make = Effect.gen(function* () {
     }
     return scope;
   };
+  // A fresh isolated context must not become a way around its thread's hold.
   const siteHoldOf = (tab: ServerTab, url = tab.page.url()) =>
-    siteHolds.get(siteHoldScope(tab), siteOf(url));
+    siteHolds.get(siteHoldScope(tab), siteOf(url)) ??
+    (tab.isolatedContext ? siteHolds.forThread(tab.threadId, siteOf(url)) : undefined);
   const publicSiteHold = ({ site, vendor, kind, url, since }: HeldSite) => ({
     site,
     vendor,
@@ -3432,6 +3437,8 @@ const make = Effect.gen(function* () {
     };
     if (!siteHolds.create(siteHoldScope(tab), hold)) return;
     runFork(Effect.logInfo("Site hold raised", { site, vendor: hold.vendor, kind: hold.kind }));
+    // Page watches run caller code on the page, so they stop with the agent.
+    stopTabWatches(tab, "revoked");
     const target = { threadId: tab.threadId, tabId: tab.tabId };
     await runPromise(
       manager.setSiteHold({ ...target, siteHold: publicSiteHold(hold) }).pipe(Effect.ignore),
@@ -3608,7 +3615,7 @@ const make = Effect.gen(function* () {
           const held = existing
             ? siteHoldOf(existing, url)
             : profileId === undefined || profileId === INCOGNITO_BROWSER_PROFILE_ID
-              ? undefined
+              ? siteHolds.forThread(request.threadId, siteOf(url))
               : siteHolds.get(`server:${profileId}`, siteOf(url));
           if (held) throw siteHoldError(held);
         }
