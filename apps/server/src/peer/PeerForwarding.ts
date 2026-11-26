@@ -324,10 +324,13 @@ const make = Effect.gen(function* () {
           });
         yield* peers.requirePendingRequests(environmentId, options?.expectedLinkIdentity);
       }
-      const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
-        params,
-      ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
-      const { environmentId: _target, ...args } = encoded;
+      const encode = (input: unknown) =>
+        Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(input).pipe(
+          Effect.mapError(unavailable),
+          Effect.map((value) => value as Record<string, unknown>),
+        );
+      const encoded = yield* encode(params);
+      let { environmentId: _target, ...args } = encoded;
       yield* assertWithinLinkAccess(environmentId, args.runtimeMode);
       if (toolName === "t3_thread_send") {
         if (args.delegatedContinuation !== undefined) {
@@ -372,7 +375,12 @@ const make = Effect.gen(function* () {
                     "The original remote delegated launch has no validated purpose evidence.",
                 });
               }
-              args.delegatedContinuation = evidence;
+              // The destination checks its authority against arguments in schema field
+              // order, so the evidence is encoded with them rather than appended.
+              ({ environmentId: _target, ...args } = yield* encode({
+                ...(params as Record<string, unknown>),
+                delegatedContinuation: evidence,
+              }));
             }
           }
         }
