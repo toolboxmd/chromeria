@@ -37,5 +37,8 @@ export function useIssueRowThreads(
     loading: query.isPending && query.values.length < targets.length,
     // The first server that could not answer, so a view can say whose threads it is missing.
     error: query.error?.message ?? null,
+    failedEnvironmentId: query.error?.environmentId ?? null,
+    /** Reads the failed batches again. */
+    retry: query.retry,
   };
 }

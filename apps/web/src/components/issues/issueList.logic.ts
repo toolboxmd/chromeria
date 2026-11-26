@@ -86,41 +86,65 @@ export interface IssueListTarget {
   readonly input: GitHubIssueListInput;
 }
 
+/** GitHub returns at most this many results for one search, however many match. */
+const SEARCH_RESULT_CEILING = 1000;
+/** The server's page size when a listing names none. */
+const DEFAULT_PAGE_SIZE = 50;
+
 /**
- * Every page to read: each server's listing, then the continuation of each page that has
- * answered, until a page carries none. Status is computed here in the client, so a group's count
- * is a total only when `complete`: every server's last page answered. A continuation already
- * asked for is not asked again, so a server repeating a cursor ends its walk.
+ * Every page to read: each server's listing, then each answered page's continuation. Group counts
+ * are totals only when `rows` is `complete`: `pending` while a page has no answer, `truncated` when
+ * a search repeated a cursor (never read twice) or ended exactly at GitHub's result ceiling.
  */
 export function issueListPages(
   listings: ReadonlyArray<IssueListTarget>,
   answerOf: (target: IssueListTarget) => Pick<GitHubIssueListResult, "nextCursors"> | null,
-): { readonly targets: ReadonlyArray<IssueListTarget>; readonly complete: boolean } {
+): {
+  readonly targets: ReadonlyArray<IssueListTarget>;
+  readonly rows: "complete" | "pending" | "truncated";
+} {
   const targets: Array<IssueListTarget> = [];
-  const asked = new Set<string>();
-  let complete = true;
+  /** Per server and search: the cursors already read from, which is also its pages after the first. */
+  const read = new Map<string, Set<string>>();
+  let pending = false;
+  let truncated = false;
   // Page by page across servers, so a page that arrives later adds its rows after the ones shown.
   let round = listings;
   while (round.length > 0) {
     const next: Array<IssueListTarget> = [];
     for (const target of round) {
-      const key = JSON.stringify(target);
-      if (asked.has(key)) continue;
-      asked.add(key);
       targets.push(target);
       const answer = answerOf(target);
       if (answer === null) {
-        complete = false;
-      } else if (Object.keys(answer.nextCursors).length > 0) {
-        next.push({
-          environmentId: target.environmentId,
-          input: { ...target.input, cursors: answer.nextCursors },
-        });
+        pending = true;
+        continue;
+      }
+      const pageSize = target.input.limit ?? DEFAULT_PAGE_SIZE;
+      for (const search of Object.keys(target.input.cursors ?? {})) {
+        const pages = 1 + (read.get(`${target.environmentId} ${search}`)?.size ?? 0);
+        if (!(search in answer.nextCursors) && pages * pageSize >= SEARCH_RESULT_CEILING) {
+          truncated = true;
+        }
+      }
+      const cursors: Record<string, string> = {};
+      for (const [search, cursor] of Object.entries(answer.nextCursors)) {
+        const key = `${target.environmentId} ${search}`;
+        const seen = read.get(key) ?? new Set<string>();
+        read.set(key, seen);
+        if (seen.has(cursor)) {
+          truncated = true;
+          continue;
+        }
+        seen.add(cursor);
+        cursors[search] = cursor;
+      }
+      if (Object.keys(cursors).length > 0) {
+        next.push({ environmentId: target.environmentId, input: { ...target.input, cursors } });
       }
     }
     round = next;
   }
-  return { targets, complete };
+  return { targets, rows: pending ? "pending" : truncated ? "truncated" : "complete" };
 }
 
 /**

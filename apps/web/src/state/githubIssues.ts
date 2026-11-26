@@ -105,7 +105,8 @@ const issueListPagesAtom = Atom.family((key: string) =>
 
 /**
  * One listing per environment with every further page, merged into the list the page renders.
- * `complete` once every page has answered; a page whose reread failed still counts as answered.
+ * `rows` is the page walk's verdict; a page whose reread failed still counts as answered there,
+ * so a reader checks `error` too.
  */
 export function useIssueList(
   listings: ReadonlyArray<EnvironmentQueryTarget<GitHubIssueListInput>>,
@@ -115,7 +116,7 @@ export function useIssueList(
   const data = mergeIssueLists(query.values);
   return {
     data,
-    complete: pages.complete,
+    rows: pages.rows,
     error: query.error?.message ?? null,
     isPending: query.isPending,
     refresh: query.refresh,

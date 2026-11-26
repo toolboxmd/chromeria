@@ -118,7 +118,7 @@ describe("mergeIssueLists", () => {
     // The first page asks for its continuation unprompted; until that answers, rows are missing.
     expect(issueListPages([listing], answerOf)).toEqual({
       targets: [listing, continuation],
-      complete: false,
+      rows: "pending",
     });
     const first = mergeIssueLists([[ENV_A, pageOne]]);
     expect(first?.nextCursors.get(ENV_A)).toEqual({ "github.com#0": "c1" });
@@ -126,7 +126,7 @@ describe("mergeIssueLists", () => {
     answers.set(JSON.stringify(continuation), pageTwo);
     expect(issueListPages([listing], answerOf)).toEqual({
       targets: [listing, continuation],
-      complete: true,
+      rows: "complete",
     });
     const second = mergeIssueLists([
       [ENV_A, pageOne],
@@ -136,20 +136,44 @@ describe("mergeIssueLists", () => {
     expect(second?.nextCursors.has(ENV_A)).toBe(false);
   });
 
-  it("is incomplete while any server has not answered, and asks no page twice", () => {
+  it("reads no cursor of a search twice, and a search that repeats one is not complete", () => {
     const listingA = { environmentId: ENV_A, input: { state: "open" } } as const;
     const listingB = { environmentId: ENV_B, input: { state: "open" } } as const;
-    // A server that answers every page with the same cursor would otherwise be walked forever.
-    const stuck = result([], { nextCursors: { "github.com#0": "c1" } });
+    // ENV_A's first search answers every page with the cursor it was read from while its second
+    // search advances once and ends; ENV_B has one page and is done.
+    const cursorsOf = (target: { environmentId: EnvironmentId; input: { cursors?: object } }) =>
+      target.environmentId === ENV_B
+        ? {}
+        : target.input.cursors === undefined
+          ? { "github.com#0": "stuck", "github.com#1": "next" }
+          : { "github.com#0": "stuck" };
     const pages = issueListPages([listingA, listingB], (target) =>
-      target.environmentId === ENV_A ? stuck : null,
+      result([], { nextCursors: cursorsOf(target) }),
     );
     expect(pages.targets).toEqual([
       listingA,
       listingB,
-      { environmentId: ENV_A, input: { state: "open", cursors: { "github.com#0": "c1" } } },
+      {
+        environmentId: ENV_A,
+        input: { state: "open", cursors: { "github.com#0": "stuck", "github.com#1": "next" } },
+      },
     ]);
-    expect(pages.complete).toBe(false);
+    expect(pages.rows).toBe("truncated");
+  });
+
+  it("is truncated when a search ends exactly at GitHub's 1,000-result ceiling", () => {
+    const listing = { environmentId: ENV_A, input: { state: "all", limit: 100 } } as const;
+    // Ten full pages: the tenth carries no cursor however many more Issues match.
+    const lastPage = (pages: number) =>
+      issueListPages([listing], (target) => {
+        const read = Number(target.input.cursors?.["github.com#0"] ?? 1);
+        return result([], {
+          nextCursors: read < pages ? { "github.com#0": String(read + 1) } : {},
+        });
+      });
+    expect(lastPage(9)).toMatchObject({ rows: "complete" });
+    expect(lastPage(10).targets).toHaveLength(10);
+    expect(lastPage(10).rows).toBe("truncated");
   });
 
   it("counts each repository on another forge once, across pages and servers", () => {

@@ -231,13 +231,16 @@ export function IssuesView() {
   const rowThreads = useIssueRowThreads(data?.entries ?? [], linkEnvironments);
   const { threadsByIssue, working } = rowThreads;
   // Status is computed from every row and its threads, so a count is a total only once all of
-  // both have been read.
-  const countsFinal =
-    data !== null &&
-    list.complete &&
-    list.error === null &&
-    data.errors.length === 0 &&
-    !rowThreads.loading;
+  // both are read. Missing rows can only add to it. A row whose threads are unread sits in the
+  // wrong group and fails the status and linked filters, so those counts can fall as well.
+  const rowsComplete =
+    data !== null && list.rows === "complete" && list.error === null && data.errors.length === 0;
+  const threadsRead = !rowThreads.loading && rowThreads.error === null;
+  const groupCounts = countCertainty(rowsComplete, threadsRead);
+  const totalCount = countCertainty(
+    rowsComplete,
+    threadsRead || ((filters.statuses?.length ?? 0) === 0 && filters.linked === undefined),
+  );
   const facts = (() => {
     const byKey = new Map<string, IssueRowFacts>();
     for (const entry of data?.entries ?? []) {
@@ -379,12 +382,14 @@ export function IssuesView() {
     body = (
       <>
         <p className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground">
-          {countsFinal
+          {totalCount === "final"
             ? gt("{count, plural, one {{count} Issue} other {{count} Issues}}", {
                 count: visible.length,
               })
-            : gt("{count}+ Issues", { count: visible.length })}
-          {list.isPending && !countsFinal ? (
+            : totalCount === "floor"
+              ? gt("{count}+ Issues", { count: visible.length })
+              : gt("~{count} Issues", { count: visible.length })}
+          {(list.isPending && !rowsComplete) || rowThreads.loading ? (
             <Spinner size="xs" aria-label={gt("Loading more Issues")} />
           ) : null}
         </p>
@@ -395,7 +400,7 @@ export function IssuesView() {
                   key={group.status}
                   status={group.status}
                   count={group.entries.length}
-                  final={countsFinal}
+                  certainty={groupCounts}
                   collapsed={collapsed.has(group.status)}
                   onToggle={() =>
                     setCollapsed((previous) => {
@@ -513,9 +518,43 @@ export function IssuesView() {
                   </Button>
                 </div>
               ) : null}
+              {/* A search GitHub refused inside an answered page ends that search's walk; reading
+                  again is the way to carry on. */}
               {data !== null && data.errors.length > 0 ? (
-                <p className="text-xs text-destructive-foreground">
-                  {data.errors.map((error) => `${error.host}: ${error.message}`).join(" · ")}
+                <div className="flex items-center justify-between gap-3 text-xs text-destructive-foreground">
+                  <span>
+                    {data.errors.map((error) => `${error.host}: ${error.message}`).join(" · ")}
+                  </span>
+                  <Button size="xs" variant="outline" onClick={refresh}>
+                    <T>Retry</T>
+                  </Button>
+                </div>
+              ) : null}
+              {rowThreads.error !== null ? (
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning-surface px-3 py-2 text-xs">
+                  <span>
+                    {gt(
+                      "Linked threads on {server} could not be read, so statuses and counts may be wrong. {error}",
+                      {
+                        server:
+                          environments.find(
+                            (environment) =>
+                              environment.environmentId === rowThreads.failedEnvironmentId,
+                          )?.label ?? String(rowThreads.failedEnvironmentId),
+                        error: rowThreads.error,
+                      },
+                    )}
+                  </span>
+                  <Button size="xs" variant="outline" onClick={rowThreads.retry}>
+                    <T>Retry</T>
+                  </Button>
+                </div>
+              ) : null}
+              {data !== null && list.rows === "truncated" ? (
+                <p className="text-xs text-muted-foreground">
+                  {gt(
+                    "GitHub did not return every matching Issue, so the counts are lower bounds.",
+                  )}
                 </p>
               ) : null}
 
@@ -553,6 +592,17 @@ export function IssuesView() {
   );
 }
 
+/**
+ * How far a count can be trusted: `floor` while rows are missing (it can only grow), `unsettled`
+ * while thread facts are missing (rows can still move between groups, so it can fall too).
+ */
+type CountCertainty = "final" | "floor" | "unsettled";
+
+function countCertainty(rowsComplete: boolean, threadsSettled: boolean): CountCertainty {
+  if (!threadsSettled) return "unsettled";
+  return rowsComplete ? "final" : "floor";
+}
+
 function EmptyState({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-40 items-center justify-center text-sm text-muted-foreground">
@@ -564,15 +614,14 @@ function EmptyState({ children }: { children: ReactNode }) {
 function IssueStatusGroup({
   status,
   count,
-  final,
+  certainty,
   collapsed,
   onToggle,
   children,
 }: {
   status: IssueStatus;
   count: number;
-  /** False while rows or their threads are still being read: the count can still change. */
-  final: boolean;
+  certainty: CountCertainty;
   collapsed: boolean;
   onToggle: () => void;
   children: ReactNode;
@@ -593,8 +642,9 @@ function IssueStatusGroup({
         <IssueStatusGlyph status={status} className="size-3.5" />
         <span>{messages(ISSUE_STATUS_PRESENTATION[status].label)}</span>
         <span className="tabular-nums">
+          {certainty === "unsettled" ? "~" : null}
           {count}
-          {final ? null : "+"}
+          {certainty === "floor" ? "+" : null}
         </span>
       </button>
       {collapsed ? null : <ul className="flex flex-col">{children}</ul>}
@@ -683,36 +733,47 @@ const IssueRow = memo(function IssueRow({
         />
       </button>
       {threads.length > 0 ? (
-        // The title keeps its room: a narrow row shows the threads as icons, a narrower one not
-        // at all (the side panel, which is what narrows the list, lists them).
-        <span className="hidden max-w-[40%] shrink-0 items-center gap-1 @sm/issue-row:flex">
-          {threads.slice(0, 2).map((thread) => (
-            <Button
+        // The title keeps its room: a narrow row shows the threads as icons, a narrower one only
+        // the first, with the rest behind the count.
+        <span className="flex max-w-[40%] shrink-0 items-center gap-1">
+          {threads.slice(0, 2).map((thread, index) => (
+            // The layout sits on this one-track grid, which the button fills and shrinks with.
+            <span
               key={`${thread.environmentId} ${thread.id}`}
-              size="xs"
-              variant="ghost"
-              className="max-w-48 min-w-0 shrink"
-              aria-label={thread.title}
-              title={thread.title}
-              onClick={() => onOpenThread(thread)}
+              className={cn(
+                "max-w-48 min-w-0 grid-cols-1",
+                index === 0 ? "grid" : "hidden @sm/issue-row:grid",
+              )}
             >
-              <MessageSquareIcon />
-              <span className="hidden truncate @lg/issue-row:block">{thread.title}</span>
-            </Button>
+              <Button
+                size="xs"
+                variant="ghost"
+                aria-label={thread.title}
+                title={thread.title}
+                onClick={() => onOpenThread(thread)}
+              >
+                <MessageSquareIcon />
+                <span className="hidden truncate @lg/issue-row:block">{thread.title}</span>
+              </Button>
+            </span>
           ))}
-          {threads.length > 2 ? (
+          {threads.length > 1 ? (
             <Tooltip>
               <TooltipTrigger
-                render={<span className="relative shrink-0 text-2xs text-muted-foreground" />}
+                render={
+                  <span
+                    tabIndex={0}
+                    className={cn(
+                      "relative shrink-0 rounded-sm text-2xs text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                      threads.length === 2 && "@sm/issue-row:hidden",
+                    )}
+                  />
+                }
               >
-                +{threads.length - 2}
+                <span className="@sm/issue-row:hidden">+{threads.length - 1}</span>
+                <span className="hidden @sm/issue-row:inline">+{threads.length - 2}</span>
               </TooltipTrigger>
-              <TooltipPopup>
-                {threads
-                  .slice(2)
-                  .map((thread) => thread.title)
-                  .join(", ")}
-              </TooltipPopup>
+              <TooltipPopup>{threads.map((thread) => thread.title).join(", ")}</TooltipPopup>
             </Tooltip>
           ) : null}
         </span>
