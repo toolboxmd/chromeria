@@ -354,7 +354,7 @@ describe("PrismService", () => {
         error.message,
         "No eligible model with usage headroom for this Prism role and lane. Skipped: " +
           "codex/missing-model: model is not advertised by the provider; " +
-          "codex-work/configured: provider usage limit reached; " +
+          "codex-work/configured: Weekly usage window is exhausted with no reported reset; " +
           "codex-off/configured: provider is unavailable.",
       );
     }),
