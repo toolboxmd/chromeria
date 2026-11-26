@@ -51,6 +51,15 @@ describe("RPC authorization scopes", () => {
     ).toEqual([AuthOrchestrationOperateScope]);
   });
 
+  it("guards clearing a reset redeemed elsewhere as redeeming one, on both client and server", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.providerClearRedeemedReset)).toBe(
+      requiredScopeForRpcMethod(WS_METHODS.providerConsumeResetCredit),
+    );
+    expect(
+      clientRpcRequiredScopes(WS_METHODS.providerClearRedeemedReset, { instanceId: "claude" }),
+    ).toEqual([AuthProvidersManageScope]);
+  });
+
   it("declares exactly one scope for every RPC in the server group", () => {
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
   });

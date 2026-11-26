@@ -188,6 +188,30 @@ const voided = Effect.flatMap(
 const resolve = (role: "worker" | "computer-use" = "worker") =>
   Effect.flatMap(Prism.PrismService, (prism) => prism.resolve({ projectId, role, lane: "hard" }));
 
+/** The limited instance told of a reset redeemed elsewhere; `refresh` stands in for its usage read. */
+const clearRedeemed = (refresh: Effect.Effect<void>, readFailed = false) =>
+  Effect.gen(function* () {
+    const redemptions = yield* ResetRedemptions.ResetRedemptions;
+    const providers = yield* Providers.ProviderRegistry;
+    return yield* redemptions.clearRedeemed(
+      { instanceId: limited.instanceId, driver: ProviderDriverKind.make("codex") },
+      {
+        refreshUsage: refresh,
+        getSnapshot: providers.getProviders.pipe(
+          Effect.map((all) => {
+            const provider = all.find((p) => p.instanceId === limited.instanceId)!;
+            return readFailed && provider.usageLimits
+              ? {
+                  ...provider,
+                  usageLimits: { ...provider.usageLimits, unavailable: { reason: "probeFailed" } },
+                }
+              : provider;
+          }),
+        ),
+      },
+    );
+  });
+
 describe("Prism capacity from durable run failures", () => {
   it.effect.each([false, true])(
     "skips known limits across new role calls (stale windows: %s)",
@@ -462,6 +486,47 @@ describe("Prism capacity from durable run failures", () => {
       yield* Effect.provide(Effect.void, restarted());
       assert.deepStrictEqual((yield* resolve()).modelSelection, limited);
     }).pipe(Effect.provide(Layer.mergeAll(deps, Prism.layer.pipe(Layer.provide(deps)))));
+  });
+
+  it.effect(
+    "a reset redeemed elsewhere refreshes usage, then voids what blocks the instance",
+    () => {
+      const window = { id: "session", label: "Session", usedPercent: 100 };
+      const deps = dependencies(true, [limited], window);
+      return Effect.gen(function* () {
+        yield* seed();
+        let voidedAtRefresh: ReadonlyArray<unknown> | undefined;
+        const refresh = Effect.gen(function* () {
+          voidedAtRefresh = yield* voided;
+          window.usedPercent = 10;
+        }).pipe(Effect.orDie);
+        assert.deepStrictEqual(yield* clearRedeemed(refresh), { voided: 1, usage: "headroom" });
+        assert.deepStrictEqual(voidedAtRefresh, []);
+        assert.deepStrictEqual((yield* resolve()).modelSelection, limited);
+        assert.deepStrictEqual(yield* clearRedeemed(refresh), { voided: 0, usage: "headroom" });
+        assert.deepStrictEqual(yield* voided, [{ turn_item_id: errorFor(recoveryRun).id }]);
+        assert.deepStrictEqual((yield* resolve()).modelSelection, limited);
+      }).pipe(Effect.provide(withRedemptions(deps)));
+    },
+  );
+
+  it.effect.each([
+    { case: "the fresh read is still exhausted", readFailed: false, usage: "exhausted" },
+    { case: "the read failed and kept the old window", readFailed: true, usage: "unread" },
+  ] as const)("reports and keeps skipping when $case", ({ readFailed, usage }) => {
+    const deps = dependencies(true, [limited], {
+      id: "session",
+      label: "Session",
+      usedPercent: 100,
+    });
+    return Effect.gen(function* () {
+      yield* seed();
+      assert.deepStrictEqual(yield* clearRedeemed(Effect.void, readFailed), { voided: 1, usage });
+      assert.strictEqual(
+        (yield* Effect.flip(resolve())).message,
+        "No eligible model with usage headroom for this Prism role and lane. Skipped: codex/fixed: Session usage window is exhausted until 2026-10-08T12:00:00Z.",
+      );
+    }).pipe(Effect.provide(withRedemptions(deps)));
   });
 
   it.effect("keeps the block and the reset's success when the record cannot be written", () => {

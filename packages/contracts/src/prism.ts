@@ -2,7 +2,12 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 
-import { PositiveInt, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import {
+  NonNegativeInt,
+  PositiveInt,
+  TrimmedNonEmptyString,
+  TrimmedString,
+} from "./baseSchemas.ts";
 import { ProviderOptionSelections } from "./model.ts";
 import {
   defaultInstanceIdForDriver,
@@ -397,3 +402,17 @@ export function withoutUnsetPrismRoles<
 
 export const PrismStaleReason = Schema.Literals(["silence", "provider-dead", "provider-error"]);
 export type PrismStaleReason = typeof PrismStaleReason.Type;
+
+/** A reset was redeemed for this instance's login on another instance or machine. */
+export const ProviderClearRedeemedResetInput = Schema.Struct({ instanceId: ProviderInstanceId });
+export type ProviderClearRedeemedResetInput = typeof ProviderClearRedeemedResetInput.Type;
+
+/**
+ * `voided`: usage-limit failures that blocked the instance and no longer do. `usage` after the
+ * refresh: no exhausted window, an exhausted window read fresh, or one kept because the read failed.
+ */
+export const ProviderClearRedeemedResetResult = Schema.Struct({
+  voided: NonNegativeInt,
+  usage: Schema.Literals(["headroom", "exhausted", "unread"]),
+});
+export type ProviderClearRedeemedResetResult = typeof ProviderClearRedeemedResetResult.Type;

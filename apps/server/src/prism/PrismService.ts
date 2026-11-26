@@ -28,6 +28,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import {
   blockingUsageLimitFailures,
+  exhaustedWindow,
   initializeResetRedemptions,
   type UsageLimitFailure,
 } from "./ResetRedemptions.ts";
@@ -140,14 +141,6 @@ export function delegatedPrismRole(role?: OrchestratorMcpTaskRole): PrismDelegat
     default:
       return "worker";
   }
-}
-
-function exhaustedWindow(provider: ServerProvider, now: number) {
-  return (provider.usageLimits?.windows ?? []).find(
-    (window) =>
-      window.usedPercent >= 100 &&
-      (window.resetsAt === undefined || Date.parse(window.resetsAt) > now),
-  );
 }
 
 /** Why the provider cannot take work now, or undefined when it has headroom. */

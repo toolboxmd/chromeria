@@ -1,7 +1,10 @@
 import type {
+  ProviderClearRedeemedResetResult,
   ProviderConsumeResetCreditOutcome,
   ProviderDriverKind,
   ProviderInstanceId,
+  ServerProvider,
+  ServerSettingsError,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -17,6 +20,15 @@ export const initializeResetRedemptions = Effect.gen(function* () {
     redeemed_at TEXT NOT NULL, PRIMARY KEY (turn_item_id, provider_instance_id, driver)
   )`;
 });
+
+/** A usage window Prism treats as closed: fully used and not yet reset. */
+export function exhaustedWindow(provider: Pick<ServerProvider, "usageLimits">, now: number) {
+  return (provider.usageLimits?.windows ?? []).find(
+    (window) =>
+      window.usedPercent >= 100 &&
+      (window.resetsAt === undefined || Date.parse(window.resetsAt) > now),
+  );
+}
 
 export interface UsageLimitFailure {
   readonly turn_item_id: string;
@@ -75,6 +87,17 @@ export class ResetRedemptions extends Context.Service<
       instance: { readonly instanceId: ProviderInstanceId; readonly driver: ProviderDriverKind },
       consume: Effect.Effect<ProviderConsumeResetCreditOutcome, E, R>,
     ) => Effect.Effect<ProviderConsumeResetCreditOutcome, E, R>;
+    /**
+     * A reset redeemed for this login elsewhere: refresh the instance's usage, then void the
+     * failures that block it now. Refreshing first keeps a stale window from admitting it.
+     */
+    readonly clearRedeemed: (
+      instance: { readonly instanceId: ProviderInstanceId; readonly driver: ProviderDriverKind },
+      usage: {
+        readonly getSnapshot: Effect.Effect<ServerProvider>;
+        readonly refreshUsage?: Effect.Effect<void, ServerSettingsError> | undefined;
+      },
+    ) => Effect.Effect<ProviderClearRedeemedResetResult>;
   }
 >()("t3/prism/ResetRedemptions") {}
 
@@ -87,21 +110,39 @@ const make = Effect.gen(function* () {
       instanceId,
       cause,
     });
-  const redeem = Effect.fn("ResetRedemptions.redeem")(function* <E, R>(
+  const blockingOn = (
     instance: { readonly instanceId: ProviderInstanceId; readonly driver: ProviderDriverKind },
-    consume: Effect.Effect<ProviderConsumeResetCreditOutcome, E, R>,
-  ) {
-    const started = yield* DateTime.now;
-    // Read before the call: a failure recorded while the reset is confirmed is not in the set.
-    const blocking: ReadonlyArray<UsageLimitFailure> = yield* blockingUsageLimitFailures(
-      started,
-    ).pipe(
+    at: DateTime.DateTime,
+  ) =>
+    blockingUsageLimitFailures(at).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.map((failures) =>
         failures.filter(
           (f) => f.provider_instance_id === instance.instanceId && f.driver === instance.driver,
         ),
       ),
+    );
+  const voidFailures = (
+    instance: { readonly instanceId: ProviderInstanceId; readonly driver: ProviderDriverKind },
+    failures: ReadonlyArray<UsageLimitFailure>,
+    redeemedAt: DateTime.DateTime,
+  ) =>
+    Effect.forEach(
+      failures,
+      (failure) =>
+        sql`INSERT OR IGNORE INTO fork_prism_reset_voided_failures
+          (turn_item_id, provider_instance_id, driver, redeemed_at)
+          VALUES (${failure.turn_item_id}, ${instance.instanceId}, ${instance.driver},
+            ${DateTime.formatIso(redeemedAt)})`,
+      { discard: true },
+    );
+  const redeem = Effect.fn("ResetRedemptions.redeem")(function* <E, R>(
+    instance: { readonly instanceId: ProviderInstanceId; readonly driver: ProviderDriverKind },
+    consume: Effect.Effect<ProviderConsumeResetCreditOutcome, E, R>,
+  ) {
+    const started = yield* DateTime.now;
+    // Read before the call: a failure recorded while the reset is confirmed is not in the set.
+    const blocking: ReadonlyArray<UsageLimitFailure> = yield* blockingOn(instance, started).pipe(
       Effect.catchCause((cause) =>
         unrecorded(instance.instanceId)(cause).pipe(
           Effect.as<ReadonlyArray<UsageLimitFailure>>([]),
@@ -110,18 +151,48 @@ const make = Effect.gen(function* () {
     );
     const outcome = yield* consume;
     if (outcome === "reset")
-      yield* Effect.forEach(
-        blocking,
-        (failure) =>
-          sql`INSERT OR IGNORE INTO fork_prism_reset_voided_failures
-            (turn_item_id, provider_instance_id, driver, redeemed_at)
-            VALUES (${failure.turn_item_id}, ${instance.instanceId}, ${instance.driver},
-              ${DateTime.formatIso(started)})`,
-        { discard: true },
-      ).pipe(Effect.catchCause(unrecorded(instance.instanceId)));
+      yield* voidFailures(instance, blocking, started).pipe(
+        Effect.catchCause(unrecorded(instance.instanceId)),
+      );
     return outcome;
   });
-  return ResetRedemptions.of({ redeem });
+  const clearRedeemed = Effect.fn("ResetRedemptions.clearRedeemed")(function* (
+    instance: { readonly instanceId: ProviderInstanceId; readonly driver: ProviderDriverKind },
+    usage: {
+      readonly getSnapshot: Effect.Effect<ServerProvider>;
+      readonly refreshUsage?: Effect.Effect<void, ServerSettingsError> | undefined;
+    },
+  ) {
+    const refreshed = yield* (usage.refreshUsage ?? Effect.void).pipe(
+      Effect.as(true),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Unable to refresh usage after a reset redeemed elsewhere.", {
+          instanceId: instance.instanceId,
+          cause,
+        }).pipe(Effect.as(false)),
+      ),
+    );
+    const now = yield* DateTime.now;
+    const blocking = yield* blockingOn(instance, now).pipe(
+      Effect.tap((failures) => voidFailures(instance, failures, now)),
+      Effect.catchCause((cause) =>
+        unrecorded(instance.instanceId)(cause).pipe(
+          Effect.as<ReadonlyArray<UsageLimitFailure>>([]),
+        ),
+      ),
+    );
+    const snapshot = yield* usage.getSnapshot;
+    const readFailed = !refreshed || snapshot.usageLimits?.unavailable?.reason === "probeFailed";
+    return {
+      voided: blocking.length,
+      usage: !exhaustedWindow(snapshot, DateTime.toEpochMillis(now))
+        ? "headroom"
+        : readFailed
+          ? "unread"
+          : "exhausted",
+    } satisfies ProviderClearRedeemedResetResult;
+  });
+  return ResetRedemptions.of({ redeem, clearRedeemed });
 });
 
 export const layer = Layer.effect(ResetRedemptions, make);
