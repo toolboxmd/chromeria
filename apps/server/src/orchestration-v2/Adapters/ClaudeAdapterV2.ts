@@ -5643,6 +5643,7 @@ interface ActiveClaudeTurnContext {
   readonly nativeResponseIds: Set<string>;
   // The session's count of model-capable native task starts when this turn began.
   readonly nativeChildStartsBefore: number;
+  readonly promptSuggestions: boolean;
   readonly subagentsByTaskId: Map<string, ActiveClaudeSubagent>;
   readonly subagentsByToolUseId: Map<string, ActiveClaudeSubagent>;
   readonly promptUuid: string | null;
@@ -5741,6 +5742,8 @@ interface ClaudeLiveQueryContext {
   readonly subagentsFromEarlierProcesses: ReadonlySet<ActiveClaudeSubagent>;
   // Subagents this process still ran when a replacement took over; only its exit can end them.
   handedOffSubagents: ReadonlySet<ActiveClaudeSubagent>;
+  // Suggestions run after a result, so their model call is outside the turn that caused it.
+  readonly promptSuggestions: boolean;
   // The SDK's per-process model ledger at the last result. A resumed process starts from the
   // ledger Claude restores, which only an exact match with the main agent's usage proves.
   modelLedger: { readonly ledger: ClaudeModelLedger; readonly restored: boolean } | undefined;
@@ -10729,6 +10732,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               [...(yield* Ref.get(sessionSubagentsByTaskId)).values()].some(
                 (subagent) => subagent.task.status === "running",
               ),
+            promptSuggestions: input.context.promptSuggestions,
           });
           const terminalEvent: ProviderAdapter.ProviderAdapterV2Event =
             input.status === "failed"
@@ -14850,6 +14854,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 (subagent) => subagent.task.status === "running",
               ),
             ),
+            promptSuggestions: queryOptions.promptSuggestions === true,
             modelLedger:
               restoredLedger === undefined
                 ? undefined
@@ -15251,6 +15256,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               rootModels: new Set(),
               nativeResponseIds: new Set(),
               nativeChildStartsBefore: nativeChildTasksFor(nativeThreadId).starts,
+              promptSuggestions: querySession.promptSuggestions,
               subagentsByTaskId: new Map(),
               subagentsByToolUseId: new Map(),
               promptUuid,

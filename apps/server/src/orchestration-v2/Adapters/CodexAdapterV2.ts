@@ -347,6 +347,13 @@ const decodeCodexBackgroundTerminalsListResponse = Schema.decodeUnknownEffect(
 );
 // Initialize normally answers in under a second; leave room for a slow first launch.
 const CODEX_INITIALIZE_TIMEOUT = "30 seconds";
+// Collab calls that make an existing child do model work.
+const CODEX_CHILD_WORK_TOOLS: ReadonlySet<string> = new Set([
+  "sendInput",
+  "resumeAgent",
+  "sendMessage",
+  "followupTask",
+]);
 const CodexThreadSampleResponse = Schema.Struct({ text: Schema.NullOr(Schema.String) });
 const decodeCodexThreadSampleResponse = Schema.decodeUnknownEffect(CodexThreadSampleResponse);
 export const CODEX_PROMPT_SUGGESTION_PROMPT =
@@ -2488,6 +2495,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             usageStateForThread(nativeThreadId),
             context.nativeTurnId,
           ).hasSubagents = true;
+        };
+        // A retried response's usage reaches no usage notification.
+        const markUsageStreamBroken = (context: ActiveCodexTurnContext) => {
+          const nativeThreadId = context.providerThread.nativeThreadRef?.nativeId;
+          if (!nativeThreadId) return;
+          getCodexTurnAccumulator(
+            usageStateForThread(nativeThreadId),
+            context.nativeTurnId,
+          ).streamBroken = true;
         };
         const pendingRootTurns = yield* Ref.make(
           new Map<string, ProviderAdapter.ProviderAdapterV2TurnInput>(),
@@ -5941,6 +5957,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               };
               return;
             }
+            markUsageStreamBroken(context);
             const updatedAt = yield* DateTime.now;
             const previous = (yield* Ref.get(providerRetries)).get(context.providerTurnId);
             const progress = parseCodexRetryProgress(payload.error.message);
@@ -6265,6 +6282,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return;
             }
             if (payload.item.type === "collabAgentToolCall" && payload.item.tool !== "spawnAgent") {
+              if (
+                CODEX_CHILD_WORK_TOOLS.has(payload.item.tool) &&
+                payload.item.receiverThreadIds.length > 0
+              ) {
+                const owner = yield* resolveItemEventContext(payload.turnId);
+                if (owner !== undefined) markSubagentUsage(owner.context);
+              }
               if (payload.item.tool === "resumeAgent" || payload.item.tool === "sendInput") {
                 const owner = yield* resolveItemEventContext(payload.turnId);
                 if (owner !== undefined) {

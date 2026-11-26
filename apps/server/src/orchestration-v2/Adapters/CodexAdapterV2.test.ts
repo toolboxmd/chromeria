@@ -3731,6 +3731,60 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       closure: { version: 1, state: "open", reason: "native_child_observed" } as const,
     },
     {
+      name: "leaves a turn open when Codex reconnects to retry a response",
+      frames: (nativeThreadId: string, nativeTurnId: string) => [
+        codexUsageFrame({ nativeThreadId, turnId: nativeTurnId, total: 10, last: 10 }),
+        {
+          type: "emit_inbound" as const,
+          label: "error/retry",
+          frame: {
+            method: "error",
+            params: {
+              threadId: nativeThreadId,
+              turnId: nativeTurnId,
+              willRetry: true,
+              error: {
+                message: "Reconnecting... 1/5",
+                additionalDetails: "The response stream disconnected.",
+                codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 529 } },
+              },
+            },
+          },
+        },
+        codexUsageFrame({ nativeThreadId, turnId: nativeTurnId, total: 25, last: 15 }),
+      ],
+      closure: { version: 1, state: "open", reason: "usage_stream_broken" } as const,
+    },
+    {
+      name: "leaves a turn open when it sends input to an existing child thread",
+      frames: (nativeThreadId: string, nativeTurnId: string) => [
+        {
+          type: "emit_inbound" as const,
+          label: "send input",
+          frame: {
+            method: "item/completed",
+            params: {
+              threadId: nativeThreadId,
+              turnId: nativeTurnId,
+              item: {
+                type: "collabAgentToolCall",
+                id: "closure-send-input",
+                tool: "sendInput",
+                status: "completed",
+                senderThreadId: nativeThreadId,
+                receiverThreadIds: ["closure-existing-child"],
+                agentsStates: {
+                  "closure-existing-child": { status: "completed", message: null },
+                },
+              },
+            },
+          },
+        },
+        codexUsageFrame({ nativeThreadId, turnId: nativeTurnId, total: 10, last: 10 }),
+      ],
+      closure: { version: 1, state: "open", reason: "native_child_observed" } as const,
+    },
+    {
       name: "leaves an interrupted turn open",
       status: "interrupted" as const,
       frames: (nativeThreadId: string, nativeTurnId: string) => [

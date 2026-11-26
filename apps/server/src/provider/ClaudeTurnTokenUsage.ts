@@ -341,6 +341,8 @@ export interface ClaudeUsageClosureInput {
   readonly nativeChildObserved: boolean;
   // One is still on the session roster at the terminal, or of a type not known to be a command.
   readonly nativeChildRunning: boolean;
+  // The CLI may spend a model call on suggestions after the result.
+  readonly promptSuggestions: boolean;
 }
 
 /** Closed only when the CLI's all-participant ledger grew by exactly the main agent's usage. */
@@ -378,6 +380,7 @@ export function claudeUsageClosure(input: ClaudeUsageClosureInput): UsageClosure
     return open("ledger_growth_outside_root_model");
   }
   if (!matches) return open("ledger_mismatch");
+  if (input.promptSuggestions) return open("prompt_suggestion_sampled");
   return {
     version: 1,
     state: "main_agent_only",

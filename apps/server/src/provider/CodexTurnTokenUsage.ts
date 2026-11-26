@@ -17,7 +17,7 @@ interface CodexTurnTokenUsageAccumulator {
   reasoningTokens: number;
   observed: boolean;
   hasSubagents: boolean;
-  // A thread-wide total went backwards mid-turn, so its counter fell back to single responses.
+  // A reconnect retried a response, or a thread-wide total went backwards mid-turn.
   streamBroken: boolean;
   // The thread's total grew under another turn id while this turn ran.
   unattributed: boolean;

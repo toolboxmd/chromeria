@@ -13511,6 +13511,32 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       }).pipe(Effect.scoped, Effect.provide(layer)),
     );
 
+    it.effect(
+      "leaves a turn open when Claude may spend a call on prompt suggestions after it",
+      () =>
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarnessWithOptions({ promptSuggestions: true });
+          yield* startClosureTurn(harness, "attempt-closure-suggestions");
+          yield* harness.offerAndWait(
+            makeAssistantTextFrame({ uuid: "00000000-0000-4000-8000-000000009061", text: "Done." }),
+          );
+          yield* harness.offerAndWait(
+            makeResultFrame({
+              uuid: "00000000-0000-4000-8000-000000009062",
+              result: "Done.",
+              usage: usageOf([2, 0, 0, 3]),
+              modelUsage: ledgerOf({ [SONNET]: [2, 0, 0, 3] }),
+            }),
+          );
+          yield* harness.awaitTerminal(1);
+          assert.deepEqual(terminalTurns(harness.events)[0]?.usageClosure, {
+            version: 1,
+            state: "open",
+            reason: "prompt_suggestion_sampled",
+          });
+        }).pipe(Effect.scoped, Effect.provide(layer)),
+    );
+
     it.effect.each([
       {
         name: "compaction or auxiliary work",
