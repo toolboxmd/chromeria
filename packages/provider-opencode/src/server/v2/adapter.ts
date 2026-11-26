@@ -507,6 +507,10 @@ const sessionRules = (
   ...(policy.interactionMode === "plan" ? [rule("edit", "deny")] : []),
   ...paths,
   ...mcpRules(mcpServerName),
+  // OpenCode's `browser` tools and skill bind only to its desktop app, never to this headless
+  // server; denying "*" last hides them even after full access's `*` allow.
+  rule("browser", "deny"),
+  { action: "skill", resource: "browser", effect: "deny" },
 ];
 
 const sameRules = (left: ReadonlyArray<Rule> | undefined, right: ReadonlyArray<Rule>) =>
