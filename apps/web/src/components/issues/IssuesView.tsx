@@ -10,7 +10,7 @@ import {
   issueGroupOf,
   parseIssueUrl,
 } from "@t3tools/contracts";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import {
   CalendarArrowDownIcon,
   ChevronRightIcon,
@@ -46,7 +46,6 @@ import {
 } from "../pullRequest/PullRequestListRow";
 import type { PullRequestFilterOption } from "../pullRequest/PullRequestListFilters";
 import { resolveFilterOptions } from "../pullRequest/pullRequestListOptions";
-import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { PullRequestLabelChip } from "../pullRequest/pullRequestPresentation";
 import { Button } from "../ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
@@ -752,6 +751,10 @@ interface IssueRowProps {
   onStart: (entry: EnvironmentIssueEntry) => Promise<void>;
 }
 
+/** A link in the row's second line, above the row's own hit area. */
+const ISSUE_ROW_ACTION_CLASS =
+  "relative shrink-0 rounded-sm font-medium text-foreground underline decoration-muted-foreground/60 underline-offset-2 outline-none hover:decoration-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset";
+
 /** What the row's own action opens: the thread or pull request its grouping names, by a key. */
 const targetKey = ({ target }: IssueRowGrouping) =>
   target.kind === "thread"
@@ -803,39 +806,68 @@ const IssueRow = memo(function IssueRow({
         selected && "bg-accent text-accent-foreground",
       )}
     >
-      <button
-        type="button"
-        aria-current={selected ? "true" : undefined}
-        // Its hit area covers the row, so the update time beside the threads opens the Issue too.
-        className="flex min-w-0 flex-1 items-center gap-2 text-left after:absolute after:inset-0"
-        onClick={() => onOpen(entry)}
-      >
-        <IssueStatusGlyph status={status} />
-        <PullRequestRowLines
-          number={<span className={PULL_REQUEST_ROW_NUMBER_CLASS}>#{entry.number}</span>}
-          title={entry.title}
-          status={
-            <>
-              {showGroupLabel ? (
-                <span className="text-muted-foreground">
-                  {messages(ISSUE_GROUP_PRESENTATION[group].label)}
-                </span>
-              ) : null}
-              {entry.subIssueCount > 0 ? (
-                <span className="inline-flex items-center gap-0.5 text-muted-foreground">
-                  <LayersIcon aria-hidden className="size-3" />
-                  {entry.subIssueCount}
-                </span>
-              ) : null}
-            </>
-          }
-          meta={
-            <>
-              {reason !== null ? (
-                <span className="shrink-0 font-medium text-foreground/80">
-                  {issueReasonLabel(reason, messages)}
-                </span>
-              ) : null}
+      <IssueStatusGlyph status={status} />
+      <PullRequestRowLines
+        number={<span className={PULL_REQUEST_ROW_NUMBER_CLASS}>#{entry.number}</span>}
+        title={
+          <button
+            type="button"
+            aria-current={selected ? "true" : undefined}
+            // Its hit area covers the row, so the second line and the update time open the Issue
+            // too. Only the title is inside it: the second line holds a link of its own.
+            className="block max-w-full truncate text-left after:absolute after:inset-0"
+            onClick={() => onOpen(entry)}
+          >
+            {entry.title}
+          </button>
+        }
+        status={
+          <>
+            {showGroupLabel ? (
+              <span className="text-muted-foreground">
+                {messages(ISSUE_GROUP_PRESENTATION[group].label)}
+              </span>
+            ) : null}
+            {entry.subIssueCount > 0 ? (
+              <span className="inline-flex items-center gap-0.5 text-muted-foreground">
+                <LayersIcon aria-hidden className="size-3" />
+                {entry.subIssueCount}
+              </span>
+            ) : null}
+          </>
+        }
+        meta={
+          <>
+            {reason !== null ? (
+              <span className="min-w-0 truncate font-medium text-foreground/80">
+                {issueReasonLabel(reason, messages)}
+              </span>
+            ) : null}
+            {/* The one thing the reason points at, beside it so the title keeps its width. The
+                row itself opens the Issue. */}
+            {target.kind === "thread" ? (
+              <Link
+                className={ISSUE_ROW_ACTION_CLASS}
+                to="/$environmentId/$threadId"
+                params={buildThreadRouteParams(
+                  scopeThreadRef(target.thread.environmentId, target.thread.id),
+                )}
+              >
+                <T context="link on an Issue row">Open thread</T>
+              </Link>
+            ) : target.kind === "pull-request" ? (
+              <a
+                className={ISSUE_ROW_ACTION_CLASS}
+                href={target.pullRequest.url}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(event) => onOpenPullRequest(event, target.pullRequest.url)}
+              >
+                {gt("Open pull request #{number}", { number: String(target.pullRequest.number) })}
+              </a>
+            ) : null}
+            {/* Shrinks away before the reason does, so a narrow row cuts these first. */}
+            <span className="flex min-w-0 shrink-[9999] items-center gap-1.5 overflow-hidden">
               {entry.author ? <span className="shrink-0">{entry.author}</span> : null}
               {showProject ? <span className="shrink-0 truncate">{entry.repository}</span> : null}
               {entry.milestone ? (
@@ -844,43 +876,10 @@ const IssueRow = memo(function IssueRow({
               {entry.labels.slice(0, 3).map((label) => (
                 <PullRequestLabelChip key={label.name} label={label} />
               ))}
-            </>
-          }
-        />
-      </button>
-      {/* The one thing the reason points at. The row itself opens the Issue. */}
-      {target.kind === "thread" ? (
-        <span className="relative flex shrink-0">
-          <Button
-            size="xs"
-            variant="outline"
-            aria-label={gt("Open the thread")}
-            onClick={() => onOpenThread(target.thread)}
-          >
-            <MessageSquareIcon />
-            <span className="hidden @lg/issue-row:inline">
-              <T context="button on an Issue row">Open thread</T>
             </span>
-          </Button>
-        </span>
-      ) : target.kind === "pull-request" ? (
-        <span className="relative flex shrink-0">
-          <Button
-            size="xs"
-            variant="outline"
-            aria-label={gt("Open pull request #{number}", {
-              number: String(target.pullRequest.number),
-            })}
-            render={<a href={target.pullRequest.url} target="_blank" rel="noreferrer" />}
-            onClick={(event) => onOpenPullRequest(event, target.pullRequest.url)}
-          >
-            <PullRequestGlyph.pullRequest />
-            <span className="hidden @lg/issue-row:inline">
-              <T context="button on an Issue row">Open pull request</T>
-            </span>
-          </Button>
-        </span>
-      ) : null}
+          </>
+        }
+      />
       {threads.length > 0 ? (
         // The title keeps its room: a narrow row shows the threads as icons, a narrower one only
         // the first, with the rest behind the count.

@@ -37,8 +37,8 @@ test(
       await app.screenshot("your-move");
     }
 
-    // The row of the Issue that waits is first, so its action is the first of the two.
-    await screen.getByRole("button", "Open the thread", { exact: true }).nth(0).tap();
+    // The row of the Issue that waits is first, so its link is the first of the two.
+    await screen.getByRole("link", "Open thread", { exact: true }).nth(0).tap();
     await expect(browser).toHaveURL(new RegExp(`${asking.threadId.split(":").at(-1)}$`));
   },
 );
