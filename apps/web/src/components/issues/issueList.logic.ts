@@ -38,6 +38,17 @@ export interface MergedIssueList {
    * any of them posted is trusted.
    */
   readonly trustedLogins: ReadonlyMap<string, ReadonlySet<string>>;
+  /**
+   * The week's filed and closed Issues per `repositoryKey`, once each however many servers list
+   * the repository. A repository no server counted is missing.
+   */
+  readonly recentCounts: ReadonlyMap<string, IssueWeekFlow>;
+}
+
+/** Issues filed and closed over the last 7 days: the week's flow, not a change in the open total. */
+export interface IssueWeekFlow {
+  readonly filed: number;
+  readonly closed: number;
 }
 
 export interface IssueListFilters {
@@ -173,6 +184,7 @@ export function mergeIssueLists(
   const nextCursors = new Map<EnvironmentId, GitHubIssueListCursors>();
   const linkedPullRequests = new Map<string, IssuePullRequest>();
   const trustedLogins = new Map<string, Set<string>>();
+  const recentCounts = new Map<string, IssueWeekFlow>();
   for (const [environmentId, result] of values) {
     const viewers = new Map(
       result.viewers.map(({ host, login }) => [host.toLowerCase(), login.toLowerCase()]),
@@ -201,6 +213,11 @@ export function mergeIssueLists(
       unsupportedSeen.add(key);
       unsupported.set(host.toLowerCase(), (unsupported.get(host.toLowerCase()) ?? 0) + 1);
     }
+    // Every server counts the same repository on GitHub; the first answer stands for all.
+    for (const { host, repository, filed, closed } of result.recentCounts ?? []) {
+      const key = repositoryKey(host, repository);
+      if (!recentCounts.has(key)) recentCounts.set(key, { filed, closed });
+    }
     for (const error of result.errors) errors.push({ environmentId, ...error });
     if (Object.keys(result.nextCursors).length > 0) {
       nextCursors.set(environmentId, result.nextCursors);
@@ -216,7 +233,57 @@ export function mergeIssueLists(
     nextCursors,
     linkedPullRequests,
     trustedLogins,
+    recentCounts,
   };
+}
+
+/**
+ * The week's flow over `repositories` (`repositoryKey`s), or null when any of them has no count:
+ * a server that predates the counts, or a count GitHub did not answer, is unknown and never zero.
+ */
+export function issueWeekFlow(
+  repositories: ReadonlyArray<string>,
+  recentCounts: ReadonlyMap<string, IssueWeekFlow>,
+): IssueWeekFlow | null {
+  let filed = 0;
+  let closed = 0;
+  for (const key of new Set(repositories)) {
+    const counted = recentCounts.get(key);
+    if (counted === undefined) return null;
+    filed += counted.filed;
+    closed += counted.closed;
+  }
+  return repositories.length === 0 ? null : { filed, closed };
+}
+
+const STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Open Issues among the rows that nobody updated for 30 days. */
+export function staleIssueCount(
+  entries: ReadonlyArray<Pick<GitHubIssueListEntry, "state" | "updatedAt">>,
+  now: number,
+): number {
+  return entries.filter(
+    (entry) => entry.state === "open" && now - Date.parse(entry.updatedAt) >= STALE_AFTER_MS,
+  ).length;
+}
+
+/**
+ * How far a count over the loaded rows can be trusted. Rows only arrive, so a count of rows is a
+ * `floor` until every page is read. A count that depends on which group a row is in is
+ * `unsettled` until every page and every linked-thread read has answered: a later page can carry
+ * the pull request, and a thread read the thread, that moves a row already shown.
+ */
+export function issueCountCertainty(input: {
+  /** Every page of every search is read, with no error. */
+  readonly rowsComplete: boolean;
+  /** Every linked-thread read answered. */
+  readonly threadsRead: boolean;
+  /** The count depends on rows' groups or links: a group's count, or a total under such a filter. */
+  readonly byGroup: boolean;
+}): "final" | "floor" | "unsettled" {
+  if (input.byGroup) return input.rowsComplete && input.threadsRead ? "final" : "unsettled";
+  return input.rowsComplete ? "final" : "floor";
 }
 
 export function matchesIssueFilters(

@@ -1,5 +1,6 @@
 import type {
   GitHubIssueDetail,
+  IssueCheckState,
   IssueLink,
   GitHubIssueListSort,
   GitHubIssueListState,
@@ -86,10 +87,75 @@ export function issueSearchQuery(input: {
   ].join(" ");
 }
 
+/**
+ * Two searches per repository that only count: `recent<2n>` Issues filed since `since` and
+ * `recent<2n + 1>` closed since, for the repository at `n`. Text, labels and milestone narrow them
+ * as they narrow the list; state does not, since a filed Issue may be closed by now. Null when no
+ * repository is a plain `owner/name`.
+ */
+export function issueRecentCountsGraphQlDocument(input: {
+  readonly repositories: ReadonlyArray<string>;
+  /** An ISO instant GitHub's search takes, such as `2026-11-19T22:00:00Z`. */
+  readonly since: string;
+  readonly query?: string | undefined;
+  readonly labels?: ReadonlyArray<string> | undefined;
+  readonly milestone?: string | undefined;
+}): GraphQlDocument | null {
+  return aliasedGraphQlDocument({
+    operation: "query",
+    name: "IssueRecentCounts",
+    alias: "recent",
+    key: (item) => item.position,
+    items: input.repositories.flatMap((repository, index) => {
+      const q = issueSearchQuery({
+        repositories: [repository],
+        state: "all",
+        query: input.query,
+        labels: input.labels,
+        milestone: input.milestone,
+      });
+      return q === null
+        ? []
+        : [
+            { position: index * 2, q: `${q} created:>=${input.since}` },
+            { position: index * 2 + 1, q: `${q} closed:>=${input.since}` },
+          ];
+    }),
+    variables: (item) => ({ q: ["String!", item.q] }),
+    field: ({ q }) => `search(query: ${q}, type: ISSUE, first: 1) { issueCount }`,
+  });
+}
+
+export const decodeIssueRecentCountsJson = Schema.decodeUnknownResult(
+  Schema.fromJsonString(
+    Schema.Struct({
+      data: Schema.Record(
+        Schema.String,
+        Schema.UndefinedOr(Schema.NullOr(Schema.Struct({ issueCount: Schema.Number }))),
+      ),
+    }),
+  ),
+);
+
+/** Each repository both of whose counts GitHub answered, by its position in the document. */
+export function issueRecentCountsOf<Repository>(
+  repositories: ReadonlyArray<Repository>,
+  data: Readonly<Record<string, { readonly issueCount: number } | null | undefined>>,
+): Array<{ readonly repository: Repository; readonly filed: number; readonly closed: number }> {
+  return repositories.flatMap((repository, index) => {
+    const filed = data[`recent${index * 2}`]?.issueCount;
+    const closed = data[`recent${index * 2 + 1}`]?.issueCount;
+    return filed === undefined || closed === undefined ? [] : [{ repository, filed, closed }];
+  });
+}
+
 const LINK_FIELDS = "number title url state stateReason repository { nameWithOwner }";
 
-/** A commit's review mark and who posted it; trust is decided against the query's viewer. */
-const COMMIT_REVIEW_FIELDS = `oid status { context(name: "${REVIEW_MARK_CONTEXT}") { state creator { login } } }`;
+/**
+ * A commit's review mark and who posted it, with the combined state of all its checks; trust in
+ * the mark is decided against the query's viewer.
+ */
+const COMMIT_REVIEW_FIELDS = `oid statusCheckRollup { state } status { context(name: "${REVIEW_MARK_CONTEXT}") { state creator { login } } }`;
 
 const PULL_REQUEST_FIELDS = `number url state isDraft headRefName headRefOid repository { nameWithOwner }
             headRef { target { ... on Commit { ${COMMIT_REVIEW_FIELDS} } } }`;
@@ -335,6 +401,8 @@ type LinkNode = typeof LinkNode.Type;
 // A non-commit target answers `{}`, which this reads as no mark.
 const ReviewCommit = Schema.Struct({
   oid: Schema.optional(Schema.String),
+  // Null for a commit no check or status ever reported on.
+  statusCheckRollup: Schema.optional(Schema.NullOr(Schema.Struct({ state: Schema.String }))),
   status: Schema.optional(
     Schema.NullOr(
       Schema.Struct({
@@ -494,10 +562,31 @@ export function reviewStatusOf(
   }
 }
 
+/**
+ * The combined state of every check and commit status on the head commit, the review mark
+ * included; undefined for a commit without any, or in a state this does not know.
+ */
+function checkStateOf(commit: GitHubReviewCommit | null | undefined): IssueCheckState | undefined {
+  switch (commit?.statusCheckRollup?.state) {
+    case "SUCCESS":
+      return "success";
+    case "FAILURE":
+    case "ERROR":
+      return "failure";
+    case "PENDING":
+    case "EXPECTED":
+      return "pending";
+    default:
+      return undefined;
+  }
+}
+
 export function pullRequestOf(host: string, node: ClosingPullRequestNode): IssuePullRequest {
-  // The branch can have moved past the head GitHub last synced; only the head's own mark counts.
+  // The branch can have moved past the head GitHub last synced; only the head's own mark and
+  // checks count.
   const target = node.headRef?.target ?? null;
   const head = target?.oid === node.headRefOid ? target : null;
+  const checks = checkStateOf(head);
   return {
     host,
     repository: node.repository.nameWithOwner,
@@ -508,6 +597,7 @@ export function pullRequestOf(host: string, node: ClosingPullRequestNode): Issue
     headRefName: node.headRefName,
     headSha: node.headRefOid || null,
     review: reviewStatusOf(head),
+    ...(checks === undefined ? {} : { checks }),
   };
 }
 

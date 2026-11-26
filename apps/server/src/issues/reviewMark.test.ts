@@ -76,6 +76,28 @@ describe("pullRequestOf", () => {
   });
 
   it.each([
+    ["SUCCESS", "success"],
+    ["FAILURE", "failure"],
+    ["ERROR", "failure"],
+    ["PENDING", "pending"],
+    ["EXPECTED", "pending"],
+  ] as const)("reads the head's combined checks %s as %s", (state, expected) => {
+    const target = { ...commit("SUCCESS", "lukemaj"), statusCheckRollup: { state } };
+    expect(pullRequestOf("github.com", { ...node, headRef: { target } }).checks).toBe(expected);
+  });
+
+  it.each([
+    ["a head no check reported on", { statusCheckRollup: null }, "abc123"],
+    ["a state it does not know", { statusCheckRollup: { state: "SOMETHING_NEW" } }, "abc123"],
+    ["a branch that moved past the head", { statusCheckRollup: { state: "PENDING" } }, "def"],
+  ])("leaves the checks unknown for %s", (_label, rollup, oid) => {
+    const target = { ...commit("SUCCESS", "lukemaj"), ...rollup, oid };
+    expect(pullRequestOf("github.com", { ...node, headRef: { target } })).not.toHaveProperty(
+      "checks",
+    );
+  });
+
+  it.each([
     ["MERGED", "merged"],
     ["CLOSED", "closed"],
   ] as const)("reads %s without a head branch", (state, expected) => {

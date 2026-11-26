@@ -1,6 +1,12 @@
-import type { GitHubIssueState, IssueStatus } from "@t3tools/contracts";
+import type {
+  GitHubIssueState,
+  IssueGroup,
+  IssueGroupReason,
+  IssueStatus,
+} from "@t3tools/contracts";
 import {
   BanIcon,
+  BotIcon,
   CircleAlertIcon,
   CircleCheckIcon,
   CircleDotDashedIcon,
@@ -9,10 +15,13 @@ import {
   CirclePauseIcon,
   CircleSlashIcon,
   EyeIcon,
+  HandIcon,
+  HourglassIcon,
   MessagesSquareIcon,
 } from "lucide-react";
 import { msg, useMessages } from "gt-react";
 
+import type { MessageResolver } from "~/i18n/messages";
 import { cn } from "~/lib/utils";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 
@@ -53,7 +62,7 @@ export function IssueStateGlyph({
 }
 
 /** The computed status (#29); Done and Not planned keep GitHub's own look. */
-export const ISSUE_STATUS_PRESENTATION = {
+const ISSUE_STATUS_PRESENTATION = {
   done: ISSUE_STATE_PRESENTATION.done,
   "not-planned": ISSUE_STATE_PRESENTATION["not-planned"],
   "in-review": {
@@ -121,4 +130,87 @@ export function IssueStatusGlyph({
       className={cn("size-4 shrink-0", toneClassName, className)}
     />
   );
+}
+
+/** Whose move it is; Done and Not planned keep GitHub's own look. */
+export const ISSUE_GROUP_PRESENTATION = {
+  "your-move": {
+    label: msg("Your move", { $context: "issue group: the user has to act next" }),
+    toneClassName: "text-amber-600 dark:text-amber-300/90",
+    Icon: HandIcon,
+  },
+  "agents-working": {
+    label: msg("Agents working", { $context: "issue group: agents act next" }),
+    toneClassName: "text-sky-600 dark:text-sky-300/90",
+    Icon: BotIcon,
+  },
+  waiting: {
+    label: msg("Waiting", { $context: "issue group: held by a date or a third party" }),
+    toneClassName: "text-zinc-500 dark:text-zinc-400/80",
+    Icon: HourglassIcon,
+  },
+  blocked: {
+    label: msg("Blocked", { $context: "issue group: blocked by other open Issues" }),
+    toneClassName: "text-red-600 dark:text-red-300/90",
+    Icon: BanIcon,
+  },
+  stalled: {
+    label: msg("Stalled", { $context: "issue group: started, and nobody is moving it" }),
+    toneClassName: "text-orange-600 dark:text-orange-300/90",
+    Icon: CirclePauseIcon,
+  },
+  "nobody-on-it": {
+    label: msg("Nobody on it", { $context: "issue group: free to start" }),
+    toneClassName: "text-emerald-600 dark:text-emerald-300/90",
+    Icon: CircleIcon,
+  },
+  done: ISSUE_STATE_PRESENTATION.done,
+  "not-planned": ISSUE_STATE_PRESENTATION["not-planned"],
+} as const satisfies Record<
+  IssueGroup,
+  { readonly label: string; readonly toneClassName: string; readonly Icon: unknown }
+>;
+
+export function IssueGroupGlyph({ group, className }: { group: IssueGroup; className?: string }) {
+  const { Icon, toneClassName } = ISSUE_GROUP_PRESENTATION[group];
+  return <Icon aria-hidden className={cn("size-4 shrink-0", toneClassName, className)} />;
+}
+
+const ISSUE_REASON_LABEL = {
+  "needs-user": msg("Needs you", { $context: "why an Issue waits on the user" }),
+  "thread-waits-on-user": msg("A thread is waiting for your answer"),
+  waiting: msg("Waiting", { $context: "why an Issue cannot move: a date or a third party" }),
+  "reviewed-checks-running": msg("Reviewed, checks running", {
+    $context: "state of an Issue's pull request",
+  }),
+  "reviewed-not-merged": msg("Reviewed, not merged", {
+    $context: "state of an Issue's pull request",
+  }),
+  "last-thread-archived": msg("Last linked thread archived"),
+} as const;
+
+/**
+ * Why a row sits in its group, as the row's second line says it: facts, never duties. A function
+ * of the row's own resolver, not a component, so a list of hundreds of rows mounts no more for it.
+ */
+export function issueReasonLabel(reason: IssueGroupReason, resolve: MessageResolver): string {
+  const blockedBy = (count: number) =>
+    resolve(
+      msg(
+        "{count, plural, one {Blocked by {count} open Issue} other {Blocked by {count} open Issues}}",
+        { count },
+      ),
+    );
+  switch (reason.kind) {
+    case "blocked":
+      return blockedBy(reason.openBlockerCount);
+    case "status": {
+      const status = resolve(ISSUE_STATUS_PRESENTATION[reason.status].label);
+      return reason.openBlockerCount > 0
+        ? `${status} · ${blockedBy(reason.openBlockerCount)}`
+        : status;
+    }
+    default:
+      return resolve(ISSUE_REASON_LABEL[reason.kind]);
+  }
 }

@@ -2,14 +2,15 @@ import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environ
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import {
   type EnvironmentId,
+  ISSUE_GROUPS,
   ISSUE_LINKS_BATCH_MAX,
-  ISSUE_STATUSES,
+  type IssueGroup,
+  type IssueGroupInput,
+  type IssueGrouping,
   type IssueKey,
   type GitHubIssueListEntry,
   type IssuePullRequest,
-  type IssueStatus,
-  type IssueStatusInput,
-  type ThreadId,
+  ThreadId,
   type ThreadGitHubIssueLinkSource,
   type ThreadsForIssuesInput,
   type ThreadsForIssuesResult,
@@ -18,24 +19,24 @@ import {
 import { issueKey } from "./issueList.logic";
 
 /** Groups that start collapsed: finished work. */
-export const COLLAPSED_ISSUE_STATUSES: ReadonlySet<IssueStatus> = new Set(["done", "not-planned"]);
+export const COLLAPSED_ISSUE_GROUPS: ReadonlySet<IssueGroup> = new Set(["done", "not-planned"]);
 
 export type IssueLinkedFilter = "linked" | "unlinked";
 
-export interface IssueStatusFilters {
-  /** Any of these; absent or empty means every status. */
-  readonly statuses?: ReadonlyArray<IssueStatus> | undefined;
+export interface IssueGroupFilters {
+  /** Any of these; absent or empty means every group. */
+  readonly groups?: ReadonlyArray<IssueGroup> | undefined;
   readonly linked?: IssueLinkedFilter | undefined;
 }
 
-export function matchesIssueStatusFilters(
-  derived: { readonly status: IssueStatus; readonly linkedThreadCount: number },
-  filters: IssueStatusFilters,
+export function matchesIssueGroupFilters(
+  derived: { readonly group: IssueGroup; readonly linkedThreadCount: number },
+  filters: IssueGroupFilters,
 ): boolean {
   if (
-    filters.statuses !== undefined &&
-    filters.statuses.length > 0 &&
-    !filters.statuses.includes(derived.status)
+    filters.groups !== undefined &&
+    filters.groups.length > 0 &&
+    !filters.groups.includes(derived.group)
   ) {
     return false;
   }
@@ -44,21 +45,21 @@ export function matchesIssueStatusFilters(
   return true;
 }
 
-/** Rows grouped by status in table order, keeping each group's incoming order; empty groups drop. */
-export function groupIssuesByStatus<Entry>(
+/** Rows by group in the group table's order, keeping each group's incoming order; empty groups drop. */
+export function groupIssues<Entry>(
   entries: ReadonlyArray<Entry>,
-  statusOf: (entry: Entry) => IssueStatus,
-): ReadonlyArray<{ readonly status: IssueStatus; readonly entries: ReadonlyArray<Entry> }> {
-  const byStatus = new Map<IssueStatus, Array<Entry>>();
+  groupOf: (entry: Entry) => IssueGroup,
+): ReadonlyArray<{ readonly group: IssueGroup; readonly entries: ReadonlyArray<Entry> }> {
+  const byGroup = new Map<IssueGroup, Array<Entry>>();
   for (const entry of entries) {
-    const status = statusOf(entry);
-    const group = byStatus.get(status);
-    if (group === undefined) byStatus.set(status, [entry]);
-    else group.push(entry);
+    const group = groupOf(entry);
+    const held = byGroup.get(group);
+    if (held === undefined) byGroup.set(group, [entry]);
+    else held.push(entry);
   }
-  return ISSUE_STATUSES.flatMap((status) => {
-    const group = byStatus.get(status);
-    return group === undefined ? [] : [{ status, entries: group }];
+  return ISSUE_GROUPS.flatMap((group) => {
+    const held = byGroup.get(group);
+    return held === undefined ? [] : [{ group, entries: held }];
   });
 }
 
@@ -111,15 +112,7 @@ export function workingThreadKeysOf(shells: ReadonlyArray<WorkingShell>): string
     for (
       let current: WorkingShell | undefined = shell;
       current !== undefined;
-      current =
-        current.lineage.relationshipToParent === "subagent" &&
-        current.lineage.parentThreadId !== null
-          ? byKey.get(
-              scopedThreadKey(
-                scopeThreadRef(current.environmentId, current.lineage.parentThreadId),
-              ),
-            )
-          : undefined
+      current = spawnerOf(current, byKey)
     ) {
       const key = scopedThreadKey(scopeThreadRef(current.environmentId, current.id));
       if (keys.has(key)) break;
@@ -127,6 +120,68 @@ export function workingThreadKeysOf(shells: ReadonlyArray<WorkingShell>): string
     }
   }
   return [...keys].toSorted().join("\n");
+}
+
+/**
+ * Threads that wait on the user, each with every thread that spawned it up an unbroken chain, as
+ * sorted `<scoped key>\t<id of the waiting thread>` lines, so a view can subscribe to it alone.
+ * The waiting thread is the one to open: the request is answered there. An archived thread asks
+ * nothing; a thread that waits itself names itself over one it spawned.
+ */
+export function waitingThreadKeysOf(shells: ReadonlyArray<WorkingShell>): string {
+  const byKey = new Map(
+    shells.map((shell) => [scopedThreadKey(scopeThreadRef(shell.environmentId, shell.id)), shell]),
+  );
+  const waiting = new Map<string, ThreadId>();
+  const asking = shells
+    .filter(
+      (shell) =>
+        shell.archivedAt === null && (shell.hasPendingApprovals || shell.hasPendingUserInput),
+    )
+    .toSorted((left, right) => left.id.localeCompare(right.id));
+  for (const shell of asking) {
+    waiting.set(scopedThreadKey(scopeThreadRef(shell.environmentId, shell.id)), shell.id);
+  }
+  for (const shell of asking) {
+    const seen = new Set<string>();
+    for (
+      let current = spawnerOf(shell, byKey);
+      current !== undefined;
+      current = spawnerOf(current, byKey)
+    ) {
+      const key = scopedThreadKey(scopeThreadRef(current.environmentId, current.id));
+      if (seen.has(key)) break;
+      seen.add(key);
+      if (!waiting.has(key)) waiting.set(key, shell.id);
+    }
+  }
+  return [...waiting]
+    .map(([key, id]) => `${key}\t${id}`)
+    .toSorted()
+    .join("\n");
+}
+
+/** `waitingThreadKeysOf` as a lookup from a thread's scoped key to the thread that waits. */
+export function waitingThreadsOf(keys: string): ReadonlyMap<string, ThreadId> {
+  return new Map(
+    keys
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => {
+        const [key = "", id = ""] = line.split("\t");
+        return [key, ThreadId.make(id)];
+      }),
+  );
+}
+
+/** The thread that spawned this one, when the client holds it. */
+function spawnerOf(
+  shell: WorkingShell,
+  byKey: ReadonlyMap<string, WorkingShell>,
+): WorkingShell | undefined {
+  return shell.lineage.relationshipToParent === "subagent" && shell.lineage.parentThreadId !== null
+    ? byKey.get(scopedThreadKey(scopeThreadRef(shell.environmentId, shell.lineage.parentThreadId)))
+    : undefined;
 }
 
 export interface IssueRowThread {
@@ -138,21 +193,36 @@ export interface IssueRowThread {
   readonly pullRequests: ReadonlyArray<IssueKey>;
 }
 
+/** What a row opens for a thread: enough to navigate to it. */
+export interface IssueThreadRef {
+  readonly environmentId: EnvironmentId;
+  readonly id: ThreadId;
+}
+
+/** A row's group, reason and target, with the thread or pull request the target opens. */
+export type IssueRowGrouping = IssueGrouping<IssueThreadRef, IssuePullRequest>;
+
 /**
- * The status table's inputs for one row. Its pull requests are the ones closing it plus the
- * ones linked to its linked threads, once each; a mark counts when any of `trustedLogins` posted it.
+ * The group table's inputs for one row. Its pull requests are the ones closing it plus the ones
+ * linked to its linked threads, once each; a mark counts when any of `trustedLogins` posted it.
+ * A linked thread waits on the user through the client's own shells, on whichever server it lives.
  */
-export function issueStatusInputOf(
-  entry: Pick<GitHubIssueListEntry, "state" | "openBlockerCount" | "closingPullRequests">,
+export function issueGroupInputOf(
+  entry: Pick<
+    GitHubIssueListEntry,
+    "state" | "openBlockerCount" | "closingPullRequests" | "labels"
+  >,
   threads: ReadonlyArray<IssueRowThread>,
   context: {
     readonly working: ReadonlySet<string>;
+    /** `waitingThreadsOf`: a thread's scoped key to the thread that holds the pending request. */
+    readonly waiting: ReadonlyMap<string, ThreadId>;
     /** Thread-linked pull requests the list read, by `issueKey`. */
     readonly linkedPullRequests: ReadonlyMap<string, IssuePullRequest>;
     /** Lowercase logins. */
     readonly trustedLogins: ReadonlySet<string>;
   },
-): IssueStatusInput {
+): IssueGroupInput<IssueThreadRef, IssuePullRequest> {
   const pullRequests = new Map<string, IssuePullRequest>();
   for (const pullRequest of entry.closingPullRequests) {
     pullRequests.set(issueKey(pullRequest), pullRequest);
@@ -165,19 +235,30 @@ export function issueStatusInputOf(
       }
     }
   }
+  const keyOf = (thread: IssueRowThread) =>
+    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
   return {
     state: entry.state,
     openBlockerCount: entry.openBlockerCount,
+    labels: entry.labels.map((label) => label.name),
+    threads: threads.map((thread) => {
+      const waiting = context.waiting.get(keyOf(thread));
+      return {
+        ref: { environmentId: thread.environmentId, id: thread.id },
+        archived: thread.archivedAt !== null,
+        waitsOnUser:
+          waiting === undefined ? null : { environmentId: thread.environmentId, id: waiting },
+      };
+    }),
     pullRequests: [...pullRequests.values()].map((pullRequest) => ({
+      ref: pullRequest,
       state: pullRequest.state,
       isDraft: pullRequest.isDraft,
       reviewMark: trustedReviewMark(pullRequest.review, context.trustedLogins),
+      checks: pullRequest.checks,
     })),
     hasTaskBranch: threads.some((thread) => thread.sources.includes("branch")),
-    linkedThreadCount: threads.length,
-    workingNow: threads.some((thread) =>
-      context.working.has(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
-    ),
+    workingNow: threads.some((thread) => context.working.has(keyOf(thread))),
   };
 }
 

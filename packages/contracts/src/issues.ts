@@ -65,6 +65,13 @@ export const IssueReviewStatus = Schema.Struct({
 export type IssueReviewStatus = typeof IssueReviewStatus.Type;
 
 /**
+ * GitHub's combined state of every check and commit status on a pull request's head commit:
+ * `error` reads as a failure, `expected` as pending.
+ */
+export const IssueCheckState = Schema.Literals(["pending", "success", "failure"]);
+export type IssueCheckState = typeof IssueCheckState.Type;
+
+/**
  * A pull request as the list's own GraphQL page reads it: one that closes the Issue
  * (`Closes #N`), or one linked to a thread of this server.
  */
@@ -78,6 +85,11 @@ export const IssuePullRequest = Schema.Struct({
   headRefName: Schema.String,
   headSha: Schema.NullOr(TrimmedNonEmptyString),
   review: Schema.NullOr(IssueReviewStatus),
+  /**
+   * The head commit's combined check state. Absent when that commit has no checks, and from
+   * servers that predate it: a reader then cannot tell checks are running.
+   */
+  checks: Schema.optional(IssueCheckState),
 });
 export type IssuePullRequest = typeof IssuePullRequest.Type;
 
@@ -137,6 +149,15 @@ export const IssueListRepository = Schema.Struct({
 });
 export type IssueListRepository = typeof IssueListRepository.Type;
 
+/** Issues filed and closed in one repository over the last 7 days, whatever their state now. */
+export const IssueRecentCounts = Schema.Struct({
+  host: TrimmedNonEmptyString,
+  repository: TrimmedNonEmptyString,
+  filed: NonNegativeInt,
+  closed: NonNegativeInt,
+});
+export type IssueRecentCounts = typeof IssueRecentCounts.Type;
+
 export const GitHubIssueListResult = Schema.Struct({
   /** Every GitHub repository of this environment's projects, whether or not it has rows. */
   repositories: Schema.Array(IssueListRepository),
@@ -162,6 +183,12 @@ export const GitHubIssueListResult = Schema.Struct({
    * return. Absent from servers that predate it: the reader then cannot tell a list is complete.
    */
   matchCounts: Schema.optional(Schema.Record(TrimmedNonEmptyString, NonNegativeInt)),
+  /**
+   * The week's flow per searched repository, narrowed like the list by text, labels and milestone
+   * but not by state; read with a listing's first page. A repository is missing when its read
+   * failed, and the field is absent from servers that predate it: unknown, never zero.
+   */
+  recentCounts: Schema.optional(Schema.Array(IssueRecentCounts)),
 });
 export type GitHubIssueListResult = typeof GitHubIssueListResult.Type;
 

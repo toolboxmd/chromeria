@@ -27,18 +27,18 @@ test(
       .getByText("Showing the last Issues loaded.", { exact: false })
       .waitFor({ timeout: 60_000 });
     await expect(screen.getByText("Open Issue 3", { exact: true })).toBeVisible();
-    await expect(total("2+ Issues")).toBeVisible();
+    await expect(total("2+ open Issues")).toBeVisible();
     await expect(group).toHaveText("~2");
     await app.screenshot("failed-read");
 
     await retry.tap();
     await screen.getByText("GitHub API rate limit exceeded.", { exact: false }).waitFor();
     await expect(screen.getByText("Open Issue 3", { exact: true })).toBeVisible();
-    await expect(total("2+ Issues")).toBeVisible();
+    await expect(total("2+ open Issues")).toBeVisible();
     await app.screenshot("github-refusal");
 
     await retry.tap();
-    await expect(total("3 Issues")).toBeVisible();
+    await expect(total("3 open Issues")).toBeVisible();
     await expect(group).toHaveText("3");
     await expect(screen.getByText("Open Issue 1", { exact: true })).toBeVisible();
   },

@@ -88,8 +88,35 @@ Open **Issues** from the sidebar utility row or **Open issues** in the command p
 
 You can also switch to **Issues** from the PRs/Issues switch on the Pull Requests page. For GitHub, the list covers the repositories of your projects on every connected environment.
 
-Each Issue shows one status, worked out from GitHub and your threads; nothing is written to GitHub.
-The first that applies wins:
+Open Issues are grouped by whose move it is, worked out from GitHub and your threads; nothing is
+written to GitHub. The first rule that applies wins, and the row's second line says why:
+
+| Group          | When                                                                                         | The row says                        |
+| -------------- | -------------------------------------------------------------------------------------------- | ----------------------------------- |
+| Your move      | The Issue has the label `needs-user`                                                         | Needs you                           |
+| Your move      | A linked thread, or a thread it started, waits for your approval or answer                   | A thread is waiting for your answer |
+| Waiting        | The Issue has the label `waiting`: a date or someone outside holds it                        | Waiting                             |
+| Agents working | A linked thread works now                                                                    | Its status, and any open blockers   |
+| Agents working | An open pull request is in review                                                            | In review                           |
+| Agents working | An open pull request, not a draft, passed review and its checks are running                  | Reviewed, checks running            |
+| Your move      | An open pull request, not a draft, passed review and its checks are not running              | Reviewed, not merged                |
+| Blocked        | An open Issue blocks it on GitHub                                                            | Blocked by N open Issues            |
+| Stalled        | A thread is linked, or a task branch or open pull request exists, and none of the above fits | Its status                          |
+| Nobody on it   | Nothing was started                                                                          |                                     |
+
+The two labels are yours and your agents' to set; Chromeria only reads them, from an Issue's first 20
+labels. A thread that ended its turn with a question in plain text is not a pending request, so its
+Issue shows as Stalled until someone adds `needs-user`. A Stalled row whose linked threads are all
+archived says so instead of its status. A row whose reason names a thread or a pull request has a
+button that opens it; the row itself opens the Issue.
+
+Above the list, one line counts the open Issues, the Issues filed and closed in the last 7 days,
+and the open Issues nobody updated for 30 days, across the listed repositories. Filed and closed
+are the week's flow, not the change in the open total: a reopened Issue grows the pile without being
+filed. A count ends in `+` while more Issues are still being read, and a group's count starts with
+`~` until every Issue and its threads are read, because a row can still move to another group.
+
+The status a row names is the first of these that applies:
 
 | Status             | When                                                                |
 | ------------------ | ------------------------------------------------------------------- |
@@ -111,10 +138,10 @@ counts too. A task branch is a linked thread's branch named `<type>/<number>-<sl
 count only when the GitHub account of a server that lists the Issue posted them. A thread counts
 as working while it or any of its subagent threads works, on any connected server.
 
-The list is grouped by status, with Done and Not planned collapsed. **Group by parent** shows the
-sub-Issue tree instead, including sub-Issues in repositories outside your projects, which are marked
-as such and open on GitHub. Search, sort and filter by status, whether a thread is linked,
-repository, labels, milestone and parent. Rows show their linked threads; select one to open it.
+Closed Issues keep GitHub's own two groups, Done and Not planned, which start collapsed. **Group by
+parent** shows the sub-Issue tree instead, including sub-Issues in repositories outside your
+projects, which are marked as such and open on GitHub. Search, sort and filter by group (the
+**Status** filter), whether a thread is linked, repository, labels, milestone and parent. Rows show their linked threads; select one to open it.
 Select an Issue to read it, see its linked threads and pull requests, comment, close or reopen it,
 or start a thread from it: the new thread opens in the matching project with the Issue in the
 composer, already linked. Selecting an Issue in a thread's **Linked items** panel opens it

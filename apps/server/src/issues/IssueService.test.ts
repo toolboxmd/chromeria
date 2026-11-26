@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
+import { TestClock } from "effect/testing";
 
 import * as IssueLinks from "../issueLinks/IssueLinks.ts";
 import { gitHubIdentity } from "../issueLinks/IssueLinks.testFixtures.ts";
@@ -47,6 +48,12 @@ const page = (endCursor: string | null) =>
     },
   });
 
+/** A week's counts answer: `values[2n]` Issues filed and `values[2n + 1]` closed in repository `n`. */
+const counts = (values: ReadonlyArray<number>) =>
+  JSON.stringify({
+    data: Object.fromEntries(values.map((issueCount, index) => [`recent${index}`, { issueCount }])),
+  });
+
 /** Resolves no folder to a repository; the shells carry their identity. */
 const noIdentities: RepositoryIdentityResolver.RepositoryIdentityResolver["Service"]["resolve"] =
   () => Effect.succeed(null);
@@ -88,9 +95,11 @@ describe("IssueService.list", () => {
     Effect.gen(function* () {
       const requests = yield* Ref.make<ReadonlyArray<unknown>>([]);
       const issues = yield* serviceWith(projects.slice(0, 1), (input) =>
-        Ref.updateAndGet(requests, (all) => [...all, input.variables?.after]).pipe(
-          Effect.map((all) => page(all.length === 1 ? "cursor-1" : null)),
-        ),
+        input.operation === "searchIssues"
+          ? Ref.updateAndGet(requests, (all) => [...all, input.variables?.after]).pipe(
+              Effect.map((all) => page(all.length === 1 ? "cursor-1" : null)),
+            )
+          : Effect.succeed(counts([3, 1])),
       );
 
       const first = yield* issues.list({ state: "open" });
@@ -102,7 +111,64 @@ describe("IssueService.list", () => {
       const next = yield* issues.list({ state: "open", cursors: first.nextCursors });
       expect(yield* Ref.get(requests)).toEqual([null, "cursor-1"]);
       expect(next.nextCursors).toEqual({});
+      // The week's flow is read once, with the listing, not again with each further page.
+      expect(first.recentCounts).toEqual([
+        { host: "github.com", repository: "acme/repo-0", filed: 3, closed: 1 },
+      ]);
+      expect(next).not.toHaveProperty("recentCounts");
     }),
+  );
+
+  it.effect(
+    "counts the week's filed and closed Issues per repository, narrowed like the list",
+    () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse("2026-11-26T12:00:00.500Z"));
+        const requests = yield* Ref.make<ReadonlyArray<Readonly<Record<string, unknown>>>>([]);
+        const issues = yield* serviceWith(projects.slice(0, 21), (input) =>
+          input.operation === "searchIssues"
+            ? Effect.succeed(page(null))
+            : Ref.updateAndGet(requests, (all) => [...all, input.variables ?? {}]).pipe(
+                // The second request, for the 21st repository, fails as a GitHub timeout would.
+                Effect.flatMap((all) =>
+                  all.length === 1
+                    ? Effect.succeed(
+                        counts(Array.from({ length: 20 }, (_, index) => [index, 1]).flat()),
+                      )
+                    : Effect.fail(
+                        new GitHubApi.GitHubApiRequestError({
+                          host: input.host,
+                          operation: input.operation,
+                          cause: new Error("502"),
+                        }),
+                      ),
+                ),
+              ),
+        );
+
+        const result = yield* issues.list({ state: "open", labels: ["bug"], query: "tree" });
+
+        const [first, second] = yield* Ref.get(requests);
+        // Two searches a repository, each over the last 7 days and whatever the Issue's state now.
+        expect(Object.keys(first!)).toHaveLength(40);
+        expect(first!.recent0_q).toBe(
+          'is:issue "tree" label:"bug" sort:updated-desc repo:acme/repo-0 created:>=2026-11-19T12:00:00Z',
+        );
+        expect(first!.recent1_q).toBe(
+          'is:issue "tree" label:"bug" sort:updated-desc repo:acme/repo-0 closed:>=2026-11-19T12:00:00Z',
+        );
+        expect(Object.keys(second!)).toEqual(["recent0_q", "recent1_q"]);
+        // The failed read leaves its repository out; the rows and the other counts still answer.
+        expect(result.errors).toEqual([]);
+        expect(result.matchCounts).toEqual({ "github.com#0": 120 });
+        expect(result.recentCounts).toHaveLength(20);
+        expect(result.recentCounts?.[19]).toEqual({
+          host: "github.com",
+          repository: "acme/repo-19",
+          filed: 19,
+          closed: 1,
+        });
+      }),
   );
 
   it.effect("reads every search of a host under the one credential it pinned", () =>
@@ -118,11 +184,13 @@ describe("IssueService.list", () => {
               fingerprint: `account-${count}`,
             })),
           ),
-        graphql: () =>
+        graphql: (input) =>
           Effect.gen(function* () {
             const pinned = yield* GitHubApi.PinnedGitHubCredential;
             yield* Ref.update(searches, (all) => [...all, pinned?.credentialFingerprint ?? null]);
-            return emptyPage(pinned?.credentialFingerprint ?? "unpinned");
+            return input.operation === "searchIssues"
+              ? emptyPage(pinned?.credentialFingerprint ?? "unpinned")
+              : counts([]);
           }),
       });
       const issues = yield* Effect.provide(
@@ -145,7 +213,8 @@ describe("IssueService.list", () => {
 
       const result = yield* issues.list({ state: "open" });
       expect(yield* Ref.get(lookups)).toBe(1);
-      expect(yield* Ref.get(searches)).toEqual(["account-1", "account-1"]);
+      // Two searches for 101 repositories, and their week's counts in six requests of 20.
+      expect(yield* Ref.get(searches)).toEqual(Array.from({ length: 8 }, () => "account-1"));
       expect(result.viewers).toEqual([{ host: "github.com", login: "account-1" }]);
       expect(result.errors).toEqual([]);
     }),

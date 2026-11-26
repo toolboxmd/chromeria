@@ -1,8 +1,8 @@
 import {
   EnvironmentId,
+  type IssueGroup,
   type IssuePullRequest,
-  type IssueStatus,
-  issueStatusOf,
+  issueGroupOf,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -10,13 +10,15 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  groupIssuesByStatus,
-  issueStatusInputOf,
+  groupIssues,
+  issueGroupInputOf,
   issuePanelPullRequests,
   issueThreadTargets,
-  matchesIssueStatusFilters,
+  matchesIssueGroupFilters,
   mergeIssueRowThreads,
   isThreadShellWorking,
+  waitingThreadKeysOf,
+  waitingThreadsOf,
   workingThreadKeysOf,
   type IssueRowThread,
 } from "./issueStatus.logic";
@@ -52,52 +54,66 @@ function thread(id: string, overrides: Partial<IssueRowThread> = {}): IssueRowTh
   };
 }
 
-const openIssue = { state: "open" as const, openBlockerCount: 0, closingPullRequests: [] };
-const context = (overrides: Partial<Parameters<typeof issueStatusInputOf>[2]> = {}) => ({
+const openIssue = {
+  state: "open" as const,
+  openBlockerCount: 0,
+  closingPullRequests: [],
+  labels: [],
+};
+const label = (name: string) => ({ name, color: "ededed" });
+const context = (overrides: Partial<Parameters<typeof issueGroupInputOf>[2]> = {}) => ({
   working: new Set<string>(),
+  waiting: new Map<string, ThreadId>(),
   linkedPullRequests: new Map<string, IssuePullRequest>(),
   trustedLogins: new Set(["lukemaj"]),
   ...overrides,
 });
-const statusOf = (...args: Parameters<typeof issueStatusInputOf>) =>
-  issueStatusOf(issueStatusInputOf(...args));
+const groupingOf = (...args: Parameters<typeof issueGroupInputOf>) =>
+  issueGroupOf(issueGroupInputOf(...args));
+const statusOf = (...args: Parameters<typeof issueGroupInputOf>) => groupingOf(...args).status;
 
-describe("matchesIssueStatusFilters", () => {
+describe("matchesIssueGroupFilters", () => {
   it.each([
-    [{}, "to-do", 0, true],
-    [{ statuses: [] }, "paused", 1, true],
-    [{ statuses: ["paused", "blocked"] }, "blocked", 0, true],
-    [{ statuses: ["paused"] }, "blocked", 0, false],
-    [{ linked: "linked" }, "discussion", 1, true],
-    [{ linked: "linked" }, "to-do", 0, false],
-    [{ linked: "unlinked" }, "blocked", 0, true],
-    [{ linked: "unlinked" }, "paused", 2, false],
-    [{ statuses: ["blocked"], linked: "linked" }, "blocked", 0, false],
-  ] as const)("%j keeps %s with %i threads: %s", (filters, status, linkedThreadCount, kept) => {
-    expect(matchesIssueStatusFilters({ status, linkedThreadCount }, filters)).toBe(kept);
+    [{}, "nobody-on-it", 0, true],
+    [{ groups: [] }, "stalled", 1, true],
+    [{ groups: ["stalled", "blocked"] }, "blocked", 0, true],
+    [{ groups: ["stalled"] }, "blocked", 0, false],
+    [{ linked: "linked" }, "your-move", 1, true],
+    [{ linked: "linked" }, "nobody-on-it", 0, false],
+    [{ linked: "unlinked" }, "waiting", 0, true],
+    [{ linked: "unlinked" }, "stalled", 2, false],
+    [{ groups: ["blocked"], linked: "linked" }, "blocked", 0, false],
+  ] as const)("%j keeps %s with %i threads: %s", (filters, group, linkedThreadCount, kept) => {
+    expect(matchesIssueGroupFilters({ group, linkedThreadCount }, filters)).toBe(kept);
   });
 });
 
-describe("groupIssuesByStatus", () => {
-  it("orders groups by the status table and keeps each group's row order", () => {
-    const rows: Array<[string, IssueStatus]> = [
-      ["a", "to-do"],
+describe("groupIssues", () => {
+  it("orders groups by whose move it is and keeps each group's row order", () => {
+    const rows: Array<[string, IssueGroup]> = [
+      ["a", "nobody-on-it"],
       ["b", "done"],
-      ["c", "in-progress"],
-      ["d", "to-do"],
-      ["e", "blocked"],
+      ["c", "stalled"],
+      ["d", "nobody-on-it"],
+      ["e", "waiting"],
+      ["f", "agents-working"],
+      ["g", "your-move"],
+      ["h", "blocked"],
     ];
-    const groups = groupIssuesByStatus(rows, ([, status]) => status);
-    expect(groups.map((group) => [group.status, group.entries.map(([name]) => name)])).toEqual([
+    const groups = groupIssues(rows, ([, group]) => group);
+    expect(groups.map((group) => [group.group, group.entries.map(([name]) => name)])).toEqual([
+      ["your-move", ["g"]],
+      ["agents-working", ["f"]],
+      ["waiting", ["e"]],
+      ["blocked", ["h"]],
+      ["stalled", ["c"]],
+      ["nobody-on-it", ["a", "d"]],
       ["done", ["b"]],
-      ["in-progress", ["c"]],
-      ["blocked", ["e"]],
-      ["to-do", ["a", "d"]],
     ]);
   });
 });
 
-describe("issueStatusInputOf: pull requests", () => {
+describe("issueGroupInputOf: pull requests", () => {
   it("counts a thread's PR into a non-default branch, which closes nothing on GitHub", () => {
     const linked = new Map([["github.com toolboxmd/t3code#36", pullRequest(36)]]);
     const threads = [
@@ -111,7 +127,7 @@ describe("issueStatusInputOf: pull requests", () => {
 
   it("counts a pull request both closing and thread-linked once, closing read first", () => {
     const closing = pullRequest(7, { review: { state: "failure", creator: "lukemaj" } });
-    const input = issueStatusInputOf(
+    const input = issueGroupInputOf(
       { ...openIssue, closingPullRequests: [closing] },
       [
         thread("t", {
@@ -124,7 +140,9 @@ describe("issueStatusInputOf: pull requests", () => {
         ]),
       }),
     );
-    expect(input.pullRequests).toEqual([{ state: "open", isDraft: false, reviewMark: "failure" }]);
+    expect(input.pullRequests).toEqual([
+      { ref: closing, state: "open", isDraft: false, reviewMark: "failure", checks: undefined },
+    ]);
   });
 
   it("trusts a mark from any server that listed the Issue, and no one else", () => {
@@ -134,6 +152,39 @@ describe("issueStatusInputOf: pull requests", () => {
     expect(
       statusOf(issue, [], context({ trustedLogins: new Set(["lukemaj", "other-machine"]) })),
     ).toBe("waiting-for-merge");
+  });
+
+  it("keeps a reviewed pull request with the agents while its head's checks run", () => {
+    const reviewed = (checks?: IssuePullRequest["checks"]) =>
+      pullRequest(7, {
+        review: { state: "success", creator: "lukemaj" },
+        ...(checks === undefined ? {} : { checks }),
+      });
+    const read = (closing: IssuePullRequest) => {
+      const { group, reason, target } = groupingOf(
+        { ...openIssue, closingPullRequests: [closing] },
+        [],
+        context(),
+      );
+      return [group, reason?.kind, target.kind === "pull-request" ? target.pullRequest : null];
+    };
+    const running = reviewed("pending");
+    expect(read(running)).toEqual(["agents-working", "reviewed-checks-running", running]);
+    // Checks an older server did not read are unknown, not running: the fact still stands.
+    const unread = reviewed();
+    expect(read(unread)).toEqual(["your-move", "reviewed-not-merged", unread]);
+  });
+});
+
+describe("issueGroupInputOf: labels", () => {
+  it("reads the two marks from the row's labels, over what its threads do", () => {
+    const working = new Set(["local:t"]);
+    const threads = [thread("t", { sources: ["branch"] })];
+    const groupOf = (...names: ReadonlyArray<string>) =>
+      groupingOf({ ...openIssue, labels: names.map(label) }, threads, context({ working })).group;
+    expect(groupOf("bug")).toBe("agents-working");
+    expect(groupOf("bug", "waiting")).toBe("waiting");
+    expect(groupOf("waiting", "needs-user")).toBe("your-move");
   });
 });
 
@@ -214,6 +265,82 @@ function shell(
     ...rest,
   };
 }
+
+describe("waiting on the user", () => {
+  const asking = { hasPendingApprovals: true };
+
+  it("names the thread that holds the request for itself and for every thread that spawned it", () => {
+    expect(
+      waitingThreadKeysOf([
+        shell("own", { hasPendingUserInput: true }),
+        shell("parent"),
+        shell("child", { parent: "parent" }),
+        shell("grandchild", { parent: "child", ...asking }),
+        shell("idle"),
+      ]).split("\n"),
+    ).toEqual([
+      "local:child\tgrandchild",
+      "local:grandchild\tgrandchild",
+      "local:own\town",
+      "local:parent\tgrandchild",
+    ]);
+    expect(waitingThreadKeysOf([shell("idle")])).toBe("");
+  });
+
+  it("opens a thread that waits itself rather than one it spawned", () => {
+    const waiting = waitingThreadsOf(
+      waitingThreadKeysOf([
+        shell("parent", asking),
+        shell("a-child", { parent: "parent", ...asking }),
+      ]),
+    );
+    expect(waiting.get("local:parent")).toBe("parent");
+  });
+
+  it("counts no archived thread's request, and a fork's request for the fork alone", () => {
+    expect(
+      waitingThreadKeysOf([
+        shell("gone", { ...asking, archivedAt: "2026-09-25T10:00:00Z" }),
+        shell("original"),
+        shell("fork", { parent: "original", fork: true, ...asking }),
+      ]),
+    ).toBe("local:fork\tfork");
+  });
+
+  // The Issue's repository is listed by two servers; its row is the local server's, while the
+  // thread working on it, and the thread that one spawned, live on the remote one.
+  it("moves an Issue to Your move for a request on a remote server's spawned thread", () => {
+    const waiting = waitingThreadsOf(
+      waitingThreadKeysOf([
+        shell("parent", { environmentId: REMOTE }),
+        shell("job", { environmentId: REMOTE, parent: "parent", ...asking }),
+      ]),
+    );
+    const linked = thread("parent", { sources: ["branch"] });
+    // The same thread id on the local server asks nothing.
+    expect(groupingOf(openIssue, [linked], context({ waiting })).group).toBe("stalled");
+    const { group, reason, target } = groupingOf(
+      openIssue,
+      [linked, { ...linked, environmentId: REMOTE }],
+      context({ waiting }),
+    );
+    expect([group, reason, target]).toEqual([
+      "your-move",
+      { kind: "thread-waits-on-user" },
+      { kind: "thread", thread: { environmentId: REMOTE, id: "job" } },
+    ]);
+  });
+
+  it("opens the thread to resume for a stalled row, and the archived one when none is left", () => {
+    const targetOf = (...threads: ReadonlyArray<IssueRowThread>) => {
+      const { reason, target } = groupingOf(openIssue, threads, context());
+      return [reason?.kind, target.kind === "thread" ? target.thread.id : null];
+    };
+    const archived = thread("old", { archivedAt: "2026-09-25T10:00:00Z" });
+    expect(targetOf(archived, thread("live"))).toEqual(["status", "live"]);
+    expect(targetOf(archived)).toEqual(["last-thread-archived", "old"]);
+  });
+});
 
 describe("working now", () => {
   const runtime = (status: NonNullable<WorkingShell["runtime"]>["status"]) => ({

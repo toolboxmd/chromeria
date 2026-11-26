@@ -1,8 +1,8 @@
 import {
-  ISSUE_STATUSES,
+  ISSUE_GROUPS,
   type GitHubIssueListSort,
   type GitHubIssueListState,
-  type IssueStatus,
+  type IssueGroup,
 } from "@t3tools/contracts";
 import {
   ArrowDownUpIcon,
@@ -39,13 +39,13 @@ import {
 } from "../ui/menu";
 import { issueKey, type IssueFacets, type IssueListFilters } from "./issueList.logic";
 import {
+  ISSUE_GROUP_PRESENTATION,
   ISSUE_STATE_PRESENTATION,
-  ISSUE_STATUS_PRESENTATION,
-  IssueStatusGlyph,
+  IssueGroupGlyph,
 } from "./issuePresentation";
-import type { IssueStatusFilters } from "./issueStatus.logic";
+import type { IssueGroupFilters } from "./issueStatus.logic";
 
-export type IssueMenuFilters = IssueListFilters & IssueStatusFilters;
+export type IssueMenuFilters = IssueListFilters & IssueGroupFilters;
 
 /** The unset value of each single-choice filter. */
 const ANY = "";
@@ -98,7 +98,7 @@ export function IssueFiltersMenu({
     (filters.labels?.length ?? 0) +
     (filters.milestone ? 1 : 0) +
     (filters.parent ? 1 : 0) +
-    (filters.statuses?.length ?? 0) +
+    (filters.groups?.length ?? 0) +
     (filters.linked ? 1 : 0);
   const set = (patch: Partial<IssueMenuFilters>) =>
     onFilters((previous) => ({ ...previous, ...patch }));
@@ -152,10 +152,7 @@ export function IssueFiltersMenu({
           options={resolveFilterOptions(ISSUE_STATE_OPTIONS, messages)}
           onChange={onState}
         />
-        <IssueStatusFilter
-          value={filters.statuses ?? []}
-          onChange={(statuses) => set({ statuses })}
-        />
+        <IssueGroupFilter value={filters.groups ?? []} onChange={(groups) => set({ groups })} />
         <MenuSeparator />
         <PullRequestSearchableFilterSubmenu
           label={gt("Project", { $context: "issue filter" })}
@@ -209,13 +206,13 @@ export function IssueFiltersMenu({
   );
 }
 
-/** Any of several computed statuses; unset shows every one. */
-function IssueStatusFilter({
+/** Any of several groups, by whose move it is; unset shows every one. */
+function IssueGroupFilter({
   value,
   onChange,
 }: {
-  value: ReadonlyArray<IssueStatus>;
-  onChange: (statuses: ReadonlyArray<IssueStatus>) => void;
+  value: ReadonlyArray<IssueGroup>;
+  onChange: (groups: ReadonlyArray<IssueGroup>) => void;
 }) {
   const gt = useGT();
   const messages = useMessages();
@@ -224,7 +221,7 @@ function IssueStatusFilter({
     <MenuSub>
       <MenuSubTrigger>
         {only ? (
-          <IssueStatusGlyph status={only} className="size-3.5" />
+          <IssueGroupGlyph group={only} className="size-3.5" />
         ) : (
           <CircleDotDashedIcon aria-hidden className="size-3.5" />
         )}
@@ -233,7 +230,7 @@ function IssueStatusFilter({
         </span>
         <span className="min-w-0 max-w-32 truncate text-xs text-muted-foreground">
           {only
-            ? messages(ISSUE_STATUS_PRESENTATION[only].label)
+            ? messages(ISSUE_GROUP_PRESENTATION[only].label)
             : value.length === 0
               ? gt("Any", { $context: "no status filter set" })
               : gt("{count, plural, one {{count} selected} other {{count} selected}}", {
@@ -242,20 +239,20 @@ function IssueStatusFilter({
         </span>
       </MenuSubTrigger>
       <MenuSubPopup>
-        {ISSUE_STATUSES.map((status) => (
+        {ISSUE_GROUPS.map((group) => (
           <MenuCheckboxItem
-            key={status}
-            checked={value.includes(status)}
+            key={group}
+            checked={value.includes(group)}
             closeOnClick={false}
             onCheckedChange={(next) => {
-              const others = value.filter((candidate) => candidate !== status);
-              onChange(next ? [...others, status] : others);
+              const others = value.filter((candidate) => candidate !== group);
+              onChange(next ? [...others, group] : others);
             }}
           >
             <span className="flex min-w-0 items-center gap-2">
-              <IssueStatusGlyph status={status} className="size-3.5" />
+              <IssueGroupGlyph group={group} className="size-3.5" />
               <span className="min-w-0 flex-1 truncate">
-                {messages(ISSUE_STATUS_PRESENTATION[status].label)}
+                {messages(ISSUE_GROUP_PRESENTATION[group].label)}
               </span>
             </span>
           </MenuCheckboxItem>

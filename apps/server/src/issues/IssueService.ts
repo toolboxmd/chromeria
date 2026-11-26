@@ -11,6 +11,7 @@ import {
   type GitHubIssueListResult,
   GitHubIssueOperationError,
   type IssuePullRequest,
+  type IssueRecentCounts,
   type GitHubIssueRef,
   type GitHubIssueSetStateInput,
   type IssueStatesInput,
@@ -44,6 +45,7 @@ import * as GitHubApi from "./IssueGitHubApi.ts";
 import { type GraphQlDocument, readGraphQlPages } from "./gitHubDocuments.ts";
 import {
   decodeIssueDetailJson,
+  decodeIssueRecentCountsJson,
   decodeIssueStatesJson,
   issueDetailOf,
   decodeIssueSearchJson,
@@ -52,6 +54,8 @@ import {
   ISSUE_DETAIL_GRAPHQL_QUERY,
   ISSUE_SEARCH_MAX_ROWS,
   issueLinkOf,
+  issueRecentCountsGraphQlDocument,
+  issueRecentCountsOf,
   issueSearchGraphQlDocument,
   issueSearchQuery,
   issueStatesGraphQlDocument,
@@ -67,6 +71,12 @@ import {
 const REPOSITORY_SEARCH_CHUNK = 100;
 const DEFAULT_LIMIT = 50;
 const SEARCH_CONCURRENCY = 4;
+/**
+ * Repositories counted per request, two searches each. GitHub answered 42 such searches in 2 to
+ * 3 s, about one search page, and failed 210 in one request with a 502 after 10 s (26 Nov 2026).
+ */
+const RECENT_COUNT_REPOSITORIES = 20;
+const RECENT_DAYS = 7;
 
 export class IssueService extends Context.Service<
   IssueService,
@@ -337,7 +347,7 @@ const make = Effect.gen(function* () {
     const pinned = yield* pinnedCredentials([
       ...new Set([...reads.map((search) => search.host), ...linkedOnlyHosts]),
     ]);
-    const answers = yield* Effect.forEach(
+    const readSearches = Effect.forEach(
       reads,
       (search): Effect.Effect<SearchAnswer> => {
         const q = issueSearchQuery({
@@ -393,6 +403,59 @@ const make = Effect.gen(function* () {
       },
       { concurrency: SEARCH_CONCURRENCY },
     );
+    // The week's flow rides with a listing's first page, beside its searches so it adds no wait
+    // of its own. A count that cannot be read leaves its repositories out; the list still answers.
+    const since = DateTime.formatIso(
+      DateTime.subtract(yield* DateTime.now, { days: RECENT_DAYS }),
+    ).replace(/\.\d+Z$/u, "Z");
+    const countChunks =
+      input.cursors === undefined
+        ? [...byHost].flatMap(([host, group]) => {
+            const chunks: Array<{ host: string; chunk: ReadonlyArray<WorkspaceRepository> }> = [];
+            for (let start = 0; start < group.length; start += RECENT_COUNT_REPOSITORIES) {
+              chunks.push({ host, chunk: group.slice(start, start + RECENT_COUNT_REPOSITORIES) });
+            }
+            return chunks;
+          })
+        : [];
+    const readRecentCounts = Effect.forEach(
+      countChunks,
+      ({ host, chunk }): Effect.Effect<ReadonlyArray<IssueRecentCounts>> => {
+        const document = issueRecentCountsGraphQlDocument({
+          repositories: chunk.map((repository) => repository.repository),
+          since,
+          query: input.query,
+          labels: input.labels,
+          milestone: input.milestone,
+        });
+        if (document === null) return Effect.succeed([]);
+        return pinned(
+          host,
+          graphqlRead({
+            host,
+            operation: "countRecentIssues",
+            document,
+            decode: decodeIssueRecentCountsJson,
+          }),
+        ).pipe(
+          Effect.map((answer) =>
+            issueRecentCountsOf(chunk, answer.data).map(({ repository, filed, closed }) => ({
+              host,
+              repository: repository.repository,
+              filed,
+              closed,
+            })),
+          ),
+          Effect.catch((error) =>
+            Effect.logWarning("Could not count the week's Issues", error).pipe(Effect.as([])),
+          ),
+        );
+      },
+      { concurrency: SEARCH_CONCURRENCY },
+    );
+    const [answers, recentCounts] = yield* Effect.all([readSearches, readRecentCounts], {
+      concurrency: "unbounded",
+    });
     const linkedOnly = yield* Effect.forEach(
       linkedOnlyHosts,
       (host) =>
@@ -481,6 +544,7 @@ const make = Effect.gen(function* () {
       linkedPullRequests,
       nextCursors,
       matchCounts,
+      ...(input.cursors === undefined ? { recentCounts: recentCounts.flat() } : {}),
     };
   });
 
