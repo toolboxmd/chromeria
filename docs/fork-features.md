@@ -3972,7 +3972,10 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/pull/1017"
   ],
   "newFiles": [],
-  "upstreamFiles": [],
+  "upstreamFiles": [
+    "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.integration.test.ts",
+    "apps/server/src/orchestration-v2/testkit/fixtures/opencode2_fork/opencode_transcript.ndjson"
+  ],
   "sharedFiles": [
     "apps/server/src/orchestration-v2/Adapters/OpenCode2AdapterV2.test.ts",
     "packages/provider-opencode/src/server/adapter.ts",
