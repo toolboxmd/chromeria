@@ -6554,7 +6554,7 @@
   "9fec3189085f85fe": "{count, plural, one {{count} repository på {host}} other {{count} repositories på {host}}}",
   "d1c30b9a0f1d6284": "{error} Visar de senast inlästa ärendena.",
   "e0ff2395eb041df6": "Länkade trådar på {server} kunde inte läsas, så statusar och antal kan vara fel. {error}",
-  "981ada6b96c7d434": "GitHub returnerade färre ärenden än en sökning matchade (högst 1 000 per sökning), så några saknas i listan.",
+  "840397752d8e5d3a": "Ärendelistan kan vara ofullständig, så antalen är preliminära.",
   "7cbfe16dfa69de2f": "En ansluten server är för gammal för att kunna säga om listan är komplett, så totalen är inte slutgiltig.",
   "d1ab876ae91e57bc": "Starta en tråd från #{number}",
   "dae2949d02d34ec6": "Startar en tråd...",

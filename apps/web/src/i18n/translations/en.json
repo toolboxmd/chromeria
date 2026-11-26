@@ -6563,7 +6563,7 @@
   "9fec3189085f85fe": "{count, plural, one {{count} repository on {host}} other {{count} repositories on {host}}}",
   "d1c30b9a0f1d6284": "{error} Showing the last Issues loaded.",
   "e0ff2395eb041df6": "Linked threads on {server} could not be read, so statuses and counts may be wrong. {error}",
-  "981ada6b96c7d434": "GitHub returned fewer Issues than a search matched (it returns at most 1,000 per search), so some are missing from this list.",
+  "840397752d8e5d3a": "The Issues list may be incomplete, so the counts are provisional.",
   "7cbfe16dfa69de2f": "A connected server is too old to say whether this list is complete, so the total is not final.",
   "d1ab876ae91e57bc": "Start a thread from #{number}",
   "dae2949d02d34ec6": "Starting a thread...",

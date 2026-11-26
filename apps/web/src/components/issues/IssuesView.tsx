@@ -566,9 +566,7 @@ export function IssuesView() {
               ) : null}
               {data !== null && data.errors.length === 0 && list.rows === "truncated" ? (
                 <p className="text-xs text-muted-foreground">
-                  {gt(
-                    "GitHub returned fewer Issues than a search matched (it returns at most 1,000 per search), so some are missing from this list.",
-                  )}
+                  {gt("The Issues list may be incomplete, so the counts are provisional.")}
                 </p>
               ) : null}
               {data !== null && list.rows === "unknown" ? (

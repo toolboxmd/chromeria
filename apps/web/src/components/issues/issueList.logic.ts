@@ -89,7 +89,7 @@ export interface IssueListTarget {
 /**
  * Every page to read: each server's listing, then each answered page's continuation. Group counts
  * are totals only when `rows` is `complete`: `pending` while a page has no answer, `truncated`
- * when GitHub matched more Issues than it returned, `unknown` when a server gives no match counts.
+ * when a server's pages hold fewer rows than GitHub matched, `unknown` when a server gives no match counts.
  */
 export function issueListPages(
   listings: ReadonlyArray<IssueListTarget>,
@@ -146,7 +146,7 @@ export function issueListPages(
     round = next;
   }
   // A search never returns more rows than it matches, so a server whose rows fall short of its
-  // searches' matches has a search GitHub cut off, however many other searches it read in full.
+  // searches' matches is missing rows of one of them, however many others it read in full.
   for (const { rows, matches } of returned.values()) {
     if (rows < [...matches.values()].reduce((sum, count) => sum + count, 0)) truncated = true;
   }

@@ -6553,7 +6553,7 @@
   "9fec3189085f85fe": "{count, plural, one {{count} repositorio en {host}} other {{count} repositorios en {host}}}",
   "d1c30b9a0f1d6284": "{error} Se muestran las últimas issues cargadas.",
   "e0ff2395eb041df6": "No se pudieron leer los hilos vinculados en {server}, así que los estados y los recuentos pueden ser incorrectos. {error}",
-  "981ada6b96c7d434": "GitHub devolvió menos issues de las que encontró una búsqueda (devuelve como máximo 1000 por búsqueda), así que faltan algunas en esta lista.",
+  "840397752d8e5d3a": "Puede que la lista de issues esté incompleta, así que los recuentos son provisionales.",
   "7cbfe16dfa69de2f": "Un servidor conectado es demasiado antiguo para indicar si esta lista está completa, así que el total no es definitivo.",
   "d1ab876ae91e57bc": "Iniciar un hilo desde #{number}",
   "dae2949d02d34ec6": "Iniciando un hilo...",

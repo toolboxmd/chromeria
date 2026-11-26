@@ -6554,7 +6554,7 @@
   "9fec3189085f85fe": "{count, plural, one {{count} Repository auf {host}} other {{count} Repositorys auf {host}}}",
   "d1c30b9a0f1d6284": "{error} Die zuletzt geladenen Issues werden angezeigt.",
   "e0ff2395eb041df6": "Verknüpfte Threads auf {server} konnten nicht gelesen werden, daher können Status und Zahlen falsch sein. {error}",
-  "981ada6b96c7d434": "GitHub hat weniger Issues geliefert, als eine Suche gefunden hat (höchstens 1.000 pro Suche), daher fehlen einige in dieser Liste.",
+  "840397752d8e5d3a": "Die Issue-Liste ist möglicherweise unvollständig, daher sind die Zahlen vorläufig.",
   "7cbfe16dfa69de2f": "Ein verbundener Server ist zu alt, um zu sagen, ob diese Liste vollständig ist, daher ist die Gesamtzahl nicht endgültig.",
   "d1ab876ae91e57bc": "Einen Thread aus #{number} starten",
   "dae2949d02d34ec6": "Thread wird gestartet...",

@@ -6554,7 +6554,7 @@
   "9fec3189085f85fe": "{count, plural, one {{count} dépôt sur {host}} other {{count} dépôts sur {host}}}",
   "d1c30b9a0f1d6284": "{error} Affichage des derniers tickets chargés.",
   "e0ff2395eb041df6": "Les fils associés sur {server} n’ont pas pu être lus : les statuts et les nombres peuvent être faux. {error}",
-  "981ada6b96c7d434": "GitHub a renvoyé moins de tickets qu’une recherche n’en a trouvé (1 000 au plus par recherche) : il en manque dans cette liste.",
+  "840397752d8e5d3a": "La liste des tickets est peut-être incomplète : les nombres sont provisoires.",
   "7cbfe16dfa69de2f": "Un serveur connecté est trop ancien pour dire si cette liste est complète : le total n’est pas définitif.",
   "d1ab876ae91e57bc": "Démarrer un fil depuis #{number}",
   "dae2949d02d34ec6": "Démarrage d’un fil...",

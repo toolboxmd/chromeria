@@ -6553,7 +6553,7 @@
   "9fec3189085f85fe": "{count, plural, one {{count} repositório em {host}} other {{count} repositórios em {host}}}",
   "d1c30b9a0f1d6284": "{error} Mostrando as últimas issues carregadas.",
   "e0ff2395eb041df6": "Não foi possível ler as threads vinculadas em {server}, então os status e as contagens podem estar errados. {error}",
-  "981ada6b96c7d434": "O GitHub retornou menos issues do que uma busca encontrou (ele retorna no máximo 1.000 por busca), então algumas faltam nesta lista.",
+  "840397752d8e5d3a": "A lista de issues pode estar incompleta, então as contagens são provisórias.",
   "7cbfe16dfa69de2f": "Um servidor conectado é antigo demais para dizer se esta lista está completa, então o total não é definitivo.",
   "d1ab876ae91e57bc": "Iniciar uma thread a partir de #{number}",
   "dae2949d02d34ec6": "Iniciando uma thread...",
