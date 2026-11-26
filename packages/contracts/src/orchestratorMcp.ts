@@ -6,6 +6,7 @@ import { BareLaunchRequest, BareSupport } from "./bareLaunch.ts";
 import {
   ExecutionPurpose,
   ExecutionPurposeDelivery,
+  DelegatedPurposeIntent,
   PurposeIntent,
   PurposeSelection,
   RemotePurposeContinuation,
@@ -205,7 +206,7 @@ export type OrchestratorMcpTerminalDelegatedTaskStatus =
   typeof OrchestratorMcpTerminalDelegatedTaskStatus.Type;
 
 export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
-  purposeIntent: Schema.optional(PurposeIntent),
+  purposeIntent: Schema.optional(DelegatedPurposeIntent),
   bare: Schema.optional(BareLaunchRequest),
   tools: Schema.optional(ThreadToolsRequest),
   projectId: Schema.optional(ProjectId),

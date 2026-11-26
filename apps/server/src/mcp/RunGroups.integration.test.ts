@@ -6,6 +6,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   CommandId,
   EnvironmentId,
+  LEGACY_EXECUTION_PURPOSE,
   MessageId,
   NodeId,
   type OrchestrationV2ServerCommand,
@@ -581,10 +582,10 @@ describe("Run groups", () => {
       provenance: { type: "selection", revision: 2 },
     },
     {
-      name: "legacy omission",
+      name: "omission inheriting the calling run",
       intent: undefined,
-      scope: { type: "unscoped", reason: "legacy_no_intent" },
-      provenance: { type: "legacy" },
+      scope: { type: "single", reference: referenceA },
+      provenance: { type: "parent_run", threadId: parentThreadId },
     },
   ] as const)(
     "persists $name on every member and child run, as single delegation does",
@@ -639,7 +640,7 @@ describe("Run groups", () => {
                 scope: testCase.scope,
                 provenance: testCase.provenance,
               });
-              if (testCase.intent?.intent.type === "inherit")
+              if (testCase.provenance.type === "parent_run")
                 expect(member.purpose?.provenance).toEqual({
                   type: "parent_run",
                   threadId: parentThreadId,
@@ -650,8 +651,7 @@ describe("Run groups", () => {
               expect(child.runs[0]?.purpose).toEqual(member.purpose);
               expect(child.thread.purposeSelection?.scope).toEqual(testCase.scope);
               admitted.push({ taskId: task.taskId, run: child.runs[0], purpose: member.purpose });
-              if (testCase.intent === undefined)
-                expect(task.warnings?.join(" ")).toContain("Legacy caller omitted purpose intent");
+              expect(task.warnings ?? []).toEqual([]);
             }
             // A changed chip must not re-resolve an already admitted selection or inheritance.
             yield* orchestrator.dispatch({
@@ -803,40 +803,136 @@ describe("Run groups", () => {
   );
 
   it.live.each([
-    { name: "legacy", intent: undefined },
-    { name: "deliberate", intent: { version: 1, intent: { type: "unscoped" } } },
-  ] as const)("inherits the exact $name unscoped parent run", ({ intent }) =>
-    withParent(
-      roastRun([codexColor, claudeColor], 2),
-      () => Effect.succeed<TurnOutcome>("hang"),
-      ({ orchestrator, invoke }) =>
-        Effect.gen(function* () {
-          const active = (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]!;
-          const started = yield* group(
-            yield* invoke("delegate_task", {
+    { name: "legacy", intent: undefined, launch: "inherit" },
+    { name: "legacy", intent: undefined, launch: "omitted" },
+    { name: "deliberate", intent: { version: 1, intent: { type: "unscoped" } }, launch: "inherit" },
+    { name: "deliberate", intent: { version: 1, intent: { type: "unscoped" } }, launch: "omitted" },
+  ] as const)(
+    "inherits the exact $name unscoped parent run with $launch intent",
+    ({ intent, launch }) =>
+      withParent(
+        roastRun([codexColor, claudeColor], 2),
+        () => Effect.succeed<TurnOutcome>("hang"),
+        ({ orchestrator, invoke }) =>
+          Effect.gen(function* () {
+            const active = (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]!;
+            const args = {
               task: "Check unscoped inheritance.",
-              prismRole: "roast",
-              purposeIntent: { version: 1, intent: { type: "inherit" } },
-            }),
-          );
-          const parent = yield* orchestrator.getThreadProjection(parentThreadId);
-          for (const task of started.tasks) {
-            const member = subagent(parent, task.taskId)!;
-            expect(member.purpose).toEqual({
+              ...(launch === "inherit"
+                ? { purposeIntent: { version: 1, intent: { type: "inherit" } } }
+                : {}),
+            };
+            const started = yield* group(
+              yield* invoke("delegate_task", { ...args, prismRole: "roast" }),
+            );
+            const single = yield* decodeTask(
+              (yield* invoke("delegate_task", {
+                ...args,
+                target: { providerInstanceId: codex, model: codexModel },
+              })).structuredContent,
+            ).pipe(Effect.orDie);
+            const parent = yield* orchestrator.getThreadProjection(parentThreadId);
+            for (const task of [...started.tasks, single]) {
+              const member = subagent(parent, task.taskId)!;
+              expect(member.purpose).toEqual({
+                version: 1,
+                scope: {
+                  type: "unscoped",
+                  reason: intent === undefined ? "legacy_no_intent" : "deliberate",
+                },
+                provenance: { type: "parent_run", threadId: parentThreadId, runId: active.id },
+              });
+              expect(
+                (yield* orchestrator.getThreadProjection(task.childThreadId!)).runs[0]?.purpose,
+              ).toEqual(member.purpose);
+              // An inherited legacy scope is still unaccountable, but no longer blames this caller.
+              expect(task.warnings ?? []).toHaveLength(intent === undefined ? 1 : 0);
+              expect(task.warnings?.join(" ")).not.toContain("caller omitted");
+            }
+          }),
+        intent,
+      ),
+  );
+
+  it.live(
+    "omission inherits only the authenticated caller's run, and only for delegated children",
+    () =>
+      withParent(
+        roastRun([codexColor, claudeColor], 2),
+        () => Effect.succeed<TurnOutcome>("hang"),
+        ({ orchestrator, invoke, drain }) =>
+          Effect.gen(function* () {
+            const active = (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]!;
+            const create = (threadId: ThreadId) =>
+              orchestrator.dispatch({
+                type: "thread.create",
+                createdBy: "user",
+                creationSource: "web",
+                commandId: CommandId.make(`command:run-group:create:${threadId}`),
+                threadId,
+                projectId,
+                title: "Another thread",
+                modelSelection: { instanceId: codex, model: codexModel },
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: null,
+                worktreePath: null,
+              });
+            // Another thread's active run is deliberately unscoped; the caller's serves A.
+            const other = ThreadId.make("thread:run-group:other-run");
+            yield* create(other);
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              createdBy: "user",
+              creationSource: "web",
+              commandId: CommandId.make("command:run-group:other-run"),
+              purposeIntent: { version: 1, intent: { type: "unscoped" } },
+              threadId: other,
+              messageId: MessageId.make("message:run-group:other-run"),
+              text: "Keep this turn active.",
+              attachments: [],
+              dispatchMode: { type: "start_immediately" },
+            });
+            const otherRun = (yield* waitForProjection(
+              orchestrator,
+              other,
+              (projection) => projection.runs[0]?.rootNodeId != null,
+            )).runs[0]!;
+            const args = {
+              task: "Inherit the calling run.",
+              target: { providerInstanceId: codex, model: codexModel },
+            };
+            // The only caller-supplied context is refused for another thread.
+            const forged = yield* invoke("delegate_task", { ...args, contextThreadId: other });
+            expect(forged.isError).toBe(true);
+            expect((yield* orchestrator.getThreadProjection(other)).subagents).toEqual([]);
+            expect(
+              (yield* orchestrator.getThreadProjection(parentThreadId)).subagents,
+            ).toHaveLength(0);
+            const own = yield* decodeTask(
+              (yield* invoke("delegate_task", args)).structuredContent,
+            ).pipe(Effect.orDie);
+            expect(own.purpose).toEqual({
               version: 1,
-              scope: {
-                type: "unscoped",
-                reason: intent === undefined ? "legacy_no_intent" : "deliberate",
-              },
+              scope: { type: "single", reference: referenceA },
               provenance: { type: "parent_run", threadId: parentThreadId, runId: active.id },
             });
-            expect(
-              (yield* orchestrator.getThreadProjection(task.childThreadId!)).runs[0]?.purpose,
-            ).toEqual(member.purpose);
-          }
-        }),
-      intent,
-    ),
+            expect(otherRun.purpose?.scope).toEqual({ type: "unscoped", reason: "deliberate" });
+            // An ordinary send to a thread that is not a delegated child stays legacy.
+            const idle = ThreadId.make("thread:run-group:idle");
+            yield* create(idle);
+            const sent = yield* invoke("t3_thread_send", {
+              threadId: idle,
+              message: "Ordinary send.",
+            });
+            expect(sent.isError, JSON.stringify(sent.content)).toBe(false);
+            yield* drain;
+            expect((yield* orchestrator.getThreadProjection(idle)).runs[0]?.purpose).toEqual(
+              LEGACY_EXECUTION_PURPOSE,
+            );
+          }),
+        parentIntent,
+      ),
   );
 
   it.live("rejects stale selection before admitting any group member or provider effect", () =>

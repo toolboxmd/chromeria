@@ -47,7 +47,6 @@ import {
   type Project,
   type RepositoryIdentity,
   type ExecutionPurpose,
-  LEGACY_EXECUTION_PURPOSE,
   OrchestratorMcpThreadSendResult,
   type OrchestratorMcpThreadReadInput,
   RunId,
@@ -1585,9 +1584,13 @@ it.effect.each([false, true])(
     ).pipe(Effect.provide(layerLoopbackServerTest)),
 );
 
-it.effect.each(["omitted", "inherit"] as const)(
-  "a remote child of an unscoped parent launched with $0 intent starts and continues",
-  (launchIntent) =>
+it.effect.each([
+  { launchIntent: "omitted", parent: "unscoped" },
+  { launchIntent: "inherit", parent: "unscoped" },
+  { launchIntent: "omitted", parent: "task-scoped" },
+] as const)(
+  "a remote child of a $parent parent launched with $launchIntent intent starts and continues",
+  ({ launchIntent, parent }) =>
     Effect.scoped(
       Effect.gen(function* () {
         const thread = yield* makeBoxThread;
@@ -1600,8 +1603,19 @@ it.effect.each(["omitted", "inherit"] as const)(
         const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
         const a = yield* makeLaptop(database, offers, linking);
         yield* linkTo(a.links, b, "full-access");
-        const deliberate = { type: "unscoped", reason: "deliberate" } as const;
-        yield* seedParent(a, { version: 1, scope: deliberate, provenance: { type: "declared" } });
+        const parentScope =
+          parent === "unscoped"
+            ? ({ type: "unscoped", reason: "deliberate" } as const)
+            : ({
+                type: "single",
+                reference: {
+                  host: "github.com",
+                  repository: "example/repo",
+                  kind: "issue",
+                  number: 11,
+                },
+              } as const);
+        yield* seedParent(a, { version: 1, scope: parentScope, provenance: { type: "declared" } });
         const launched = yield* a.call("delegate_task", {
           task: "Unscoped purpose fixture in an isolated peer.",
           target: {
@@ -1613,31 +1627,24 @@ it.effect.each(["omitted", "inherit"] as const)(
             ? { purposeIntent: { version: 1, intent: { type: "inherit" } } }
             : {}),
           mode: "async",
-          clientRequestId: `remote-unscoped-${launchIntent}`,
+          clientRequestId: `remote-${parent}-${launchIntent}`,
         });
         expect(launched.isError, JSON.stringify(launched.content)).toBe(false);
         const childId = (yield* Ref.get(thread.launched))!;
         const child = yield* actual.threads.getThreadProjection(childId);
         const original = child.runs[0]!;
-        const expectedScope =
-          launchIntent === "inherit"
-            ? deliberate
-            : { type: "unscoped", reason: "legacy_no_intent" };
-        expect(original.purpose?.scope ?? LEGACY_EXECUTION_PURPOSE.scope).toEqual(expectedScope);
-        if (launchIntent === "inherit") {
-          expect(child.thread.delegatedFrom?.purposeLaunch?.purpose).toEqual({
-            version: 1,
-            scope: deliberate,
-            provenance: { type: "parent_run", threadId: parentThreadId, runId: parentRunId },
-          });
-        } else {
-          expect(child.thread.delegatedFrom?.purposeLaunch).toBeUndefined();
-        }
+        const expectedScope = parentScope;
+        expect(original.purpose?.scope).toEqual(expectedScope);
+        expect(child.thread.delegatedFrom?.purposeLaunch?.purpose).toEqual({
+          version: 1,
+          scope: parentScope,
+          provenance: { type: "parent_run", threadId: parentThreadId, runId: parentRunId },
+        });
         const now = yield* DateTime.now;
         yield* actual.sink.write({
           events: [
             {
-              id: EventId.make(`remote-unscoped-${launchIntent}-stopped`),
+              id: EventId.make(`remote-${parent}-${launchIntent}-stopped`),
               type: "run.updated",
               threadId: childId,
               occurredAt: now,
@@ -1649,7 +1656,7 @@ it.effect.each(["omitted", "inherit"] as const)(
           environmentId: box.environmentId,
           threadId: childId,
           message: "Continue the delegated job.",
-          clientRequestId: `remote-unscoped-${launchIntent}-continue`,
+          clientRequestId: `remote-${parent}-${launchIntent}-continue`,
         });
         expect(continued.isError, JSON.stringify(continued.content)).toBe(false);
         expect(
@@ -1958,6 +1965,17 @@ it.effect.each(["target", "environmentId"] as const)(
           environmentId: laptop.environmentId,
           threadId: parentThreadId,
           title: "Laptop parent",
+          purposeLaunch: {
+            environmentId: laptop.environmentId,
+            threadId: parentThreadId,
+            runId: parentRunId,
+            launchId: expect.any(String),
+            purpose: {
+              version: 1,
+              scope: { type: "unscoped", reason: "legacy_no_intent" },
+              provenance: { type: "parent_run", threadId: parentThreadId, runId: parentRunId },
+            },
+          },
         });
         // A retry with the same key launches nothing new and records nothing new.
         const retried = yield* delegateToBox(a);
@@ -5568,7 +5586,11 @@ it.effect(
         const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
         const a = yield* makeLaptop(database, offers);
         yield* linkTo(a.links, b, "full-access");
-        yield* seedParent(a);
+        const scope = {
+          type: "single",
+          reference: { host: "github.com", repository: "example/repo", kind: "issue", number: 11 },
+        } as const;
+        yield* seedParent(a, { version: 1, scope, provenance: { type: "declared" } });
         const group = (key: string, runtimeMode?: "full-access") => {
           const commandId = CommandId.make(`command:modes:${key}`);
           return a.remote.delegateGroup(
@@ -5601,6 +5623,18 @@ it.effect(
           [instanceId, "full-access"],
           [boxClaude.instanceId, "approval-required"],
         ]);
+        // Without an intent, every member carries the calling run's purpose there.
+        for (const id of members) {
+          const task = recorded.find((candidate) => candidate.id === id)!;
+          expect(task.purpose).toEqual({
+            version: 1,
+            scope,
+            provenance: { type: "parent_run", threadId: parentThreadId, runId: parentRunId },
+          });
+          expect(task.remoteChild?.launch?.delegatedFrom.purposeLaunch?.purpose).toEqual(
+            task.purpose,
+          );
+        }
         // Explicit: a mode one Color does not offer refuses the whole group before anything is kept.
         const launchesBefore = (yield* Ref.get(thread.launchIds)).length;
         const refused = yield* group("explicit", "full-access").pipe(Effect.flip);
