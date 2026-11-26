@@ -59,7 +59,7 @@ flowchart TD
     T3M --> PSS --> PBI
 
     PZ["Prism routing"]
-    %% PZ: #92 #625 #616 #579 #573 #568 #564 PR #556 #554 PR #408 PR #430 PR #479 PR #489 PR #512 PR #471 PR #476 PR #539 #515 #636 PR #637 #1001 PR #1002 PR #1012
+    %% PZ: #92 #625 #616 #579 #573 #568 #564 PR #556 #554 PR #408 PR #430 PR #479 PR #489 PR #512 PR #471 PR #476 PR #539 #515 #636 PR #637 #1001 PR #1002 PR #1012 #1020
     VT["Visible T3 threads"]
     %% VT: #10
     PM["Promachos bubbles and persona"]

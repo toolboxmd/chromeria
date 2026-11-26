@@ -129,7 +129,12 @@ part of a segment is what that reset restores. Tap a segment or account row for 
 where it is signed in, and its reset time. On web, you can hover too. Codex and Claude accounts
 with banked reset credits show a ticket count and the **Use reset** action in the account details.
 Claude resets are not available when the server runs on macOS, where Claude keeps its login in the
-Keychain. On narrow screens, numbered rows below
+Keychain. After a reset, every other environment you are connected to that has the same account
+signed in, with the same email and workspace, is told, so Prism can send its delegated work to that
+provider again. The result lists each of them: cleared, still showing an exhausted window, or not
+reached. An environment that is not connected keeps its old limit until that limit's own reset
+time; one that does not answer within 10 seconds is also listed as not reached. On narrow screens,
+numbered rows below
 the bar show each account's quota, countdown, and credits. Tap a row to open its details.
 
 The same account signed in on more than one environment, or reported by a hub as well, counts once.

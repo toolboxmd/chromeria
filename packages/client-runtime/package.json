@@ -399,6 +399,10 @@
       "types": "./src/state/runtime.ts",
       "default": "./src/state/runtime.ts"
     },
+    "./state/redeemed-reset": {
+      "types": "./src/state/redeemedReset.ts",
+      "default": "./src/state/redeemedReset.ts"
+    },
     "./state/usage": {
       "types": "./src/state/usage.ts",
       "default": "./src/state/usage.ts"

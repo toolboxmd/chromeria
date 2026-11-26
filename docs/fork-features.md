@@ -1245,13 +1245,14 @@ Child creation paths are owned by child-threads and shared with thread-people.
 ```json
 {
   "id": "prism-toolkit",
-  "purpose": "Route upstream delegation and top-level launches through one Prism service and coordinate persisted same-provider/model recovery with immutable per-run outcomes, indexed admitted continuation sources and current recovery intent. Recover event changes only for their thread and parent; retain startup catch-up and the shared scheduler for unresolved recovery. Own Chromeria autoResumeLimitedThreads=true; Wight consumes it and saved false overrides remain respected.",
+  "purpose": "Route upstream delegation and top-level launches through one Prism service and coordinate persisted same-provider/model recovery with immutable per-run outcomes, indexed admitted continuation sources and current recovery intent. Recover event changes only for their thread and parent; retain startup catch-up and the shared scheduler for unresolved recovery. Own Chromeria autoResumeLimitedThreads=true; Wight consumes it and saved false overrides remain respected. A confirmed reset redemption also clears the usage-limit block of every other connected instance with the same driver, email and workspace, and the redeem result names each machine.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/169",
     "https://github.com/toolboxmd/chromeria/issues/210",
     "https://github.com/toolboxmd/chromeria/issues/424",
     "https://github.com/toolboxmd/chromeria/issues/579",
-    "https://github.com/toolboxmd/chromeria/issues/1001"
+    "https://github.com/toolboxmd/chromeria/issues/1001",
+    "https://github.com/toolboxmd/chromeria/issues/1020"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/183",
@@ -1279,6 +1280,10 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/prism/RecoveryStore.test.ts",
     "apps/server/src/prism/RecoveryStore.ts",
     "apps/server/src/prism/ResetRedemptions.ts",
+    "packages/client-runtime/src/state/redeemedReset.ts",
+    "packages/client-runtime/src/state/redeemedReset.test.ts",
+    "apps/web/src/state/redeemResetCredit.ts",
+    "apps/mobile/src/state/redeem-reset-credit.ts",
     "apps/server/src/prism/recovery.testkit.ts",
     "apps/server/src/prism/recoveryAdmission.test.ts",
     "apps/server/src/prism/recoveryAdmission.ts",
@@ -1291,7 +1296,11 @@ Child creation paths are owned by child-threads and shared with thread-people.
   ],
   "upstreamFiles": [
     "apps/server/src/mcp/toolkits/project/tools.ts",
-    "apps/server/src/orchestration-v2/runtimeLayer.ts"
+    "apps/server/src/orchestration-v2/runtimeLayer.ts",
+    "apps/web/src/components/usage/UsageLimits.tsx",
+    "apps/web/src/components/usage/UsageLimitsPooled.tsx",
+    "apps/mobile/src/features/usage/UsageLimitsSection.tsx",
+    "docs/user/usage.md"
   ],
   "sharedFiles": [
     "apps/server/src/mcp/toolkits/project/handlers.test.ts",
