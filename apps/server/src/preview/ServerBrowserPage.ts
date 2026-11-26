@@ -1393,8 +1393,19 @@ export const evaluate = async (
   input: PreviewAutomationEvaluateInput,
   timeoutMs: number,
   authorize: Authorize = noAuthorization,
+  world: "isolated" | "main" = "main",
 ) => {
   await authorize();
+  // A world of its own shares the DOM, but pages cannot see the agent's globals or wrappers.
+  const contextId =
+    world === "isolated"
+      ? (
+          await cdp.send("Page.createIsolatedWorld", {
+            frameId: (await cdp.send("Page.getFrameTree")).frameTree.frame.id,
+            worldName: "t3-agent",
+          })
+        ).executionContextId
+      : undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   const expired = new Promise<never>((_, reject) => {
@@ -1414,6 +1425,7 @@ export const evaluate = async (
     expression: input.expression,
     awaitPromise: input.awaitPromise ?? true,
     returnByValue: true,
+    ...(contextId === undefined ? {} : { contextId }),
   };
   // The devtools console's replMode allows top-level await but returns a trailing promise unawaited,
   // so it only retries what the page's parser rejected. A parse error has a scriptId but no stack and

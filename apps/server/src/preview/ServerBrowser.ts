@@ -4532,13 +4532,18 @@ const make = Effect.gen(function* () {
           throw cause;
         }
       }
-      case "evaluate":
-        return ServerBrowserPage.evaluate(
+      case "evaluate": {
+        const evaluateInput = input as PreviewAutomationEvaluateInput;
+        const world = evaluateInput.world ?? "main";
+        const value = await ServerBrowserPage.evaluate(
           tab.cdp,
-          input as PreviewAutomationEvaluateInput,
+          evaluateInput,
           request.timeoutMs,
           authorize,
+          world,
         );
+        return { value, evaluatedIn: world };
+      }
       case "waitFor":
         return ServerBrowserPage.waitFor(
           tab.page,

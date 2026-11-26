@@ -761,6 +761,24 @@ describe("server browser element refs", () => {
     expect(result).toBe("Ready");
   });
 
+  it("evaluates in an isolated world that shares the DOM but not page variables", async () => {
+    await page.setContent(
+      "<title>Ready</title><script>window.pageSecret = 42; document.modelContext = {};</script>",
+    );
+    const run = (expression: string, world?: "isolated" | "main") =>
+      ServerBrowserPage.evaluate(cdp, { expression }, 5_000, undefined, world);
+    const probe = "[document.title, typeof window.pageSecret, typeof document.modelContext]";
+    expect(await run(probe, "isolated")).toEqual(["Ready", "undefined", "undefined"]);
+    expect(await run(probe, "main")).toEqual(["Ready", "number", "object"]);
+    expect(await run(probe)).toEqual(["Ready", "number", "object"]);
+    await run("window.agentOnly = 1; document.body.dataset.agent = 'seen'", "isolated");
+    expect(await run("[typeof window.agentOnly, document.body.dataset.agent]", "main")).toEqual([
+      "undefined",
+      "seen",
+    ]);
+    expect(await run("await Promise.resolve(); document.title", "isolated")).toBe("Ready");
+  });
+
   it("returns object contents even when a legacy caller asks for a remote reference", async () => {
     const input = decodeEvaluateInput({
       expression: "({ answer: 42, nested: { ready: true } })",

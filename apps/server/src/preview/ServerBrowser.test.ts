@@ -1699,7 +1699,7 @@ it.effect("enforces provider ownership and explicit targets when a session has m
         operation: "evaluate",
         input: { expression: "owned()" },
       });
-      expect(result).toBe("evaluated");
+      expect(result).toMatchObject({ value: "evaluated" });
       expect(contexts).toHaveLength(2);
 
       const manager = yield* Manager.PreviewManager;
@@ -1926,7 +1926,7 @@ it.effect(
           reason: "humanControl",
         });
         finish.resolve({ result: { value: "finished" } });
-        expect(yield* Fiber.join(running)).toBe("finished");
+        expect(yield* Fiber.join(running)).toMatchObject({ value: "finished" });
         yield* Fiber.join(takeover);
         yield* viewer.input({ type: "releaseControl" });
         const stale = yield* broker
@@ -1941,7 +1941,7 @@ it.effect(
             operation: "evaluate",
             input: { expression: "resumed()" },
           }),
-        ).toBe("evaluated");
+        ).toMatchObject({ value: "evaluated" });
       }),
     ).pipe(Effect.provide(layer)),
 );
@@ -2074,7 +2074,7 @@ it.effect("reports a pending dialog without evaluating the page and resolves it 
       });
       expect(page.goto).toHaveBeenCalledTimes(1);
       yield* broker.invoke({ scope, tabId, operation: "dialog", input: { accept: true } });
-      expect(yield* Fiber.join(blockedAction)).toBe(true);
+      expect(yield* Fiber.join(blockedAction)).toMatchObject({ value: true });
       expect(dialog.accept).toHaveBeenCalledTimes(1);
       const resolved = yield* broker.invoke<PreviewAutomationStatus>({
         scope,
@@ -4236,6 +4236,10 @@ it.live("clearing a hold on a page still showing its check clears it", () =>
         ]),
       );
       yield* manager.adjust({ threadId: scope.thread.threadId, tabId, clear: "siteHold" });
+      expect(
+        yield* broker.invoke({ scope, operation: "evaluate", input: { expression: "1" }, tabId }),
+        "an omitted world stays the main world, even on a public page",
+      ).toEqual({ value: 1, evaluatedIn: "main" });
       const [session] = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
       expect(session?.siteHold).toBeUndefined();
     }),
@@ -5688,7 +5692,7 @@ it.live("settlement closes only the thread's unwatched agent tabs and permits re
           operation: "evaluate",
           input: { expression: "1" },
         }),
-      ).toBe("evaluated");
+      ).toMatchObject({ value: "evaluated" });
     }),
   ).pipe(Effect.provide(layer)),
 );
@@ -6854,7 +6858,7 @@ it.effect("a fill leaves its tab and related tabs readable and returns no value"
             operation: "evaluate",
             input: { expression: "1" },
           }),
-        ).toBe("evaluated");
+        ).toMatchObject({ value: "evaluated" });
       }
     }),
   ).pipe(Effect.provide(layer)),
