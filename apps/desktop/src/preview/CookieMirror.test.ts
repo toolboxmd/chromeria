@@ -368,6 +368,38 @@ describe("one-way mirror service seam", () => {
     expect(carried.snapshot("env")[0]!.mutations).toEqual([{ type: "set", cookie: login }]);
   });
 
+  it("removes a verdict it wrote even when Chrome no longer reports it", async () => {
+    // An earlier build forgot a session verdict after a Chrome restart but kept it here.
+    const verdict = cookie("chrome-verdict", {
+      name: "datadome",
+      domain: ".shop.example.test",
+      path: "/",
+    });
+    const key = { name: "datadome", domain: ".shop.example.test", path: "/" };
+    const desktop = store([verdict]);
+    const mirror = new CookieMirror({
+      metadata: {
+        version: 1,
+        mappings: [],
+        chrome: [{ source: "chrome-default", profileId: profile.id, managed: [], removed: [] }],
+        partitions: [
+          {
+            id: "partition",
+            environmentId: "env",
+            profile,
+            managed: [{ key, persistent: false }],
+            chromeManaged: [key],
+            remoteManaged: [],
+            removed: [],
+          },
+        ],
+      },
+    });
+    await mirror.addPartition("partition", "env", profile, desktop);
+    expect(desktop.cookies.size).toBe(0);
+    expect(mirror.metadata().partitions[0]?.chromeManaged).toEqual([]);
+  });
+
   it("keeps profile accounts and both partition-key fields distinct on exact removal", async () => {
     const first = store();
     const second = store();

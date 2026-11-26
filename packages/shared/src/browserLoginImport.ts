@@ -74,9 +74,9 @@ export const selectLoginCookies = (input: {
   let bytes = 0;
   for (const cookie of input.cookies) {
     if (!hosts.some((host) => cookieCoversHost(cookie, host, registrableDomain))) continue;
-    if (cookie.partitionKey !== undefined) partitioned++;
-    else if (isGoogleCredential(cookie, registrableDomain) || isAntiBotVerdictCookie(cookie.name))
+    if (isGoogleCredential(cookie, registrableDomain) || isAntiBotVerdictCookie(cookie.name))
       deviceBound++;
+    else if (cookie.partitionKey !== undefined) partitioned++;
     else {
       cookies.push(cookie);
       bytes += cookieBytes(cookie);

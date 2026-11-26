@@ -203,7 +203,13 @@ export class CookieMirror {
     }
     if (mutations.length > 0) partition.changed = true;
   }
+  /** Removes every verdict the mirror ever wrote here, whatever Chrome now holds. */
+  private withdrawVerdicts(partition: PartitionState) {
+    for (const [name, key] of partition.chromeManaged)
+      if (isAntiBotVerdictCookie(key.name)) partition.pending.set(name, { type: "remove", key });
+  }
   private async applyPending(partition: PartitionState) {
+    this.withdrawVerdicts(partition);
     if (!partition.store || partition.pending.size === 0) return;
     const mutations = [...partition.pending.values()];
     // Persist write intent: a browser can apply a write before its reply is lost.
