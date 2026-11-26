@@ -21,7 +21,6 @@ import {
   peerCapabilities,
 } from "@t3tools/contracts";
 import * as Prism from "../prism/PrismService.ts";
-import { executionPurposeOf } from "@t3tools/contracts";
 import * as PurposeAdmission from "../orchestration-v2/ExecutionPurpose.ts";
 import {
   CommandId,
@@ -443,14 +442,11 @@ const make = Effect.gen(function* () {
         supportedRuntimeModes: color.supportedRuntimeModes,
       }).pipe(Effect.map((runtimeMode) => ({ ...color, runtimeMode }))),
     );
-    const resolvedPurpose = yield* PurposeAdmission.resolvePurposeIntent({
+    const resolvedPurpose = yield* PurposeAdmission.resolveDelegatedPurposeIntent({
       intent: input.purposeIntent,
       selection: parent.thread.purposeSelection,
-      inherited: {
-        version: 1,
-        scope: executionPurposeOf(parentRun).scope,
-        provenance: { type: "parent_run", threadId: parent.thread.id, runId: parentRun.id },
-      },
+      parentThreadId: parent.thread.id,
+      parentRun,
     }).pipe(
       Effect.mapError(
         (error) => new OrchestratorMcpFailure({ code: "invalid_request", message: error.message }),
@@ -477,17 +473,13 @@ const make = Effect.gen(function* () {
           environmentId: hereId,
           threadId: parent.thread.id,
           title: parent.thread.title,
-          ...(input.purposeIntent === undefined
-            ? {}
-            : {
-                purposeLaunch: {
-                  environmentId: hereId,
-                  threadId: parent.thread.id,
-                  runId: parentRun.id,
-                  launchId,
-                  purpose: resolvedPurpose.purpose,
-                },
-              }),
+          purposeLaunch: {
+            environmentId: hereId,
+            threadId: parent.thread.id,
+            runId: parentRun.id,
+            launchId,
+            purpose: resolvedPurpose.purpose,
+          },
         },
         runGroupMember: { kitText: there.prismColors!.kitText },
       };
@@ -703,19 +695,11 @@ const make = Effect.gen(function* () {
           code: "invalid_request",
           message: PRISM_DELEGATE_ROLE_ERROR,
         });
-      const parentPurpose = executionPurposeOf(parentRun);
-      const resolvedPurpose = yield* PurposeAdmission.resolvePurposeIntent({
+      const resolvedPurpose = yield* PurposeAdmission.resolveDelegatedPurposeIntent({
         intent: input.purposeIntent,
         selection: parent.thread.purposeSelection,
-        inherited: {
-          version: 1,
-          scope: parentPurpose.scope,
-          provenance: {
-            type: "parent_run",
-            threadId: parent.thread.id,
-            runId: parentRun.id,
-          },
-        },
+        parentThreadId: parent.thread.id,
+        parentRun,
       }).pipe(
         Effect.mapError(
           (error) =>
@@ -797,17 +781,13 @@ const make = Effect.gen(function* () {
           environmentId: hereId,
           threadId: parent.thread.id,
           title: parent.thread.title,
-          ...(input.purposeIntent === undefined
-            ? {}
-            : {
-                purposeLaunch: {
-                  environmentId: hereId,
-                  threadId: parent.thread.id,
-                  runId: parentRun.id,
-                  launchId: commandId,
-                  purpose: resolvedPurpose.purpose,
-                },
-              }),
+          purposeLaunch: {
+            environmentId: hereId,
+            threadId: parent.thread.id,
+            runId: parentRun.id,
+            launchId: commandId,
+            purpose: resolvedPurpose.purpose,
+          },
         },
       };
       const remoteChild: OrchestrationV2RemoteTaskChild = {

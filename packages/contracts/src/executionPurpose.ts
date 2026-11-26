@@ -141,6 +141,11 @@ export const PurposeIntent = Schema.Struct({
     "Version 1 execution purpose. Choose reference, inherit the exact caller run, selection with its revision, deliberate unscoped, or target for Steer/Restart. Omission is legacy unscoped with a warning.",
 });
 export type PurposeIntent = typeof PurposeIntent.Type;
+
+export const DelegatedPurposeIntent = PurposeIntent.annotate({
+  description:
+    "Version 1 execution purpose. Omit it, or choose inherit, to serve the calling run's purpose; an unscoped run gives an unscoped child. Choose reference for another Issue or PR, selection with its revision, or deliberate unscoped.",
+});
 const encodePurposeIntent = Schema.encodeSync(Schema.fromJsonString(PurposeIntent));
 
 export function purposeIntentsEqual(
@@ -295,9 +300,10 @@ export function purposeScopeLabel(scope: ExecutionPurposeScope): string {
 }
 
 export function executionPurposeWarnings(purpose: ExecutionPurpose): ReadonlyArray<string> {
-  return purpose.scope.type === "unscoped" && purpose.scope.reason === "legacy_no_intent"
-    ? [
-        "Legacy caller omitted purpose intent. This execution is unscoped and cannot establish exact outcome accounting.",
-      ]
-    : [];
+  if (purpose.scope.type !== "unscoped" || purpose.scope.reason !== "legacy_no_intent") return [];
+  return [
+    purpose.provenance.type === "legacy"
+      ? "Legacy caller omitted purpose intent. This execution is unscoped and cannot establish exact outcome accounting."
+      : "This execution inherited a legacy unscoped purpose, so it cannot establish exact outcome accounting. Pass purposeIntent to assign a task.",
+  ];
 }

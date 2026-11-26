@@ -2,6 +2,7 @@ import { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import {
   type ExecutionPurpose,
   type ExecutionPurposeScope,
+  type OrchestrationV2Run,
   type OrchestrationV2RuntimeRequest,
   type ThreadId,
   LEGACY_EXECUTION_PURPOSE,
@@ -119,6 +120,26 @@ export const resolvePurposeIntent = Effect.fnUntraced(function* (input: {
   }
   return { purpose, select };
 });
+
+/**
+ * Every delegation entry point resolves here: a child serves its authenticated
+ * calling run's purpose unless the caller explicitly assigns another.
+ */
+export const resolveDelegatedPurposeIntent = (input: {
+  readonly intent: PurposeIntent | undefined;
+  readonly selection: PurposeSelection | undefined;
+  readonly parentThreadId: ThreadId;
+  readonly parentRun: Pick<OrchestrationV2Run, "id" | "purpose">;
+}) =>
+  resolvePurposeIntent({
+    intent: input.intent ?? { version: 1, intent: { type: "inherit" } },
+    selection: input.selection,
+    inherited: {
+      version: 1,
+      scope: executionPurposeOf(input.parentRun).scope,
+      provenance: { type: "parent_run", threadId: input.parentThreadId, runId: input.parentRun.id },
+    },
+  });
 
 /** Validated system causes keep one owner only when every cause agrees. */
 export function purposeFromCauses(

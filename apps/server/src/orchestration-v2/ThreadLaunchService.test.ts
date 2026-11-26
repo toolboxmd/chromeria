@@ -29,6 +29,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   GitCommandError,
+  LEGACY_EXECUTION_PURPOSE,
   MessageId,
   RunId,
   ProjectId,
@@ -2538,6 +2539,17 @@ it.effect("launch receipt replay refuses inheritance from a different-purpose pa
       .pipe(Effect.flip);
     assert.equal(error._tag, "ThreadLaunchError");
     assert.include(String(error.cause), "purpose intent");
+    // A top-level launch never inherits without an explicit intent, unlike a delegated child.
+    const omitted = yield* launches.launch({
+      ...launchInput({
+        command: "purpose-top-level-omitted",
+        thread: "purpose-top-level-omitted",
+        message: "Top-level fixture",
+      }),
+      createdBy: "agent",
+      purposeParentRun: parents[0]!,
+    });
+    assert.deepEqual(omitted.projection.runs[0]?.purpose, LEGACY_EXECUTION_PURPOSE);
   }).pipe(Effect.provide(harness.layer));
 });
 

@@ -362,8 +362,8 @@ const make = Effect.gen(function* () {
           const task = matches[0];
           if (task !== undefined) {
             const evidence = task.remoteChild?.launch?.delegatedFrom.purposeLaunch;
-            // A launch that omitted intent recorded no evidence. Its omitted
-            // follow-up stays warned legacy unscoped there, as a local one does.
+            // Only a launch recorded before omission inherited lacks evidence.
+            // Its omitted follow-up stays warned legacy unscoped there.
             if (evidence !== undefined || args.purposeIntent !== undefined) {
               if (evidence === undefined || evidence.threadId !== scope.thread.threadId) {
                 return yield* new OrchestratorMcpFailure({

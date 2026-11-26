@@ -11561,19 +11561,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
 
-      const parentPurpose = executionPurposeOf(parentRun);
-      const delegatedPurpose = yield* ExecutionPurpose.resolvePurposeIntent({
+      const delegatedPurpose = yield* ExecutionPurpose.resolveDelegatedPurposeIntent({
         intent: command.purposeIntent,
         selection: parentProjection.thread.purposeSelection,
-        inherited: {
-          version: 1,
-          scope: parentPurpose.scope,
-          provenance: {
-            type: "parent_run",
-            threadId: command.parentThreadId,
-            runId: parentRun.id,
-          },
-        },
+        parentThreadId: command.parentThreadId,
+        parentRun,
       }).pipe(mapDispatchError(command));
       const now = command.createdAt ?? (yield* DateTime.now);
       const idSeed = { commandId: member?.idSeed ?? command.commandId };
@@ -12073,22 +12065,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Parent run ${command.parentRunId} is stopping.`,
       });
     }
-    const resolvedRemotePurpose = yield* ExecutionPurpose.resolvePurposeIntent({
+    const resolvedRemotePurpose = yield* ExecutionPurpose.resolveDelegatedPurposeIntent({
       intent: command.purposeIntent,
       selection: parentProjection.thread.purposeSelection,
-      inherited: {
-        version: 1,
-        scope: executionPurposeOf(parentRun).scope,
-        provenance: {
-          type: "parent_run",
-          threadId: command.parentThreadId,
-          runId: parentRun.id,
-        },
-      },
+      parentThreadId: command.parentThreadId,
+      parentRun,
     }).pipe(mapDispatchError(command));
     const remotePurposeLaunch = command.remoteChild.launch?.delegatedFrom.purposeLaunch;
+    // A launch recorded before omission inherited carries no evidence and stays legacy there.
     if (
-      command.purposeIntent !== undefined &&
+      (command.purposeIntent !== undefined || remotePurposeLaunch !== undefined) &&
       (remotePurposeLaunch === undefined ||
         remotePurposeLaunch.threadId !== command.parentThreadId ||
         remotePurposeLaunch.runId !== parentRun.id ||

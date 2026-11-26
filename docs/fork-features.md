@@ -3264,7 +3264,8 @@ sources and reasons.
   "purpose": "Pin typed Issue or PR purpose at run admission and retain supported native causal evidence without treating job binding as outcome ownership.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/377",
-    "https://github.com/toolboxmd/chromeria/issues/909"
+    "https://github.com/toolboxmd/chromeria/issues/909",
+    "https://github.com/toolboxmd/chromeria/issues/983"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/388",
@@ -3323,6 +3324,7 @@ sources and reasons.
     "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
     "apps/server/src/mcp/RunGroups.integration.test.ts",
     "apps/server/src/mcp/toolkits/core.test.ts",
+    "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
     "apps/server/src/mcp/toolkits/project/handlers.ts",
     "apps/server/src/mcp/toolkits/project/tools.ts",
     "apps/server/src/mcp/toolkits/pullRequests/tools.ts",
