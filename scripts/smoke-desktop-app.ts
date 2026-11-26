@@ -35,7 +35,8 @@ const artifactsDir = NodePath.resolve(values["artifacts-dir"] ?? "desktop-launch
 const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-desktop-launch-"));
 const t3Home = NodePath.join(home, "t3");
 NodeFS.mkdirSync(NodePath.join(t3Home, "userdata"), { recursive: true });
-NodeFS.copyFileSync(FIXTURE_DB, NodePath.join(t3Home, "userdata/statev2.sqlite"));
+// Fork: Chromeria reads its V2 database as chromeria-v2.sqlite (data-foundation).
+NodeFS.copyFileSync(FIXTURE_DB, NodePath.join(t3Home, "userdata/chromeria-v2.sqlite"));
 
 // Packaged builds turn off Electron's Node inspector fuse, so Playwright's `_electron.launch`
 // (which attaches through `--inspect`) never connects. Chromium's DevTools port still works.

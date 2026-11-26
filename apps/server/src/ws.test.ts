@@ -18,6 +18,8 @@ import {
   AuthSessionId,
   AuthSourceControlWriteScope,
   AuthTerminalOperateScope,
+  CommandId,
+  ORCHESTRATION_V2_WS_METHODS,
   ORCHESTRATION_PROTOCOL_VERSION,
   ORCHESTRATION_PROTOCOL_QUERY_PARAM,
   EnvironmentId,
@@ -88,6 +90,7 @@ import * as AntigravityInstallation from "./provider/AntigravityInstallation.ts"
 import * as ProviderInstallation from "./provider/providerInstallation.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
+import * as CheckpointStore from "./checkpointing/CheckpointStore.ts";
 import * as NativeChildWorkQuery from "./orchestration-v2/NativeChildWorkQuery.ts";
 import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as ThreadViewers from "./orchestration-v2/ThreadViewers.ts";
@@ -121,6 +124,7 @@ import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts
 import * as ProviderAuthService from "./provider/ProviderAuthService.ts";
 import * as AcpRegistrySessions from "./provider/AcpRegistrySessions.ts";
 import * as ProviderInstanceRegistry from "./provider/ProviderInstanceRegistry.ts";
+import * as ResetRedemptions from "./prism/ResetRedemptions.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
@@ -155,6 +159,14 @@ import * as StorageCleanup from "./storageCleanup.ts";
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as ThreadLaunchService from "./orchestration-v2/ThreadLaunchService.ts";
+import * as BareLaunch from "./orchestration-v2/BareLaunch.ts";
+import * as CommandReceiptStore from "./orchestration-v2/CommandReceiptStore.ts";
+import * as ProviderReplayHarness from "./orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as ProviderAdapterRegistry from "./orchestration-v2/ProviderAdapterRegistry.ts";
+import { CodexProviderCapabilitiesV2 } from "./orchestration-v2/Adapters/CodexAdapterV2.ts";
+import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderRegistryMock from "./provider/testUtils/providerRegistryMock.ts";
+import * as TextGeneration from "./textGeneration/TextGeneration.ts";
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as UsageService from "./usage/UsageService.ts";
@@ -194,6 +206,17 @@ import * as SqlitePersistence from "./persistence/Sqlite.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as ProjectEnrichment from "./project/ProjectEnrichmentService.ts";
 import * as ProjectService from "./project/ProjectService.ts";
+import * as AuthSessions from "./persistence/AuthSessions.ts";
+import * as DeviceHubProxy from "./device/DeviceHubProxy.ts";
+import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
+import * as IssueLinks from "./issueLinks/IssueLinks.ts";
+import * as ForkIssueService from "./issues/IssueService.ts";
+import * as PeerAuthority from "./peer/PeerAuthority.ts";
+import * as PendingRequestService from "./childThreads/PendingRequestService.ts";
+import * as ServerBrowserStream from "./preview/ServerBrowserStream.ts";
+import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
+import * as SpectrumReportService from "./spectrum/ReportService.ts";
+import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import {
   layerWsRpc,
   resolveOpenDiscoveryForConfig,
@@ -831,6 +854,7 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
 
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
+  Layer.mock(ResetRedemptions.ResetRedemptions)({}),
   Layer.mock(DocumentText.DocumentText)({}),
   Layer.mock(ServerSecretStore.ServerSecretStore)({}),
   Layer.mock(SecretCheck.SecretCheck)({}),
@@ -923,6 +947,18 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(WorkspaceFileSystem.WorkspaceFileSystem)({}),
   Layer.mock(WorktreeSetupTracker.WorktreeSetupTracker)({}),
   FeatureFlags.layerTest(),
+  Layer.mock(AuthSessions.AuthSessionRepository)({}),
+  Layer.mock(DeviceHubProxy.DeviceViewers)({}),
+  Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+  Layer.mock(IssueLinks.IssueLinks)({}),
+  Layer.mock(ForkIssueService.IssueService)({}),
+  Layer.mock(PeerAuthority.PeerAuthority)({}),
+  Layer.mock(PeerLinks.PeerLinks)({}),
+  Layer.mock(PendingRequestService.PendingRequests)({}),
+  Layer.mock(ServerBrowserStream.PreviewViewers)({}),
+  Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+  Layer.mock(SpectrumReportService.SpectrumReportService)({}),
+  Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({}),
 );
 
 const layerConfigSources = Layer.mergeAll(
@@ -2993,10 +3029,386 @@ const makeWorkflowClient = Effect.fn("test.makeWorkflowClient")(function* (
     ),
   );
 });
+const resetCreditRpcs = WsRpcGroup.omit(
+  ...[...WsRpcGroup.requests.keys()].filter(
+    (
+      tag,
+    ): tag is Exclude<
+      keyof typeof RpcAuthorization.RPC_REQUIRED_SCOPES,
+      "provider.consumeResetCredit" | "provider.clearRedeemedReset"
+    > =>
+      tag !== WS_METHODS.providerConsumeResetCredit &&
+      tag !== WS_METHODS.providerClearRedeemedReset,
+  ),
+);
+
+/** A failed run on `instanceId`, made through `driver`, whose root error is an unexpired usage limit. */
+const seedUsageLimitFailure = Effect.fn("test.seedUsageLimitFailure")(function* (
+  instanceId: ProviderInstanceId,
+  driver: ProviderDriverKind,
+) {
+  const at = DateTime.makeUnsafe("2026-11-26T15:00:00Z");
+  const threadId = ThreadId.make(`thread:limited:${instanceId}`);
+  const runId = RunId.make(`run:limited:${instanceId}`);
+  const providerThreadId = ProviderThreadId.make(`provider-thread:limited:${instanceId}`);
+  const base = { threadId, occurredAt: at };
+  yield* (yield* EventSink.EventSinkV2).write({
+    events: [
+      {
+        ...base,
+        id: EventId.make(`${runId}:thread`),
+        type: "thread.created",
+        payload: {
+          id: threadId,
+          projectId: acpProjectId,
+          title: "Limited",
+          createdBy: "agent",
+          creationSource: "mcp",
+          providerInstanceId: instanceId,
+          modelSelection: { instanceId, model: "default" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: null,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: at,
+          updatedAt: at,
+          archivedAt: null,
+          settledAt: null,
+          settledOverride: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      },
+      {
+        ...base,
+        id: EventId.make(`${runId}:provider-thread`),
+        type: "provider-thread.updated",
+        payload: {
+          id: providerThreadId,
+          driver,
+          providerInstanceId: instanceId,
+          providerSessionId: null,
+          appThreadId: threadId,
+          ownerNodeId: null,
+          nativeThreadRef: null,
+          nativeConversationHeadRef: null,
+          status: "idle",
+          firstRunOrdinal: 1,
+          lastRunOrdinal: 1,
+          handoffIds: [],
+          forkedFrom: null,
+          pendingBackgroundTasks: [],
+          contextUsage: null,
+          nativeMetadata: null,
+          goal: null,
+          createdAt: at,
+          updatedAt: at,
+        },
+      },
+      {
+        ...base,
+        id: EventId.make(`${runId}:run`),
+        type: "run.created",
+        payload: {
+          id: runId,
+          threadId,
+          ordinal: 1,
+          providerInstanceId: instanceId,
+          modelSelection: { instanceId, model: "default" },
+          providerThreadId,
+          userMessageId: MessageId.make(`${runId}:prompt`),
+          rootNodeId: null,
+          activeAttemptId: null,
+          status: "failed",
+          requestedAt: at,
+          startedAt: at,
+          completedAt: at,
+          checkpointId: null,
+          contextHandoffId: null,
+        },
+      },
+      {
+        ...base,
+        id: EventId.make(`${runId}:error`),
+        type: "turn-item.updated",
+        payload: {
+          id: TurnItemId.make(`error:${runId}`),
+          type: "error",
+          threadId,
+          runId,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 1,
+          status: "failed",
+          title: null,
+          startedAt: at,
+          completedAt: at,
+          updatedAt: at,
+          failure: {
+            class: "usage_limit",
+            message: "Claude API rate limit reached. Try again later.",
+            code: "api_error_429",
+            retryable: true,
+            resetAt: "2026-11-28T19:00:00.000Z",
+          },
+        },
+      },
+    ],
+  });
+});
+
+it.effect(
+  "a reset-credit RPC voids the instance's blocking failures only when the provider confirms a reset",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const instances = {
+        claudeAgent: ProviderDriverKind.make("claudeAgent"),
+        codex: ProviderDriverKind.make("codex"),
+      } as const;
+      for (const [instanceId, driver] of Object.entries(instances))
+        yield* seedUsageLimitFailure(ProviderInstanceId.make(instanceId), driver);
+      const outcomes: Record<string, "reset" | "nothingToReset"> = {};
+      const consumed: Array<string> = [];
+      const instanceFor = (instanceId: string) =>
+        ({
+          instanceId: ProviderInstanceId.make(instanceId),
+          driverKind: instances[instanceId as keyof typeof instances],
+          enabled: true,
+          snapshot: { getSnapshot: Effect.succeed({}), refreshUsage: Effect.void },
+          consumeResetCredit: () =>
+            Effect.sync(() => consumed.push(instanceId)).pipe(Effect.as(outcomes[instanceId]!)),
+        }) as unknown as ProviderInstance;
+      const services = Layer.mergeAll(
+        layerUnusedConfigRpcServices,
+        Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+        Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+        Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+        Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
+        Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+        Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+        Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getInstance: (instanceId) => Effect.succeed(instanceFor(instanceId)),
+        }),
+        ResetRedemptions.layer.pipe(Layer.provide(Layer.succeed(SqlClient.SqlClient, sql))),
+      );
+      const scopes = [AuthProvidersManageScope];
+      const client = yield* RpcTest.makeClient(resetCreditRpcs).pipe(
+        Effect.provide(
+          layerWsRpc(
+            {
+              sessionId: AuthSessionId.make("reset-credit-test"),
+              subject: "reset-credit-test",
+              method: "browser-session-cookie",
+              scopes,
+            },
+            {},
+            yield* ServerBrowser.ServerBrowser,
+            () => Effect.void,
+            { secretReferences: true },
+          ).pipe(Layer.provide(services), Layer.merge(RpcAuthorization.layer(scopes))),
+        ),
+      );
+      const voided = () =>
+        sql<{ turn_item_id: string; provider_instance_id: string; driver: string }>`
+          SELECT turn_item_id, provider_instance_id, driver FROM fork_prism_reset_voided_failures
+          ORDER BY provider_instance_id`;
+      yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe("2026-11-26T16:00:00Z")));
+      for (const instanceId of Object.keys(instances)) {
+        outcomes[instanceId] = "nothingToReset";
+        assert.deepEqual(
+          yield* client[WS_METHODS.providerConsumeResetCredit]({
+            instanceId: ProviderInstanceId.make(instanceId),
+          }),
+          { outcome: "nothingToReset" },
+        );
+      }
+      assert.deepEqual(yield* voided(), []);
+      // Told of a reset redeemed elsewhere: voids the same way and spends nothing here.
+      consumed.length = 0;
+      assert.deepEqual(
+        yield* client[WS_METHODS.providerClearRedeemedReset]({
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+        }),
+        { voided: 1, usage: "headroom" },
+      );
+      assert.deepEqual(consumed, []);
+      for (const instanceId of Object.keys(instances)) {
+        outcomes[instanceId] = "reset";
+        assert.deepEqual(
+          yield* client[WS_METHODS.providerConsumeResetCredit]({
+            instanceId: ProviderInstanceId.make(instanceId),
+          }),
+          { outcome: "reset" },
+        );
+      }
+      assert.deepEqual(yield* voided(), [
+        {
+          turn_item_id: "error:run:limited:claudeAgent",
+          provider_instance_id: "claudeAgent",
+          driver: "claudeAgent",
+        },
+        { turn_item_id: "error:run:limited:codex", provider_instance_id: "codex", driver: "codex" },
+      ]);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.fresh(layerConfigSources),
+          Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
+          Layer.mock(ServerBrowser.ServerBrowser)({}),
+          // Last, so the test reads the database the event sink writes.
+          EventSink.layer.pipe(Layer.provideMerge(acpStores)),
+        ),
+      ),
+    ),
+);
+
 const layerWorkflowRpcTest = Layer.mergeAll(
   Layer.fresh(layerConfigSources),
   Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
   Layer.mock(ServerBrowser.ServerBrowser)({}),
+);
+
+it.effect("launch RPC persists explicit purpose and keeps legacy launches unscoped", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const database = Layer.succeed(SqlClient.SqlClient, sql);
+    const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "default" };
+    const replay = ProviderReplayHarness.layerWithRegistry(
+      { name: "ws-launch-purpose" },
+      ProviderAdapterRegistry.layerFromAdapters([
+        {
+          instanceId: modelSelection.instanceId,
+          driver: ProviderDriverKind.make("codex"),
+          getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+          planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" as const }),
+          openSession: () => Effect.die("Launch admission fixture cannot open a provider session"),
+        } satisfies ProviderAdapter.ProviderAdapterV2["Service"],
+      ]),
+      { databaseLayer: database, runEffectWorker: false },
+    );
+    const projectId = ProjectId.make("project:ws-launch-purpose");
+    const launchServices = Layer.mergeAll(
+      replay,
+      IdAllocator.layer,
+      CommandReceiptStore.layer.pipe(Layer.provide(database)),
+      WorktreeSetupTracker.layer,
+      Layer.mock(BareLaunch.BareLaunch)({}),
+      Layer.mock(CheckpointStore.CheckpointStore)({
+        isGitRepository: () => Effect.succeed(false),
+      }),
+      Layer.mock(GitWorkflowService.GitWorkflowService)({
+        currentBranch: () => Effect.succeed(null),
+      }),
+      Layer.mock(TextGeneration.TextGeneration)({}),
+      ProviderRegistryMock.layer(),
+      Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({ get: () => Effect.succeed(null) }),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/unused",
+        folderForThread: () => Effect.succeedNone,
+      }),
+      Layer.mock(ProjectService.ProjectService)({
+        getById: () =>
+          Effect.succeedSome({
+            id: projectId,
+            title: "Purpose fixture",
+            workspaceRoot: "/workspace",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: "2026-11-25T00:00:00.000Z",
+            updatedAt: "2026-11-25T00:00:00.000Z",
+            deletedAt: null,
+          }),
+      }),
+    );
+    const services = Layer.mergeAll(
+      layerUnusedConfigRpcServices,
+      launchServices,
+      ThreadLaunchService.layer.pipe(
+        Layer.provide(Layer.mergeAll(layerUnusedConfigRpcServices, launchServices)),
+      ),
+      Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+      Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+      Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+      Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+      Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+      Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+      Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+      Layer.mock(ServerRuntimeStartup.ServerRuntimeStartup)({ enqueueCommand: (effect) => effect }),
+      Layer.mock(SessionStore.SessionStore)({
+        cookieName: "launch-purpose-test",
+        legacyCookieName: undefined,
+        getPerson: () => Effect.succeed(null),
+      }),
+      Layer.mock(AnalyticsService.AnalyticsService)({ record: () => Effect.succeed(false) }),
+    );
+    const scopes = [AuthOrchestrationOperateScope];
+    const rpc = layerWsRpc(
+      {
+        sessionId: AuthSessionId.make("launch-purpose-test"),
+        subject: "launch-purpose-test",
+        method: "browser-session-cookie",
+        scopes,
+      },
+      {},
+      yield* ServerBrowser.ServerBrowser,
+      () => Effect.void,
+      { secretReferences: true },
+    ).pipe(Layer.provideMerge(services), Layer.merge(RpcAuthorization.layer(scopes)));
+    yield* Effect.gen(function* () {
+      const client = yield* RpcTest.makeClient(WsRpcGroup);
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const reference = {
+        host: "github.com",
+        repository: "example/repo",
+        kind: "issue",
+        number: 377,
+      } as const;
+      for (const withPurpose of [false, true]) {
+        const threadId = ThreadId.make(`thread:launch-purpose:${withPurpose}`);
+        yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+          commandId: CommandId.make(`command:launch-purpose:${withPurpose}`),
+          threadId,
+          projectId,
+          title: "Purpose fixture",
+          modelSelection,
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          workspaceStrategy: { type: "root" },
+          initialMessage: { text: "First prompt", attachments: [] },
+          ...(withPurpose
+            ? { purposeIntent: { version: 1, intent: { type: "reference", reference } } }
+            : {}),
+        });
+        const projection = yield* projections.getThreadProjection(threadId);
+        assert.deepEqual(
+          projection.runs.map((run) => run.purpose),
+          [
+            withPurpose
+              ? {
+                  version: 1,
+                  scope: { type: "single", reference },
+                  provenance: { type: "declared" },
+                }
+              : {
+                  version: 1,
+                  scope: { type: "unscoped", reason: "legacy_no_intent" },
+                  provenance: { type: "legacy" },
+                },
+          ],
+        );
+      }
+    }).pipe(Effect.provide(rpc));
+  }).pipe(Effect.provide(layerWorkflowRpcTest)),
 );
 
 /** A client for the ACP Registry RPCs; `calls` records what reached the agent or the catalog. */
