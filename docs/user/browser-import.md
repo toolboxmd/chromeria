@@ -15,6 +15,13 @@ The Chrome login source is off by default on each machine. To enable continuous 
 - **Device-bound logins**: Some logins cannot move between devices. Google account sign-in on current macOS Chrome and other observed device-bound sites appear in **Settings → Browser** as **device-bound, not mirrored**. Sign in separately in each environment for those sites. Cookie convergence alone does not prove a working login.
 - **Partitioned cookies**: The continuous Chrome mirror keeps them.
 
+Anti-bot verdict cookies never move: `datadome`, `cf_clearance`, `__cf_bm`,
+`_abck`, `bm_sz`, `reese84`, and names starting with `_px` or `incap_ses_`. Sites
+issue them to the browser that passed their check, so a copy on another device
+can look like a mismatch and trigger a block. Mirroring, imports and copies skip
+them. Chromeria removes each one it copied before, once. Your Chrome keeps its
+own, and each agent browser keeps the ones it earns itself.
+
 ## Agents on other machines
 
 An agent on another linked environment can copy your session for a site from the environment that holds your logins, such as the one your desktop mirrors Chrome into. It copies one snapshot of that site's cookies into a browser profile on its own machine, then opens the site with that profile. If the site is still logged out, the agent signs in from your [rbw vault](#agent-sign-in-from-an-rbw-vault) instead.

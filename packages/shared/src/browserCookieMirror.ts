@@ -150,6 +150,19 @@ export function cdpCookieMirrorStore(
   };
 }
 
+const ANTI_BOT_VERDICT_NAMES = new Set([
+  "datadome",
+  "cf_clearance",
+  "__cf_bm",
+  "_abck",
+  "bm_sz",
+  "reese84",
+]);
+
+/** Anti-bot vendors bind these verdicts to the device that earned them, so they never travel. */
+export const isAntiBotVerdictCookie = (name: string) =>
+  ANTI_BOT_VERDICT_NAMES.has(name) || name.startsWith("_px") || name.startsWith("incap_ses_");
+
 export const mirrorCookieSignature = (cookie: MirrorCookie) =>
   JSON.stringify([
     cookie.value,

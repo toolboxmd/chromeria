@@ -62,7 +62,7 @@ to the environment's agent browser. To reuse logins from another browser:
   `preview_import_login`. The permission is separate from **Browser access**.
 
 See [Reuse browser logins](browser-import.md) for setup and limits, including
-logins that cannot move between devices. The agent's rbw login tool,
+logins that cannot move between devices and anti-bot cookies that never move. The agent's rbw login tool,
 `preview_fill_credential`, works only in agent-browser tabs. It refuses native
 desktop tabs. It fills only on https pages in the same registrable domain as one
 of the vault item's URIs, so `www.example.com` covers `portal.example.com`.

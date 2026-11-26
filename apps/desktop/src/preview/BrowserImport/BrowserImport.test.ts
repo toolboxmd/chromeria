@@ -331,11 +331,15 @@ describe("BrowserImport.writeCookies", () => {
             },
           },
         },
-        { cookies: [cookie, cookie], undecryptable: 0, undecryptableHosts: [] },
+        {
+          cookies: [cookie, { ...cookie, name: "datadome" }, cookie],
+          undecryptable: 0,
+          undecryptableHosts: [],
+        },
       );
 
       assert.deepEqual(events, ["set", "set", "flush"]);
-      assert.deepEqual(result, { imported: 2, skipped: 0, skippedDomains: [] });
+      assert.deepEqual(result, { imported: 2, skipped: 1, skippedDomains: [] });
     }),
   );
 });

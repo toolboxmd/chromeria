@@ -7,6 +7,7 @@ import {
 import {
   cdpCookieMirrorStore,
   cdpMirrorCookies,
+  isAntiBotVerdictCookie,
   mirrorCookieSignature,
 } from "@t3tools/shared/browserCookieMirror";
 
@@ -142,6 +143,8 @@ export class ServerCookieMirror {
         );
       const current = await read();
       const mutations = batch.mutations.filter((mutation) => {
+        // A desktop built before verdicts stopped travelling still sends them.
+        if (mutation.type === "set" && isAntiBotVerdictCookie(mutation.cookie.name)) return false;
         const key = cookieMirrorKey(mutation.type === "set" ? mutation.cookie : mutation.key);
         const last = mirrored.get(key);
         const changedHere =

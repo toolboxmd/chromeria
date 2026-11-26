@@ -151,5 +151,14 @@ describe("ServerCookieMirror", () => {
       renewed: ["shared", 2_200_000_000],
       own: ["agent-own", -1],
     });
+
+    jar.set("datadome", { ...jar.get("own")!, name: "datadome", value: "mirrored-earlier" });
+    await send([desktop("datadome", "desktop-verdict"), desktop("_px3", "desktop-verdict")]);
+    expect(state()).toMatchObject({ datadome: ["mirrored-earlier", -1] });
+    expect(jar.has("_px3")).toBe(false);
+    await send([
+      { type: "remove", key: { name: "datadome", domain: ".dash.example.test", path: "/" } },
+    ]);
+    expect(jar.has("datadome")).toBe(false);
   });
 });

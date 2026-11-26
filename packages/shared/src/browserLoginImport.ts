@@ -6,6 +6,8 @@ import {
   type MirrorCookie,
 } from "@t3tools/contracts";
 
+import { isAntiBotVerdictCookie } from "./browserCookieMirror.ts";
+
 /** The host's eTLD+1 under the public suffix list, or undefined for a suffix, IP or single label. */
 export type RegistrableDomain = (host: string) => string | undefined;
 
@@ -73,7 +75,8 @@ export const selectLoginCookies = (input: {
   for (const cookie of input.cookies) {
     if (!hosts.some((host) => cookieCoversHost(cookie, host, registrableDomain))) continue;
     if (cookie.partitionKey !== undefined) partitioned++;
-    else if (isGoogleCredential(cookie, registrableDomain)) deviceBound++;
+    else if (isGoogleCredential(cookie, registrableDomain) || isAntiBotVerdictCookie(cookie.name))
+      deviceBound++;
     else {
       cookies.push(cookie);
       bytes += cookieBytes(cookie);
@@ -119,6 +122,7 @@ export const planLoginImport = (input: {
       cookie.partitionKey !== undefined ||
       incoming.has(cookieMirrorKey(cookie)) ||
       isGoogleCredential(cookie, registrableDomain) ||
+      isAntiBotVerdictCookie(cookie.name) ||
       !hosts.some((host) => cookieCoversHost(cookie, host, registrableDomain))
     )
       continue;

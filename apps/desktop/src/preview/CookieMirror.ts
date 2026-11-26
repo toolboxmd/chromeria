@@ -11,6 +11,7 @@ import {
 import {
   applyMirrorMutations,
   diffMirrorCookies,
+  isAntiBotVerdictCookie,
   type CookieMirrorStore,
 } from "@t3tools/shared/browserCookieMirror";
 
@@ -289,11 +290,15 @@ export class CookieMirror {
         cookies: new Map<string, MirrorCookie>(),
       };
       this.chrome.set(sourceId, source);
-      const mutations: CookieMirrorMutation[] = diffMirrorCookies(
-        source.cookies,
-        snapshot.cookies,
-      ).filter((mutation) => mutation.type === "set");
-      const present = new Set(snapshot.identities.map((item) => cookieMirrorKey(item.key)));
+      const cookies = snapshot.cookies.filter((cookie) => !isAntiBotVerdictCookie(cookie.name));
+      const mutations: CookieMirrorMutation[] = diffMirrorCookies(source.cookies, cookies).filter(
+        (mutation) => mutation.type === "set",
+      );
+      const present = new Set(
+        snapshot.identities
+          .filter((item) => !isAntiBotVerdictCookie(item.key.name))
+          .map((item) => cookieMirrorKey(item.key)),
+      );
       for (const [key, previous] of source.managed) {
         const unresolved =
           previous.key.partitionKey &&
@@ -308,6 +313,7 @@ export class CookieMirror {
           // A lock alone does not distinguish startup cleanup from signing out.
           if (
             previous.persistent ||
+            isAntiBotVerdictCookie(previous.key.name) ||
             (snapshot.processIdentity !== undefined &&
               source.processIdentity === snapshot.processIdentity)
           ) {
@@ -319,7 +325,7 @@ export class CookieMirror {
         }
       }
       source.processIdentity = snapshot.processIdentity;
-      for (const cookie of snapshot.cookies) {
+      for (const cookie of cookies) {
         const key = cookieMirrorKey(cookie);
         source.managed.set(key, identity(cookie));
         source.removed.delete(key);
@@ -388,12 +394,17 @@ export class CookieMirror {
       .map((state) => ({
         profile: state.profile,
         mutations: [
-          ...[...state.cookies.values()].map((cookie): CookieMirrorMutation => ({
-            type: "set",
-            cookie,
-          })),
+          ...[...state.cookies.values()]
+            .filter((cookie) => !isAntiBotVerdictCookie(cookie.name))
+            .map((cookie): CookieMirrorMutation => ({ type: "set", cookie })),
           ...[...state.removed]
             .filter(([key]) => state.remoteManaged.has(key))
+            .map(([, key]): CookieMirrorMutation => ({ type: "remove", key })),
+          // Withdraw verdicts delivered before they stopped travelling; the ack ends this.
+          ...[...state.remoteManaged]
+            .filter(
+              ([key, cookie]) => isAntiBotVerdictCookie(cookie.name) && !state.removed.has(key),
+            )
             .map(([, key]): CookieMirrorMutation => ({ type: "remove", key })),
         ],
       }));
