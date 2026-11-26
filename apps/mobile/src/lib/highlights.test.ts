@@ -1,9 +1,44 @@
+import { Hct, SchemeTonalSpot, argbFromHex, hexFromArgb } from "@material/material-color-utilities";
 import { codeToTokens } from "@pierre/highlights";
 import { pierreDark, pierreLight } from "@pierre/highlights/themes";
+import { MOBILE_THEME_IDS } from "@t3tools/shared/themePalettes";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import { withReadableDarkPunctuation } from "../../scripts/generate-highlights.mts";
 import { resolveHighlightLanguage } from "./highlightLanguage";
 import { highlightCode, highlightCommand, tokenizeCode, type HighlightedLines } from "./highlights";
+import type { MaterialYouPalette } from "./materialYouPalette";
+import { materialYouPaletteToMobileThemeVariables } from "./materialYouTheme.android";
+import { promachosReplyCodeFence } from "./promachosCodeFence";
+import { codeFenceRenderer } from "../native/codeBlockMarkdown";
+import { getMobileThemeVariables } from "./mobileTheme";
+import { getMobileThemeRuntimeVariables } from "./mobileThemeVariables";
+
+const MATERIAL_YOU_ROLES = [
+  "primary",
+  "onPrimary",
+  "primaryContainer",
+  "onPrimaryContainer",
+  "inversePrimary",
+  "secondaryContainer",
+  "onSecondaryContainer",
+  "tertiary",
+  "tertiaryContainer",
+  "onTertiaryContainer",
+  "surface",
+  "onSurface",
+  "onSurfaceVariant",
+  "surfaceContainer",
+  "surfaceContainerHigh",
+  "surfaceContainerHighest",
+  "surfaceContainerLow",
+  "surfaceContainerLowest",
+  "errorContainer",
+  "onErrorContainer",
+  "outline",
+  "outlineVariant",
+  "scrim",
+] as const satisfies ReadonlyArray<keyof MaterialYouPalette>;
 
 vi.mock("react-native-nitro-modules", async () => {
   const { createWasmHighlightsModule } = await import("./highlights.testing");
@@ -24,7 +59,7 @@ describe("highlightCode", () => {
 
     for (const [scheme, theme] of [
       ["light", pierreLight],
-      ["dark", pierreDark],
+      ["dark", withReadableDarkPunctuation(pierreDark)],
     ] as const) {
       const expected = codeToTokens(code, { lang: "tsx", theme }).tokens.map((line) =>
         line.map((token) => ({
@@ -34,6 +69,90 @@ describe("highlightCode", () => {
         })),
       );
       expect(highlightCode(code, "tsx", scheme)).toEqual(expected);
+    }
+  });
+
+  it("draws dark punctuation at 4.5:1 on every dark code fence", () => {
+    const rgba = (color: string) => {
+      const css = /^rgba\((\d+), (\d+), (\d+), ([\d.]+)\)$/.exec(color);
+      if (css) return [...css.slice(1, 4).map(Number), Number(css[4])];
+      const [r, g, b, a = 255] = color
+        .slice(1)
+        .match(/.{2}/g)!
+        .map((channel) => Number.parseInt(channel, 16));
+      return [r!, g!, b!, a / 255];
+    };
+    const over = (overlay: string, base: string) => {
+      const [top, bottom] = [rgba(overlay), rgba(base)];
+      return [0, 1, 2].map((index) => top[index]! * top[3]! + bottom[index]! * (1 - top[3]!));
+    };
+    const luminance = (rgb: ReadonlyArray<number>) => {
+      const [r, g, b] = rgb.map((channel) => {
+        const c = channel / 255;
+        return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+    };
+    const contrast = (a: ReadonlyArray<number>, b: ReadonlyArray<number>) =>
+      (Math.max(luminance(a), luminance(b)) + 0.05) / (Math.min(luminance(a), luminance(b)) + 0.05);
+    const materialYou = (appearance: "light" | "dark") =>
+      ["#6750a4", "#9c4146", "#a3b08b", "#006a6a"].map((seed) => {
+        const scheme = new SchemeTonalSpot(
+          Hct.fromInt(argbFromHex(seed)),
+          appearance === "dark",
+          0,
+        );
+        const palette = Object.fromEntries(
+          MATERIAL_YOU_ROLES.map((role) => [role, `${hexFromArgb(scheme[role])}ff`]),
+        ) as Record<keyof MaterialYouPalette, string>;
+        return materialYouPaletteToMobileThemeVariables(
+          palette,
+          appearance,
+          getMobileThemeRuntimeVariables("material-you", appearance, "android"),
+        );
+      });
+    const themes = (appearance: "light" | "dark") => [
+      ...MOBILE_THEME_IDS.map((themeId) => getMobileThemeVariables(themeId, appearance)),
+      ...materialYou(appearance),
+    ];
+    // Light Promachos replies keep their fence; only the dark scheme's fences change.
+    for (const variables of themes("light")) {
+      expect(promachosReplyCodeFence(variables, "light")).toBe(variables["--color-md-code-bg"]);
+    }
+    // A Promachos user's bubble draws its code in the dark scheme in both appearances.
+    const fences = [
+      ...themes("dark").flatMap((variables) => [
+        over(variables["--color-md-code-bg"], variables["--color-thread-canvas"]),
+        rgba(promachosReplyCodeFence(variables, "dark")),
+        over(variables["--color-md-user-fence-bg"], variables["--color-user-bubble"]),
+      ]),
+      ...[...themes("dark"), ...themes("light")].map((variables) =>
+        rgba(variables["--color-promachos-outbound-fence"]),
+      ),
+    ];
+    // Only fences the app hands to @pierre/highlights; the rest are coloured natively.
+    const punctuation = (code: string, fence: string, marks: string) => {
+      const renderer = codeFenceRenderer(fence, false);
+      if (renderer.kind !== "highlight") throw new Error(`${fence} is not highlighted here`);
+      return highlightCode(code, renderer.language, "dark")
+        .flat()
+        .flatMap(({ content, color }) =>
+          [...content].filter((char) => marks.includes(char)).map((char) => ({ char, color })),
+        );
+    };
+    const cpp = punctuation("int main() { return 0; }", "cpp", "(){};");
+    const interpolation = punctuation('puts "#{name}"', "ruby", "#{}");
+
+    expect(cpp.map(({ char }) => char).join("")).toBe("(){;}");
+    expect(interpolation.map(({ char }) => char).join("")).toBe("#{}");
+    expect(new Set([...cpp, ...interpolation].map(({ color }) => color)).size).toBe(2);
+    for (const { color } of [...cpp, ...interpolation]) {
+      for (const fence of fences) {
+        expect(
+          contrast(rgba(color!), fence),
+          `${color} on ${fence.map(Math.round)}`,
+        ).toBeGreaterThanOrEqual(4.5);
+      }
     }
   });
 
