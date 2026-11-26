@@ -117,6 +117,11 @@ export default defineConfig({
     },
   },
   test: {
+    alias: {
+      "@t3tools/mobile-preview-stream": NodeURL.fileURLToPath(
+        new URL("./apps/mobile/src/features/browser/preview-stream.browser.ts", import.meta.url),
+      ),
+    },
     environment: "node",
     // Fixture subprocesses must not inherit the outer task runner’s cache policy.
     env: { VP_REMOTE_CACHE: "off", VP_REMOTE_CACHE_URL: "" },
@@ -359,6 +364,8 @@ export default defineConfig({
         files: [
           "packages/client-runtime/src/state/runtime.ts",
           "packages/client-runtime/src/state/vcsAction.ts",
+          // Fork (toolboxmd/chromeria#176): the Stop command's guard for the Spectrum bridge.
+          "packages/client-runtime/src/spectrumStop.ts",
         ],
         rules: {
           "t3code/no-rpc-permission-bypass": [
@@ -669,6 +676,7 @@ export default defineConfig({
           "apps/mobile/src/features/files/ThreadFilesRouteScreen.tsx",
           "apps/mobile/src/features/files/thread-file-navigator-pane.tsx",
           "apps/mobile/src/features/layout/nested-stacks.tsx",
+          "apps/mobile/src/features/promachos/PromachosConversationSwipe.tsx",
           "apps/mobile/src/features/review/ReviewSheet.tsx",
           "apps/mobile/src/features/review/useNativeReviewDiffBridge.ts",
           "apps/mobile/src/features/settings/SettingsEnvironmentsRouteScreen.tsx",

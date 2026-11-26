@@ -1,0 +1,71 @@
+import { threadOwner, type OrchestrationV2AppThread } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import { ForkCommitGuardRejected, type ForkCommitPlan } from "../childThreads/ForkCommitPlan.ts";
+import { retirementAdmission } from "../childThreads/retirement.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import { membersOf, type SpectrumState } from "./state.ts";
+import { insertSpectrum } from "./store.ts";
+
+/** Shells copy the caller's acknowledgements, so the commit requires the exact list that was read. */
+function sameAcknowledgements(
+  current: OrchestrationV2AppThread["forkResumedRetirements"],
+  read: OrchestrationV2AppThread["forkResumedRetirements"],
+): boolean {
+  const a = current ?? [];
+  const b = read ?? [];
+  return a.length === b.length && a.every((token, index) => token === b[index]);
+}
+
+/** Registration and lineage shells commit together; only fork SQL is written by this plan. */
+export function spectrumRegistrationPlan(
+  state: SpectrumState,
+  caller: OrchestrationV2AppThread,
+): ForkCommitPlan {
+  const threadId = state.threadId;
+  return {
+    guards: [
+      ...retirementAdmission({ threadId: caller.id }).guards,
+      Effect.gen(function* () {
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const current = yield* projections.getThread(caller.id);
+        if (
+          current.deletedAt !== null ||
+          current.projectId !== caller.projectId ||
+          current.runtimeMode !== caller.runtimeMode ||
+          current.interactionMode !== caller.interactionMode ||
+          current.linkOrigin?.sessionId !== caller.linkOrigin?.sessionId ||
+          !sameAcknowledgements(current.forkResumedRetirements, caller.forkResumedRetirements) ||
+          threadOwner(current) !== threadOwner(caller)
+        )
+          return yield* new ForkCommitGuardRejected({ threadId, kind: "state_conflict" });
+        if (state.callerRunId !== null) {
+          const records = yield* projections.getThreadRecords(caller.id, ["runs"]);
+          if (!records.runs.some((run) => run.id === state.callerRunId))
+            return yield* new ForkCommitGuardRejected({ threadId, kind: "state_conflict" });
+        }
+        for (const id of [threadId, ...membersOf(state).map((member) => member.threadId)]) {
+          const existing = yield* projections
+            .getThread(id)
+            .pipe(
+              Effect.asSome,
+              Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeedNone }),
+            );
+          if (Option.isSome(existing))
+            return yield* new ForkCommitGuardRejected({ threadId, kind: "state_conflict" });
+        }
+      }).pipe(
+        Effect.mapError((error) =>
+          error._tag === "ForkCommitGuardRejected"
+            ? error
+            : new ForkCommitGuardRejected({ threadId, kind: "storage_failure" }),
+        ),
+      ),
+    ],
+    mutations: [
+      insertSpectrum(state).pipe(
+        Effect.mapError(() => new ForkCommitGuardRejected({ threadId, kind: "storage_failure" })),
+      ),
+    ],
+  };
+}
