@@ -309,8 +309,8 @@ const make = Effect.gen(function* () {
         }
         const block = usageBlock(provider, failures, now);
         if (block !== undefined) {
-          // Credits cover only spent plan windows, never a recorded usage-limit failure, and
-          // are read only for a Color that could otherwise start.
+          // Credits cover only spent plan windows, never a recorded usage-limit failure. No read
+          // for an unavailable instance or a Color whose model the provider does not advertise.
           const mayUseCredits =
             !failures.some((f) => f.provider_instance_id === candidate.instanceId) &&
             provider.availability !== "unavailable" &&
