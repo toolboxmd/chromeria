@@ -38,7 +38,7 @@ A turn's diff shows only that turn's own edits, commits, and conflict fixes—ex
 ## Create, review, and merge pull requests
 
 - **Create**: Commit, push, and open PRs from a thread's Git actions. Configure AI-generated commit/PR writing style in **Settings → Source control & issues → Commits & pull requests** (**Repository conventions** or **Custom instructions**).
-- **Review**: Open **Pull requests** to inspect diffs, comments, checks, commits, and request reviewers. Draft line comments stay local until submitted. If new commits are pushed while you review, click **Load new commits** before merging or submitting.
+- **Review**: Open **Pull requests** to inspect diffs, comments, checks, commits, and request reviewers. Draft line comments stay local until submitted. If new commits are pushed while you review, click **Load new commits** before merging or submitting; until you do, a merge or review is refused and your review draft is kept. Merging from a thread's PR row or the list lands the head that row had when you confirmed. On GitHub, a merge from the PR panel or an agent's merge tool waits while a required check is still running, names a required check that failed or was cancelled, and never skips those checks through an administrator bypass.
 - **Saved views**: Save and update filter/sort setups under **Views → Save current view** (stored per device).
 - **Mark files viewed**: Check off files in the **Code** tab to collapse them (reopens as **Changed** on new pushes). Syncs natively with GitHub; stored on your T3 Code server for other hosts.
 - **Mobile**: Open **Pull requests** across environments (cached lists, details, guides, and diffs stay readable offline). Tap **Work on PR** to start a worktree thread on the PR's branch.
@@ -83,6 +83,109 @@ Open **Issues** from the sidebar utility row or **Open issues** in the command p
 - **Linear**: Connect an API key in **Settings → Source control & issues** and bind one or more teams per project (supports multiple Linear accounts). Agents file new issues in the first bound team unless another is named.
 - **Link to threads**: Click **Link to this thread** on an issue beside a thread (or let agents call `link_issue`) to track it in **Linked items**.
 - Remote issue writes require the `source-control:write` scope.
+
+### GitHub Issue status
+
+You can also switch to **Issues** from the PRs/Issues switch on the Pull Requests page. For GitHub, the list covers the repositories of your projects on every connected environment.
+
+Each Issue shows one status, worked out from GitHub and your threads; nothing is written to GitHub.
+The first that applies wins:
+
+| Status             | When                                                                |
+| ------------------ | ------------------------------------------------------------------- |
+| Done               | Closed as completed                                                 |
+| Not planned        | Closed as not planned or duplicate                                  |
+| In review          | An open pull request's head has a pending `review/independent` mark |
+| In progress        | A task branch or open pull request exists and a linked thread works |
+| Waiting for merge  | The review mark passed                                              |
+| Changes requested  | The review mark failed                                              |
+| Waiting for review | A pull request is open and ready for review (not a draft), unmarked |
+| Paused             | A task branch or draft pull request exists and nobody is working    |
+| Blocked            | An open Issue blocks it on GitHub                                   |
+| Discussion         | A thread is linked, with no branch or pull request                  |
+| To do              | Nothing is linked                                                   |
+
+The pull requests that count are the open ones that close the Issue (`Closes #N`) and the open
+ones linked to its linked threads, so a pull request into a branch other than the default one
+counts too. A task branch is a linked thread's branch named `<type>/<number>-<slug>`. Review marks
+count only when the GitHub account of a server that lists the Issue posted them. A thread counts
+as working while it or any of its subagent threads works, on any connected server.
+
+The list is grouped by status, with Done and Not planned collapsed. **Group by parent** shows the
+sub-Issue tree instead, including sub-Issues in repositories outside your projects, which are marked
+as such and open on GitHub. Search, sort and filter by status, whether a thread is linked,
+repository, labels, milestone and parent. Rows show their linked threads; select one to open it.
+Select an Issue to read it, see its linked threads and pull requests, comment, close or reopen it,
+or start a thread from it: the new thread opens in the matching project with the Issue in the
+composer, already linked. Selecting an Issue in a thread's **Linked items** panel opens it
+beside the thread. An Issue's pull requests and GitHub Issue links in chat open in the app: pull
+requests in the pull request panel, Issues beside the thread, and anything else as a normal link,
+following the **Open links in** setting. Cmd/Ctrl-click opens GitHub directly. While the list is open, the command palette searches it too. Anywhere,
+typing `#12`, `owner/repo#12` or an Issue URL in the command palette finds the threads linked to
+that Issue.
+A bare `#12` for an Issue the list has not loaded finds only threads linked by hand, by an agent,
+by starting from the Issue or by branch name, not through a pull request that closes it.
+
+Commenting on, closing or reopening an Issue needs the `source-control:write` permission, like
+pull request changes; standard pairings include it. A client paired without it can read Issues
+but not change them; give it the permission with a fresh pairing link, as described in
+[Manage or revoke access](./remote-access.md#manage-or-revoke-access).
+
+To link a thread by hand, open its **Linked items** panel, choose **Link** and enter the
+Issue's number or URL; the same panel removes a link, and a removed branch link stays removed.
+Agents can link and unlink their own thread with the `link_issue` and `unlink_issue` MCP tools.
+
+## Feature map
+
+The **Map** tab beside a thread draws the thread's project from `docs/map.md` on its GitHub default
+branch, and colours each part by what GitHub shows now: planned, working, broken or done. Open it
+from the add-tab menu (`A`). The tab rereads GitHub every minute while shown and when the window
+regains focus. If GitHub is unreachable, it keeps the last map and shows when it was read.
+
+The file holds one fenced `mermaid` flowchart. Declare each part once as `ID["Name"]`, and bind it
+on its own comment line, which GitHub ignores:
+
+```text
+C["Capture"]
+%% C: #7 PR #22
+SR["Serve report"]
+%% SR: PR #38 #15
+S["Session"]
+%% S: context
+B["Existing base capability"]
+%% B: live
+```
+
+A ref is `#7`, `PR #38`, `owner/repo#231` or `owner/repo PR #227`, on the project's GitHub host. The
+first ref is the primary ref, and it alone decides planned, working or done:
+
+| Primary ref | Planned                                     | Working                                                  | Done                                 |
+| ----------- | ------------------------------------------- | -------------------------------------------------------- | ------------------------------------ |
+| Issue       | Open, with no open closing PR and no thread | Open, with an open closing PR or a linked working thread | Closed as completed                  |
+| PR          | (never)                                     | Open, or merged into a branch other than the default     | Merged into its repository's default |
+
+A part is broken instead while any open Issue among its refs has the `bug` label, or while an open
+PR of the part (a PR ref, or a PR that closes its primary Issue) fails its checks. A merged
+component PR does not finish an open Issue: the part stays planned or working until GitHub closes
+the Issue. A primary ref closed as not planned, or closed unmerged, shows as cancelled. A ref that
+GitHub does not return, because it is private or deleted, shows as unavailable. If an open Issue
+has more labels or closing PRs than one GitHub page holds, a part they could break shows as
+incomplete instead of a state. A primary ref the map cannot read shows as unknown; the next ref
+never takes its place. `context` marks a part another project owns; it is drawn grey and never
+counted as missing. `live` marks an existing capability in the mapped project, asserted by the
+map author rather than inferred from GitHub. Live is distinct from Done and Context and is not
+counted as an untracked part. Live, context and refs cannot be combined; contradictory bindings
+appear under unreadable refs.
+
+On github.com, a map from `toolboxmd/chromeria` marks tracked parts with the Chromeria crystal
+in the accessible part list. This identifies Chromeria-tracked work, regardless of its status,
+rather than complete historical provenance. Live and context parts carry no crystal.
+
+A part that a thread is working on carries a thread icon; select it to open that thread. Select a
+part, or its row in the list under the drawing, to open its primary ref. The gaps list shows parts
+with no refs, Issues bound to more than one part, open Issues on no part (marked partial after the
+first 500), cancelled, unavailable or incomplete refs, ref lines that name no part, and refs the map
+cannot read.
 
 ## Troubleshooting
 

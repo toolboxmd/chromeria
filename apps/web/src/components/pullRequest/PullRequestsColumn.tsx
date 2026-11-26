@@ -15,6 +15,7 @@ import {
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
+import { ListModeToggle } from "../issues/ListModeToggle";
 import { PullRequestCompactFilterMenu } from "./PullRequestCompactFilterMenu";
 import type { PullRequestFilterOption } from "./PullRequestListFilters";
 import { INVOLVEMENT_TABS, resolveFilterOptions, STATE_TABS } from "./pullRequestListOptions";
@@ -224,6 +225,11 @@ export function PullRequestsColumn({
               </h1>
             </WorkspaceBreadcrumbItem>
           </WorkspaceBreadcrumb>
+        )}
+        {condensed ? null : (
+          <div className="[-webkit-app-region:no-drag]">
+            <ListModeToggle mode="pull-requests" />
+          </div>
         )}
         <div className="min-w-0 flex-1" />
         {condensed ? (
