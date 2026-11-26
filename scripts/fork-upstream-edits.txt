@@ -897,3 +897,10 @@ apps/server/src/provider/CodexTurnTokenUsage.ts
 apps/server/src/provider/TurnTokenUsage.test.ts
 packages/contracts/src/orchestrationV2.test.ts
 apps/server/src/orchestration-v2/testkit/fixtures/claude_idle_resume/output.ts
+apps/server/src/provider/codexUsageLimits.test.ts
+apps/server/src/provider/codexUsageLimits.ts
+packages/contracts/src/providerUsageLimits.ts
+packages/provider-core/src/server/snapshot.ts
+packages/provider-core/src/server/usageLimits.test.ts
+packages/provider-core/src/server/usageLimits.ts
+packages/shared/src/usageLimits.ts

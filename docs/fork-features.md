@@ -4120,3 +4120,34 @@ sources and reasons.
   "keywords": ["T3CODE_THREAD_ID", "38855", "34032"]
 }
 ```
+
+## codex-credit-continuation
+
+```json
+{
+  "id": "codex-credit-continuation",
+  "purpose": "Keep a Codex account with spendable credits eligible past its exhausted plan windows, and skip it once credits or spending run out (#1001). Ports upstream pingdotgg/t3code#36341 unchanged, plus one test row with the shape a live account returned. Drop this owner when upstream merges #36341 or an equivalent.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/1001",
+    "https://github.com/pingdotgg/t3code/issues/27792",
+    "https://github.com/pingdotgg/t3code/pull/36341"
+  ],
+  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...fix/1001-codex-credits"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/server/src/provider/codexUsageLimits.test.ts",
+    "apps/server/src/provider/codexUsageLimits.ts",
+    "packages/contracts/src/providerUsageLimits.ts",
+    "packages/provider-core/src/server/snapshot.ts",
+    "packages/provider-core/src/server/usageLimits.test.ts",
+    "packages/provider-core/src/server/usageLimits.ts",
+    "packages/shared/src/usageLimits.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+    "apps/server/src/provider/CodexProvider.ts",
+    "apps/server/src/prism/PrismService.ts"
+  ],
+  "keywords": ["36341", "27792", "continuesOnCredits", "hasCredits", "spendControlReached"]
+}
+```
