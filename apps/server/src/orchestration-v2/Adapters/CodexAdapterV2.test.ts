@@ -169,6 +169,20 @@ describe("CodexAdapterV2 assistant message streaming", () => {
 });
 
 describe("CodexAdapterV2 runtime policy", () => {
+  it.each([
+    [[{ type: "mcp", server: "t3-code" }], ["t3-code", "t3-code-direct"], "observed_clean"],
+    [[{ type: "mcp", server: "t3-code", tool: "web_read" }], ["t3-code-direct"], "observed_clean"],
+    [[], ["t3-code", "t3-code-direct"], "observed_unexpected"],
+    [[{ type: "mcp", server: "t3-code" }], ["t3-code", "user-server"], "observed_unexpected"],
+  ] as const)("judges bare MCP inventory %j against %j as %s", (additions, servers, status) => {
+    const evidence = CodexAdapterV2.codexBareMcpEvidence(
+      { additions, nativeHomeOwnerThreadId: ThreadId.make("bare-owner") },
+      servers,
+      "native-bare",
+    );
+    assert.equal(evidence.status, status);
+  });
+
   it.effect.each([undefined, false, true])(
     "selects native collaboration modes without prompt overrides with hasT3Mcp=%s",
     (hasT3Mcp) =>
