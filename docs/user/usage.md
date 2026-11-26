@@ -33,6 +33,7 @@ Usage aggregates history across Codex, Claude Code, Grok Build, OpenCode, Antigr
 
 - **In chat**: Run `/usage-limits` in the composer to view the current model's snapshot without running the agent, or enable **Settings → Appearance → Thread details → Usage limits** (web/desktop).
 - **Reset credits**: Click an account segment/row to inspect plan details and redeem banked Codex/Claude reset credits via **Use reset** (Claude resets unavailable on macOS Keychain logins).
+- **Reset on other machines**: After a reset, every other connected environment with the same account signed in (same email and workspace) is told, so Prism can route delegated work to that provider again. The result lists each one: cleared, still showing an exhausted window, no answer within 10 seconds, or not reached. An environment that received the call finishes clearing even if it answers late; one that could not be reached keeps its old limit until that limit's own reset time.
 - **Provider notes**:
   - **OpenCode**: OpenCode 2 servers with usage reporting show Go allowances and Console budgets for the connected workspace. Local servers can also report Go usage from a Go API key (`OPENCODE_API_KEY`).
   - **Cursor**: Reports monthly Auto + API quotas via `CURSOR_AUTH_TOKEN` or default-endpoint sign-in/`CURSOR_API_KEY`.
