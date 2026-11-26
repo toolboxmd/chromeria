@@ -25,6 +25,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { ProviderAdapterRegistryV2 } from "../orchestration-v2/ProviderAdapterRegistry.ts";
+import { initializeResetRedemptions } from "./ResetRedemptions.ts";
 
 /**
  * The model a launch outside any thread inherits: the project's effective default, as the
@@ -136,12 +137,40 @@ export function delegatedPrismRole(role?: OrchestratorMcpTaskRole): PrismDelegat
   }
 }
 
-function blocked(provider: ServerProvider, now: number) {
-  return (provider.usageLimits?.windows ?? []).some(
+function exhaustedWindow(provider: ServerProvider, now: number) {
+  return (provider.usageLimits?.windows ?? []).find(
     (window) =>
       window.usedPercent >= 100 &&
       (window.resetsAt === undefined || Date.parse(window.resetsAt) > now),
   );
+}
+
+interface UsageLimitFailure {
+  readonly provider_instance_id: string;
+  readonly run_id: string;
+  readonly failed_at: string;
+  readonly reset_at: string;
+}
+
+/** Why the provider cannot take work now, or undefined when it has headroom. */
+function usageBlock(
+  provider: ServerProvider,
+  failures: ReadonlyArray<UsageLimitFailure>,
+  now: number,
+) {
+  const window = exhaustedWindow(provider, now);
+  if (window)
+    return `${window.label} usage window is exhausted ${window.resetsAt ? `until ${window.resetsAt}` : "with no reported reset"}`;
+  const failure = failures
+    .filter((f) => f.provider_instance_id === provider.instanceId)
+    .reduce<UsageLimitFailure | undefined>(
+      (latest, f) =>
+        latest === undefined || Date.parse(f.reset_at) > Date.parse(latest.reset_at) ? f : latest,
+      undefined,
+    );
+  return failure
+    ? `run ${failure.run_id} hit a usage limit at ${failure.failed_at}, blocked until ${failure.reset_at}`
+    : undefined;
 }
 
 export class PrismService extends Context.Service<
@@ -184,6 +213,7 @@ function roleRun(kits: PrismRoleKits, role: PrismRole): number {
 }
 
 const make = Effect.gen(function* () {
+  yield* Effect.orDie(initializeResetRedemptions);
   const registry = yield* ProviderRegistry.ProviderRegistry;
   const settings = yield* ServerSettings.ServerSettingsService;
   const sql = yield* SqlClient.SqlClient;
@@ -252,9 +282,11 @@ const make = Effect.gen(function* () {
       const instant = yield* DateTime.now;
       const now = DateTime.toEpochMillis(instant);
       // Recovery preferences and stopping a child do not restore its subscription capacity.
-      // Use the executing run's instance, even if its thread has since changed Colors.
-      const limited = yield* sql<{ provider_instance_id: string }>`
-        SELECT DISTINCT r.provider_instance_id
+      // Use the executing run's instance, even if its thread has since changed Colors. A reset
+      // credit the owner redeemed on that instance after the failure voids it.
+      const failures = yield* sql<UsageLimitFailure>`
+        SELECT r.provider_instance_id, r.run_id, item.updated_at AS failed_at,
+          json_extract(item.payload_json, '$.failure.resetAt') AS reset_at
         FROM orchestration_v2_projection_turn_items item
         INNER JOIN orchestration_v2_projection_runs r ON r.run_id = item.run_id
         WHERE r.status = 'failed' AND r.provider_instance_id IS NOT NULL
@@ -269,6 +301,11 @@ const make = Effect.gen(function* () {
           )
           AND json_extract(item.payload_json, '$.failure.class') = 'usage_limit'
           AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(instant)})
+          AND NOT EXISTS (
+            SELECT 1 FROM fork_prism_reset_redemptions redemption
+            WHERE redemption.provider_instance_id = r.provider_instance_id
+              AND julianday(redemption.started_at) > julianday(item.updated_at)
+          )
       `.pipe(
         Effect.mapError(
           () =>
@@ -278,7 +315,6 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
-      const limitedInstances = new Set(limited.map((row) => row.provider_instance_id));
       const candidates =
         preferences.length > 0 ? preferences : input.inherited ? [input.inherited] : [];
       const count = Math.max(1, input.count ?? 1);
@@ -293,8 +329,9 @@ const make = Effect.gen(function* () {
           skip(candidate, provider ? "provider is disabled" : "provider is not configured");
           continue;
         }
-        if (limitedInstances.has(candidate.instanceId) || blocked(provider, now)) {
-          skip(candidate, "provider usage limit reached");
+        const block = usageBlock(provider, failures, now);
+        if (block !== undefined) {
+          skip(candidate, block);
           continue;
         }
         // A validator can re-probe stale unavailable snapshots before refusing the candidate.

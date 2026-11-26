@@ -4,9 +4,11 @@ import {
   EventId,
   NodeId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   TurnItemId,
   type OrchestrationV2ProviderFailure,
+  type ProviderConsumeResetCreditOutcome,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -16,7 +18,9 @@ import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Providers from "../provider/ProviderRegistry.ts";
 import { buildUnavailableProviderSnapshot } from "../provider/unavailableProviderSnapshot.ts";
 import * as Settings from "../serverSettings.ts";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Prism from "./PrismService.ts";
+import * as ResetRedemptions from "./ResetRedemptions.ts";
 import { errorFor, recoveryEvents, recoveryRun, recoveryTestLayer } from "./recovery.testkit.ts";
 
 const limited = recoveryRun.modelSelection;
@@ -63,7 +67,16 @@ const seed = Effect.fn("capacityTest.seed")(function* (
   yield* TestClock.setTime(DateTime.toEpochMillis(now));
 });
 
-const dependencies = (staleWindow = false, candidates = [limited, spare]) =>
+const dependencies = (
+  staleWindow = false,
+  candidates = [limited, spare],
+  window: { readonly id: string; readonly label: string; readonly usedPercent: number } = {
+    id: "session",
+    label: "Session",
+    usedPercent: 10,
+  },
+  driverKind = "codex",
+) =>
   Layer.mergeAll(
     recoveryTestLayer,
     Settings.layerTest({
@@ -78,7 +91,7 @@ const dependencies = (staleWindow = false, candidates = [limited, spare]) =>
     Layer.mock(Providers.ProviderRegistry)({
       getProviders: Effect.map(
         buildUnavailableProviderSnapshot({
-          driverKind: "codex",
+          driverKind: ProviderDriverKind.make(driverKind),
           instanceId: limited.instanceId,
           reason: "fixture",
         }),
@@ -98,15 +111,7 @@ const dependencies = (staleWindow = false, candidates = [limited, spare]) =>
               ? {
                   usageLimits: {
                     checkedAt: "2026-10-08T10:00:00Z",
-                    windows: [
-                      {
-                        id: "session",
-                        kind: "session" as const,
-                        label: "Session",
-                        usedPercent: 10,
-                        resetsAt: resetAt,
-                      },
-                    ],
+                    windows: [{ ...window, kind: "session" as const, resetsAt: resetAt }],
                   },
                 }
               : {}),
@@ -114,6 +119,24 @@ const dependencies = (staleWindow = false, candidates = [limited, spare]) =>
       ),
     }),
   );
+
+const withRedemptions = (deps: ReturnType<typeof dependencies>) =>
+  Layer.mergeAll(
+    deps,
+    Prism.layer.pipe(Layer.provide(deps)),
+    ResetRedemptions.layer.pipe(Layer.provide(deps)),
+  );
+
+/** A reset redeemed on `instanceId` that started at `at`, with the provider's `outcome`. */
+const redeemAt = Effect.fn("capacityTest.redeemAt")(function* (
+  instanceId: ProviderInstanceId,
+  at: string,
+  outcome: ProviderConsumeResetCreditOutcome = "reset",
+) {
+  yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(at)));
+  yield* (yield* ResetRedemptions.ResetRedemptions).redeem(instanceId, Effect.succeed(outcome));
+  yield* TestClock.setTime(DateTime.toEpochMillis(now));
+});
 
 const resolve = (role: "worker" | "computer-use" = "worker") =>
   Effect.flatMap(Prism.PrismService, (prism) => prism.resolve({ projectId, role, lane: "hard" }));
@@ -216,5 +239,122 @@ describe("Prism capacity from durable run failures", () => {
       });
       assert.deepStrictEqual((yield* resolve()).modelSelection, limited);
     }).pipe(Effect.provide(Layer.mergeAll(deps, Prism.layer.pipe(Layer.provide(deps)))));
+  });
+  it.effect("a reset redeemed after a failure voids it on that instance only", () => {
+    const deps = dependencies(false, [limited]);
+    return Effect.gen(function* () {
+      yield* seed();
+      yield* redeemAt(spare.instanceId, "2026-10-08T10:30:00Z");
+      assert.strictEqual((yield* Effect.flip(resolve())).code, "provider_unavailable");
+      yield* redeemAt(limited.instanceId, "2026-10-08T10:30:00Z");
+      assert.deepStrictEqual((yield* resolve()).modelSelection, limited);
+    }).pipe(Effect.provide(withRedemptions(deps)));
+  });
+
+  it.effect.each([
+    { case: "before the failure", at: "2026-10-08T10:00:30Z" },
+    // The failure was recorded at 10:01:00.000Z; the comparison is strict.
+    { case: "at the failure's instant", at: "2026-10-08T10:01:00.000+00:00" },
+  ])("keeps a failure recorded after a reset redeemed $case", ({ at }) => {
+    const deps = dependencies(false, [limited]);
+    return Effect.gen(function* () {
+      yield* redeemAt(limited.instanceId, at);
+      yield* seed();
+      const result = yield* Effect.flip(resolve());
+      assert.strictEqual(
+        result.message,
+        "No eligible model with usage headroom for this Prism role and lane. Skipped: codex/fixed: run run:original hit a usage limit at 2026-10-08T10:01:00.000Z, blocked until 2026-10-08T12:00:00Z.",
+      );
+    }).pipe(Effect.provide(withRedemptions(deps)));
+  });
+
+  it.effect("keeps a failure recorded while the reset is being confirmed", () => {
+    const deps = dependencies(false, [limited]);
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe("2026-10-08T10:00:30Z")));
+      const redemptions = yield* ResetRedemptions.ResetRedemptions;
+      yield* redemptions.redeem(limited.instanceId, seed().pipe(Effect.as("reset" as const)));
+      assert.strictEqual((yield* Effect.flip(resolve())).code, "provider_unavailable");
+    }).pipe(Effect.provide(withRedemptions(deps)));
+  });
+
+  it.effect.each(["nothingToReset", "noCredit", "alreadyRedeemed"] as const)(
+    "records nothing for a %s outcome",
+    (outcome) => {
+      const deps = dependencies(false, [limited]);
+      return Effect.gen(function* () {
+        yield* seed();
+        yield* redeemAt(limited.instanceId, "2026-10-08T10:30:00Z", outcome);
+        assert.strictEqual((yield* Effect.flip(resolve())).code, "provider_unavailable");
+        const rows =
+          yield* (yield* SqlClient.SqlClient)`SELECT * FROM fork_prism_reset_redemptions`;
+        assert.strictEqual(rows.length, 0);
+      }).pipe(Effect.provide(withRedemptions(deps)));
+    },
+  );
+
+  it.effect("still skips a voided provider whose usage window is exhausted", () => {
+    const deps = dependencies(true, [limited], {
+      id: "session",
+      label: "Session",
+      usedPercent: 100,
+    });
+    return Effect.gen(function* () {
+      yield* seed();
+      yield* redeemAt(limited.instanceId, "2026-10-08T10:30:00Z");
+      const result = yield* Effect.flip(resolve());
+      assert.strictEqual(
+        result.message,
+        "No eligible model with usage headroom for this Prism role and lane. Skipped: codex/fixed: Session usage window is exhausted until 2026-10-08T12:00:00Z.",
+      );
+    }).pipe(Effect.provide(withRedemptions(deps)));
+  });
+
+  it.effect("skips Cursor when only its Overall window is exhausted", () => {
+    const deps = dependencies(
+      true,
+      [limited],
+      { id: "totalPercentUsed", label: "Overall", usedPercent: 100 },
+      "cursor",
+    );
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(DateTime.toEpochMillis(now));
+      const result = yield* Effect.flip(resolve());
+      assert.strictEqual(
+        result.message,
+        "No eligible model with usage headroom for this Prism role and lane. Skipped: codex/fixed: Overall usage window is exhausted until 2026-10-08T12:00:00Z.",
+      );
+    }).pipe(Effect.provide(withRedemptions(deps)));
+  });
+
+  it.effect("keeps a recorded reset across a fresh service on the same database", () => {
+    const deps = dependencies(false, [limited]);
+    return Effect.gen(function* () {
+      yield* seed();
+      // A restart builds the service again over the same database.
+      const database = Layer.succeed(SqlClient.SqlClient, yield* SqlClient.SqlClient);
+      const restarted = () => Layer.fresh(ResetRedemptions.layer.pipe(Layer.provide(database)));
+      yield* redeemAt(limited.instanceId, "2026-10-08T10:30:00Z").pipe(Effect.provide(restarted()));
+      yield* Effect.provide(Effect.void, restarted());
+      assert.deepStrictEqual((yield* resolve()).modelSelection, limited);
+    }).pipe(Effect.provide(Layer.mergeAll(deps, Prism.layer.pipe(Layer.provide(deps)))));
+  });
+
+  it.effect("keeps the block and the reset's success when the record cannot be written", () => {
+    const deps = dependencies(false, [limited]);
+    return Effect.gen(function* () {
+      yield* seed();
+      const sql = yield* SqlClient.SqlClient;
+      const redemptions = yield* ResetRedemptions.ResetRedemptions;
+      yield* sql`DROP TABLE fork_prism_reset_redemptions`;
+      yield* sql`CREATE TABLE fork_prism_reset_redemptions (provider_instance_id TEXT PRIMARY KEY)`;
+      assert.strictEqual(
+        yield* redemptions.redeem(limited.instanceId, Effect.succeed("reset" as const)),
+        "reset",
+      );
+      yield* sql`DROP TABLE fork_prism_reset_redemptions`;
+      yield* ResetRedemptions.initializeResetRedemptions;
+      assert.strictEqual((yield* Effect.flip(resolve())).code, "provider_unavailable");
+    }).pipe(Effect.provide(withRedemptions(deps)));
   });
 });

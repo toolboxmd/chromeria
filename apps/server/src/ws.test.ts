@@ -124,6 +124,7 @@ import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts
 import * as ProviderAuthService from "./provider/ProviderAuthService.ts";
 import * as AcpRegistrySessions from "./provider/AcpRegistrySessions.ts";
 import * as ProviderInstanceRegistry from "./provider/ProviderInstanceRegistry.ts";
+import * as ResetRedemptions from "./prism/ResetRedemptions.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import * as ProviderRegistry from "./provider/ProviderRegistry.ts";
@@ -853,6 +854,7 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
 
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
+  Layer.mock(ResetRedemptions.ResetRedemptions)({}),
   Layer.mock(DocumentText.DocumentText)({}),
   Layer.mock(ServerSecretStore.ServerSecretStore)({}),
   Layer.mock(SecretCheck.SecretCheck)({}),
@@ -3027,6 +3029,100 @@ const makeWorkflowClient = Effect.fn("test.makeWorkflowClient")(function* (
     ),
   );
 });
+const resetCreditRpcs = WsRpcGroup.omit(
+  ...[...WsRpcGroup.requests.keys()].filter(
+    (
+      tag,
+    ): tag is Exclude<
+      keyof typeof RpcAuthorization.RPC_REQUIRED_SCOPES,
+      "provider.consumeResetCredit"
+    > => tag !== WS_METHODS.providerConsumeResetCredit,
+  ),
+);
+
+it.effect(
+  "a reset-credit RPC records the redemption's start only when the provider confirms a reset",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const outcomes: Record<string, "reset" | "nothingToReset"> = {};
+      const instanceFor = (instanceId: string) =>
+        ({
+          instanceId: ProviderInstanceId.make(instanceId),
+          enabled: true,
+          consumeResetCredit: () =>
+            // The provider answers after the clock moved on; the record keeps the start.
+            TestClock.adjust("5 seconds").pipe(Effect.as(outcomes[instanceId]!)),
+        }) as unknown as ProviderInstance;
+      const services = Layer.mergeAll(
+        layerUnusedConfigRpcServices,
+        Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+        Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+        Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+        Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/unused" }),
+        Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
+        Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+        Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getInstance: (instanceId) => Effect.succeed(instanceFor(instanceId)),
+        }),
+        ResetRedemptions.layer.pipe(Layer.provide(Layer.succeed(SqlClient.SqlClient, sql))),
+      );
+      const scopes = [AuthProvidersManageScope];
+      const client = yield* RpcTest.makeClient(resetCreditRpcs).pipe(
+        Effect.provide(
+          layerWsRpc(
+            {
+              sessionId: AuthSessionId.make("reset-credit-test"),
+              subject: "reset-credit-test",
+              method: "browser-session-cookie",
+              scopes,
+            },
+            {},
+            yield* ServerBrowser.ServerBrowser,
+            () => Effect.void,
+            { secretReferences: true },
+          ).pipe(Layer.provide(services), Layer.merge(RpcAuthorization.layer(scopes))),
+        ),
+      );
+      const recorded = () =>
+        sql<{ provider_instance_id: string; started_at: string }>`
+        SELECT provider_instance_id, started_at FROM fork_prism_reset_redemptions
+        ORDER BY provider_instance_id`;
+      yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe("2026-11-26T16:00:00Z")));
+      for (const instanceId of ["claudeAgent", "codex"]) {
+        outcomes[instanceId] = "nothingToReset";
+        const answer = yield* client[WS_METHODS.providerConsumeResetCredit]({
+          instanceId: ProviderInstanceId.make(instanceId),
+        });
+        assert.deepEqual(answer, { outcome: "nothingToReset" });
+      }
+      assert.deepEqual(yield* recorded(), []);
+      for (const instanceId of ["claudeAgent", "codex"]) {
+        outcomes[instanceId] = "reset";
+        const answer = yield* client[WS_METHODS.providerConsumeResetCredit]({
+          instanceId: ProviderInstanceId.make(instanceId),
+        });
+        assert.deepEqual(answer, { outcome: "reset" });
+      }
+      assert.deepEqual(yield* recorded(), [
+        { provider_instance_id: "claudeAgent", started_at: "2026-11-26T16:00:10.000Z" },
+        { provider_instance_id: "codex", started_at: "2026-11-26T16:00:15.000Z" },
+      ]);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          SqlitePersistence.layerMemory,
+          Layer.fresh(layerConfigSources),
+          Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
+          Layer.mock(ServerBrowser.ServerBrowser)({}),
+        ),
+      ),
+    ),
+);
+
 const layerWorkflowRpcTest = Layer.mergeAll(
   Layer.fresh(layerConfigSources),
   Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),

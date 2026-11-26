@@ -1250,11 +1250,13 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "https://github.com/toolboxmd/chromeria/issues/169",
     "https://github.com/toolboxmd/chromeria/issues/210",
     "https://github.com/toolboxmd/chromeria/issues/424",
-    "https://github.com/toolboxmd/chromeria/issues/579"
+    "https://github.com/toolboxmd/chromeria/issues/579",
+    "https://github.com/toolboxmd/chromeria/issues/1001"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/183",
-    "https://github.com/toolboxmd/chromeria/pull/580"
+    "https://github.com/toolboxmd/chromeria/pull/580",
+    "https://github.com/toolboxmd/chromeria/pull/1002"
   ],
   "newFiles": [
     "packages/provider-core/src/server/failure.network-recovery.test.ts",
@@ -1276,6 +1278,7 @@ Child creation paths are owned by child-threads and shared with thread-people.
     "apps/server/src/prism/RecoverySettings.test.ts",
     "apps/server/src/prism/RecoveryStore.test.ts",
     "apps/server/src/prism/RecoveryStore.ts",
+    "apps/server/src/prism/ResetRedemptions.ts",
     "apps/server/src/prism/recovery.testkit.ts",
     "apps/server/src/prism/recoveryAdmission.test.ts",
     "apps/server/src/prism/recoveryAdmission.ts",
