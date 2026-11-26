@@ -2233,15 +2233,23 @@ const make = Effect.gen(function* () {
     );
   });
 
-  // grantPermissions would deny every other permission, and pages would read them all as
-  // "denied", which no person's browser shows. Only clipboard-write is granted. Chrome drops
-  // an override when the session that set it detaches, so it is set on a session that lives
-  // as long as the context: the browser's own, or a persistent profile's reserved page.
-  const grantedContexts = new WeakSet<BrowserContext>();
+  // Only clipboard-write is granted: grantPermissions would show every other one as "denied".
+  // Chrome drops an override when its session detaches, so it is set on a session as long-lived
+  // as the context. Tabs opening together share one grant; a failed grant is retried.
+  const contextGrants = new WeakMap<BrowserContext, Promise<void>>();
   const browserSessions = new WeakMap<object, Promise<CDPSession>>();
-  const grantClipboardWrite = async (context: BrowserContext, cdp: CDPSession) => {
-    if (grantedContexts.has(context)) return;
-    grantedContexts.add(context);
+  const grantClipboardWrite = (context: BrowserContext, cdp: CDPSession): Promise<void> => {
+    let grant = contextGrants.get(context);
+    if (!grant) {
+      grant = setClipboardWrite(context, cdp);
+      contextGrants.set(context, grant);
+      grant.catch(() => {
+        if (contextGrants.get(context) === grant) contextGrants.delete(context);
+      });
+    }
+    return grant;
+  };
+  const setClipboardWrite = async (context: BrowserContext, cdp: CDPSession) => {
     const browser = context.browser();
     const permission = { permission: { name: "clipboard-write" }, setting: "granted" } as const;
     if (browser) {
@@ -2250,6 +2258,10 @@ const make = Effect.gen(function* () {
       if (!session) {
         session = browser.newBrowserCDPSession();
         browserSessions.set(browser, session);
+        const created = session;
+        created.catch(() => {
+          if (browserSessions.get(browser) === created) browserSessions.delete(browser);
+        });
       }
       await (
         await session

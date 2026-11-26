@@ -3236,6 +3236,50 @@ it.live("clipboard-write stays granted in a tab after another tab of its profile
   ).pipe(Effect.provide(layer)),
 );
 
+it.live(
+  "a failed clipboard-write grant is retried, and tabs opening together share one grant",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const chromiumBrowser = yield* Effect.acquireRelease(
+          Effect.promise(() => chromium.launch({ headless: true })),
+          (launched) => Effect.promise(() => launched.close()),
+        );
+        const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+        realContextOverride = context;
+        const realSession = chromiumBrowser.newBrowserCDPSession.bind(chromiumBrowser);
+        let sessions = 0;
+        chromiumBrowser.newBrowserCDPSession = async () => {
+          sessions++;
+          if (sessions === 1) throw new Error("no browser session");
+          return realSession();
+        };
+        const broker = yield* Broker.PreviewAutomationBroker;
+        const open = () =>
+          broker.invoke<PreviewAutomationStatus>({
+            scope,
+            operation: "open",
+            input: { reuseExistingTab: false, show: false, profileId: "default" },
+          });
+        const state = (tabId: PreviewTabId) =>
+          broker.invoke({
+            scope,
+            operation: "evaluate",
+            input: {
+              expression:
+                "navigator.permissions.query({ name: 'clipboard-write' }).then((s) => s.state)",
+            },
+            tabId,
+          });
+        expect(yield* Effect.exit(open())).toMatchObject({ _tag: "Failure" });
+        const [first, second] = yield* Effect.all([open(), open()], { concurrency: 2 });
+        expect(sessions).toBe(2);
+        expect(yield* state(PreviewTabId.make(first.tabId!))).toBe("granted");
+        expect(yield* state(PreviewTabId.make(second.tabId!))).toBe("granted");
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
 it.live("a relayed select press reaches page handlers, and a page can keep its own press", () =>
   Effect.scoped(
     Effect.gen(function* () {
