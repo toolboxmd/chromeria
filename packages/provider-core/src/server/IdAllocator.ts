@@ -276,14 +276,31 @@ const DELEGATED_TASK_THREAD_PREFIX = joinId("thread", "delegated-task", "");
 export const isDelegatedTaskThread = (threadId: ThreadId): boolean =>
   threadId.startsWith(DELEGATED_TASK_THREAD_PREFIX);
 
+const MAX_ENCODED_THREAD_ID = 256;
+
+/**
+ * Thread ids are route params, and the hosted relay rejects params over 512 characters.
+ * An id that fits stays verbatim; a longer one becomes `${prefix}sha256:<hex>`, which the
+ * caller's verbatim form must never produce.
+ */
+export const boundedThreadId = (prefix: string, rest: string): ThreadId => {
+  const verbatim = `${prefix}${rest}`;
+  return ThreadId.make(
+    encodeURIComponent(verbatim).length <= MAX_ENCODED_THREAD_ID
+      ? verbatim
+      : `${prefix}sha256:${NodeCrypto.createHash("sha256").update(rest).digest("hex")}`,
+  );
+};
+
 export const derive: IdAllocatorV2Derive = {
   providerSession: (input) =>
     ProviderSessionId.make(
       joinId("provider-session", "provider-instance", input.providerInstanceId, "shared"),
     ),
   delegatedTaskNode: (input) => NodeId.make(joinId("node", "delegated-task", input.commandId)),
+  // The encoded command id never contains ":", so it cannot equal the digest form.
   delegatedTaskThread: (input) =>
-    ThreadId.make(`${DELEGATED_TASK_THREAD_PREFIX}${encodePart(input.commandId)}`),
+    boundedThreadId(DELEGATED_TASK_THREAD_PREFIX, encodePart(input.commandId)),
   delegatedTaskMessage: (input) =>
     MessageId.make(joinId("message", "delegated-task", input.commandId)),
   delegatedTaskTurnItem: (input) =>
