@@ -2,13 +2,16 @@
 // Scripted answers to the Issues view's paged GitHub reads; the DOM lib types the page code.
 import type { Browser } from "@e2e-dev/web";
 
-/** One answer to a page read: its Issue numbers and where the search carries on, or a failure. */
-interface IssuePageAnswer {
+/**
+ * One answer to a page read: its Issue numbers and where the search carries on, or a failure.
+ * A type alias, not an interface: only that passes as the init script's JSON argument.
+ */
+type IssuePageAnswer = {
   issues: Array<number>;
   next?: string;
   /** `rpc` fails the read itself; `github` answers it with GitHub's refusal inside the result. */
   failure?: "rpc" | "github";
-}
+};
 
 /**
  * Answers every `githubIssues.list` read in the page: `plan.first` for a listing and
