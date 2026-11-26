@@ -110,7 +110,7 @@ import { openCodeCommandFailed, openCodeToolOutput, openCodeToolTurnItem } from 
 export const OPENCODE_PROVIDER = ProviderDriverKind.make("opencode");
 
 // Tools named by a bare launch stay listed upfront: its credential hides tool_search.
-export function t3McpHeaders(authorization: string, bare: ThreadBare | undefined) {
+function t3McpHeaders(authorization: string, bare: ThreadBare | undefined) {
   return bareT3ToolNames(bare) === undefined
     ? { Authorization: authorization, [MCP_TOOL_EXPOSURE_HEADER]: "deferred" }
     : { Authorization: authorization };
