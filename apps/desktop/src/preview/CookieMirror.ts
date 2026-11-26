@@ -217,7 +217,18 @@ export class CookieMirror {
       if (mutation.type === "set")
         partition.chromeManaged.set(keyOfMutation(mutation), identity(mutation.cookie).key);
     await this.save();
-    await partition.store.apply(mutations);
+    // Each withdrawal is forgotten once applied, so a failed batch retries only the rest.
+    const withdrawals = mutations.filter(
+      (mutation) => mutation.type === "remove" && isAntiBotVerdictCookie(mutation.key.name),
+    );
+    for (const withdrawal of withdrawals) {
+      await partition.store.apply([withdrawal]);
+      partition.chromeManaged.delete(keyOfMutation(withdrawal));
+      partition.pending.delete(keyOfMutation(withdrawal));
+      this.record(partition, [withdrawal]);
+      await this.save();
+    }
+    await partition.store.apply(mutations.filter((mutation) => !withdrawals.includes(mutation)));
     for (const mutation of mutations)
       if (mutation.type === "remove") partition.chromeManaged.delete(keyOfMutation(mutation));
     this.record(partition, mutations);

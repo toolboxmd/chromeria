@@ -400,6 +400,45 @@ describe("one-way mirror service seam", () => {
     expect(mirror.metadata().partitions[0]?.chromeManaged).toEqual([]);
   });
 
+  it("retries only the verdict withdrawals a failed batch did not apply", async () => {
+    const keyOf = (name: string) => ({ name, domain: ".shop.example.test", path: "/" });
+    const verdict = (name: string, value: string) => cookie(value, keyOf(name));
+    const desktop = store([
+      verdict("datadome", "chrome-verdict"),
+      verdict("cf_clearance", "chrome-verdict"),
+    ]);
+    const mirror = new CookieMirror({
+      metadata: {
+        version: 1,
+        mappings: [],
+        chrome: [{ source: "chrome-default", profileId: profile.id, managed: [], removed: [] }],
+        partitions: [
+          {
+            id: "partition",
+            environmentId: "env",
+            profile,
+            managed: [],
+            chromeManaged: [keyOf("datadome"), keyOf("cf_clearance")],
+            remoteManaged: [],
+            removed: [],
+          },
+        ],
+      },
+    });
+    const apply = desktop.apply.getMockImplementation()!;
+    desktop.apply
+      .mockImplementationOnce(apply)
+      .mockRejectedValueOnce(new Error("synthetic write failure"));
+    await expect(mirror.addPartition("partition", "env", profile, desktop)).rejects.toThrow();
+    // The person passes a check in the desktop tab before the retry.
+    expect(desktop.cookies.has(cookieMirrorKey(keyOf("datadome")))).toBe(false);
+    const earned = verdict("datadome", "earned-here");
+    desktop.cookies.set(cookieMirrorKey(earned), earned);
+    await mirror.observeDesktop("partition");
+    expect([...desktop.cookies.values()]).toEqual([earned]);
+    expect(mirror.metadata().partitions[0]?.chromeManaged).toEqual([]);
+  });
+
   it("keeps profile accounts and both partition-key fields distinct on exact removal", async () => {
     const first = store();
     const second = store();

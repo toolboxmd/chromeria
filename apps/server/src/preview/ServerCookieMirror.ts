@@ -168,11 +168,20 @@ export class ServerCookieMirror {
           (mutation.type === "set" && mirrorCookieSignature(mutation.cookie) !== last.sent)
         );
       });
-      await attached.store.apply(mutations);
-      // Marked only once applied, so a failed delivery is retried.
-      for (const mutation of mutations)
-        if (mutation.type === "remove" && isAntiBotVerdictCookie(mutation.key.name))
-          withdrawn.add(cookieMirrorKey(mutation.key));
+      // Each withdrawal is marked once it is applied, so a failed delivery retries only
+      // the ones that did not happen.
+      const withdrawals = mutations.flatMap((mutation) =>
+        mutation.type === "remove" && isAntiBotVerdictCookie(mutation.key.name) ? [mutation] : [],
+      );
+      for (const withdrawal of withdrawals) {
+        await attached.store.apply([withdrawal]);
+        withdrawn.add(cookieMirrorKey(withdrawal.key));
+      }
+      await attached.store.apply(
+        mutations.filter(
+          (mutation) => !(withdrawals as ReadonlyArray<typeof mutation>).includes(mutation),
+        ),
+      );
       const stored = mutations.length > 0 ? await read() : current;
       for (const mutation of mutations)
         if (mutation.type === "set") {
