@@ -1,3 +1,7 @@
+import { RemoteSecretHandle } from "./remoteSecret.ts";
+import { McpManualRunReceipt } from "./mcpRequest.ts";
+import { BareLaunchRequest } from "./bareLaunch.ts";
+import { SavedPurposeIntent } from "./executionPurpose.ts";
 import * as Schema from "effect/Schema";
 
 import {
@@ -12,11 +16,13 @@ import {
 } from "./baseSchemas.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import {
+  OrchestrationV2LinkOrigin,
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
   OrchestrationV2ThreadLaunchWorkspaceStrategy,
 } from "./orchestrationV2.ts";
 import { ProviderInteractionMode, RuntimeMode } from "./providerPolicy.ts";
+import * as Fork from "./scheduledTaskChecks.ts";
 
 const TimeOfDay = TrimmedNonEmptyString.check(
   Schema.isPattern(/^([01]?\d|2[0-3]):([0-5]\d)$/),
@@ -43,7 +49,8 @@ const ScheduledTaskFixedTimeSchedule = Schema.Struct({
       description: "Default: every day.",
     }),
   ),
-});
+  ...Fork.ScheduledTaskFixedTimeForkFields,
+}).check(Fork.fixedTimeForkCheck);
 
 const ISO_WITH_OFFSET =
   /^(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3]):[0-5]\d(:[0-5]\d(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
@@ -171,13 +178,24 @@ const ScheduledTaskUpsertWebhookSchedule = Schema.Struct({
     Schema.NullOr(
       Schema.Struct({
         ...ScheduledTaskWebhookSignatureFields,
+        secretRequest: Schema.optional(RemoteSecretHandle).annotate({
+          description:
+            "Remote request_secret handle for this destination/project. schedule_task only, consumed atomically on first acceptance; cannot be combined with secret or secretRef.",
+        }),
         secret: Schema.optional(TrimmedNonEmptyString).annotate({
           description: "Default: stored secret.",
         }),
         secretRef: Schema.optional(SecretRef).annotate({
           description: "From `request_secret`. Instead of `secret`. Spent by this save.",
         }),
-      }),
+      }).check(
+        Schema.makeFilter(
+          (signature) =>
+            signature.secretRequest === undefined ||
+            (signature.secret === undefined && signature.secretRef === undefined),
+          { expected: "one destination request without a local secret or ref" },
+        ),
+      ),
     ),
   ).annotate({
     description: "Omit for URL token only.",
@@ -196,6 +214,7 @@ export const ScheduledTaskSchedule = Schema.Union([
   ScheduledTaskFixedTimeSchedule,
   ScheduledTaskOnceSchedule,
   ScheduledTaskWebhookSchedule,
+  ...Fork.ScheduledTaskForkSchedules,
 ]);
 export type ScheduledTaskSchedule = typeof ScheduledTaskSchedule.Type;
 
@@ -211,6 +230,7 @@ export const ScheduledTaskUpsertSchedule = Schema.Union([
   ScheduledTaskFixedTimeSchedule,
   ScheduledTaskOnceSchedule,
   ScheduledTaskUpsertWebhookSchedule,
+  ...Fork.ScheduledTaskForkSchedules,
 ]);
 export type ScheduledTaskUpsertSchedule = typeof ScheduledTaskUpsertSchedule.Type;
 
@@ -239,6 +259,8 @@ export function scheduledTaskThreadMode(
 }
 
 export const ScheduledTask = Schema.Struct({
+  purposeIntent: Schema.optional(SavedPurposeIntent),
+  bare: Schema.optional(BareLaunchRequest),
   id: ScheduledTaskId,
   title: TrimmedNonEmptyString,
   prompt: TrimmedNonEmptyString,
@@ -253,6 +275,7 @@ export const ScheduledTask = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   createdBy: OrchestrationV2Actor,
   creationSource: OrchestrationV2CreationSource,
+  linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   nextRunAt: Schema.NullOr(IsoDateTime),
@@ -263,6 +286,7 @@ export const ScheduledTask = Schema.Struct({
   webhook: Schema.optional(ScheduledTaskWebhookEndpoint),
   /** Why the task cannot run regardless of `enabled`, such as a managed policy refusing webhooks. */
   blockedByPolicy: Schema.optionalKey(Schema.String),
+  ...Fork.ScheduledTaskForkFields,
 });
 export type ScheduledTask = typeof ScheduledTask.Type;
 
@@ -277,6 +301,8 @@ export const ScheduledTaskListResult = Schema.Struct({
 export type ScheduledTaskListResult = typeof ScheduledTaskListResult.Type;
 
 export const ScheduledTaskUpsertInput = Schema.Struct({
+  purposeIntent: Schema.optional(SavedPurposeIntent),
+  bare: Schema.optional(BareLaunchRequest),
   id: Schema.optional(ScheduledTaskId),
   requireExisting: Schema.optional(Schema.Boolean).annotate({
     description:
@@ -300,6 +326,7 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
   creationSource: Schema.optional(OrchestrationV2CreationSource),
+  linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
 });
 export type ScheduledTaskUpsertInput = typeof ScheduledTaskUpsertInput.Type;
 
@@ -411,6 +438,7 @@ export type ScheduledTaskDeleteResult = typeof ScheduledTaskDeleteResult.Type;
 
 export const ScheduledTaskRunNowResult = Schema.Struct({
   task: ScheduledTask,
+  manualReceipt: Schema.optional(McpManualRunReceipt),
 });
 export type ScheduledTaskRunNowResult = typeof ScheduledTaskRunNowResult.Type;
 

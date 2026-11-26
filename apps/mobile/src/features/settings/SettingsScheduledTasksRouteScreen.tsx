@@ -1,16 +1,18 @@
 import { msg, T, useGT, useLocale, useMessages, Var } from "gt-react-native";
 import { managedCapabilityDenial } from "@t3tools/client-runtime/contract-labels";
 import * as Dialog from "../../components/ui/Dialog";
+import { ExecutionPurposePicker } from "../threads/ExecutionPurposePicker";
+import { savedPurposeIntentForScope } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import {
   AuthOrchestrationOperateScope,
   clampManagedRuntimeMode,
+  isForkScheduledTaskSchedule,
   resolveProjectProviderInstanceEnabled,
 } from "@t3tools/contracts";
 import { readEnvironmentScope } from "../../state/session";
 import type {
   EnvironmentId,
-  ProjectId,
   ScheduledTask,
   ScheduledTaskThreadMode,
   ScheduledTaskUpsertInput,
@@ -59,6 +61,7 @@ import { Menu } from "../../components/ui/Menu";
 import type { ComposerEditorSelection } from "../../components/ComposerEditor";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { SegmentedControl } from "../../components/ui/SegmentedControl";
+import * as ScheduledTaskFork from "./scheduledTaskFork";
 import { ThemedSwitch } from "../../components/ui/ThemedSwitch";
 import { webhookAddress } from "@t3tools/client-runtime/webhook-address";
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
@@ -68,6 +71,7 @@ import { withImplicitFastModeSelection } from "../../lib/providerOptions";
 import { useProjects, useEnvironmentServerConfig } from "../../state/entities";
 import { useEnvironmentQuery } from "../../state/query";
 import { usePaginatedBranches } from "../../state/queries";
+import { useEnvironments } from "../../state/environments";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { resolveNewTaskBranchLabel } from "../threads/new-task-context-presentation";
@@ -132,11 +136,13 @@ function describeSchedule(
 ): string {
   if (task.schedule.type === "webhook") return resolve(msg("On webhook"));
   if (task.schedule.type === "once") {
-    const runAt = new Date(task.schedule.runAt);
+    const runAt = new Date("runAt" in task.schedule ? task.schedule.runAt : task.schedule.at);
     return resolve(
       msg("Once, {date} at {time}", { date: formatRunAtDate(runAt), time: formatRunAtTime(runAt) }),
     );
   }
+  if (isForkScheduledTaskSchedule(task.schedule))
+    return ScheduledTaskFork.forkScheduleLabel(task.schedule, { formatTime }, resolve);
   if (task.schedule.type === "interval")
     return formatScheduledTaskInterval(task.schedule.everyMs, resolve);
   const days = task.schedule.weekdays?.length
@@ -453,12 +459,22 @@ export function SettingsScheduledTasksRouteScreen() {
       subscription.remove();
     };
   });
-  const { availableTargets, selectedTargets, selectedProjectKey, projectGroups } =
+  const { availableTargets, selectedTargets, selectedIds, selectedProjectKey, projectGroups } =
     useSettingsEnvironmentFilter();
+  const { environments } = useEnvironments();
   const selectedGroup = projectGroups.find((group) => group.key === selectedProjectKey);
   const visibleEnvironments = settingsTargetsForProject(
     selectedTargets,
     selectedProjectKey === null ? null : selectedGroup,
+  );
+  const disconnectedEnvironments = environments.filter(
+    (entry) =>
+      !availableTargets.some((target) => target.environmentId === entry.environmentId) &&
+      (selectedIds === null || selectedIds.has(entry.environmentId)) &&
+      (selectedProjectKey === null ||
+        selectedGroup?.members.some(
+          (member) => member.project.environmentId === entry.environmentId,
+        ) === true),
   );
   const { startEditor, resetEditor } = useScheduledTaskEditor();
   const navigation = useNavigation<NativeStackNavigationProp<ScheduledTaskRoutes>>();
@@ -492,31 +508,41 @@ export function SettingsScheduledTasksRouteScreen() {
         contentContainerClassName="gap-5 px-5 pt-4"
         contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
       >
-        {visibleEnvironments.length > 0 ? (
-          visibleEnvironments.map((environment) => (
-            <EnvironmentTasks
-              key={environment.environmentId}
-              environment={environment}
-              now={now}
-              projectIds={
-                selectedProjectKey === null
-                  ? null
-                  : (selectedGroup?.members
-                      .filter(
-                        (member) => member.project.environmentId === environment.environmentId,
-                      )
-                      .map((member) => member.project.id) ?? [])
-              }
-              onEdit={(task) => {
-                startEditor({
-                  environmentId: environment.environmentId,
-                  environmentLabel: environment.label,
-                  draft: editDraft(task),
-                });
-                navigation.navigate("SettingsScheduledTaskEdit");
-              }}
-            />
-          ))
+        {visibleEnvironments.length > 0 || disconnectedEnvironments.length > 0 ? (
+          <ScheduledTaskFork.ScheduledTaskList
+            now={now}
+            environments={visibleEnvironments}
+            disconnected={disconnectedEnvironments}
+            projectIds={(environmentId) =>
+              selectedProjectKey === null
+                ? null
+                : (selectedGroup?.members
+                    .filter((member) => member.project.environmentId === environmentId)
+                    .map((member) => member.project.id) ?? [])
+            }
+            projectName={(environmentId, projectId) =>
+              projectGroups.find((group) =>
+                // Refs keep every registration of a grouped checkout, members only the newest.
+                group.memberProjectRefs.some(
+                  (ref) => ref.environmentId === environmentId && ref.projectId === projectId,
+                ),
+              )?.label
+            }
+            renderRow={(row) => (
+              <ScheduledTaskItem
+                {...row}
+                now={now}
+                onEdit={() => {
+                  startEditor({
+                    environmentId: row.environment.environmentId,
+                    environmentLabel: row.environment.label,
+                    draft: editDraft(row.task),
+                  });
+                  navigation.navigate("SettingsScheduledTaskEdit");
+                }}
+              />
+            )}
+          />
         ) : (
           <Text className="px-2 text-base text-foreground-muted">
             {availableTargets.length === 0
@@ -879,7 +905,20 @@ function TaskForm({
       Dialog.alert(gt("Project unavailable"), gt("Choose a project in this environment."));
       return;
     }
+    if (
+      draft.purposeScope?.type === "unscoped" &&
+      draft.purposeScope.reason === "legacy_no_intent"
+    ) {
+      Dialog.alert(
+        gt("Choose this task's purpose"),
+        gt("Select an Issue or PR, or clear the purpose to choose unscoped work."),
+      );
+      return;
+    }
     const input: ScheduledTaskUpsertInput = {
+      purposeIntent: savedPurposeIntentForScope(
+        draft.purposeScope ?? { type: "unscoped", reason: "deliberate" },
+      ),
       ...(draft.task ? { id: draft.task.id, requireExisting: true } : {}),
       title: draft.title.trim(),
       prompt: draft.prompt.trim(),
@@ -974,6 +1013,11 @@ function TaskForm({
             value={draft.title}
             placeholder={gt("Check for issues")}
             onChange={(title) => setDraft((current) => ({ ...current, title }))}
+          />
+          <ExecutionPurposePicker
+            scope={draft.purposeScope ?? { type: "unscoped", reason: "deliberate" }}
+            disabled={saving || !canOperate}
+            onChange={(scope) => setDraft((current) => ({ ...current, purposeScope: scope }))}
           />
           {promptField}
         </SettingsSection>
@@ -1152,7 +1196,11 @@ function TaskForm({
         </SettingsSection>
 
         <SettingsSection title={gt("Schedule", { $context: "noun, section heading" })}>
-          <View className="px-4 py-3">
+          <ScheduledTaskFork.PreservedScheduleText
+            schedule={draft.schedule.preserved}
+            formatTime={formatTime}
+          />
+          <View className={draft.schedule.preserved ? "hidden" : "px-4 py-3"}>
             <SegmentedControl
               variant="card"
               options={[
@@ -1193,7 +1241,7 @@ function TaskForm({
               }}
             />
           </View>
-          {draft.schedule.mode === "fixed_time" ? (
+          {draft.schedule.mode === "preserved" ? null : draft.schedule.mode === "fixed_time" ? (
             <>
               <Pressable
                 accessibilityRole="button"
@@ -1469,7 +1517,7 @@ function TaskForm({
             />
           </View>
         </SettingsSection>
-        {draft.schedule.mode === "fixed_time" ? (
+        {draft.schedule.mode === "preserved" ? null : draft.schedule.mode === "fixed_time" ? (
           <Text className="px-2 text-sm text-foreground-muted">
             <T>Time uses the environment's time zone, which may differ from your phone's.</T>
           </Text>
@@ -1594,27 +1642,25 @@ function WebhookScheduleDetails({
   );
 }
 
-function EnvironmentTasks({
+function ScheduledTaskItem({
   environment,
+  task,
+  timeZone,
+  machine,
+  divided,
+  origin,
   now,
-  projectIds,
   onEdit,
-}: {
-  readonly environment: SettingsTarget;
+}: ScheduledTaskFork.ScheduledTaskListRow & {
   readonly now: number;
-  readonly projectIds: readonly ProjectId[] | null;
-  readonly onEdit: (task: ScheduledTask) => void;
+  readonly onEdit: () => void;
 }) {
   const gt = useGT();
   const m = useMessages();
   const locale = useLocale();
   const environmentId = environment.environmentId;
-  const tasks = useEnvironmentQuery(
-    serverEnvironment.scheduledTasksLive({ environmentId, input: {} }),
-  );
-  const visibleTasks = tasks.data?.tasks.filter(
-    (task) => projectIds === null || projectIds.includes(task.projectId),
-  );
+  // One list holds every machine's tasks, so the machine tells same-named tasks apart.
+  const named = `${task.title} · ${machine}`;
   const canOperate = useAtomValue(
     serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
   );
@@ -1631,13 +1677,14 @@ function EnvironmentTasks({
     reportFailure: false,
   });
   const selectDetail = useSelectWorkspaceDetail();
+  const abandonReport = ScheduledTaskFork.useAbandonReport(environmentId);
   const failure = (title: string, result: AtomCommandResult<unknown, unknown>) => {
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
       Dialog.alert(title, String(squashAtomCommandFailure(result)));
     }
   };
 
-  const act = async (task: ScheduledTask, action: "run" | "toggle" | "delete") => {
+  const act = async (action: "run" | "toggle" | "delete") => {
     if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
     const result =
       action === "run"
@@ -1656,136 +1703,111 @@ function EnvironmentTasks({
   };
 
   return (
-    <SettingsSection
-      title={environment.label}
-      titleIcon={
-        <EnvironmentMachineSymbol
-          kind={resolveEnvironmentMachineKind(environment.serverConfig)}
-          size={16}
-          tintColorClassName={
-            Platform.OS === "android" ? "accent-primary" : "accent-foreground-muted"
-          }
-        />
+    <View
+      className={
+        !divided
+          ? "flex-row items-start gap-1 px-4 py-3"
+          : "flex-row items-start gap-1 border-t border-border-subtle px-4 py-3"
       }
     >
-      {tasks.error ? (
-        <Text className="p-4 text-base text-danger-foreground">{tasks.error}</Text>
-      ) : !tasks.data ? (
-        <Text className="p-4 text-base text-foreground-muted">
-          <T>Loading tasks…</T>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={gt("Edit {title}", { title: named })}
+        onPress={onEdit}
+        className="min-w-0 flex-1 gap-1 active:opacity-70"
+      >
+        {origin}
+        <Text textRole="body" className="text-foreground" numberOfLines={1}>
+          {task.title}
         </Text>
-      ) : visibleTasks?.length === 0 ? (
-        <Text className="p-4 text-base text-foreground-muted">
-          {projectIds === null ? gt("No scheduled tasks yet.") : gt("No tasks in this project.")}
+        <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+          {!task.enabled
+            ? gt("{schedule} · Paused", {
+                schedule: describeSchedule(task, timeZone, m, locale),
+              })
+            : task.nextRunAt
+              ? gt("{schedule} · {nextRun}", {
+                  schedule: describeSchedule(task, timeZone, m, locale),
+                  nextRun: formatNextScheduledTaskRun(task.nextRunAt, now, m),
+                })
+              : describeSchedule(task, timeZone, m, locale)}
         </Text>
-      ) : (
-        visibleTasks?.map((task, index) => (
-          <View
-            key={task.id}
-            className={
-              index === 0
-                ? "flex-row items-start gap-1 px-4 py-3"
-                : "flex-row items-start gap-1 border-t border-border-subtle px-4 py-3"
-            }
-          >
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={gt("Edit {title}", { title: task.title })}
-              onPress={() => {
-                onEdit(task);
-              }}
-              className="min-w-0 flex-1 gap-1 active:opacity-70"
-            >
-              <Text textRole="body" className="text-foreground" numberOfLines={1}>
-                {task.title}
-              </Text>
-              <Text className="text-sm text-foreground-muted" numberOfLines={2}>
-                {!task.enabled
-                  ? gt("{schedule} · Paused", {
-                      schedule: describeSchedule(task, tasks.data?.timeZone, m, locale),
-                    })
-                  : task.nextRunAt
-                    ? gt("{schedule} · {nextRun}", {
-                        schedule: describeSchedule(task, tasks.data?.timeZone, m, locale),
-                        nextRun: formatNextScheduledTaskRun(task.nextRunAt, now, m),
-                      })
-                    : describeSchedule(task, tasks.data?.timeZone, m, locale)}
-              </Text>
-              {task.blockedByPolicy ? (
-                <Text className="text-sm text-foreground-muted" numberOfLines={2}>
-                  {task.blockedByPolicy}
-                </Text>
-              ) : null}
-              {task.lastRunError ? (
-                <Text className="text-sm text-danger-foreground" numberOfLines={2}>
-                  <T>
-                    Last run failed: <Var>{task.lastRunError}</Var>
-                  </T>
-                </Text>
-              ) : null}
-            </Pressable>
-            <Menu
-              actions={[
-                { id: "edit", title: gt("Edit") },
-                ...(task.threadId !== null && scheduledTaskThreadMode(task) !== "new_thread"
-                  ? [{ id: "thread", title: gt("Open thread") }]
-                  : []),
-                {
-                  id: "toggle",
-                  title: task.enabled ? gt("Pause") : gt("Resume"),
-                  attributes: { disabled: !canOperate },
-                },
-                ...(task.schedule.type === "webhook"
-                  ? []
-                  : [{ id: "run", title: gt("Run now"), attributes: { disabled: !canOperate } }]),
-                {
-                  id: "delete",
-                  title: gt("Delete"),
-                  attributes: { destructive: true, disabled: !canOperate },
-                },
-              ]}
-              onPressAction={({ nativeEvent }) => {
-                const action = nativeEvent.event;
-                if (action === "edit") {
-                  onEdit(task);
-                } else if (action === "thread" && task.threadId !== null) {
-                  selectDetail({
-                    name: "Thread",
-                    params: {
-                      environmentId: String(environmentId),
-                      threadId: String(task.threadId),
-                    },
-                  });
-                } else if (action === "delete") {
-                  Dialog.alert(gt("Delete task?"), task.title, [
-                    { text: gt("Cancel"), style: "cancel" },
-                    {
-                      text: gt("Delete"),
-                      style: "destructive",
-                      onPress: () => void act(task, "delete"),
-                    },
-                  ]);
-                } else if (action === "toggle" || action === "run") {
-                  void act(task, action);
-                }
-              }}
-            >
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={gt("Actions for {title}", { title: task.title })}
-                className="h-11 w-11 items-center justify-center"
-              >
-                <SymbolView
-                  name="ellipsis"
-                  size={18}
-                  tintColorClassName="accent-icon"
-                  type="monochrome"
-                />
-              </Pressable>
-            </Menu>
-          </View>
-        ))
-      )}
-    </SettingsSection>
+        {task.blockedByPolicy ? (
+          <Text className="text-sm text-foreground-muted" numberOfLines={2}>
+            {task.blockedByPolicy}
+          </Text>
+        ) : null}
+        {task.lastRunError ? (
+          <Text className="text-sm text-danger-foreground" numberOfLines={2}>
+            <T>
+              Last run failed: <Var>{task.lastRunError}</Var>
+            </T>
+          </Text>
+        ) : null}
+        <ScheduledTaskFork.ForkTaskSummaryText task={task} />
+      </Pressable>
+      <Menu
+        actions={[
+          { id: "edit", title: gt("Edit") },
+          ...(task.threadId !== null && scheduledTaskThreadMode(task) !== "new_thread"
+            ? [{ id: "thread", title: gt("Open thread") }]
+            : []),
+          {
+            id: "toggle",
+            title: task.enabled ? gt("Pause") : gt("Resume"),
+            attributes: { disabled: !canOperate },
+          },
+          ...(task.schedule.type === "webhook"
+            ? []
+            : [ScheduledTaskFork.runNowAction(task, canOperate, m)]),
+          ...abandonReport.actions(task),
+          {
+            id: "delete",
+            title: gt("Delete"),
+            attributes: { destructive: true, disabled: !canOperate },
+          },
+        ]}
+        onPressAction={({ nativeEvent }) => {
+          const action = nativeEvent.event;
+          if (action === "edit") {
+            onEdit();
+          } else if (action === "thread" && task.threadId !== null) {
+            selectDetail({
+              name: "Thread",
+              params: {
+                environmentId: String(environmentId),
+                threadId: String(task.threadId),
+              },
+            });
+          } else if (action === "delete") {
+            Dialog.alert(gt("Delete task?"), named, [
+              { text: gt("Cancel"), style: "cancel" },
+              {
+                text: gt("Delete"),
+                style: "destructive",
+                onPress: () => void act("delete"),
+              },
+            ]);
+          } else if (action === "toggle" || action === "run") {
+            void act(action);
+          } else {
+            abandonReport.onAction(action, task);
+          }
+        }}
+      >
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={gt("Actions for {title}", { title: named })}
+          className="h-11 w-11 items-center justify-center"
+        >
+          <SymbolView
+            name="ellipsis"
+            size={18}
+            tintColorClassName="accent-icon"
+            type="monochrome"
+          />
+        </Pressable>
+      </Menu>
+    </View>
   );
 }
