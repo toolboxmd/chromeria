@@ -514,7 +514,7 @@ interface ViewerState {
   readonly id: string;
   readonly resourceViewerId: string | undefined;
   readonly canOperate: boolean;
-  readonly pressedKeys: Map<string, { key: string; code: string }>;
+  readonly pressedKeys: Map<string, { key: string; code: string; keyCode: number }>;
   readonly pressedButtons: Map<"left" | "middle" | "right", { x: number; y: number }>;
   /** Handle for the guarded select under a held left press; its release offers the menu. */
   selectPress: string | null;
@@ -1507,7 +1507,7 @@ const make = Effect.gen(function* () {
       await authorize();
       const cdp = (pendingCdp = await context.newCDPSession(page));
       // The desktop page already has its own clipboard.
-      if (!desktop) await prepareContext(context, cdp);
+      if (!desktop) await grantClipboardWrite(context, cdp);
       await installPdfDocumentNavigation(cdp);
       await authorize();
       // The desktop's page is already a normal browser. A popup's first request went out
@@ -2233,18 +2233,35 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const preparedContexts = new WeakSet<BrowserContext>();
   // grantPermissions would deny every other permission, and pages would read them all as
-  // "denied", which no person's browser shows. Only clipboard-write is granted.
-  const prepareContext = async (context: BrowserContext, cdp: CDPSession) => {
-    if (preparedContexts.has(context)) return;
-    preparedContexts.add(context);
-    const { targetInfo } = await cdp.send("Target.getTargetInfo");
-    await cdp.send("Browser.setPermission", {
-      permission: { name: "clipboard-write" },
-      setting: "granted",
-      ...(targetInfo.browserContextId ? { browserContextId: targetInfo.browserContextId } : {}),
-    });
+  // "denied", which no person's browser shows. Only clipboard-write is granted. Chrome drops
+  // an override when the session that set it detaches, so it is set on a session that lives
+  // as long as the context: the browser's own, or a persistent profile's reserved page.
+  const grantedContexts = new WeakSet<BrowserContext>();
+  const browserSessions = new WeakMap<object, Promise<CDPSession>>();
+  const grantClipboardWrite = async (context: BrowserContext, cdp: CDPSession) => {
+    if (grantedContexts.has(context)) return;
+    grantedContexts.add(context);
+    const browser = context.browser();
+    const permission = { permission: { name: "clipboard-write" }, setting: "granted" } as const;
+    if (browser) {
+      const { targetInfo } = await cdp.send("Target.getTargetInfo");
+      let session = browserSessions.get(browser);
+      if (!session) {
+        session = browser.newBrowserCDPSession();
+        browserSessions.set(browser, session);
+      }
+      await (
+        await session
+      ).send("Browser.setPermission", {
+        ...permission,
+        ...(targetInfo.browserContextId ? { browserContextId: targetInfo.browserContextId } : {}),
+      });
+      return;
+    }
+    const reserved = await contexts.reservedPage(context);
+    const session = await context.newCDPSession(reserved);
+    await session.send("Browser.setPermission", permission);
   };
 
   /** Records the copies made in each frame a session reaches. */
@@ -4050,8 +4067,15 @@ const make = Effect.gen(function* () {
     });
 
   const releaseViewerInput = async (viewer: ViewerState, session: CDPSession) => {
-    for (const { key, code } of viewer.pressedKeys.values()) {
-      await session.send("Input.dispatchKeyEvent", { type: "keyUp", key, code }).catch(constVoid);
+    for (const { key, code, keyCode } of viewer.pressedKeys.values()) {
+      await session
+        .send("Input.dispatchKeyEvent", {
+          type: "keyUp",
+          key,
+          code,
+          windowsVirtualKeyCode: keyCode,
+        })
+        .catch(constVoid);
     }
     viewer.pressedKeys.clear();
     for (const [button, point] of viewer.pressedButtons) {
@@ -4222,6 +4246,10 @@ const make = Effect.gen(function* () {
         if (copying)
           while (Date.now() <= tab.copyKeyedUntil) await sleepUntil(tab.copyKeyedUntil + 1);
         const since = Date.now();
+        const keyCode = num(
+          message.keyCode,
+          key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0,
+        );
         await authorize();
         await session.send("Input.dispatchKeyEvent", {
           type: text ? "keyDown" : "rawKeyDown",
@@ -4230,12 +4258,9 @@ const make = Effect.gen(function* () {
           modifiers,
           ...(text ? { text, unmodifiedText: text } : {}),
           ...command,
-          windowsVirtualKeyCode: num(
-            message.keyCode,
-            key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0,
-          ),
+          windowsVirtualKeyCode: keyCode,
         });
-        viewer.pressedKeys.set(code || key, { key, code });
+        viewer.pressedKeys.set(code || key, { key, code, keyCode });
         if (!copying) return;
         const until = Date.now();
         tab.copyKeyedUntil = until;

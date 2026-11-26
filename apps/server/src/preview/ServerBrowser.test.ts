@@ -295,6 +295,8 @@ function makeContext(onClose?: (context: BrowserContext) => void, initialUrl = "
     page,
     sessions,
     cssViewport,
+    // Permission overrides go through the browser's own session.
+    browser: () => ({ newBrowserCDPSession: async () => ({ send: async () => ({}) }) }),
     newPage: async () => page as unknown as Page,
     newCDPSession: async (target: unknown) => {
       const session = makeSession(
@@ -3181,13 +3183,55 @@ it.live("a viewer's input looks like a person's, and only clipboard-write is gra
       yield* click(140, 30);
       yield* viewer.input({ type: "key", action: "down", key: "b", code: "KeyB", text: "b" });
       yield* viewer.input({ type: "key", action: "up", key: "b", code: "KeyB" });
-      expect(yield* evaluate("seen")).toEqual(["pressure:0.5", "keydown:66", "keyup:66"]);
+      // A key still held when the viewer lets go is released with its own code too.
+      yield* viewer.input({ type: "key", action: "down", key: "c", code: "KeyC", text: "c" });
+      yield* viewer.input({ type: "releaseControl" });
+      expect(yield* evaluate("seen")).toEqual([
+        "pressure:0.5",
+        "keydown:66",
+        "keyup:66",
+        "keydown:67",
+        "keyup:67",
+      ]);
       expect(
         yield* evaluate(
           `Promise.all(["notifications", "geolocation", "clipboard-write"].map((name) => navigator.permissions.query({ name }).then((state) => state.state)))`,
         ),
         "other permissions stay at their default",
       ).toEqual(["prompt", "prompt", "granted"]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("clipboard-write stays granted in a tab after another tab of its profile closes", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      realContextOverride = yield* Effect.promise(() => chromiumBrowser.newContext());
+      const broker = yield* Broker.PreviewAutomationBroker;
+      const open = () =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false, profileId: "default" },
+        });
+      const first = PreviewTabId.make((yield* open()).tabId!);
+      const second = PreviewTabId.make((yield* open()).tabId!);
+      yield* broker.invoke({ scope, operation: "close", input: {}, tabId: first });
+      expect(
+        yield* broker.invoke({
+          scope,
+          operation: "evaluate",
+          input: {
+            expression:
+              "navigator.permissions.query({ name: 'clipboard-write' }).then((s) => s.state)",
+          },
+          tabId: second,
+        }),
+      ).toBe("granted");
     }),
   ).pipe(Effect.provide(layer)),
 );
