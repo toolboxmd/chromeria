@@ -3,6 +3,7 @@ import type {
   IssueLink,
   GitHubIssueListCursors,
   GitHubIssueListEntry,
+  GitHubIssueListInput,
   IssueListRepository,
   GitHubIssueListResult,
   GitHubIssueListSort,
@@ -80,10 +81,85 @@ export function issueKey(issue: Pick<IssueLink, "host" | "repository" | "number"
   return `${repositoryKey(issue.host, issue.repository)}#${issue.number}`;
 }
 
+export interface IssueListTarget {
+  readonly environmentId: EnvironmentId;
+  readonly input: GitHubIssueListInput;
+}
+
+/**
+ * Every page to read: each server's listing, then each answered page's continuation. Group counts
+ * are totals only when `rows` is `complete`: `pending` while a page has no answer, `truncated`
+ * when a server's pages hold fewer rows than GitHub matched, `unknown` when a server gives no match counts.
+ */
+export function issueListPages(
+  listings: ReadonlyArray<IssueListTarget>,
+  answerOf: (
+    target: IssueListTarget,
+  ) => Pick<GitHubIssueListResult, "entries" | "nextCursors" | "matchCounts"> | null,
+): {
+  readonly targets: ReadonlyArray<IssueListTarget>;
+  readonly rows: "complete" | "pending" | "truncated" | "unknown";
+} {
+  const targets: Array<IssueListTarget> = [];
+  /** Per server and search: the cursors already read from. */
+  const read = new Map<string, Set<string>>();
+  /** Per server: the raw rows its pages returned, and GitHub's latest match count per search. */
+  const returned = new Map<EnvironmentId, { rows: number; matches: Map<string, number> }>();
+  let pending = false;
+  let truncated = false;
+  let unknown = false;
+  // Page by page across servers, so a page that arrives later adds its rows after the ones shown.
+  let round = listings;
+  while (round.length > 0) {
+    const next: Array<IssueListTarget> = [];
+    for (const target of round) {
+      targets.push(target);
+      const answer = answerOf(target);
+      if (answer === null) {
+        pending = true;
+        continue;
+      }
+      const server = returned.get(target.environmentId) ?? { rows: 0, matches: new Map() };
+      returned.set(target.environmentId, server);
+      server.rows += answer.entries.length;
+      if (answer.matchCounts === undefined) unknown = true;
+      for (const [search, count] of Object.entries(answer.matchCounts ?? {})) {
+        server.matches.set(search, count);
+      }
+      const cursors: Record<string, string> = {};
+      for (const [search, cursor] of Object.entries(answer.nextCursors)) {
+        const key = `${target.environmentId} ${search}`;
+        const seen = read.get(key) ?? new Set<string>();
+        read.set(key, seen);
+        // A search answering with a cursor it was read from would be read forever.
+        if (seen.has(cursor)) {
+          truncated = true;
+          continue;
+        }
+        seen.add(cursor);
+        cursors[search] = cursor;
+      }
+      if (Object.keys(cursors).length > 0) {
+        next.push({ environmentId: target.environmentId, input: { ...target.input, cursors } });
+      }
+    }
+    round = next;
+  }
+  // A search never returns more rows than it matches, so a server whose rows fall short of its
+  // searches' matches is missing rows of one of them, however many others it read in full.
+  for (const { rows, matches } of returned.values()) {
+    if (rows < [...matches.values()].reduce((sum, count) => sum + count, 0)) truncated = true;
+  }
+  return {
+    targets,
+    rows: pending ? "pending" : truncated ? "truncated" : unknown ? "unknown" : "complete",
+  };
+}
+
 /**
  * The answers of every server and every page already loaded, in the order they were asked. Two
  * servers with one repository return the same Issue; the first answer keeps it. A later page of a
- * server replaces its continuation, which is how "load more" walks forward.
+ * server replaces its continuation, which is how the page walk moves forward.
  */
 export function mergeIssueLists(
   values: ReadonlyArray<readonly [EnvironmentId, GitHubIssueListResult]>,

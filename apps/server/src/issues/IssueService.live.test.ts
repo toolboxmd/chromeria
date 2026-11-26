@@ -146,6 +146,8 @@ describe.skipIf(!live)("IssueService (live GitHub)", () => {
         const first = yield* issues.list(input);
         expect(first.entries).toHaveLength(3);
         expect(Object.keys(first.nextCursors)).toEqual(["github.com#0"]);
+        // GitHub's match count for the search, far beyond the page it came with.
+        expect(first.matchCounts?.["github.com#0"]).toBeGreaterThan(500);
         const second = yield* issues.list({ ...input, cursors: first.nextCursors });
         expect(second.entries).toHaveLength(3);
         const firstNumbers = first.entries.map((entry) => entry.number);

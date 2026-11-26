@@ -428,6 +428,7 @@ const make = Effect.gen(function* () {
     const entries: Array<GitHubIssueListEntry> = [];
     const errors: Array<{ host: string; message: string }> = [];
     const nextCursors: Record<string, string> = {};
+    const matchCounts: Record<string, number> = {};
     const viewers = new Map<string, string>();
     const linkedPullRequests: Array<IssuePullRequest> = [];
     for (const { search, rows, linked, error } of answers) {
@@ -435,6 +436,7 @@ const make = Effect.gen(function* () {
       if (rows === null) continue;
       const page = rows.data.search;
       viewers.set(search.host, rows.data.viewer.login);
+      matchCounts[search.key] = page.issueCount;
       linkedPullRequests.push(...linked);
       if (page.pageInfo.hasNextPage && page.pageInfo.endCursor !== null) {
         nextCursors[search.key] = page.pageInfo.endCursor;
@@ -478,6 +480,7 @@ const make = Effect.gen(function* () {
       viewers: [...viewers].map(([host, login]) => ({ host, login })),
       linkedPullRequests,
       nextCursors,
+      matchCounts,
     };
   });
 

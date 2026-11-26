@@ -30,6 +30,15 @@ export function useIssueRowThreads(
   const threadsByIssue = mergeIssueRowThreads(query.values);
   const workingKey = useAtomValue(workingThreadKeysAtom);
   const working = new Set(workingKey.length === 0 ? [] : workingKey.split("\n"));
-  // The first server that could not answer, so a view can say whose threads it is missing.
-  return { threadsByIssue, working, error: query.error?.message ?? null };
+  return {
+    threadsByIssue,
+    working,
+    /** A batch has yet to answer for the first time, so some rows still lack their threads. */
+    loading: query.isPending && query.values.length < targets.length,
+    // The first server that could not answer, so a view can say whose threads it is missing.
+    error: query.error?.message ?? null,
+    failedEnvironmentId: query.error?.environmentId ?? null,
+    /** Reads the failed batches again. */
+    retry: query.retry,
+  };
 }

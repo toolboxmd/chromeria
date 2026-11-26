@@ -11,11 +11,13 @@ import {
   buildIssueTree,
   collectIssueFacets,
   issueKey,
+  issueListPages,
   matchesIssueFilters,
   mergeIssueLists,
   repositoryKey,
   sortIssues,
   type EnvironmentIssueEntry,
+  type IssueListTarget,
   type IssueTreeNode,
   environmentIdsWithCapability,
 } from "./issueList.logic";
@@ -104,16 +106,89 @@ describe("mergeIssueLists", () => {
   });
 
   it("walks a server's continuation forward and drops it once exhausted", () => {
-    const first = mergeIssueLists([
-      [ENV_A, result([strip(entry(3))], { nextCursors: { "github.com#0": "c1" } })],
-    ]);
+    const listing = { environmentId: ENV_A, input: { state: "open", limit: 1 } } as const;
+    const continuation = {
+      environmentId: ENV_A,
+      input: { state: "open", limit: 1, cursors: { "github.com#0": "c1" } },
+    } as const;
+    const matchCounts = { "github.com#0": 2 };
+    const pageOne = result([strip(entry(3))], {
+      nextCursors: { "github.com#0": "c1" },
+      matchCounts,
+    });
+    const pageTwo = result([strip(entry(2))], { nextCursors: {}, matchCounts });
+    const answers = new Map([[JSON.stringify(listing), pageOne]]);
+    const answerOf = (target: unknown) => answers.get(JSON.stringify(target)) ?? null;
+
+    // The first page asks for its continuation unprompted; until that answers, rows are missing.
+    expect(issueListPages([listing], answerOf)).toEqual({
+      targets: [listing, continuation],
+      rows: "pending",
+    });
+    const first = mergeIssueLists([[ENV_A, pageOne]]);
     expect(first?.nextCursors.get(ENV_A)).toEqual({ "github.com#0": "c1" });
+
+    answers.set(JSON.stringify(continuation), pageTwo);
+    expect(issueListPages([listing], answerOf)).toEqual({
+      targets: [listing, continuation],
+      rows: "complete",
+    });
     const second = mergeIssueLists([
-      [ENV_A, result([strip(entry(3))], { nextCursors: { "github.com#0": "c1" } })],
-      [ENV_A, result([strip(entry(2))], { nextCursors: {} })],
+      [ENV_A, pageOne],
+      [ENV_A, pageTwo],
     ]);
     expect(second?.entries.map((row) => row.number)).toEqual([3, 2]);
     expect(second?.nextCursors.has(ENV_A)).toBe(false);
+  });
+
+  it("reads no cursor of a search twice, and a search that repeats one is not complete", () => {
+    const listingA = { environmentId: ENV_A, input: { state: "open" } } as const;
+    const listingB = { environmentId: ENV_B, input: { state: "open" } } as const;
+    // ENV_A's first search answers every page with the cursor it was read from while its second
+    // search advances once and ends; ENV_B has one page and is done.
+    const cursorsOf = (target: IssueListTarget) =>
+      target.environmentId === ENV_B
+        ? {}
+        : target.input.cursors === undefined
+          ? { "github.com#0": "stuck", "github.com#1": "next" }
+          : { "github.com#0": "stuck" };
+    const pages = issueListPages([listingA, listingB], (target) =>
+      result([], { nextCursors: cursorsOf(target), matchCounts: {} }),
+    );
+    expect(pages.targets).toEqual([
+      listingA,
+      listingB,
+      {
+        environmentId: ENV_A,
+        input: { state: "open", cursors: { "github.com#0": "stuck", "github.com#1": "next" } },
+      },
+    ]);
+    expect(pages.rows).toBe("truncated");
+  });
+
+  it("calls a list truncated only when GitHub matched more Issues than it returned", () => {
+    const listing = { environmentId: ENV_A, input: { state: "all", limit: 100 } } as const;
+    const rows = (count: number) => Array.from({ length: count }, () => strip(entry(1)));
+    // One search read page by page: `sizes` rows per page, against GitHub's match count.
+    const walk = (sizes: ReadonlyArray<number>, matchCounts: Record<string, number> | undefined) =>
+      issueListPages([listing], (target) => {
+        const page = Number(target.input.cursors?.["github.com#0"] ?? 0);
+        return result(rows(sizes[page] ?? 0), {
+          nextCursors: page + 1 < sizes.length ? { "github.com#0": String(page + 1) } : {},
+          ...(matchCounts === undefined ? {} : { matchCounts }),
+        });
+      }).rows;
+    const full = (pages: number) => Array.from({ length: pages }, () => 100);
+
+    // 901 matches end on a short tenth page: all read.
+    expect(walk([...full(9), 1], { "github.com#0": 901 })).toBe("complete");
+    // GitHub stops after 1,000 rows however many match.
+    expect(walk(full(10), { "github.com#0": 1500 })).toBe("truncated");
+    // The same cut-off search beside a second search read in full: its 50 rows hide nothing.
+    expect(walk([150, ...full(9)], { "github.com#0": 1500, "github.com#1": 50 })).toBe("truncated");
+    expect(walk([150, ...full(9)], { "github.com#0": 1000, "github.com#1": 50 })).toBe("complete");
+    // A server that predates match counts cannot say either way.
+    expect(walk([100, 20], undefined)).toBe("unknown");
   });
 
   it("counts each repository on another forge once, across pages and servers", () => {
