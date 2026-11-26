@@ -3645,6 +3645,66 @@ it.live(
     ).pipe(Effect.provide(layer)),
 );
 
+it.live("a release trusts only a committed document, whatever its fragment", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      let answer: "challenge" | "noContent" | "clean" = "challenge";
+      yield* Effect.promise(() =>
+        context.route("https://shop.test/**", (route) =>
+          route.fulfill(
+            answer === "challenge"
+              ? {
+                  status: 403,
+                  contentType: "text/html",
+                  body: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+                }
+              : answer === "noContent"
+                ? { status: 204 }
+                : { status: 200, contentType: "text/html", body: "<p>ok</p>" },
+          ),
+        ),
+      );
+      realContextOverride = context;
+      const { browser, broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const held = () =>
+        manager
+          .list({ threadId: scope.thread.threadId })
+          .pipe(Effect.map(({ sessions }) => sessions[0]?.siteHold));
+      yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "https://shop.test/a" },
+          tabId,
+        }),
+      );
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      const page = context.pages()[0]!;
+      yield* viewer.input({ type: "takeControl" });
+      // A 204 commits nothing, and a history change is no new document: the check stays on screen.
+      answer = "noContent";
+      yield* Effect.promise(() => page.goto("https://shop.test/a").catch(() => undefined));
+      yield* Effect.promise(() => page.evaluate(() => history.pushState(null, "", "/a")));
+      yield* viewer.input({ type: "releaseControl" });
+      expect(yield* held(), "the check is still on screen").toBeDefined();
+      yield* viewer.input({ type: "takeControl" });
+      answer = "clean";
+      yield* Effect.promise(() => page.goto("https://shop.test/clean#results"));
+      const events = yield* manager.subscribeEvents;
+      yield* viewer.input({ type: "releaseControl" });
+      // Clearing the hold publishes the snapshot without it.
+      while ((yield* held()) !== undefined) yield* PubSub.take(events);
+      expect(yield* held()).toBeUndefined();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live("a check that a same-site API call answers holds the site without a navigation", () =>
   Effect.scoped(
     Effect.gen(function* () {

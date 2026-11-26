@@ -1754,12 +1754,16 @@ const make = Effect.gen(function* () {
       });
       // frameNavigated is cross-document only; a select's handle dies with its document.
       cdp.on("Page.frameNavigated", ({ frame }) => {
-        if (!frame.parentId) for (const viewer of tab.viewers) withdrawSelectMenu(viewer);
-      });
-      page.on("framenavigated", (frame) => {
-        // Only a committed response is the document on screen.
-        if (frame === page.mainFrame() && tab.pendingDocument?.url === frame.url())
+        if (frame.parentId) return;
+        for (const viewer of tab.viewers) withdrawSelectMenu(viewer);
+        // Only a committed response is the document on screen; a 204 or a history change commits none.
+        if (tab.pendingDocument && withoutHash(tab.pendingDocument.url) === withoutHash(frame.url))
           tab.mainDocument = tab.pendingDocument;
+        tab.pendingDocument = null;
+      });
+      // Server tabs turn the Page domain on with their viewport; a desktop tab needs it for commits.
+      if (desktop) await cdp.send("Page.enable").catch(constVoid);
+      page.on("framenavigated", (frame) => {
         const open = tab.fileChooser;
         if (open)
           void isFileChooserCurrent(open.chooser).then((current) => {
@@ -3069,7 +3073,8 @@ const make = Effect.gen(function* () {
     const startedAt = performance.now();
     const remaining = () => Math.max(1, timeout - (performance.now() - startedAt));
     await leaveBusyPage(tab, tab.cdp, timeout / 2);
-    // The last check before the request leaves.
+    // The last check before the request leaves, after any check still being classified.
+    await tab.siteHoldCheck;
     const held = siteHoldOf(tab, url);
     if (held) throw siteHoldError(held);
     const navigation = tab.page.goto(url, { timeout: remaining(), waitUntil: "commit" });
@@ -3504,13 +3509,18 @@ const make = Effect.gen(function* () {
     await runPromise(manager.requestReveal({ ...target, force: true }).pipe(Effect.ignore));
   };
 
-  /** Refuses before anything reaches a held site; after the action, reports the hold it met. */
+  /**
+   * Refuses before anything reaches a held site: every authority check the action makes
+   * right before it sends something also checks the hold. After the action, reports the hold it met.
+   */
   const guardSiteHold = async <A>(
     tab: ServerTab,
     request: PreviewAutomationRequest,
-    run: () => Promise<A>,
+    authorities: readonly [() => Promise<void>, () => Promise<void>],
+    run: (authorize: () => Promise<void>, resourceAuthorization: () => Promise<void>) => Promise<A>,
   ): Promise<A> => {
-    if (!SITE_HOLD_OPERATIONS.has(request.operation)) return run();
+    if (!SITE_HOLD_OPERATIONS.has(request.operation)) return run(...authorities);
+    const leavesPage = request.operation === "navigate" || request.operation === "readPage";
     let target = tab.page.url();
     try {
       if (request.operation === "navigate")
@@ -3520,10 +3530,18 @@ const make = Effect.gen(function* () {
     } catch {
       // The operation reports its own input error.
     }
-    // A check still being classified must not let the next action through.
-    await tab.siteHoldCheck;
-    const before = siteHoldOf(tab, target);
-    if (before) throw siteHoldError(before);
+    // A check still being classified must not let the next action through. A page the
+    // action leaves is not where it acts, so navigations check their target.
+    const refuseHeld = async () => {
+      await tab.siteHoldCheck;
+      const hold = siteHoldOf(tab, leavesPage ? target : tab.page.url());
+      if (hold) throw siteHoldError(hold);
+    };
+    await refuseHeld();
+    const guarded = (authority: () => Promise<void>) => async () => {
+      await authority();
+      await refuseHeld();
+    };
     const met = async () => {
       await tab.siteHoldCheck;
       const hold = siteHoldOf(tab);
@@ -3535,7 +3553,7 @@ const make = Effect.gen(function* () {
     };
     let result: A;
     try {
-      result = await run();
+      result = await run(guarded(authorities[0]), guarded(authorities[1]));
     } catch (cause) {
       await met();
       throw cause;
@@ -3882,8 +3900,12 @@ const make = Effect.gen(function* () {
         tab.agentOperating = !READ_OPERATIONS.has(request.operation);
         updateFileChooserInterception(tab);
         try {
-          return await guardSiteHold(tab, request, () =>
-            runTabOperation(tab, request, authorize, resourceAuthorization, deadlineMs),
+          return await guardSiteHold(
+            tab,
+            request,
+            [authorize, resourceAuthorization],
+            (guardedAuthorize, guardedResource) =>
+              runTabOperation(tab, request, guardedAuthorize, guardedResource, deadlineMs),
           );
         } finally {
           tab.agentOperating = false;
