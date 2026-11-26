@@ -866,7 +866,8 @@ describe("Codex on credits", () => {
     });
   const skippedFor = (reason: string) =>
     "No eligible model with usage headroom for this Prism role and lane. Skipped: " +
-    `codex/configured: provider usage limit reached${reason ? `; credits cannot cover it: ${reason}` : ""}.`;
+    "codex/configured: Weekly usage window is exhausted until 2026-12-01T00:00:00Z" +
+    `${reason ? `; credits cannot cover it: ${reason}` : ""}.`;
 
   it.effect.each([
     {

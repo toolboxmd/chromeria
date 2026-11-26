@@ -312,7 +312,10 @@ const make = Effect.gen(function* () {
             ? { admitted: false as const }
             : yield* codexCreditAdmission(provider, now, settings.getSettings);
           if (!credits.admitted) {
-            skip(candidate, credits.reason ? `${block}; credits cannot cover it: ${credits.reason}` : block);
+            skip(
+              candidate,
+              credits.reason ? `${block}; credits cannot cover it: ${credits.reason}` : block,
+            );
             continue;
           }
         }
