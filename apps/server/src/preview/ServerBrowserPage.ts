@@ -1396,16 +1396,6 @@ export const evaluate = async (
   world: "isolated" | "main" = "main",
 ) => {
   await authorize();
-  // A world of its own shares the DOM, but pages cannot see the agent's globals or wrappers.
-  const contextId =
-    world === "isolated"
-      ? (
-          await cdp.send("Page.createIsolatedWorld", {
-            frameId: (await cdp.send("Page.getFrameTree")).frameTree.frame.id,
-            worldName: "t3-agent",
-          })
-        ).executionContextId
-      : undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   const expired = new Promise<never>((_, reject) => {
@@ -1421,6 +1411,27 @@ export const evaluate = async (
       );
     }, timeoutMs);
   });
+  // A world of its own shares the DOM, but pages cannot see the agent's globals or wrappers.
+  // Its setup runs under the same deadline, and authority is checked again before dispatch.
+  const isolated =
+    world === "isolated"
+      ? cdp.send("Page.getFrameTree").then(({ frameTree }) =>
+          cdp.send("Page.createIsolatedWorld", {
+            frameId: frameTree.frame.id,
+            worldName: "t3-agent",
+          }),
+        )
+      : undefined;
+  if (isolated) void isolated.catch(constVoid);
+  const contextId = isolated
+    ? (
+        await Promise.race([isolated, expired]).catch((cause: unknown) => {
+          clearTimeout(timer);
+          throw cause;
+        })
+      ).executionContextId
+    : undefined;
+  await authorize();
   const params = {
     expression: input.expression,
     awaitPromise: input.awaitPromise ?? true,

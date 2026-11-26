@@ -11,7 +11,7 @@ const executable = process.env.CHROMERIA_TEST_ELECTRON;
 const execute = NodeUtil.promisify(NodeChildProcess.execFile);
 
 describe.skipIf(!executable)("real Electron desktop tab identity", () => {
-  it("reports navigator.webdriver false and no Headless marker while a debugger drives the tab", async () => {
+  it("reports navigator.webdriver false and no Headless marker in its user agent or client hints while a debugger drives the tab", async () => {
     const dir = await NodeFSP.mkdtemp(
       NodePath.join(NodeOS.tmpdir(), "chromeria-electron-webdriver-"),
     );
@@ -23,19 +23,24 @@ describe.skipIf(!executable)("real Electron desktop tab identity", () => {
         entry,
         `
 import { app, BrowserWindow } from "electron";
+import http from "node:http";
 app.setPath("userData", ${JSON.stringify(NodePath.join(dir, "user-data"))});
 app.disableHardwareAcceleration();
 app.whenReady().then(async () => {
   try {
+    // A loopback page is a secure context, so client hints are exposed.
+    const server = http.createServer((_request, response) => response.end("<title>tab</title>"));
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const window = new BrowserWindow({ show: false });
-    await window.loadURL("data:text/html,<title>tab</title>");
+    await window.loadURL("http://127.0.0.1:" + server.address().port + "/");
     window.webContents.debugger.attach("1.3");
     await window.webContents.debugger.sendCommand("Runtime.enable");
     const { result } = await window.webContents.debugger.sendCommand("Runtime.evaluate", {
-      expression: "JSON.stringify({ webdriver: navigator.webdriver, ua: navigator.userAgent })",
+      expression: "JSON.stringify({ webdriver: navigator.webdriver, ua: navigator.userAgent, brands: navigator.userAgentData.brands.map((each) => each.brand) })",
       returnByValue: true,
     });
     process.stdout.write("WEBDRIVER_RESULT " + result.value + "\\n");
+    server.close();
     app.exit(0);
   } catch (error) {
     process.stderr.write("WEBDRIVER_FAILED " + String(error) + "\\n");
@@ -67,9 +72,12 @@ app.whenReady().then(async () => {
       const seen = JSON.parse(line!.slice("WEBDRIVER_RESULT ".length)) as {
         webdriver: boolean;
         ua: string;
+        brands: string[];
       };
       expect(seen.webdriver).toBe(false);
       expect(seen.ua).not.toContain("Headless");
+      expect(seen.brands.length).toBeGreaterThan(0);
+      expect(seen.brands.join(" ")).not.toContain("Headless");
     } finally {
       await NodeFSP.rm(dir, { recursive: true, force: true });
     }
