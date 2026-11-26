@@ -2,7 +2,10 @@ import { T, Var, msg, useGT, useMessages } from "gt-react";
 import { useSubagentOpen } from "./useSubagentOpen";
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { AgentElapsed } from "./AgentElapsed";
-import { projectedSubagentsToRuntime } from "@t3tools/client-runtime/state/subagentRuntime";
+import {
+  projectedSubagentsToRuntime,
+  subagentIconDriver,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import { use, type KeyboardEventHandler, type ReactNode } from "react";
 import { useThreadShell, useProject } from "../../state/entities";
 import type { SideThreadOpenIntent } from "@t3tools/client-runtime/side-thread";
@@ -356,7 +359,7 @@ export function EnvironmentSubagentAvatar({
   return (
     <SubagentAvatar
       {...props}
-      driver={providerDriver ?? (remote === undefined ? driver : undefined)}
+      driver={subagentIconDriver({ remote, driver, resolvedDriver: providerDriver })}
       displayName={displayName}
       iconUrl={iconUrl}
       accentColor={accentColor}
@@ -658,6 +661,7 @@ function SubagentTimelineLink(props: {
         <ThreadHoverCardPopup>
           <SubagentTimelineTooltip
             {...props}
+            remote={remote}
             threadId={targetThreadId}
             childEnvironmentId={childEnvironmentId}
             elapsed={
@@ -680,6 +684,7 @@ function SubagentTimelineTooltip(
     model: string | null;
     modelSelection: OrchestrationV2Subagent["modelSelection"];
     elapsed: ReactNode;
+    remote: OrchestrationV2RemoteTaskChild | undefined;
   },
 ) {
   const environmentId = props.parentRef.environmentId;
@@ -699,6 +704,13 @@ function SubagentTimelineTooltip(
   const childProject = useProject(
     child ? scopeProjectRef(childEnvironmentId, child.projectId) : null,
   );
+  const matched = providers.find((provider) => provider.instanceId === props.providerInstanceId);
+  const iconDriver = subagentIconDriver({
+    remote: props.remote,
+    driver: props.driver,
+    resolvedDriver: matched?.driver,
+  });
+  const provider = matched?.driver === iconDriver ? matched : undefined;
   return (
     <SubagentTooltipContent
       title={formatSubagentDisplayTitle(child?.title ?? props.title)}
@@ -706,9 +718,9 @@ function SubagentTimelineTooltip(
       providerInstanceId={props.providerInstanceId}
       origin={props.origin}
       modelSelection={props.modelSelection}
-      provider={providers.find((provider) => provider.instanceId === props.providerInstanceId)}
-      providers={providers}
-      driver={props.driver}
+      provider={provider}
+      providers={props.remote === undefined ? providers : undefined}
+      driver={iconDriver}
       elapsed={props.elapsed}
       status={props.status}
       result={props.result}

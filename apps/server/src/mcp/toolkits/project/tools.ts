@@ -11,6 +11,7 @@ import {
   clampedPositiveInt,
   NonNegativeInt,
   ModelSelection,
+  ProviderDriverKind,
   TrimmedNonEmptyString,
   ThreadId,
   RunId,
@@ -196,6 +197,8 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     link: Schema.optional(Schema.String),
     projectId: ProjectId,
     modelSelection: ModelSelection,
+    /** Provider kind that owns `modelSelection`, so a remote parent can draw its icon. */
+    driver: Schema.optional(ProviderDriverKind),
     runId: Schema.NullOr(RunId),
     purpose: Schema.optional(ExecutionPurpose),
     warnings: Schema.optional(Schema.Array(Schema.String)),
