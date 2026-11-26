@@ -1618,8 +1618,10 @@ export function mergeCiGate(
   const namesOf = (items: ReadonlyArray<{ readonly name: string }>) => [
     ...new Set(items.map((item) => item.name)),
   ];
+  const blocked = (check: { readonly status: string }) =>
+    check.status === "failure" || check.status === "cancelled";
   const required = checks.filter((check) => check.required === true);
-  const failed = required.filter((check) => check.status === "failure");
+  const failed = required.filter(blocked);
   if (failed.length > 0) return { kind: "refuse", names: namesOf(failed) };
   const waiting = required.filter(
     (check) => check.status === "pending" || check.status === "action-required",
@@ -1627,7 +1629,7 @@ export function mergeCiGate(
   if (waiting.length > 0) return { kind: "wait", names: namesOf(waiting) };
   if (truncated) return { kind: "wait", names: ["CI"] };
   if (checks.some((check) => typeof check.required === "boolean")) return { kind: "clear" };
-  const failedAny = checks.filter((check) => check.status === "failure");
+  const failedAny = checks.filter(blocked);
   if (failedAny.length > 0) return { kind: "refuse", names: namesOf(failedAny) };
   const waitingAny = checks.filter(
     (check) => check.status === "pending" || check.status === "action-required",

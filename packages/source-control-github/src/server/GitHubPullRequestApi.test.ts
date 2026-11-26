@@ -3224,7 +3224,7 @@ layer("GitHubPullRequestApi.layer", (it) => {
   const requiredCheck = (
     name: string,
     status: "IN_PROGRESS" | "COMPLETED",
-    conclusion: "SUCCESS" | "FAILURE" | null,
+    conclusion: "SUCCESS" | "FAILURE" | "CANCELLED" | null,
     isRequired: boolean,
   ) => ({
     __typename: "CheckRun" as const,
@@ -3294,6 +3294,25 @@ layer("GitHubPullRequestApi.layer", (it) => {
       expect(error.message).toContain("Test Server 3");
       expect(variablesOf("mergePullRequest(")).toEqual([]);
       expect(variablesOf("enablePullRequestAutoMerge(")).toEqual([]);
+    }),
+  );
+
+  it.effect("refuses a merge when a required check was cancelled", () =>
+    Effect.gen(function* () {
+      route(
+        ["query PullRequestActionState", actionState({ mergeStateStatus: "CLEAN" })],
+        [
+          "query PullRequestCheckContexts",
+          checkContexts([requiredCheck("Check", "COMPLETED", "CANCELLED", true)]),
+        ],
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      const error = yield* Effect.flip(
+        cli.runPullRequestAction({ ...pullRequestInput, action: "merge" }),
+      );
+      expect(error._tag).toBe("GitHubMergeChecksRefusedError");
+      expect(error.message).toContain("Check");
+      expect(variablesOf("mergePullRequest(")).toEqual([]);
     }),
   );
 
@@ -3403,6 +3422,65 @@ layer("GitHubPullRequestApi.layer", (it) => {
       });
       expect(restCallsTo("merge-async")).toEqual([]);
       expect(variablesOf("enablePullRequestAutoMerge(")).toHaveLength(1);
+    }),
+  );
+
+  it.effect("does not merge a stack while a lower layer's required check is pending", () =>
+    Effect.gen(function* () {
+      route(
+        ["PullRequestNodeId", { data: { repository: { pullRequest: { id: "PR_7" } } } }],
+        ["enablePullRequestAutoMerge(", openAutoMerge],
+        [
+          "stacks?pull_request=7",
+          [
+            {
+              number: 3,
+              url: "https://api.github.com/repos/acme/web/stacks/3",
+              base: { ref: "main" },
+              pull_requests: [
+                { number: 6, head: { ref: "one", sha: "aaa" }, state: "open", draft: false },
+                { number: 7, head: { ref: "two", sha: "bbb" }, state: "open", draft: false },
+              ],
+            },
+          ],
+        ],
+      );
+      const answer = mockedExecute.getMockImplementation()!;
+      mockedExecute.mockImplementation((call) => {
+        if (call.kind === "graphql" && call.operationName === "PullRequestCheckContexts") {
+          const pending = call.variables?.["number"] === 6;
+          return Effect.succeed(
+            output(
+              encodeJson(
+                checkContexts([
+                  requiredCheck(
+                    pending ? "Lower check" : "Check",
+                    pending ? "IN_PROGRESS" : "COMPLETED",
+                    pending ? null : "SUCCESS",
+                    true,
+                  ),
+                ]),
+              ),
+            ),
+          );
+        }
+        return answer(call);
+      });
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      yield* cli.runPullRequestAction({
+        ...pullRequestInput,
+        action: "merge",
+        stackNumber: 3,
+        expectedStackHeads: [
+          { number: 6, headSha: "aaa" },
+          { number: 7, headSha: "bbb" },
+        ],
+      });
+      expect(restCallsTo("merge-async")).toEqual([]);
+      expect(variablesOf("enablePullRequestAutoMerge(")).toHaveLength(1);
+      expect(
+        variablesOf("query PullRequestCheckContexts").map((variables) => variables["number"]),
+      ).toEqual([7, 6]);
     }),
   );
 

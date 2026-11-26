@@ -2870,7 +2870,30 @@ export const make = Effect.gen(function* () {
           return stackAction(input.action);
         }
         return Effect.gen(function* () {
-          const gate = yield* readMergeCi(input);
+          // merge-async lands every open layer up to this one, so each of those heads is gated.
+          const layers = [
+            ...new Set([
+              input.number,
+              ...(input.expectedStackHeads?.map((layer) => layer.number) ?? []),
+            ]),
+          ];
+          const gates = yield* Effect.forEach(
+            layers,
+            (number) => readMergeCi({ ...input, number }),
+            { concurrency: 1 },
+          );
+          const refusedNames = [
+            ...new Set(gates.flatMap((gate) => (gate.kind === "refuse" ? gate.names : []))),
+          ];
+          const waitingNames = [
+            ...new Set(gates.flatMap((gate) => (gate.kind === "wait" ? gate.names : []))),
+          ];
+          const gate =
+            refusedNames.length > 0
+              ? { kind: "refuse" as const, names: refusedNames }
+              : waitingNames.length > 0
+                ? { kind: "wait" as const, names: waitingNames }
+                : { kind: "clear" as const, names: [] as ReadonlyArray<string> };
           if (input.action === "merge" && gate.kind === "refuse") {
             return yield* new GitHubMergeChecksRefusedError({ names: [...gate.names] });
           }
@@ -2882,7 +2905,7 @@ export const make = Effect.gen(function* () {
             (layer) => layer.number === input.number,
           )?.headSha;
           const names = gate.kind === "clear" ? [] : [...gate.names];
-          const waiting = new GitHubMergeWaitingError({ names });
+          const waitingError = new GitHubMergeWaitingError({ names });
           const armed = stackAction("enable-auto-merge").pipe(
             Effect.andThen(pullRequestNodeId(target)),
             Effect.flatMap((pullRequestId) =>
@@ -2902,11 +2925,11 @@ export const make = Effect.gen(function* () {
             // Like `gh pr merge --auto`: a stack that can merge now merges, re-pinned to its heads.
             // Required CI still open must not take that path: the merge API would bypass it.
             hold
-              ? Effect.catchIf(alreadyMergeable, () => Effect.fail(waiting))
+              ? Effect.catchIf(alreadyMergeable, () => Effect.fail(waitingError))
               : Effect.catchIf(alreadyMergeable, () => stackAction("merge")),
           );
           return input.action === "merge" && hold
-            ? yield* armed.pipe(Effect.mapError(() => waiting))
+            ? yield* armed.pipe(Effect.mapError(() => waitingError))
             : yield* armed;
         });
       }
