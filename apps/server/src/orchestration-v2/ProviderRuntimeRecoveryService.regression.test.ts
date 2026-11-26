@@ -51,6 +51,7 @@ it("uses the thread provider for stale background work without provider threads"
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getUnresolvedRestartCuts: () => Effect.succeed([]),
           getRecoveryThreadIds: () => Effect.succeed([threadId]),
           getRuntimeRecoveryProjection: () => Effect.succeed(projection),
         }),
@@ -65,6 +66,7 @@ it("uses the thread provider for stale background work without provider threads"
           runRecoveryOnce: Effect.succeed(false),
         }),
         Layer.mock(EffectOutbox.EffectOutboxV2)({
+          unsentSteers: Effect.succeed([]),
           reconcileAfterProcessLoss: Effect.succeed({ requeued: 0, cancelled: 0 }),
         }),
       ),
