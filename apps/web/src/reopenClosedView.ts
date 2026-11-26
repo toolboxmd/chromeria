@@ -163,6 +163,10 @@ export async function reopenClosedView(
     case "linked-thread":
       panels.openLinkedThread(ref, surface);
       break;
+    // Fork: an Issue opened beside the thread (toolboxmd/t3code#40).
+    case "github-issue":
+      panels.openGitHubIssue(ref, surface);
+      break;
     default:
       panels.open(ref, surface.kind);
   }
