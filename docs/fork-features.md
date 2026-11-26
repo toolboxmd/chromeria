@@ -4255,7 +4255,7 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/issues/993",
     "https://github.com/toolboxmd/chromeria/issues/995"
   ],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/main...feat/site-hold"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/1003"],
   "newFiles": [
     "apps/mobile/src/features/browser/SiteHoldBanner.tsx",
     "apps/server/src/preview/SiteHold.test.ts",

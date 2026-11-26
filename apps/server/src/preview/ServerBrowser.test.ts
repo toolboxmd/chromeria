@@ -3589,6 +3589,10 @@ it.live(
           expect(yield* Effect.flip(invoke(operation, input))).toMatchObject({
             reason: "antiBotChallenge",
           });
+        expect(
+          yield* Effect.flip(invoke("close", {})),
+          "the agent cannot end the hold by closing its tab",
+        ).toMatchObject({ reason: "antiBotChallenge" });
         expect(requests.length, "a held site gets no request").toBe(sent);
 
         const viewer = yield* browser.attachViewer(viewerInput(tabId, true));

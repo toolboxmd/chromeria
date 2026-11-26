@@ -87,6 +87,14 @@ describe("classifyAntiBotPage", () => {
       ),
     ],
     ["an ordinary 403", page(403, "<title>Access denied</title><p>Forbidden</p>")],
+    [
+      "a HUMAN-protected 404 that carries the sitewide snippet",
+      page(404, "<title>Not found</title><script>window._pxAppId='PX1'</script>"),
+    ],
+    [
+      "a Cloudflare 502 error page",
+      page(502, `<div id="cf-error-details">Bad gateway</div>`, { server: "cloudflare" }),
+    ],
     ["an ordinary Cloudflare 404", page(404, "<title>Not found</title>", { server: "cloudflare" })],
     [
       "a DataDome-protected 404",
@@ -94,6 +102,21 @@ describe("classifyAntiBotPage", () => {
     ],
   ])("ignores %s", (_name, verdict) => {
     expect(verdict).toBeUndefined();
+  });
+});
+
+describe("classifyAntiBotPage without a status", () => {
+  it("judges a page whose response was not observed by its content", () => {
+    expect(
+      classifyAntiBotPage({
+        status: undefined,
+        headers: {},
+        html: `<iframe src="https://geo.captcha-delivery.com/captcha/"></iframe>`,
+      }),
+    ).toEqual({ vendor: "datadome", kind: "challenge" });
+    expect(
+      classifyAntiBotPage({ status: undefined, headers: {}, html: "<p>Results</p>" }),
+    ).toBeUndefined();
   });
 });
 

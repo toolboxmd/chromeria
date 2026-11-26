@@ -8,7 +8,8 @@ export interface AntiBotVerdict {
 }
 
 export interface MainDocument {
-  readonly status: number;
+  /** Undefined when the response was not observed, such as after a reconnect: judge by content. */
+  readonly status: number | undefined;
   /** Lower-case names, as Playwright reports them. */
   readonly headers: Readonly<Record<string, string>>;
   readonly html: string;
@@ -22,15 +23,15 @@ export interface MainDocument {
 export const classifyAntiBotPage = (page: MainDocument): AntiBotVerdict | undefined => {
   const { status, headers, html } = page;
   if (headers["cf-mitigated"] === "challenge") return { vendor: "cloudflare", kind: "challenge" };
-  if (status < 400) return undefined;
+  if (status !== undefined && status < 400) return undefined;
   if (/captcha-delivery\.com/.test(html))
     // DataDome's page config marks a ban as `'t':'bv'`; anything else can be passed.
     return {
       vendor: "datadome",
       kind: /['"]t['"]\s*:\s*['"]bv['"]/.test(html) ? "blocked" : "challenge",
     };
-  if (/px-captcha|captcha\.px-cdn\.net|_pxAppId/.test(html))
-    return { vendor: "human", kind: "challenge" };
+  // `_pxAppId` is on every HUMAN-protected page, so only the captcha itself counts.
+  if (/px-captcha|captcha\.px-cdn\.net/.test(html)) return { vendor: "human", kind: "challenge" };
   if (/_Incapsula_Resource|Incapsula incident ID/.test(html))
     return {
       vendor: "imperva",
@@ -44,10 +45,12 @@ export const classifyAntiBotPage = (page: MainDocument): AntiBotVerdict | undefi
     /errors\.edgesuite\.net/.test(html)
   )
     return { vendor: "akamai", kind: "blocked" };
-  if (headers.server === "cloudflare") {
+  if (headers.server === "cloudflare" || status === undefined) {
     if (/cf-chl-|challenge-platform|_cf_chl_opt/.test(html))
       return { vendor: "cloudflare", kind: "challenge" };
-    if (/cf-error-details/.test(html)) return { vendor: "cloudflare", kind: "blocked" };
+    // Cloudflare's 5xx pages share `cf-error-details`; only the firewall block says this.
+    if (status === 403 && /cf-error-details/.test(html) && /you have been blocked/i.test(html))
+      return { vendor: "cloudflare", kind: "blocked" };
   }
   return undefined;
 };

@@ -1802,14 +1802,17 @@ const make = Effect.gen(function* () {
           const document = { status: response.status(), headers: response.headers() };
           tab.mainDocument = document;
           if (document.status >= 400 || document.headers["cf-mitigated"] !== undefined)
-            tab.siteHoldCheck = response
-              .text()
-              .catch(() => "")
-              .then((html) => {
-                const verdict = classifyAntiBotPage({ ...document, html });
-                if (verdict) return raiseSiteHold(tab, verdict, response.url());
-              })
-              .catch(constVoid);
+            tab.siteHoldCheck = Promise.all([
+              tab.siteHoldCheck,
+              response
+                .text()
+                .catch(() => "")
+                .then((html) => {
+                  const verdict = classifyAntiBotPage({ ...document, html });
+                  if (verdict) return raiseSiteHold(tab, verdict, response.url());
+                })
+                .catch(constVoid),
+            ]).then(constVoid);
         }
       });
       page.on("console", (message) => {
@@ -3481,7 +3484,7 @@ const make = Effect.gen(function* () {
       const verdict =
         siteOf(tab.page.url()) === hold.site
           ? classifyAntiBotPage({
-              status: tab.mainDocument?.status ?? 200,
+              status: tab.mainDocument?.status,
               headers: tab.mainDocument?.headers ?? {},
               html,
             })
@@ -3763,6 +3766,9 @@ const make = Effect.gen(function* () {
           message: "A human controls this tab.",
           reason: "humanControl",
         });
+      // Closing ends the tab's hold, so only the user may close a tab that holds its site.
+      const [held] = siteHolds.heldBy(tab.tabId);
+      if (held) throw siteHoldError(held[1]);
       stopTabWatches(tab, "closed");
       await runPromise(manager.close({ threadId: tab.threadId, tabId: tab.tabId }));
       dropTab(tab, false);
