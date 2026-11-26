@@ -17,6 +17,7 @@ import {
   repositoryKey,
   sortIssues,
   type EnvironmentIssueEntry,
+  type IssueListTarget,
   type IssueTreeNode,
   environmentIdsWithCapability,
 } from "./issueList.logic";
@@ -141,7 +142,7 @@ describe("mergeIssueLists", () => {
     const listingB = { environmentId: ENV_B, input: { state: "open" } } as const;
     // ENV_A's first search answers every page with the cursor it was read from while its second
     // search advances once and ends; ENV_B has one page and is done.
-    const cursorsOf = (target: { environmentId: EnvironmentId; input: { cursors?: object } }) =>
+    const cursorsOf = (target: IssueListTarget) =>
       target.environmentId === ENV_B
         ? {}
         : target.input.cursors === undefined
