@@ -7,7 +7,7 @@ Agents can render self-contained HTML visuals (charts, diagrams, tables, image c
 Ask an agent for a visual (e.g. "show this as a chart" or "make a collage of these screenshots"). The rendered page appears above the agent's reply, adapts to your light/dark theme, and runs sandboxed away from your T3 Code session.
 
 - **Local images**: Embedded when published so they stay intact even if the original files move or are deleted.
-- **Preview browser**: Before publishing, agents verify their visual with T3 Code's bundled headless Chromium (~120 MB one-time download, shared with [remote browser tabs](./remote-access.md#browser-host-setup)).
+- **Preview browser**: Before publishing, agents verify their visual with a headless Chrome that T3 Code keeps for itself, never a browser you installed (~200 MB one-time download, shared with [remote browser tabs](./remote-access.md#browser-host-setup)).
 - **Network restrictions**: Previews can load public CDN assets but block private/local-network IPs. If Clash/Mihomo fake-IP DNS causes CDN loads to fail, inline the resource, add the host to `fake-ip-filter`, or switch proxy DNS to `redir-host`.
 
 ## MCP apps
