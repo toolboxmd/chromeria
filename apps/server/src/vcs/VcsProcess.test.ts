@@ -180,16 +180,18 @@ describe("VcsProcess.run", () => {
         ),
       );
 
-      const capture = yield* service
-        .run({
-          ...baseInput,
-          operation: VcsProcess.CHECKPOINT_CAPTURE_OPERATION,
-          args: ["add", "--all"],
-        })
-        .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
-      yield* TestClock.adjust("1 second");
-      expect(Exit.isSuccess(yield* Fiber.join(capture))).toBe(true);
-      expect(attempts).toBe(2);
+      for (const operation of [
+        VcsProcess.CHECKPOINT_CAPTURE_OPERATION,
+        "GitVcsDriver.checkpoints.restoreCheckpoint",
+      ]) {
+        attempts = 0;
+        const checkpoint = yield* service
+          .run({ ...baseInput, operation, args: ["add", "--all"] })
+          .pipe(Effect.exit, Effect.forkChild({ startImmediately: true }));
+        yield* TestClock.adjust("1 second");
+        expect(Exit.isSuccess(yield* Fiber.join(checkpoint)), operation).toBe(true);
+        expect(attempts).toBe(2);
+      }
 
       attempts = 0;
       const error = yield* Effect.flip(service.run(baseInput));
