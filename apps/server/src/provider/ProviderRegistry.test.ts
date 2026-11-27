@@ -759,6 +759,8 @@ it.layer(
           readonly usage: Parameters<typeof statusForUsageReply>[0];
           readonly config?: Record<string, unknown>;
           readonly published: number | "unlimited" | "none" | undefined;
+          /** The reply breaks Codex's protocol schema, so its usage is not read either. */
+          readonly invalid?: true;
         }> = [
           {
             reply: "failed",
@@ -766,6 +768,30 @@ it.layer(
             published: undefined,
           },
           { reply: "timed out", usage: "silent", published: undefined },
+          {
+            reply: "not valid: credits without hasCredits",
+            usage: answered({ unlimited: false, balance: "4321" }),
+            published: undefined,
+            invalid: true,
+          },
+          {
+            reply: "not valid: credits without unlimited",
+            usage: answered({ hasCredits: true, balance: "4321" }),
+            published: undefined,
+            invalid: true,
+          },
+          {
+            reply: "not valid: unlimited with a JSON number as balance",
+            usage: answered({ hasCredits: true, unlimited: true, balance: 4321 }),
+            published: undefined,
+            invalid: true,
+          },
+          {
+            reply: "not valid: no credits with a JSON number as balance",
+            usage: answered({ hasCredits: false, unlimited: false, balance: 4321 }),
+            published: undefined,
+            invalid: true,
+          },
           {
             reply: "never ran",
             usage: answered({ ...paid, balance: "4321" }),
@@ -829,6 +855,12 @@ it.layer(
                 },
             row.reply,
           );
+          if (row.invalid) {
+            assert.deepStrictEqual(status.usageLimits?.windows, [], row.reply);
+            assert.strictEqual(status.usageLimits?.unavailable?.reason, "probeFailed", row.reply);
+          } else if (row.published !== undefined) {
+            assert.strictEqual(status.usageLimits?.windows[0]?.usedPercent, 42, row.reply);
+          }
         }
       }),
     );
