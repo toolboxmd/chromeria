@@ -572,6 +572,22 @@ describe("server browser element refs", () => {
       expect(await page.evaluate("scrollY"), `run ${run}`).toBe(100);
     }
 
+    // A page that takes the gesture and scrolls itself later still moves once.
+    await page.evaluate(`(() => {
+      scrollTo(0, 0);
+      window.addEventListener("wheel", (event) => {
+        event.preventDefault();
+        const delta = event.deltaY;
+        setTimeout(() => scrollBy(0, delta), 300);
+      }, { passive: false, once: true });
+    })()`);
+    await ServerBrowserPage.scroll(page, { deltaY: 100 }, undefined, {
+      ...human,
+      from: { x: 700, y: 500 },
+    });
+    await page.evaluate("new Promise((done) => setTimeout(done, 800))");
+    expect(await page.evaluate("scrollY"), "a page that scrolls itself late").toBe(100);
+
     // A closed shadow root and slotted content hide their boxes from the probe; the page still moves.
     for (const mode of ["closed", "partial", "slotted"] as const) {
       const shadow =

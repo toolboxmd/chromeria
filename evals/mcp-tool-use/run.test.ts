@@ -5435,12 +5435,15 @@ it.each([
   );
 });
 
-it("the site-search case needs the query typed, then submitted, not hovered", () => {
+it("the site-search case needs the query typed, then submitted, then the results read", () => {
   const line = NodeFS.readFileSync(new URL("./cases/computer-use.ndjson", import.meta.url), "utf8")
     .split("\n")
     .find((entry) => entry.includes('"id": "cu-child-searches-through-the-page"'));
   const testCase = decodeDeviceCase(line ?? "");
-  const run = (submit: { tool: string; input: Record<string, unknown> }): SampleRun => ({
+  const run = (
+    submit: { tool: string; input: Record<string, unknown> },
+    observed = true,
+  ): SampleRun => ({
     calls: [
       { step: 0, tool: "preview_open", input: {}, failed: false, output: "" },
       {
@@ -5451,13 +5454,16 @@ it("the site-search case needs the query typed, then submitted, not hovered", ()
         output: "",
       },
       { step: 2, ...submit, failed: false, output: "" },
+      ...(observed
+        ? [{ step: 3, tool: "preview_snapshot", input: {}, failed: false, output: "" }]
+        : []),
     ],
     text: "Kot Classic 2 kg, 29,49 zł",
     finalText: "Kot Classic 2 kg, 29,49 zł",
     stopReason: "end_turn",
   });
-  const failing = (submit: { tool: string; input: Record<string, unknown> }) =>
-    gradeSample(testCase.expect, run(submit))
+  const failing = (submit: { tool: string; input: Record<string, unknown> }, observed = true) =>
+    gradeSample(testCase.expect, run(submit, observed))
       .filter((check) => !check.pass)
       .map((check) => check.check);
   assert.deepEqual(failing({ tool: "preview_press", input: { key: "Enter" } }), []);
@@ -5468,5 +5474,14 @@ it("the site-search case needs the query typed, then submitted, not hovered", ()
   assert.include(
     failing({ tool: "preview_act", input: { action: "hover", locator: "aria-ref=e5" } }).join(),
     "preview_press|preview_act|preview_click",
+  );
+  // A right-click opens a menu, not the results; and the results must be read after it.
+  assert.include(
+    failing({ tool: "preview_click", input: { locator: "aria-ref=e5", button: "right" } }).join(),
+    "preview_press|preview_act|preview_click",
+  );
+  assert.include(
+    failing({ tool: "preview_press", input: { key: "Enter" } }, false).join(),
+    "callsInOrder",
   );
 });

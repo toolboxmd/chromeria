@@ -1341,10 +1341,12 @@ export const scroll = async (
       new Promise((resolve) => setTimeout(resolve, 2_500)),
     ]).catch(() => undefined);
     let after = await position();
-    for (let check = 0; check < 10; check++) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+    // Settled means unchanged for half a second: a page may take the gesture and scroll
+    // itself a little later, and filling in before it does would scroll twice.
+    for (let check = 0, still = 0; check < 20 && still < 5; check++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
       const now = await position();
-      if (now[0] === after[0] && now[1] === after[1]) break;
+      still = now[0] === after[0] && now[1] === after[1] ? still + 1 : 0;
       after = now;
     }
     const left = [delta[0] - (after[0] - before[0]), delta[1] - (after[1] - before[1])];
