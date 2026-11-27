@@ -1095,6 +1095,24 @@ describe("mobile composer drafts", () => {
     expect(getComposerDraftSnapshot(draftKey).context).toBeUndefined();
   });
 
+  it("keeps a new task's Bare and Promachos marks through persistence and drops them once sent", () => {
+    const draftKey = "new-task:bare-project";
+    updateComposerDraftSettings(draftKey, { bare: true, promachos: true });
+    const draft = getComposerDraftSnapshot(draftKey);
+    expect(draft.bare).toBe(true);
+    const decoded = decodePersistedComposerState(
+      JSON.parse(JSON.stringify({ schemaVersion: 1, drafts: { [draftKey]: draft } })),
+    ).drafts[draftKey];
+    expect(decoded?.bare).toBe(true);
+    expect(decoded?.promachos).toBe(true);
+    const sent = clearComposerDraftContentState(
+      { [draftKey]: { ...decoded!, text: "Task", runtimeMode: "full-access" } },
+      draftKey,
+    );
+    expect(sent[draftKey]?.bare).toBeUndefined();
+    expect(sent[draftKey]?.promachos).toBeUndefined();
+  });
+
   it("keeps each draft's caret when another composer moves its own caret", () => {
     const threadKey = "caret-environment:caret-thread";
     const newTaskKey = "caret-environment:new-task:caret-draft";
@@ -2680,6 +2698,7 @@ describe("mobile composer drafts", () => {
       attachments: [],
       runtimeMode: "full-access",
       interactionMode: "default",
+      bare: true,
     };
 
     const edited: ComposerDraft = {
@@ -2687,6 +2706,7 @@ describe("mobile composer drafts", () => {
       attachments: [],
       runtimeMode: "full-access",
       interactionMode: "plan",
+      bare: true,
     };
 
     expect(undoComposerDraftMergeState({ [draftKey]: edited }, draftKey, snapshot, merged)).toEqual(
@@ -2699,6 +2719,16 @@ describe("mobile composer drafts", () => {
         },
       },
     );
+    // A Bare toggle made during the merge is the user's, so rollback keeps it.
+    const plainMerge: ComposerDraft = { ...merged, bare: undefined };
+    expect(
+      undoComposerDraftMergeState(
+        { [draftKey]: { ...plainMerge, bare: true } },
+        draftKey,
+        snapshot,
+        plainMerge,
+      )[draftKey]?.bare,
+    ).toBe(true);
   });
 
   it("takes out only what the merge inserted when the user edited during it", () => {

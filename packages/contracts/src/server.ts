@@ -7,6 +7,7 @@ import {
   ServerSelfUpdateMethod,
 } from "./environment.ts";
 import { AuthClientPresentationMetadata, ServerAuthDescriptor } from "./auth.ts";
+import { BareSupport } from "./bareLaunch.ts";
 import {
   ForwardCompatibleArray,
   IsoDateTime,
@@ -255,6 +256,18 @@ export const ServerProviderUpdateState = Schema.Struct({
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
+/**
+ * Chromeria: what a Codex login's usage read said it can still spend on credits, and when the
+ * answer arrived. Present only when that answer told: `none` is "nothing to spend", absent is
+ * "not read, or the answer did not say". Live snapshots only; `withoutProviderCredits` keeps it off disk.
+ */
+export const ServerProviderCredits = Schema.Struct({
+  readAt: IsoDateTime,
+  /** Whole credits, `unlimited`, or `none`. */
+  balance: Schema.Union([Schema.Literals(["unlimited", "none"]), PositiveInt]),
+});
+export type ServerProviderCredits = typeof ServerProviderCredits.Type;
+
 export const ServerProvider = Schema.Struct({
   // Only instanceId is stable enough for provider routing.
   instanceId: ProviderInstanceId,
@@ -270,6 +283,8 @@ export const ServerProvider = Schema.Struct({
   supportedRuntimeModes: Schema.optional(ForwardCompatibleArray(RuntimeMode)),
   supportsConversationRollback: Schema.optional(Schema.Boolean),
   supportsTextGeneration: Schema.optional(Schema.Boolean),
+  /** Fork: whether a new thread may start bare here (toolboxmd/chromeria#319). */
+  bare: Schema.optional(BareSupport),
   setup: Schema.optional(
     Schema.Struct({
       canAuthenticate: Schema.Boolean,
@@ -324,6 +339,7 @@ export const ServerProvider = Schema.Struct({
    */
   workspaceRescannedAt: Schema.optionalKey(IsoDateTime),
   usageLimits: Schema.optional(ServerProviderUsageLimits),
+  credits: Schema.optionalKey(ServerProviderCredits),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   compatibilityAdvisory: Schema.optionalKey(ServerProviderCompatibilityAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
@@ -336,6 +352,15 @@ export const ServerProvider = Schema.Struct({
   loadedCatalogDigest: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type ServerProvider = typeof ServerProvider.Type;
+
+/** The provider as a cache may hold it, written or read: an account balance never rests on disk. */
+export function withoutProviderCredits<P extends { readonly credits?: ServerProviderCredits }>(
+  provider: P,
+): Omit<P, "credits"> {
+  if (provider.credits === undefined) return provider;
+  const { credits: _credits, ...rest } = provider;
+  return rest;
+}
 
 /** A provider without the lists that equal the ones its reader already holds. */
 export const ServerProviderDelta = ServerProvider.mapFields((fields) => ({
@@ -783,6 +808,8 @@ export const ServerConfig = Schema.Struct({
   secretReferences: Schema.optionalKey(Schema.Boolean),
   /** A secret request card may be answered with a secret provider reference. */
   secretRequestReferences: Schema.optionalKey(Schema.Boolean),
+  /** Chromeria: settings hold `prismUseCredits`; older servers drop the key without an error. */
+  prismUseCreditsSetting: Schema.optionalKey(Schema.Boolean),
   scratchWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
   newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
   /**

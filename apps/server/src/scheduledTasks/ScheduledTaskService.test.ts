@@ -1,3 +1,4 @@
+import * as BareLaunch from "../orchestration-v2/BareLaunch.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as NodeUtil from "node:util";
 
@@ -35,6 +36,7 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
+import * as MutationReceipts from "./mutationReceipts.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 
 const isScheduledTaskError = Schema.is(ScheduledTaskError);
@@ -43,6 +45,16 @@ const threadShell = (
   projectId: ProjectId,
   state: { archivedAt?: string | null; deletedAt?: string | null } = {},
 ) => ({ projectId, archivedAt: null, deletedAt: null, ...state }) as never;
+
+const movedProjectId = ProjectId.make("project:moved");
+const seedMoveProjects = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    INSERT INTO projection_projects (project_id, title, workspace_root, scripts_json, created_at, updated_at)
+    VALUES ('project:test', 'Original', '/projects/original', '[]', '1970-01-01', '1970-01-01'),
+           (${movedProjectId}, 'Destination', '/projects/destination', '[]', '1970-01-01', '1970-01-01')
+  `;
+});
 
 const insertRow = (
   sql: SqlClient.SqlClient,
@@ -199,7 +211,7 @@ it.effect(
         Effect.gen(function* () {
           yield* Layer.build(
             Layer.provideMerge(
-              ScheduledTaskService.layer,
+              ScheduledTaskService.layer.pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({}))),
               Layer.mergeAll(
                 ManagedPolicy.layerTest(),
                 Layer.mock(ThreadLaunchService.ThreadLaunchService)({
@@ -293,7 +305,7 @@ it.effect(
         Effect.gen(function* () {
           yield* Layer.build(
             Layer.provideMerge(
-              ScheduledTaskService.layer,
+              ScheduledTaskService.layer.pipe(Layer.provide(Layer.mock(BareLaunch.BareLaunch)({}))),
               Layer.mergeAll(
                 ManagedPolicy.layerTest(),
                 Layer.mock(ThreadLaunchService.ThreadLaunchService)({
@@ -358,6 +370,7 @@ it.effect("thread cleanup notifies subscribers and a finishing run cannot recrea
     const running = yield* Deferred.make<void>();
     const removed = yield* Deferred.make<void>();
     const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
       Layer.provide(
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
@@ -375,6 +388,7 @@ it.effect("thread cleanup notifies subscribers and a finishing run cannot recrea
             namedProjectsRoot: "/projects",
             isScratchProject: () => Effect.succeed(false),
           }),
+          Layer.mock(BareLaunch.BareLaunch)({}),
           NodeCrypto.layer,
           Scheduler.layer,
         ),
@@ -384,6 +398,7 @@ it.effect("thread cleanup notifies subscribers and a finishing run cannot recrea
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const threadId = ThreadId.make("thread:deleted-during-run");
       const { task } = yield* service.upsert({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         id: ScheduledTaskId.make("task:deleted-during-run"),
         title: "Check orchestration",
         prompt: "Check progress",
@@ -479,10 +494,12 @@ it.effect.each([
           Scheduler.layer,
         ),
       ),
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
     );
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const { task } = yield* service.upsert({
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         id: ScheduledTaskId.make("task:quota"),
         title: "Quota bookkeeping",
         prompt: "Update the notes",
@@ -516,7 +533,17 @@ it.effect.each([
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
-it.effect("a one-time task is removed once its turn completes", () =>
+// Fork: `at` is the fork's one-time trigger; accepted automation wraps either form.
+it.effect.each([
+  { name: "runAt", schedule: { type: "once", runAt: "2026-11-01T07:01:00.000Z" }, wrapped: false },
+  { name: "at", schedule: { type: "once", at: "2026-11-01T08:01:00+01:00" }, wrapped: false },
+  {
+    name: "wrapped runAt",
+    schedule: { type: "once", runAt: "2026-11-01T07:01:00.000Z" },
+    wrapped: true,
+  },
+  { name: "wrapped at", schedule: { type: "once", at: "2026-11-01T07:01:00Z" }, wrapped: true },
+] as const)("a one-time $name task is removed once its turn completes", ({ schedule, wrapped }) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(Date.parse("2026-11-01T07:00:00.000Z"));
     const projectId = ProjectId.make("project:test");
@@ -527,6 +554,7 @@ it.effect("a one-time task is removed once its turn completes", () =>
       Layer.provide(
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
+          Layer.mock(BareLaunch.BareLaunch)({}),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             sendToThread: (input) => Ref.set(sent, input.messageId).pipe(Effect.as({} as never)),
@@ -558,14 +586,21 @@ it.effect("a one-time task is removed once its turn completes", () =>
         title: "Release notes",
         prompt: "Draft the release notes",
         enabled: true,
-        schedule: { type: "once", runAt: "2026-11-01T07:01:00.000Z" },
+        schedule,
         projectId,
         threadId: ThreadId.make("thread:once"),
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         workspaceStrategy: { type: "root" },
         modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
         runtimeMode: "full-access",
         interactionMode: "default",
       });
+      if (wrapped) {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE scheduled_tasks SET schedule_json = json_object(
+          'type', 'destination-automation-v1', 'certificateId', 'certificate:once',
+          'schedule', json(schedule_json)) WHERE task_id = ${task.id}`;
+      }
       const dispatched = service.subscribeList().pipe(
         Stream.map(({ tasks }) => tasks.find((candidate) => candidate.id === task.id)),
         Stream.filter((current) => current?.lastRunStatus === "succeeded"),
@@ -600,6 +635,7 @@ it.effect("a paused one-time task run by hand before its time is kept", () =>
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+          Layer.mock(BareLaunch.BareLaunch)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
             sendToThread: (input) => Ref.set(sent, input.messageId).pipe(Effect.as({} as never)),
             getThreadShell: () => Effect.succeed(threadShell(projectId)),
@@ -629,6 +665,7 @@ it.effect("a paused one-time task run by hand before its time is kept", () =>
       const { task } = yield* service.upsert({
         id: ScheduledTaskId.make("task:paused-once"),
         title: "Release notes",
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         prompt: "Draft the release notes",
         enabled: true,
         schedule: { type: "once", runAt: "2026-11-01T08:00:00.000Z" },
@@ -657,11 +694,19 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
   Effect.gen(function* () {
     const scratch = ProjectId.make("project:scratch");
     const promoted = ProjectId.make("project:promoted");
-    const sends = yield* Ref.make<Array<{ projectId: ProjectId; commandId: string }>>([]);
+    const sends = yield* Ref.make<
+      Array<{
+        projectId: ProjectId;
+        commandId: string;
+        messageId: string | undefined;
+        text: string;
+      }>
+    >([]);
     // Saving reads it first. Then the rebind lands, and the promotion commits between the shell
     // read and the retry.
     const shellProjects = yield* Ref.make([promoted, scratch, promoted]);
     const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
       Layer.provide(
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
@@ -670,7 +715,12 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
             sendToThread: (input) =>
               Ref.updateAndGet(sends, (all) => [
                 ...all,
-                { projectId: input.projectId, commandId: input.commandId },
+                {
+                  projectId: input.projectId,
+                  commandId: input.commandId,
+                  messageId: input.messageId,
+                  text: input.text,
+                },
               ]).pipe(
                 Effect.flatMap((all) =>
                   all.length < 3
@@ -701,6 +751,7 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
       const threadId = ThreadId.make("thread:promoted-during-run");
       const { task } = yield* service.upsert({
         id: ScheduledTaskId.make("task:promoted-during-run"),
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         title: "Check in",
         prompt: "Check progress",
         enabled: true,
@@ -722,6 +773,11 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
         [promoted, scratch, promoted],
       );
       assert.equal(new Set(attempts.map((attempt) => attempt.commandId)).size, 1);
+      assert.equal(new Set(attempts.map((attempt) => attempt.messageId)).size, 1);
+      assert.deepEqual(
+        attempts.map((attempt) => attempt.text),
+        Array(3).fill(task.prompt),
+      );
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
@@ -729,15 +785,29 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
 it.effect("a fresh-session task launches one thread, then starts each later run fresh in it", () =>
   Effect.gen(function* () {
     const launches = yield* Ref.make(0);
-    const sends = yield* Ref.make<Array<{ threadId: ThreadId; freshContext?: boolean }>>([]);
+    const sends = yield* Ref.make<
+      Array<{ threadId: ThreadId; freshContext?: boolean; text: string }>
+    >([]);
+    const initialLaunch = yield* Ref.make<ThreadLaunchService.ThreadLaunchInput | undefined>(
+      undefined,
+    );
+    const messageIds = yield* Ref.make<Array<string>>([]);
     const launched = ThreadId.make("thread:fresh-session-task");
     const layer = ScheduledTaskService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
+          Layer.mock(BareLaunch.BareLaunch)({}),
           ManagedPolicy.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({
-            launch: () =>
-              Ref.update(launches, (n) => n + 1).pipe(
+            launch: (input) =>
+              Ref.set(initialLaunch, input).pipe(
+                Effect.andThen(Ref.update(launches, (n) => n + 1)),
+                Effect.andThen(
+                  Ref.update(messageIds, (all) => [
+                    ...all,
+                    String(input.initialMessage?.messageId),
+                  ]),
+                ),
                 Effect.as({ threadId: launched, resumed: false } as never),
               ),
           }),
@@ -753,9 +823,13 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
                 ...all,
                 {
                   threadId: input.threadId,
+                  text: input.text,
                   ...(input.freshContext === undefined ? {} : { freshContext: input.freshContext }),
                 },
-              ]).pipe(Effect.as({} as never)),
+              ]).pipe(
+                Effect.andThen(Ref.update(messageIds, (all) => [...all, input.messageId])),
+                Effect.as({} as never),
+              ),
           }),
           Layer.mock(SecretRequests.SecretRequests)({}),
           Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
@@ -771,6 +845,7 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const input = {
         id: ScheduledTaskId.make("task:fresh-session"),
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         title: "Triage",
         prompt: "Triage new issues",
         enabled: true,
@@ -784,6 +859,35 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
       yield* service.upsert({ ...input, threadMode: "fresh_session" });
 
       assert.equal((yield* service.runNow({ id: input.id })).threadId, launched);
+      const { commandId, initialMessage } = (yield* Ref.get(initialLaunch))!;
+      const delivered = initialMessage!.text;
+      assert.isTrue(delivered.startsWith(input.prompt + "\n\n"));
+      assert.include(delivered, "t3_thread_organize");
+      // Outcome writes are fenced by the start time, so a second start at that instant is refused.
+      // A keyed run can hold the instant without the local reservation; the refusal leaves it alone.
+      const sql = yield* SqlClient.SqlClient;
+      // Keep only the provenance that survives event log compaction.
+      yield* sql`
+        INSERT INTO orchestration_events
+          (event_id, command_id, stream_id, event_type, occurred_at, payload_json,
+            stream_version, aggregate_kind, actor_kind, metadata_json, application_event_version)
+        VALUES ('thread-created', ${commandId}, ${launched}, 'thread.created',
+          '1970-01-01T00:00:00Z', '{}', 1, 'thread', 'server', '{}', 2)
+      `;
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_messages
+          (message_id, thread_id, role, streaming, created_at, updated_at, payload_json)
+        VALUES (${initialMessage!.messageId}, ${launched}, 'user', 0,
+          '1970-01-01T00:00:00Z', '1970-01-01T00:00:00Z',
+          ${JSON.stringify({ scheduledTaskId: input.id })})
+      `;
+      yield* sql`UPDATE scheduled_tasks SET last_run_status = 'running' WHERE task_id = ${input.id}`;
+      const sameInstant = yield* Effect.flip(service.runNow({ id: input.id }));
+      assert.include(sameInstant.message, "already started a run at this instant");
+      const held = (yield* service.list()).tasks.find((task) => task.id === input.id)!;
+      assert.equal(held.lastRunStatus, "running");
+      assert.equal(held.runCount, 1);
+      yield* TestClock.adjust(5);
       // A form opened before the first run saves no thread; the binding stays.
       const { task } = yield* service.upsert({
         ...input,
@@ -792,6 +896,7 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
       });
       assert.equal(task.threadId, launched);
       assert.equal(task.threadMode, "fresh_session");
+      assert.equal(task.prompt, input.prompt);
       // A client that predates thread modes sends neither; both stay.
       const legacy = yield* service.upsert({ ...input, threadId: null });
       assert.equal(legacy.task.threadId, launched);
@@ -799,15 +904,45 @@ it.effect("a fresh-session task launches one thread, then starts each later run 
       yield* service.runNow({ id: input.id });
 
       assert.equal(yield* Ref.get(launches), 1);
-      assert.deepEqual(yield* Ref.get(sends), [{ threadId: launched, freshContext: true }]);
-      // Its thread stays in the old project, so moving the task leaves it for a new one.
-      const moved = yield* service.upsert({
+      assert.deepEqual(yield* Ref.get(sends), [
+        { threadId: launched, freshContext: true, text: delivered },
+      ]);
+      // After the clock steps back to the first run's instant, a Run Now still sends its own message.
+      yield* TestClock.setTime(0);
+      yield* service.runNow({ id: input.id });
+      assert.equal(new Set(yield* Ref.get(messageIds)).size, 3);
+      for (const prompt of ["/goal pause", "/compact"]) {
+        yield* service.upsert({ ...input, prompt, threadMode: "fresh_session" });
+        yield* TestClock.adjust(5);
+        yield* service.runNow({ id: input.id });
+        assert.equal((yield* Ref.get(sends)).at(-1)?.text, prompt);
+      }
+      const before = yield* service
+        .list()
+        .pipe(Effect.map(({ tasks }) => tasks.find((task) => task.id === input.id)!));
+      const move = {
         ...input,
-        projectId: ProjectId.make("project:moved"),
+        prompt: before.prompt,
+        projectId: movedProjectId,
         threadId: launched,
+      };
+      const rejected = yield* Effect.flip(service.upsert(move));
+      assert.include(rejected.message, "destination project was not found in this environment");
+      assert.deepEqual((yield* service.list()).tasks, [before]);
+
+      // Its thread stays in the old project, so moving the task leaves it for a new one.
+      yield* seedMoveProjects;
+      const { task: moved } = yield* service.upsert(move);
+      assert.isAbove(Date.parse(moved.updatedAt), Date.parse(before.updatedAt));
+      assert.deepEqual(moved, {
+        ...before,
+        projectId: movedProjectId,
+        threadId: null,
+        updatedAt: moved.updatedAt,
       });
-      assert.equal(moved.task.threadId, null);
-      assert.equal(moved.task.threadMode, "fresh_session");
+      yield* TestClock.adjust(5);
+      yield* service.runNow({ id: input.id });
+      assert.equal((yield* Ref.get(initialLaunch))?.projectId, movedProjectId);
       const unbound = yield* service.upsert({ ...input, threadMode: "new_thread" });
       assert.equal(unbound.task.threadId, null);
       // Clearing the thread keeps the mode, so the next run starts a thread for later runs.
@@ -833,6 +968,7 @@ it.effect("an unbound task's launch carries its name as a chosen title", () =>
     const layer = ScheduledTaskService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
+          Layer.mock(BareLaunch.BareLaunch)({}),
           ManagedPolicy.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({
             launch: (input) =>
@@ -867,6 +1003,7 @@ it.effect("an unbound task's launch carries its name as a chosen title", () =>
         runtimeMode: "full-access",
         interactionMode: "default",
         threadMode: "new_thread",
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
       } as const);
       yield* service.runNow({ id });
 
@@ -896,6 +1033,7 @@ it.effect("a refused dispatch records its refusal, and opaque causes stay generi
     const layer = ScheduledTaskService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
+          Layer.mock(BareLaunch.BareLaunch)({}),
           ManagedPolicy.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
           Layer.mock(ThreadManagementService.ThreadManagementService)({
@@ -917,6 +1055,7 @@ it.effect("a refused dispatch records its refusal, and opaque causes stay generi
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const { task } = yield* service.upsert({
         id: ScheduledTaskId.make("task:refused"),
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         title: "Refused dispatch",
         prompt: "Check progress",
         enabled: true,
@@ -930,6 +1069,7 @@ it.effect("a refused dispatch records its refusal, and opaque causes stay generi
       });
       for (const [cause, expected] of cases) {
         yield* Ref.set(failure, cause);
+        yield* TestClock.adjust(1);
         const result = yield* service.runNow({ id: task.id });
         assert.equal(result.task.lastRunStatus, "failed");
         assert.equal(result.task.lastRunError, expected);
@@ -943,6 +1083,7 @@ it.effect("a first run whose thread was deleted before it bound removes the task
     const layer = ScheduledTaskService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
+          Layer.mock(BareLaunch.BareLaunch)({}),
           ManagedPolicy.layerTest(),
           Layer.mock(ThreadLaunchService.ThreadLaunchService)({
             launch: () =>
@@ -970,6 +1111,7 @@ it.effect("a first run whose thread was deleted before it bound removes the task
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const { task } = yield* service.upsert({
         id: ScheduledTaskId.make("task:thread-deleted-mid-launch"),
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         title: "Triage",
         prompt: "Triage new issues",
         enabled: true,
@@ -988,7 +1130,7 @@ it.effect("a first run whose thread was deleted before it bound removes the task
 );
 
 it.effect.each(["recreated under the same id", "moved to another project"] as const)(
-  "a first run never binds its thread to a task %s",
+  "a first run leaves a clean binding after the task is %s",
   (change) =>
     Effect.gen(function* () {
       const launching = yield* Deferred.make<void>();
@@ -996,6 +1138,7 @@ it.effect.each(["recreated under the same id", "moved to another project"] as co
       const layer = ScheduledTaskService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
+            Layer.mock(BareLaunch.BareLaunch)({}),
             ManagedPolicy.layerTest(),
             Layer.mock(ThreadLaunchService.ThreadLaunchService)({
               launch: () =>
@@ -1022,6 +1165,7 @@ it.effect.each(["recreated under the same id", "moved to another project"] as co
         const service = yield* ScheduledTaskService.ScheduledTaskService;
         const input = {
           id: ScheduledTaskId.make("task:recreated-mid-launch"),
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
           title: "Triage",
           prompt: "Triage new issues",
           enabled: true,
@@ -1041,10 +1185,16 @@ it.effect.each(["recreated under the same id", "moved to another project"] as co
           yield* TestClock.adjust("1 second");
           yield* service.upsert(input);
         } else {
-          yield* service.upsert({ ...input, projectId: ProjectId.make("project:moved") });
+          yield* seedMoveProjects;
+          const refused = yield* Effect.flip(
+            service.upsert({ ...input, projectId: movedProjectId }),
+          );
+          assert.include(refused.message, "Let the running scheduled task finish");
         }
         yield* Deferred.succeed(proceed, undefined);
         yield* Fiber.await(run);
+        if (change === "moved to another project")
+          yield* service.upsert({ ...input, projectId: movedProjectId });
 
         const replacement = (yield* service.list()).tasks.find((task) => task.id === input.id);
         assert.equal(replacement?.threadId, null);
@@ -1055,6 +1205,7 @@ it.effect.each(["recreated under the same id", "moved to another project"] as co
 it.effect("refuses saving an enabled task above the policy ceiling", () =>
   Effect.gen(function* () {
     const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
       Layer.provide(
         Layer.mergeAll(
           ManagedPolicy.layerTest({
@@ -1081,6 +1232,7 @@ it.effect("refuses saving an enabled task above the policy ceiling", () =>
       const save = (enabled: boolean) =>
         service.upsert({
           id: ScheduledTaskId.make("task:above-ceiling"),
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
           title: "Nightly",
           prompt: "Check progress",
           enabled,
@@ -1105,6 +1257,7 @@ it.effect("refuses saving an enabled task above the policy ceiling", () =>
       // A task bound to a thread runs in that thread's mode, so its own is not checked.
       const bound = {
         id: ScheduledTaskId.make("task:bound"),
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         title: "Follow up",
         prompt: "Check progress",
         enabled: true,
@@ -1138,6 +1291,7 @@ it.effect("checks a task's destination thread only when the destination changes"
     );
     const consumed = yield* Ref.make(0);
     const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
       Layer.provide(
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
@@ -1171,6 +1325,7 @@ it.effect("checks a task's destination thread only when the destination changes"
           prompt: "Check progress",
           enabled: true,
           schedule,
+          purposeIntent: { version: 1, intent: { type: "unscoped" } },
           projectId: project,
           threadId,
           workspaceStrategy: { type: "root" },
@@ -1216,6 +1371,7 @@ it.effect("a run interrupted right after it reserves the task does not block the
   Effect.gen(function* () {
     const launches = yield* Ref.make(0);
     const layer = ScheduledTaskService.layer.pipe(
+      Layer.provide(Layer.mock(BareLaunch.BareLaunch)({})),
       Layer.provide(
         Layer.mergeAll(
           ManagedPolicy.layerTest(),
@@ -1240,6 +1396,7 @@ it.effect("a run interrupted right after it reserves the task does not block the
       const service = yield* ScheduledTaskService.ScheduledTaskService;
       const { task } = yield* service.upsert({
         id: ScheduledTaskId.make("task:interrupted-reservation"),
+        purposeIntent: { version: 1, intent: { type: "unscoped" } },
         title: "Check in",
         prompt: "Check progress",
         enabled: true,
@@ -1278,4 +1435,70 @@ it.effect("a run interrupted right after it reserves the task does not block the
       assert.equal(yield* Ref.get(launches), 1);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
+  "a task stored before incarnations existed can be deleted with and without a receipt",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-09-09T12:00:00.000Z";
+      for (const id of ["legacy-mcp", "legacy-settings", "current"])
+        yield* insertRow(sql, { id, next: null, enabled: 1, status: "never" }, now);
+      yield* sql`CREATE TABLE scheduled_task_request_incarnations (task_id TEXT PRIMARY KEY, incarnation TEXT NOT NULL, active_request_id TEXT)`;
+      yield* sql`INSERT INTO scheduled_task_request_incarnations VALUES ('current','kept',NULL)`;
+      const layer = ScheduledTaskService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            ManagedPolicy.layerTest(),
+            Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+            Layer.mock(ThreadManagementService.ThreadManagementService)({}),
+            Layer.mock(SecretRequests.SecretRequests)({}),
+            Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+              namedProjectsRoot: "/projects",
+              isScratchProject: () => Effect.succeed(false),
+            }),
+            Layer.mock(BareLaunch.BareLaunch)({}),
+            NodeCrypto.layer,
+            Scheduler.layer,
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const incarnations = yield* sql<{
+          task_id: string;
+          incarnation: string;
+        }>`SELECT task_id,incarnation FROM scheduled_task_request_incarnations ORDER BY task_id`;
+        assert.deepEqual(
+          incarnations.map((row) => row.task_id),
+          ["current", "legacy-mcp", "legacy-settings"],
+        );
+        assert.equal(incarnations[0]?.incarnation, "kept");
+        yield* service.delete({ id: ScheduledTaskId.make("legacy-mcp") }).pipe(
+          Effect.provideService(MutationReceipts.CurrentMutation, {
+            request: {
+              id: "a".repeat(64),
+              generation: "generation:1",
+              inputDigest: "digest:1",
+              clientRequestId: "delete-legacy",
+            },
+            secret: { type: "none" },
+            recheck: Effect.void,
+          }),
+        );
+        yield* service.delete({ id: ScheduledTaskId.make("legacy-settings") });
+        assert.deepEqual(
+          (yield* service.list()).tasks.map((task) => task.id),
+          ["current"],
+        );
+        const receipts = yield* sql<{
+          stage: string;
+        }>`SELECT stage FROM scheduled_mutation_receipts WHERE task_id='legacy-mcp'`;
+        assert.deepEqual(
+          receipts.map((row) => row.stage),
+          ["confirmed"],
+        );
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );

@@ -576,7 +576,7 @@ export function ComposerEffortColumn(props: { traits: TraitsSelectionInput | nul
   );
 }
 
-const FOOTER_SEGMENT =
+export const COMPOSER_FOOTER_SEGMENT =
   "flex h-6 cursor-pointer items-center justify-center gap-1 px-2 text-muted-foreground text-xs outline-none first:rounded-l-md last:rounded-r-md hover:text-foreground data-checked:bg-input/72 data-checked:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset";
 
 function SpeedSegment(props: {
@@ -593,7 +593,7 @@ function SpeedSegment(props: {
     role: "radio",
     "aria-checked": props.checked,
     "data-checked": props.checked || undefined,
-    className: FOOTER_SEGMENT,
+    className: COMPOSER_FOOTER_SEGMENT,
     onClick: props.onPick,
   } as const;
   const content = (
@@ -666,7 +666,7 @@ function UltracodeControl(props: { traits: TraitsSelectionInput }) {
         type="button"
         aria-pressed={on}
         data-checked={on || undefined}
-        className={FOOTER_SEGMENT}
+        className={COMPOSER_FOOTER_SEGMENT}
         onClick={() => traits.changeBoolean(ultracodeToggle.id, !on)}
       >
         <WorkflowIcon aria-hidden="true" className="size-3" />
@@ -725,11 +725,14 @@ export function ComposerPickerFooter(props: {
   runtimeMode: RuntimeMode;
   runtimeModeOptions: ReadonlyArray<RuntimeModeOption>;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
+  /** Fork: the Bare toggle for a new thread (toolboxmd/chromeria#319). */
+  bareControl?: ReactNode;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2 border-t border-border/70 bg-muted/40 px-3 py-2">
       {props.traits ? <SpeedControl traits={props.traits} /> : null}
       {props.traits ? <UltracodeControl traits={props.traits} /> : null}
+      {props.bareControl}
       <PermissionsMenu
         runtimeMode={props.runtimeMode}
         options={props.runtimeModeOptions}

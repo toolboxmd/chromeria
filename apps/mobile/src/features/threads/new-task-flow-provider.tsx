@@ -99,6 +99,7 @@ import {
 } from "./new-task-project-selection";
 import { useNewTaskProjectDefaults } from "./use-new-task-project-defaults";
 import { resolveNewThreadRuntimeMode } from "./thread-settings-options";
+import { bareLaunchRequest, resolveBareToggle } from "@t3tools/client-runtime/bare-launch";
 import { resolveProjectThreadCreationBranch } from "./projectThreadCreationValidation";
 import {
   INACTIVE_FLOW_KEY,
@@ -119,6 +120,9 @@ import {
   type WorktreeRepositorySelection,
 } from "@t3tools/client-runtime/state/thread-repositories";
 import { useConnectionsReady, useWorkspaceEnvironments } from "../../state/workspace";
+import { promachosPicksModel } from "@t3tools/client-runtime/promachos/start";
+import { PromachosDraftContext } from "../promachos/promachosDraft";
+import { usePromachosChatModels } from "../promachos/promachosHome";
 
 type WorkspaceMode = "local" | "worktree";
 
@@ -245,6 +249,8 @@ export function NewTaskFlowProvider(
     /** Identifies the draft route this flow serves; a new key starts a fresh flow. */
     flowKey?: string;
     routeDraftId?: string;
+    /** The draft route was started by the Promachos tab's compose button. */
+    promachos?: boolean;
   }>,
 ) {
   const projects = useProjects();
@@ -382,6 +388,14 @@ export function NewTaskFlowProvider(
           : null;
   const activeNewTask = props.active === false ? null : { pendingKey: activePendingKey };
   const selectedProjectDraft = useComposerDraft(selectedProjectDraftKey);
+  const promachosChatModels = usePromachosChatModels(
+    selectedProject === null
+      ? null
+      : { environmentId: selectedProject.environmentId, projectId: selectedProject.id },
+  );
+  // The draft keeps the mark, so it stays his conversation when reopened from anywhere.
+  const promachosDraft = props.promachos === true || selectedProjectDraft.promachos === true;
+  const promachosModels = promachosDraft ? promachosChatModels : null;
   const prompt = selectedProjectDraft.text;
   const attachments = selectedProjectDraft.attachments;
   const projectGitStatus = useEnvironmentQuery(
@@ -419,8 +433,9 @@ export function NewTaskFlowProvider(
   const resolveWorkspaceSelection = (selection: ComposerDraftWorkspaceSelection | undefined) =>
     resolveNewTaskDraftWorkspace({
       selection,
-      canChooseWorkspace,
-      defaultMode: defaultWorkspaceMode,
+      // A Promachos conversation shows no workspace choice, so it runs in the home's folder.
+      canChooseWorkspace: canChooseWorkspace && promachosModels === null,
+      defaultMode: promachosModels === null ? defaultWorkspaceMode : "local",
       defaultModeSettled: projectDefaults.defaultWorkspaceModeSettled,
       isGitRepo,
       tracksGitRepositories,
@@ -596,9 +611,10 @@ export function NewTaskFlowProvider(
     const current = readFlow().draftKey;
     if (current !== null && isNewTaskDraftKey(current)) {
       retargetNewTaskDraft(current, target, options);
+      if (props.promachos === true) updateComposerDraftSettings(current, { promachos: true });
       return current;
     }
-    return createNewTaskDraft(target);
+    return createNewTaskDraft(target, { promachos: props.promachos === true });
   };
 
   const setProject = (project: EnvironmentProject) => {
@@ -851,6 +867,19 @@ export function NewTaskFlowProvider(
           ? { startFromOrigin: true }
           : {}),
         ...(mode === "worktree" ? worktreeCreation(workspaceSelection.repositories) : {}),
+        ...(bareLaunchRequest(
+          resolveBareToggle({
+            isNewThread: true,
+            provider: selectedEnvironmentServerConfig?.providers.find(
+              (provider) => provider.instanceId === draftModelSelection.instanceId,
+            ),
+            requested: draft.bare === true,
+          }),
+        )
+          ? { bare: true }
+          : {}),
+        ...(promachosPicksModel(promachosModels) ? { prismRole: "promachos" as const } : {}),
+        ...(promachosModels !== null ? { promachos: true } : {}),
       },
       createdAt: metadata.createdAt,
     };
@@ -993,7 +1022,9 @@ export function NewTaskFlowProvider(
 
   return (
     <ActiveNewTaskContext value={activeNewTask}>
-      <NewTaskFlowContext.Provider value={value}>{props.children}</NewTaskFlowContext.Provider>
+      <PromachosDraftContext value={promachosDraft}>
+        <NewTaskFlowContext.Provider value={value}>{props.children}</NewTaskFlowContext.Provider>
+      </PromachosDraftContext>
     </ActiveNewTaskContext>
   );
 }

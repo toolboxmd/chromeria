@@ -1,5 +1,6 @@
 import * as CodexErrors from "effect-codex-app-server/errors";
 import { vi } from "vite-plus/test";
+import { unsupportedBare } from "@t3tools/provider-core/server/bareLaunch";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as CodexInstallation from "./CodexInstallation.ts";
 import * as CodexManagedTokenBroker from "./CodexManagedTokenBroker.ts";
@@ -9,6 +10,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import { describe, it, assert, expect } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import type * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -662,6 +664,324 @@ it.layer(
         assert.strictEqual(status.status, "ready");
         assert.strictEqual(status.auth.status, "authenticated");
       }),
+    );
+
+    /**
+     * `checkCodexProviderStatus` at the default probe against a fake Codex app-server whose
+     * usage read answers at second 4 with `usage`, two seconds before skills discovery does.
+     */
+    const statusForUsageReply = Effect.fn("statusForUsageReply")(function* (
+      usage: { readonly result: unknown } | { readonly error: unknown } | "silent",
+      config: Record<string, unknown> = {},
+    ) {
+      const startedAt = yield* DateTime.now;
+      // A config that routes elsewhere never asks for usage; its probe waits on skills alone.
+      const awaited = "openai_base_url" in config ? "skills/list" : "account/rateLimits/read";
+      const requested = yield* Deferred.make<void>();
+      let usageRequests = 0;
+      const spawner = ChildProcessSpawner.make(() =>
+        Effect.gen(function* () {
+          const scope = yield* Effect.scope;
+          const output = yield* Queue.unbounded<Uint8Array>();
+          const send = (message: unknown) =>
+            Queue.offer(output, encoder.encode(`${JSON.stringify(message)}\n`));
+          const results: Record<string, unknown> = {
+            initialize: {
+              userAgent: "codex_cli_rs/0.167.0",
+              codexHome: "/nonexistent-codex-home",
+              platformFamily: "unix",
+              platformOs: "linux",
+            },
+            "account/read": {
+              account: { type: "chatgpt", email: "test@example.com", planType: "pro" },
+              requiresOpenaiAuth: true,
+            },
+            "config/read": { config, origins: {} },
+            "model/list": { data: [] },
+          };
+          const later = (id: number, method: string, delay: Duration.Input, reply: unknown) =>
+            (method === awaited ? Deferred.succeed(requested, undefined) : Effect.void).pipe(
+              Effect.andThen(Effect.sleep(delay)),
+              Effect.andThen(reply === "silent" ? Effect.void : send({ id, ...(reply as object) })),
+              Effect.forkIn(scope),
+            );
+          const answer = (line: string) => {
+            const { id, method } = JSON.parse(line) as { id?: number; method?: string };
+            if (id === undefined || method === undefined) return Effect.void;
+            if (method === "account/rateLimits/read") {
+              usageRequests += 1;
+              return later(id, method, "4 seconds", usage);
+            }
+            if (method === "skills/list")
+              return later(id, method, "6 seconds", { result: { data: [] } });
+            return send({ id, result: results[method] ?? {} });
+          };
+          const decoder = new TextDecoder();
+          let buffered = "";
+          return ChildProcessSpawner.makeHandle({
+            ...mockHandle({ stdout: "", stderr: "", code: 0 }),
+            exitCode: Effect.never,
+            isRunning: Effect.succeed(true),
+            stdin: Sink.forEach((chunk: Uint8Array) => {
+              buffered += decoder.decode(chunk, { stream: true });
+              const lines = buffered.split("\n");
+              buffered = lines.pop() ?? "";
+              return Effect.forEach(lines.filter(Boolean), answer, { discard: true });
+            }),
+            stdout: Stream.fromQueue(output),
+          });
+        }),
+      );
+      const fiber = yield* checkCodexProviderStatus(defaultCodexSettings).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(requested);
+      yield* TestClock.adjust("25 seconds");
+      const status = yield* Fiber.join(fiber);
+      return { startedAt, status, usageRequests };
+    });
+
+    it.effect("publishes credits for each reply to the usage read as the contract says", () =>
+      Effect.gen(function* () {
+        const answered = (credits?: unknown) => ({
+          result: {
+            rateLimits: {
+              limitId: "codex",
+              planType: "pro",
+              primary: { usedPercent: 42, windowDurationMins: 300, resetsAt: 2e9 },
+              ...(credits === undefined ? {} : { credits }),
+            },
+            rateLimitsByLimitId: null,
+            rateLimitResetCredits: null,
+            accountId: null,
+          },
+        });
+        const paid = { hasCredits: true, unlimited: false };
+        const spent = { hasCredits: false, unlimited: false };
+        // In the order `codexCreditsShown` decides: the first row that applies decides.
+        const rows: ReadonlyArray<{
+          readonly row: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+          readonly reply: string;
+          readonly usage: Parameters<typeof statusForUsageReply>[0];
+          readonly config?: Record<string, unknown>;
+          readonly published: number | "unlimited" | "none" | undefined;
+          /** Why the reply yields no usage either; `unsupported` is a route that sends no request. */
+          readonly noUsage?: "probeFailed" | "unsupported";
+        }> = [
+          // 1: failed, timed out, never ran, or not valid under Codex's protocol schema.
+          {
+            row: 1,
+            reply: "failed",
+            usage: { error: { code: -32000, message: "usage unavailable" } },
+            published: undefined,
+            noUsage: "probeFailed",
+          },
+          {
+            row: 1,
+            reply: "timed out",
+            usage: "silent",
+            published: undefined,
+            noUsage: "probeFailed",
+          },
+          {
+            row: 1,
+            reply: "never ran",
+            usage: answered({ ...paid, balance: "4321" }),
+            config: { openai_base_url: "http://127.0.0.1:8317/v1" },
+            published: undefined,
+            noUsage: "unsupported",
+          },
+          {
+            row: 1,
+            reply: "not valid: credits without hasCredits",
+            usage: answered({ unlimited: false, balance: "4321" }),
+            published: undefined,
+            noUsage: "probeFailed",
+          },
+          {
+            row: 1,
+            reply: "not valid: credits without unlimited",
+            usage: answered({ hasCredits: true, balance: "4321" }),
+            published: undefined,
+            noUsage: "probeFailed",
+          },
+          {
+            row: 1,
+            reply: "not valid: unlimited with a JSON number as balance",
+            usage: answered({ hasCredits: true, unlimited: true, balance: 4321 }),
+            published: undefined,
+            noUsage: "probeFailed",
+          },
+          {
+            row: 1,
+            reply: "not valid: no credits with a JSON number as balance",
+            usage: answered({ hasCredits: false, unlimited: false, balance: 4321 }),
+            published: undefined,
+            noUsage: "probeFailed",
+          },
+          // 2: `credits` omitted or null.
+          { row: 2, reply: "credits omitted", usage: answered(), published: undefined },
+          { row: 2, reply: "credits null", usage: answered(null), published: undefined },
+          // 3: `unlimited: true`.
+          {
+            row: 3,
+            reply: "unlimited, whatever else it carries",
+            usage: answered({ hasCredits: false, unlimited: true, balance: "5" }),
+            published: "unlimited",
+          },
+          // 4: `hasCredits: false`.
+          {
+            row: 4,
+            reply: "no credits, with a balance",
+            usage: answered({ ...spent, balance: "77" }),
+            published: "none",
+          },
+          {
+            row: 4,
+            reply: "no credits, without a balance",
+            usage: answered(spent),
+            published: "none",
+          },
+          // 5: no balance that is a whole number within the safe range.
+          { row: 5, reply: "balance missing", usage: answered(paid), published: undefined },
+          {
+            row: 5,
+            reply: "balance null",
+            usage: answered({ ...paid, balance: null }),
+            published: undefined,
+          },
+          {
+            row: 5,
+            reply: "balance blank",
+            usage: answered({ ...paid, balance: " " }),
+            published: undefined,
+          },
+          {
+            row: 5,
+            reply: "balance not a number",
+            usage: answered({ ...paid, balance: "not a number" }),
+            published: undefined,
+          },
+          {
+            row: 5,
+            reply: "balance not finite",
+            usage: answered({ ...paid, balance: "Infinity" }),
+            published: undefined,
+          },
+          {
+            row: 5,
+            reply: "balance an exponent that overflows",
+            usage: answered({ ...paid, balance: "1e400" }),
+            published: undefined,
+          },
+          {
+            row: 5,
+            reply: "balance one above the range",
+            usage: answered({ ...paid, balance: "9007199254740992" }),
+            published: undefined,
+          },
+          {
+            row: 5,
+            reply: "balance a negative beyond the range",
+            usage: answered({ ...paid, balance: "-9007199254740992" }),
+            published: undefined,
+          },
+          // 6: a rounded balance below 1.
+          {
+            row: 6,
+            reply: "under half a credit",
+            usage: answered({ ...paid, balance: "0.49" }),
+            published: "none",
+          },
+          { row: 6, reply: "zero", usage: answered({ ...paid, balance: "0" }), published: "none" },
+          {
+            row: 6,
+            reply: "a negative balance",
+            usage: answered({ ...paid, balance: "-3" }),
+            published: "none",
+          },
+          // 7: everything else, a rounded balance from 1 to the top of the range.
+          {
+            row: 7,
+            reply: "a balance that rounds up",
+            usage: answered({ ...paid, balance: "4321.5000000000" }),
+            published: 4322,
+          },
+          {
+            row: 7,
+            reply: "half a credit",
+            usage: answered({ ...paid, balance: "0.5" }),
+            published: 1,
+          },
+          {
+            row: 7,
+            reply: "an exponent inside the range",
+            usage: answered({ ...paid, balance: "1e3" }),
+            published: 1000,
+          },
+          {
+            row: 7,
+            reply: "the largest balance in range",
+            usage: answered({ ...paid, balance: "9007199254740991" }),
+            published: 9_007_199_254_740_991,
+          },
+        ];
+
+        for (const row of rows) {
+          const label = `row ${row.row}: ${row.reply}`;
+          const { startedAt, status, usageRequests } = yield* statusForUsageReply(
+            row.usage,
+            row.config,
+          );
+          assert.strictEqual(usageRequests, row.noUsage === "unsupported" ? 0 : 1, label);
+          assert.strictEqual(status.checkedAt, DateTime.formatIso(startedAt), label);
+          assert.deepStrictEqual(
+            status.credits,
+            row.published === undefined
+              ? undefined
+              : {
+                  // The moment the usage answer arrived, not the start or the end of the probe.
+                  readAt: DateTime.formatIso(DateTime.add(startedAt, { seconds: 4 })),
+                  balance: row.published,
+                },
+            label,
+          );
+          if (row.noUsage) {
+            assert.deepStrictEqual(status.usageLimits?.windows, [], label);
+            assert.strictEqual(status.usageLimits?.unavailable?.reason, row.noUsage, label);
+          } else if (row.published !== undefined) {
+            assert.strictEqual(status.usageLimits?.windows[0]?.usedPercent, 42, label);
+          }
+        }
+      }),
+    );
+
+    it.effect("keeps credits out of the provider status cache, written or read", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const filePath = `${yield* fs.makeTempDirectoryScoped()}/codex.json`;
+        const draft = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+          Effect.succeed(makeCodexProbeSnapshot()),
+        );
+        const provider: ServerProvider = {
+          ...draft,
+          instanceId: ProviderInstanceId.make("codex"),
+          driver: ProviderDriverKind.make("codex"),
+          credits: { readAt: draft.checkedAt, balance: 4322 },
+        };
+
+        yield* writeProviderStatusCache({ filePath, provider });
+        const written = yield* fs.readFileString(filePath);
+        assert.notInclude(written, "credits");
+        assert.notInclude(written, "4322");
+
+        // A file an earlier build wrote with the balance in it.
+        yield* fs.writeFileString(filePath, JSON.stringify(provider));
+        const read = yield* readProviderStatusCache(filePath);
+        assert.strictEqual(read?.instanceId, provider.instanceId);
+        assert.notProperty(read, "credits");
+      }).pipe(Effect.scoped),
     );
 
     it.effect("labels the plan the usage read reports over the cached login plan", () =>
@@ -3982,6 +4302,7 @@ it.layer(
               ...refreshedProvider,
               models: [...initialProvider.models],
               modelsRetained: true,
+              bare: unsupportedBare(refreshedProvider.driver),
             }),
           );
         }).pipe(Effect.provide(runtimeServices));
@@ -4358,15 +4679,13 @@ it.layer(
         yield* Effect.gen(function* () {
           const registry = yield* ProviderRegistry.ProviderRegistry;
 
-          assert.deepStrictEqual(yield* registry.getProviders, [
-            withBundledCompatibility(cachedProvider),
-          ]);
-          assert.deepStrictEqual(yield* registry.refresh(codexDriver), [
-            withBundledCompatibility(cachedProvider),
-          ]);
-          assert.deepStrictEqual(yield* registry.refreshInstance(codexInstanceId), [
-            withBundledCompatibility(cachedProvider),
-          ]);
+          const expected = withBundledCompatibility({
+            ...cachedProvider,
+            bare: unsupportedBare(codexDriver),
+          });
+          assert.deepStrictEqual(yield* registry.getProviders, [expected]);
+          assert.deepStrictEqual(yield* registry.refresh(codexDriver), [expected]);
+          assert.deepStrictEqual(yield* registry.refreshInstance(codexInstanceId), [expected]);
         }).pipe(Effect.provide(runtimeServices));
       }),
     );

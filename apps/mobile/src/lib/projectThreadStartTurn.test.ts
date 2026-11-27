@@ -65,7 +65,10 @@ describe("project thread title", () => {
       threadId: "local-relaunch",
       text: input.message.text,
       titleText: input.bootstrap.createThread.title,
+      bare: true,
     });
+    expect(input).not.toHaveProperty("bare");
+    expect(relaunched.bare).toEqual({});
     expect(relaunched.titleSeed).toBe(title);
     expect(relaunched.message.text).toBe(wire.text);
     expect(relaunched.message.attachments).toEqual(uploadedAttachments);

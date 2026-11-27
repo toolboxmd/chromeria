@@ -463,6 +463,78 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
     }),
   );
 
+  it.effect("opens a bare OpenCode 2 session on a private server with stripped config", () =>
+    Effect.gen(function* () {
+      const started: Array<NodeJS.ProcessEnv> = [];
+      const runtime = {
+        ...openCode2Runtime,
+        startOpenCodeServerProcess: (input: { readonly environment?: NodeJS.ProcessEnv }) =>
+          Effect.sync(() => started.push(input.environment ?? {})).pipe(
+            Effect.andThen(reachedServer("start")),
+          ),
+      } as unknown as OpenCodeRuntime.OpenCodeRuntime["Service"];
+      const instance = yield* create({}, noHttp).pipe(
+        Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
+      );
+      const open = (runtimePolicy: { readonly bare?: { readonly additions: [] } }) =>
+        instance.orchestrationAdapter
+          .openSession({
+            threadId: ThreadId.make("thread-bare"),
+            providerSessionId: ProviderSessionId.make("session-bare"),
+            modelSelection: { instanceId: instance.instanceId, model: "opencode/big-pickle" },
+            runtimePolicy: {
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              cwd: null,
+              ...runtimePolicy,
+            },
+          })
+          .pipe(Effect.scoped, Effect.flip);
+
+      yield* open({ bare: { additions: [] } });
+      // Background catalog reads may start the shared server too.
+      const bare = started.splice(0).filter((environment) => environment.OPENCODE_CONFIG_CONTENT);
+      yield* open({});
+      assert.isNotEmpty(bare, "bare reaches a server instead of being refused");
+      assert.match(bare[0]!.XDG_CONFIG_HOME ?? "", /\/bare\/opencode-test\/opencode2\/xdg-config$/);
+      const config = JSON.parse(bare[0]!.OPENCODE_CONFIG_CONTENT ?? "{}");
+      assert.deepStrictEqual(config.agents, {
+        build: { system: "." },
+        plan: { system: "." },
+        title: { disabled: true },
+      });
+      assert.deepStrictEqual([config.instructions, config.plugins], [[], []]);
+      assert.isNotEmpty(started);
+      assert.isTrue(
+        started.every((environment) => environment.OPENCODE_CONFIG_CONTENT === undefined),
+        "normal sessions keep the shared server",
+      );
+    }),
+  );
+
+  it.effect("refuses a bare OpenCode 2 session on an external server", () =>
+    Effect.gen(function* () {
+      const instance = yield* create(
+        { serverUrl: "http://127.0.0.1:4096" },
+        replayOpenCodeServer(OPENCODE_2_RESPONSES, ""),
+      );
+      const error = yield* instance.orchestrationAdapter
+        .openSession({
+          threadId: ThreadId.make("thread-bare-external"),
+          providerSessionId: ProviderSessionId.make("session-bare-external"),
+          modelSelection: { instanceId: instance.instanceId, model: "opencode/big-pickle" },
+          runtimePolicy: {
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: null,
+            bare: { additions: [] },
+          },
+        })
+        .pipe(Effect.scoped, Effect.flip);
+      assert.include(String(error.cause), "cannot isolate an external serverUrl");
+    }),
+  );
+
   it.effect("does not scan a workspace through a 1.x server it could not probe offline", () =>
     Effect.gen(function* () {
       serverStarts.length = 0;

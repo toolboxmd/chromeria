@@ -1,3 +1,5 @@
+import { loadCursorSdk } from "./sdk.ts";
+import { bareReceipt, namesT3Mcp } from "@t3tools/provider-core/server/bareLaunch";
 import type {
   AgentMessage,
   AgentOptions,
@@ -83,6 +85,13 @@ const CURSOR_DRIVER_KIND = CursorAgentSdk.CURSOR_PROVIDER;
 export const CURSOR_DEFAULT_INSTANCE_ID = defaultInstanceIdForDriver(CURSOR_DRIVER_KIND);
 
 export const CursorProviderCapabilitiesV2 = {
+  purposeEvidence: {
+    version: 1,
+    nativeInputs: "unsupported",
+    childSegments: "unsupported",
+    backgroundInventory: "unsupported",
+    nativeUsageFinality: "unavailable",
+  },
   sessions: {
     supportsMultipleProviderThreadsPerSession: false,
     supportsModelSwitchInSession: true,
@@ -331,8 +340,25 @@ export function makeCursorAgentOptions(input: {
   readonly platform: NodeJS.Platform;
 }): AgentOptions {
   const policy = cursorRuntimeAgentPolicy(input.runtimePolicy, input.platform);
-  const mcpServers = cursorMcpServers(input.mcpSession);
+  const mcpServers =
+    input.runtimePolicy.bare !== undefined && !namesT3Mcp(input.runtimePolicy.bare)
+      ? undefined
+      : cursorMcpServers(input.mcpSession);
   return {
+    ...(input.runtimePolicy.bare === undefined
+      ? {}
+      : {
+          tools: [
+            "shell",
+            "read",
+            "edit",
+            "grep",
+            "glob",
+            "ls",
+            "delete",
+            ...(namesT3Mcp(input.runtimePolicy.bare) ? ["mcp" as const] : []),
+          ],
+        }),
     model: cursorSdkModelSelection(input.modelSelection, input.models, input.sdkModels),
     name: `T3 Code ${input.threadId}`,
     mode: input.runtimePolicy.interactionMode === "plan" ? "plan" : "agent",
@@ -343,9 +369,13 @@ export function makeCursorAgentOptions(input: {
         ? {}
         : { dirs: [...input.runtimePolicy.workspace.extraRoots] }),
       autoReview: policy.autoReview,
-      settingSources: cursorLoadsProjectConfig(input.runtimePolicy, input.platform)
-        ? [...CURSOR_AGENT_SETTING_SOURCES]
-        : CURSOR_AGENT_SETTING_SOURCES.filter((source) => source !== "project"),
+      ...(input.runtimePolicy.bare === undefined
+        ? {
+            settingSources: cursorLoadsProjectConfig(input.runtimePolicy, input.platform)
+              ? [...CURSOR_AGENT_SETTING_SOURCES]
+              : CURSOR_AGENT_SETTING_SOURCES.filter((source) => source !== "project"),
+          }
+        : {}),
       sandboxOptions: {
         enabled: policy.sandboxEnabled,
       },
@@ -1078,6 +1108,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CursorAgentSdk.CURSOR_PROVIDER,
+    bareSupport: Effect.succeed({ supported: true }),
     getCapabilities: Effect.fn("CursorAdapter.getCapabilities")(function () {
       return Effect.succeed(CursorProviderCapabilitiesV2);
     }),
@@ -2838,7 +2869,9 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
 
         let cursorSkills: ReadonlyMap<string, ServerProviderSkill> | undefined;
         const resolveCursorSkillText = Effect.fn("CursorAdapterV2.resolveCursorSkillText")(
-          function* (rawText: string, cwd: string | undefined) {
+          function* (rawText: string, cwd: string | undefined, bare: boolean) {
+            // A bare session carries no local skills.
+            if (bare) return rawText;
             if (
               cursorSkills === undefined &&
               (hasCursorSkillMention(rawText) || cursorSlashSkillNames(rawText).size > 0)
@@ -2889,12 +2922,13 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               text: yield* resolveCursorSkillText(
                 rawText,
                 turnInput.runtimePolicy.cwd ?? undefined,
+                turnInput.runtimePolicy.bare !== undefined,
               ),
               attachments: turnInput.message.attachments,
               resolveAttachmentPath: host.resolveAttachmentPath,
               resolveExtractedTextPath: host.resolveExtractedTextPath,
             }),
-            hasT3Mcp: mcpServers !== undefined,
+            hasT3Mcp: turnInput.runtimePolicy.bare === undefined && mcpServers !== undefined,
             hasDeviceTools,
             orchestrationDelivered: delivered.orchestration,
             deviceInstructionsDelivered: delivered.device,
@@ -2947,7 +2981,8 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             runtimePolicy: turnInput.runtimePolicy,
           });
           // Resend only on a new/compacted/rewound conversation or when the instructions change.
-          const sendRuntimeInstructions = delivered.runtime !== runtimeInstructions;
+          const sendRuntimeInstructions =
+            turnInput.runtimePolicy.bare === undefined && delivered.runtime !== runtimeInstructions;
           const text = sendRuntimeInstructions
             ? userText.length === 0
               ? runtimeInstructions
@@ -3287,6 +3322,33 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
         yield* Effect.addFinalizer(() => closeSession());
 
         const runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime = {
+          ...(input.runtimePolicy.bare === undefined
+            ? {}
+            : {
+                getBareReceipt: (thread: OrchestrationV2ProviderThread) =>
+                  Effect.succeed(
+                    bareReceipt({
+                      driver: CursorAgentSdk.CURSOR_PROVIDER,
+                      bare: input.runtimePolicy.bare!,
+                      mode: input.runtimePolicy.runtimeMode,
+                      effective: `Cursor sandbox ${cursorRuntimeAgentPolicy(input.runtimePolicy, platform).sandboxEnabled ? "enabled" : "disabled"}, auto-review ${cursorRuntimeAgentPolicy(input.runtimePolicy, platform).autoReview}`,
+                      controls: [
+                        "positive tools on create/resume",
+                        "settingSources omitted",
+                        "no Chromeria suffix",
+                      ],
+                      retained: [
+                        "native harness prompt; replacement access is account-gated and unknown",
+                        "native user_info",
+                        "sandbox policy files",
+                      ],
+                      root: loadCursorSdk().getDefaultSdkStateRoot(
+                        input.runtimePolicy.cwd ?? host.paths.cwd,
+                      ),
+                      sessionId: thread.nativeThreadRef?.nativeId ?? null,
+                    }),
+                  ),
+              }),
           instanceId: adapterOptions.instanceId,
           driver: CursorAgentSdk.CURSOR_PROVIDER,
           providerSessionId: input.providerSessionId,
@@ -3432,6 +3494,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                 text: yield* resolveCursorSkillText(
                   turnInput.message.text,
                   context.input.runtimePolicy.cwd ?? undefined,
+                  context.input.runtimePolicy.bare !== undefined,
                 ),
                 attachments: turnInput.message.attachments,
                 resolveAttachmentPath: host.resolveAttachmentPath,
