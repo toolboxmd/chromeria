@@ -1357,6 +1357,8 @@ export const scroll = async (
     }
     return;
   }
+  // The probe above awaited the page, so authority is checked again right before the scroll.
+  if (human) await authorize();
   if (locator === null) {
     // Page-side code is passed as source: the server compiles without DOM types.
     await page.evaluate(`scrollBy(${delta[0]}, ${delta[1]})`);

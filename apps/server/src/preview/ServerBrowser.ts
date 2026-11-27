@@ -4031,7 +4031,7 @@ const make = Effect.gen(function* () {
             // A tab holding a site's check stays for the person, as an agent's close leaves it.
             siteHolds.heldBy(tab.tabId).length === 0 &&
             // A check still being read may be about to hold this tab for the person.
-            !siteHolds.classifyingOn(tab.tabId) &&
+            !siteHolds.verdictPendingOn(tab.tabId) &&
             tabs.get(tabKey(tab.threadId, tab.tabId)) === tab
           ) {
             await runPromise(manager.close({ threadId: tab.threadId, tabId: tab.tabId }));
