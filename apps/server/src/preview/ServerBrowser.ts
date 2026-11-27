@@ -3884,7 +3884,8 @@ const make = Effect.gen(function* () {
             }
             await shown;
             // A check still being classified is waited for only while the request has time.
-            await classifiedBy(tab, deadlineMs - 100);
+            // The open has already happened, so expiry here reports only a hold, never a timeout.
+            await classifiedBy(tab, deadlineMs - 100, tab.page.url(), false);
             const held = siteHoldOf(tab);
             if (held) throw siteHoldError(held);
             return statusWithTitle(tab, request.agentSessionId);
