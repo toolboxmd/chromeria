@@ -3,6 +3,10 @@ import * as Dialog from "../../components/ui/Dialog";
 import { RegistryContext, useAtomMount, useAtomValue } from "@effect/atom-react";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
+  type RedeemedResetLine,
+  redeemedResetLineText,
+} from "@t3tools/client-runtime/state/redeemed-reset";
+import {
   AuthProvidersManageScope,
   type EnvironmentId,
   type ProviderConsumeResetCreditOutcome,
@@ -29,9 +33,9 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { m as resolveNow, type MessageResolver } from "../../i18n/messages";
 import { environmentPresentations } from "../../state/presentation";
-import { serverEnvironment } from "../../state/server";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { redeemResetCredit } from "../../state/redeem-reset-credit";
 import { useNowMinuteMs } from "../../lib/clock";
 import {
   environmentIdsKey,
@@ -253,11 +257,10 @@ export function ResetCredits(props: {
 }) {
   const { environmentId, input, credits, now, dense = false } = props;
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
-  const consume = useAtomCommand(serverEnvironment.consumeResetCredit, {
-    reportFailure: false,
-  });
+  const consume = useAtomCommand(redeemResetCredit, { reportFailure: false });
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [machines, setMachines] = useState<ReadonlyArray<RedeemedResetLine>>([]);
   const gt = useGT();
   const m = useMessages();
   if (dense && credits.availableCount === 0 && status === null) return null;
@@ -266,10 +269,12 @@ export function ResetCredits(props: {
     if (!readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
     setBusy(true);
     setStatus(null);
+    setMachines([]);
     const result = await consume({ environmentId, input: choice.input });
     setBusy(false);
     if (result._tag === "Success") {
       setStatus(result.value.warning ?? resolveNow(OUTCOME_TEXT[result.value.outcome]));
+      setMachines(result.value.machines);
       return;
     }
     setStatus(resetCreditFailureText(result, resolveNow));
@@ -321,6 +326,14 @@ export function ResetCredits(props: {
         </Text>
       ) : null}
       {status ? <Text className="text-sm text-foreground">{status}</Text> : null}
+      {machines.map((line) => (
+        <Text
+          key={`${line.environmentId}:${line.instanceId}`}
+          className="text-xs text-foreground-tertiary"
+        >
+          {redeemedResetLineText(line, m)}
+        </Text>
+      ))}
     </View>
   );
 }

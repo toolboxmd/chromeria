@@ -38,7 +38,15 @@ import { Button } from "../ui/button";
 import { OpenAI } from "../Icons";
 import { Alert, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
-import { PaceIcon, ResetCreditDialog, barColor, usePaceMark, useResetCredit } from "./UsageLimits";
+import { PrismUseCredits } from "./PrismUseCredits";
+import {
+  PaceIcon,
+  RedeemedResetLines,
+  ResetCreditDialog,
+  barColor,
+  usePaceMark,
+  useResetCredit,
+} from "./UsageLimits";
 import {
   collectExternalUsageLinks,
   collectLimitNotices,
@@ -235,6 +243,7 @@ function SegmentPopover({
           ))}
         </div>
       ) : null}
+      {account.driver === "codex" ? <PrismUseCredits account={account} now={now} /> : null}
     </div>
   );
 }
@@ -343,6 +352,7 @@ function RedeemableSegment({
         <span role="status" className="col-span-full text-xs text-muted-foreground">
           <AccountName account={props.account} className="font-medium text-foreground" />{" "}
           {redeem.busy ? gt("Using reset credit…") : redeem.status}
+          {redeem.busy ? null : <RedeemedResetLines machines={redeem.machines} />}
         </span>
       ) : null}
     </>

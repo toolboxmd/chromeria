@@ -12,6 +12,10 @@ import { useAtomValue } from "@effect/atom-react";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import { resetCreditFailureText } from "@t3tools/client-runtime/state/usage";
 import {
+  type RedeemedResetLine,
+  redeemedResetLineText,
+} from "@t3tools/client-runtime/state/redeemed-reset";
+import {
   type LimitPace,
   paceOf,
   paceRemainingPercent,
@@ -26,8 +30,8 @@ import { usePrimarySettings } from "../../hooks/useSettings";
 import { observeResize } from "../../lib/observeResize";
 import { environmentPresentations } from "../../state/presentation";
 import { useEnvironmentScope, readEnvironmentScope } from "../../state/session";
-import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { redeemResetCredit } from "../../state/redeemResetCredit";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
 import {
   AlertDialog,
@@ -270,23 +274,26 @@ const OUTCOME_TEXT: Record<ProviderConsumeResetCreditOutcome, string> = {
 
 export function useResetCredit(environmentId: EnvironmentId) {
   const canManageProviders = useEnvironmentScope(environmentId, AuthProvidersManageScope);
-  const consume = useAtomCommand(serverEnvironment.consumeResetCredit, { reportFailure: false });
+  const consume = useAtomCommand(redeemResetCredit, { reportFailure: false });
   const m = useMessages();
   // Kept after close so the dialog's text survives its exit animation.
   const [choice, setChoice] = useState<ResetCreditChoice | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  const [machines, setMachines] = useState<ReadonlyArray<RedeemedResetLine>>([]);
 
   const redeem = async () => {
     setConfirming(false);
     if (!choice || !readEnvironmentScope(environmentId, AuthProvidersManageScope)) return;
     setBusy(true);
     setStatus(null);
+    setMachines([]);
     const result = await consume({ environmentId, input: choice.input });
     setBusy(false);
     if (result._tag === "Success") {
       setStatus(result.value.warning ?? m(OUTCOME_TEXT[result.value.outcome]));
+      setMachines(result.value.machines);
       return;
     }
     setStatus(resetCreditFailureText(result, m));
@@ -298,7 +305,31 @@ export function useResetCredit(environmentId: EnvironmentId) {
     setConfirming(true);
   };
 
-  return { canManageProviders, choice, confirming, setConfirming, confirm, busy, status, redeem };
+  return {
+    canManageProviders,
+    choice,
+    confirming,
+    setConfirming,
+    confirm,
+    busy,
+    status,
+    machines,
+    redeem,
+  };
+}
+
+/** One line per other machine told of the reset. */
+export function RedeemedResetLines({
+  machines,
+}: {
+  readonly machines: ReadonlyArray<RedeemedResetLine>;
+}) {
+  const m = useMessages();
+  return machines.map((line) => (
+    <span key={`${line.environmentId}:${line.instanceId}`} className="col-span-full block">
+      {redeemedResetLineText(line, m)}
+    </span>
+  ));
 }
 
 /** Require confirmation because redemption spends credits. Mount outside popovers, which stack above
@@ -349,8 +380,17 @@ export function ResetCredits({
   readonly credits: ServerProviderResetCredits;
   readonly now: number;
 }) {
-  const { canManageProviders, choice, confirming, setConfirming, confirm, busy, status, redeem } =
-    useResetCredit(environmentId);
+  const {
+    canManageProviders,
+    choice,
+    confirming,
+    setConfirming,
+    confirm,
+    busy,
+    status,
+    machines,
+    redeem,
+  } = useResetCredit(environmentId);
   const gt = useGT();
   const m = useMessages();
   if (credits.availableCount === 0 && status === null) return null;
@@ -372,6 +412,7 @@ export function ResetCredits({
         </div>
       ))}
       {status ? <span className="text-foreground">{status}</span> : null}
+      <RedeemedResetLines machines={machines} />
       <ResetCreditDialog
         open={confirming}
         onOpenChange={setConfirming}
