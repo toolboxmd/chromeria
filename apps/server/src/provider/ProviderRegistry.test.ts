@@ -678,6 +678,7 @@ it.layer(
       // A config that routes elsewhere never asks for usage; its probe waits on skills alone.
       const awaited = "openai_base_url" in config ? "skills/list" : "account/rateLimits/read";
       const requested = yield* Deferred.make<void>();
+      let usageRequests = 0;
       const spawner = ChildProcessSpawner.make(() =>
         Effect.gen(function* () {
           const scope = yield* Effect.scope;
@@ -707,7 +708,10 @@ it.layer(
           const answer = (line: string) => {
             const { id, method } = JSON.parse(line) as { id?: number; method?: string };
             if (id === undefined || method === undefined) return Effect.void;
-            if (method === "account/rateLimits/read") return later(id, method, "4 seconds", usage);
+            if (method === "account/rateLimits/read") {
+              usageRequests += 1;
+              return later(id, method, "4 seconds", usage);
+            }
             if (method === "skills/list")
               return later(id, method, "6 seconds", { result: { data: [] } });
             return send({ id, result: results[method] ?? {} });
@@ -734,7 +738,8 @@ it.layer(
       );
       yield* Deferred.await(requested);
       yield* TestClock.adjust("25 seconds");
-      return { startedAt, status: yield* Fiber.join(fiber) };
+      const status = yield* Fiber.join(fiber);
+      return { startedAt, status, usageRequests };
     });
 
     it.effect("publishes credits for each reply to the usage read as the contract says", () =>
@@ -761,8 +766,8 @@ it.layer(
           readonly usage: Parameters<typeof statusForUsageReply>[0];
           readonly config?: Record<string, unknown>;
           readonly published: number | "unlimited" | "none" | undefined;
-          /** The reply breaks Codex's protocol schema, so its usage is not read either. */
-          readonly invalid?: true;
+          /** Why the reply yields no usage either; `unsupported` is a route that sends no request. */
+          readonly noUsage?: "probeFailed" | "unsupported";
         }> = [
           // 1: failed, timed out, never ran, or not valid under Codex's protocol schema.
           {
@@ -770,42 +775,50 @@ it.layer(
             reply: "failed",
             usage: { error: { code: -32000, message: "usage unavailable" } },
             published: undefined,
+            noUsage: "probeFailed",
           },
-          { row: 1, reply: "timed out", usage: "silent", published: undefined },
+          {
+            row: 1,
+            reply: "timed out",
+            usage: "silent",
+            published: undefined,
+            noUsage: "probeFailed",
+          },
           {
             row: 1,
             reply: "never ran",
             usage: answered({ ...paid, balance: "4321" }),
             config: { openai_base_url: "http://127.0.0.1:8317/v1" },
             published: undefined,
+            noUsage: "unsupported",
           },
           {
             row: 1,
             reply: "not valid: credits without hasCredits",
             usage: answered({ unlimited: false, balance: "4321" }),
             published: undefined,
-            invalid: true,
+            noUsage: "probeFailed",
           },
           {
             row: 1,
             reply: "not valid: credits without unlimited",
             usage: answered({ hasCredits: true, balance: "4321" }),
             published: undefined,
-            invalid: true,
+            noUsage: "probeFailed",
           },
           {
             row: 1,
             reply: "not valid: unlimited with a JSON number as balance",
             usage: answered({ hasCredits: true, unlimited: true, balance: 4321 }),
             published: undefined,
-            invalid: true,
+            noUsage: "probeFailed",
           },
           {
             row: 1,
             reply: "not valid: no credits with a JSON number as balance",
             usage: answered({ hasCredits: false, unlimited: false, balance: 4321 }),
             published: undefined,
-            invalid: true,
+            noUsage: "probeFailed",
           },
           // 2: `credits` omitted or null.
           { row: 2, reply: "credits omitted", usage: answered(), published: undefined },
@@ -917,7 +930,11 @@ it.layer(
 
         for (const row of rows) {
           const label = `row ${row.row}: ${row.reply}`;
-          const { startedAt, status } = yield* statusForUsageReply(row.usage, row.config);
+          const { startedAt, status, usageRequests } = yield* statusForUsageReply(
+            row.usage,
+            row.config,
+          );
+          assert.strictEqual(usageRequests, row.noUsage === "unsupported" ? 0 : 1, label);
           assert.strictEqual(status.checkedAt, DateTime.formatIso(startedAt), label);
           assert.deepStrictEqual(
             status.credits,
@@ -930,9 +947,9 @@ it.layer(
                 },
             label,
           );
-          if (row.invalid) {
+          if (row.noUsage) {
             assert.deepStrictEqual(status.usageLimits?.windows, [], label);
-            assert.strictEqual(status.usageLimits?.unavailable?.reason, "probeFailed", label);
+            assert.strictEqual(status.usageLimits?.unavailable?.reason, row.noUsage, label);
           } else if (row.published !== undefined) {
             assert.strictEqual(status.usageLimits?.windows[0]?.usedPercent, 42, label);
           }
