@@ -170,9 +170,11 @@ describe("issueGroupInputOf: pull requests", () => {
     };
     const running = reviewed("pending");
     expect(read(running)).toEqual(["agents-working", "reviewed-checks-running", running]);
-    // Checks an older server did not read are unknown, not running: the fact still stands.
+    const ended = reviewed("failure");
+    expect(read(ended)).toEqual(["your-move", "reviewed-not-merged", ended]);
+    // Checks an older server did not read are no evidence that they finished.
     const unread = reviewed();
-    expect(read(unread)).toEqual(["your-move", "reviewed-not-merged", unread]);
+    expect(read(unread)).toEqual(["stalled", "status", unread]);
   });
 });
 

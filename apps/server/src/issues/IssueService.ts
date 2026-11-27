@@ -11,7 +11,6 @@ import {
   type GitHubIssueListResult,
   GitHubIssueOperationError,
   type IssuePullRequest,
-  type IssueRecentCounts,
   type GitHubIssueRef,
   type GitHubIssueSetStateInput,
   type IssueStatesInput,
@@ -45,8 +44,8 @@ import * as GitHubApi from "./IssueGitHubApi.ts";
 import { type GraphQlDocument, readGraphQlPages } from "./gitHubDocuments.ts";
 import {
   decodeIssueDetailJson,
-  decodeIssueRecentCountsJson,
   decodeIssueStatesJson,
+  decodePullRequestChecksJson,
   issueDetailOf,
   decodeIssueSearchJson,
   decodeViewerJson,
@@ -54,8 +53,6 @@ import {
   ISSUE_DETAIL_GRAPHQL_QUERY,
   ISSUE_SEARCH_MAX_ROWS,
   issueLinkOf,
-  issueRecentCountsGraphQlDocument,
-  issueRecentCountsOf,
   issueSearchGraphQlDocument,
   issueSearchQuery,
   issueStatesGraphQlDocument,
@@ -63,7 +60,10 @@ import {
   LINKED_PULL_REQUEST_MAX,
   linkedPullRequestsGraphQlDocument,
   linkedPullRequestsOf,
+  pullRequestChecksGraphQlDocument,
+  pullRequestCheckVerdictsOf,
   pullRequestOf,
+  unsettledCheckUrlsOf,
   repositoryParts,
 } from "./gitHubIssues.ts";
 
@@ -71,12 +71,6 @@ import {
 const REPOSITORY_SEARCH_CHUNK = 100;
 const DEFAULT_LIMIT = 50;
 const SEARCH_CONCURRENCY = 4;
-/**
- * Repositories counted per request, two searches each. GitHub answered 42 such searches in 2 to
- * 3 s, about one search page, and failed 210 in one request with a 502 after 10 s (26 Nov 2026).
- */
-const RECENT_COUNT_REPOSITORIES = 20;
-const RECENT_DAYS = 7;
 
 export class IssueService extends Context.Service<
   IssueService,
@@ -130,6 +124,8 @@ interface SearchAnswer {
   readonly search: Search;
   readonly rows: GitHubIssueSearchJson | null;
   readonly linked: ReadonlyArray<IssuePullRequest>;
+  /** Pull requests whose failed rollup may hide a check that still runs. */
+  readonly unsettled: ReadonlyArray<string>;
   readonly error: GitHubIssueOperationError | null;
 }
 
@@ -347,7 +343,7 @@ const make = Effect.gen(function* () {
     const pinned = yield* pinnedCredentials([
       ...new Set([...reads.map((search) => search.host), ...linkedOnlyHosts]),
     ]);
-    const readSearches = Effect.forEach(
+    const answers = yield* Effect.forEach(
       reads,
       (search): Effect.Effect<SearchAnswer> => {
         const q = issueSearchQuery({
@@ -358,7 +354,9 @@ const make = Effect.gen(function* () {
           labels: input.labels,
           milestone: input.milestone,
         });
-        if (q === null) return Effect.succeed({ search, rows: null, linked: [], error: null });
+        if (q === null) {
+          return Effect.succeed({ search, rows: null, linked: [], unsettled: [], error: null });
+        }
         const after = input.cursors?.[search.key];
         // A host's thread-linked pull requests ride along with its first search's first page.
         const withLinked = after === undefined && search.key === `${search.host}#0`;
@@ -384,6 +382,7 @@ const make = Effect.gen(function* () {
                         rows,
                         linked:
                           candidates.length === 0 ? [] : linkedPullRequestsOf(search.host, raw),
+                        unsettled: unsettledCheckUrlsOf(rows, raw),
                       })),
                   }),
                 {
@@ -397,65 +396,14 @@ const make = Effect.gen(function* () {
               ).pipe(Effect.map(({ pages }) => pages[0]!)),
             ),
           ),
-          Effect.map(({ rows, linked }) => ({ search, rows, linked, error: null })),
-          Effect.catch((error) => Effect.succeed({ search, rows: null, linked: [], error })),
-        );
-      },
-      { concurrency: SEARCH_CONCURRENCY },
-    );
-    // The week's flow rides with a listing's first page, beside its searches so it adds no wait
-    // of its own. A count that cannot be read leaves its repositories out; the list still answers.
-    const since = DateTime.formatIso(
-      DateTime.subtract(yield* DateTime.now, { days: RECENT_DAYS }),
-    ).replace(/\.\d+Z$/u, "Z");
-    const countChunks =
-      input.cursors === undefined
-        ? [...byHost].flatMap(([host, group]) => {
-            const chunks: Array<{ host: string; chunk: ReadonlyArray<WorkspaceRepository> }> = [];
-            for (let start = 0; start < group.length; start += RECENT_COUNT_REPOSITORIES) {
-              chunks.push({ host, chunk: group.slice(start, start + RECENT_COUNT_REPOSITORIES) });
-            }
-            return chunks;
-          })
-        : [];
-    const readRecentCounts = Effect.forEach(
-      countChunks,
-      ({ host, chunk }): Effect.Effect<ReadonlyArray<IssueRecentCounts>> => {
-        const document = issueRecentCountsGraphQlDocument({
-          repositories: chunk.map((repository) => repository.repository),
-          since,
-          query: input.query,
-          labels: input.labels,
-          milestone: input.milestone,
-        });
-        if (document === null) return Effect.succeed([]);
-        return pinned(
-          host,
-          graphqlRead({
-            host,
-            operation: "countRecentIssues",
-            document,
-            decode: decodeIssueRecentCountsJson,
-          }),
-        ).pipe(
-          Effect.map((answer) =>
-            issueRecentCountsOf(chunk, answer.data).map(({ repository, filed, closed }) => ({
-              host,
-              repository: repository.repository,
-              filed,
-              closed,
-            })),
-          ),
+          Effect.map((page) => ({ search, ...page, error: null })),
           Effect.catch((error) =>
-            Effect.logWarning("Could not count the week's Issues", error).pipe(Effect.as([])),
+            Effect.succeed({ search, rows: null, linked: [], unsettled: [], error }),
           ),
         );
       },
       { concurrency: SEARCH_CONCURRENCY },
     );
-    const [answers, recentCounts] = yield* Effect.all([readSearches, readRecentCounts], {
-      concurrency: "unbounded",
-    });
     const linkedOnly = yield* Effect.forEach(
       linkedOnlyHosts,
       (host) =>
@@ -474,6 +422,7 @@ const make = Effect.gen(function* () {
                         host,
                         viewer: answer.data.viewer.login,
                         linked: linkedPullRequestsOf(host, raw),
+                        unsettled: unsettledCheckUrlsOf(null, raw),
                       })),
                   }),
                 ),
@@ -488,6 +437,48 @@ const make = Effect.gen(function* () {
       { concurrency: SEARCH_CONCURRENCY },
     );
 
+    // A failed rollup may hide a check that still runs. One request per host reads the contexts
+    // of the few pull requests where that decides whose move it is; a read that fails leaves
+    // their checks unknown.
+    const unsettled = new Map<string, Set<string>>();
+    for (const { host, urls } of [
+      ...answers.map((answer) => ({ host: answer.search.host, urls: answer.unsettled })),
+      ...linkedOnly.flatMap((answer) =>
+        answer === null ? [] : [{ host: answer.host, urls: answer.unsettled }],
+      ),
+    ]) {
+      for (const url of urls) unsettled.set(host, (unsettled.get(host) ?? new Set()).add(url));
+    }
+    const verdicts = new Map(
+      (yield* Effect.forEach(
+        [...unsettled],
+        ([host, found]) => {
+          const urls = [...found];
+          const document = pullRequestChecksGraphQlDocument(urls);
+          if (document === null) return Effect.succeed([]);
+          return pinned(
+            host,
+            graphqlRead({
+              host,
+              operation: "readPullRequestChecks",
+              document,
+              decode: decodePullRequestChecksJson,
+            }),
+          ).pipe(
+            Effect.map((answer) => [...pullRequestCheckVerdictsOf(urls, answer.data)]),
+            Effect.catch((error) =>
+              Effect.logWarning("Could not read pull request checks", error).pipe(Effect.as([])),
+            ),
+          );
+        },
+        { concurrency: SEARCH_CONCURRENCY },
+      )).flat(),
+    );
+    const settled = (pullRequest: IssuePullRequest): IssuePullRequest => {
+      const checks = verdicts.get(pullRequest.url);
+      return checks === undefined ? pullRequest : { ...pullRequest, checks };
+    };
+
     const entries: Array<GitHubIssueListEntry> = [];
     const errors: Array<{ host: string; message: string }> = [];
     const nextCursors: Record<string, string> = {};
@@ -500,7 +491,7 @@ const make = Effect.gen(function* () {
       const page = rows.data.search;
       viewers.set(search.host, rows.data.viewer.login);
       matchCounts[search.key] = page.issueCount;
-      linkedPullRequests.push(...linked);
+      linkedPullRequests.push(...linked.map(settled));
       if (page.pageInfo.hasNextPage && page.pageInfo.endCursor !== null) {
         nextCursors[search.key] = page.pageInfo.endCursor;
       }
@@ -525,7 +516,7 @@ const make = Effect.gen(function* () {
           subIssueCount: node.subIssues.totalCount,
           openBlockerCount: node.issueDependenciesSummary.blockedBy,
           closingPullRequests: node.closedByPullRequestsReferences.nodes.flatMap((pullRequest) =>
-            pullRequest === null ? [] : [pullRequestOf(search.host, pullRequest)],
+            pullRequest === null ? [] : [settled(pullRequestOf(search.host, pullRequest))],
           ),
         });
       }
@@ -533,7 +524,7 @@ const make = Effect.gen(function* () {
     for (const answer of linkedOnly) {
       if (answer === null) continue;
       viewers.set(answer.host, answer.viewer);
-      linkedPullRequests.push(...answer.linked);
+      linkedPullRequests.push(...answer.linked.map(settled));
     }
     return {
       repositories,
@@ -544,7 +535,6 @@ const make = Effect.gen(function* () {
       linkedPullRequests,
       nextCursors,
       matchCounts,
-      ...(input.cursors === undefined ? { recentCounts: recentCounts.flat() } : {}),
     };
   });
 

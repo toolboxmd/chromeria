@@ -9,14 +9,14 @@ import type { Browser } from "@e2e-dev/web";
 type IssueFacts = {
   labels?: Array<string>;
   openBlockerCount?: number;
-  /** Updated lately instead of weeks ago. */
-  fresh?: boolean;
+  /** The Issue it is a sub-Issue of, which the parent tree indents it under. */
+  parent?: number;
   /** A pull request closing it; a review mark is the viewer's own, so it is trusted. */
   pullRequest?: {
     number: number;
     isDraft?: boolean;
     review?: "pending" | "success" | "failure";
-    checks?: "pending" | "success" | "failure";
+    checks?: "pending" | "success" | "failure" | "none";
   };
   /** Ids of threads linked to it; with any, the helper answers the linked-thread reads itself. */
   threads?: Array<string>;
@@ -28,8 +28,6 @@ type IssuePageAnswer = {
   next?: string;
   /** `rpc` fails the read itself; `github` answers it with GitHub's refusal inside the result. */
   failure?: "rpc" | "github";
-  /** The week's filed and closed counts; `null` for a server that could not or does not count. */
-  week?: { filed: number; closed: number } | null;
 };
 
 /**
@@ -134,7 +132,7 @@ export function answerIssueListPages(
                     const {
                       labels = [],
                       openBlockerCount = 0,
-                      fresh,
+                      parent,
                       pullRequest,
                     } = facts[number] ?? {};
                     return {
@@ -148,9 +146,18 @@ export function answerIssueListPages(
                       milestone: null,
                       commentCount: 0,
                       createdAt: "2026-10-01T00:00:00.000Z",
-                      // A date no run reaches, so a fresh row never counts as stale.
-                      updatedAt: fresh ? "2099-01-01T00:00:00.000Z" : "2026-10-01T00:00:00.000Z",
-                      parent: null,
+                      updatedAt: "2026-10-01T00:00:00.000Z",
+                      parent:
+                        parent === undefined
+                          ? null
+                          : {
+                              host: repository.host,
+                              repository: repository.repository,
+                              number: parent,
+                              title: `Open Issue ${parent}`,
+                              url: `https://github.com/example/demo/issues/${parent}`,
+                              state: "open",
+                            },
                       subIssues: [],
                       subIssueCount: 0,
                       openBlockerCount,
@@ -180,18 +187,6 @@ export function answerIssueListPages(
                   }),
                   nextCursors: answer.next === undefined ? {} : { [SEARCH]: answer.next },
                   matchCounts: answer.failure === "github" ? {} : { [SEARCH]: matches },
-                  // A listing counts the week; a continuation does not, as on the server.
-                  ...(request.payload.cursors !== undefined || answer.week === null
-                    ? {}
-                    : {
-                        recentCounts: [
-                          {
-                            host: repository.host,
-                            repository: repository.repository,
-                            ...(answer.week ?? { filed: 2, closed: 1 }),
-                          },
-                        ],
-                      }),
                 },
               },
         );

@@ -87,68 +87,6 @@ export function issueSearchQuery(input: {
   ].join(" ");
 }
 
-/**
- * Two searches per repository that only count: `recent<2n>` Issues filed since `since` and
- * `recent<2n + 1>` closed since, for the repository at `n`. Text, labels and milestone narrow them
- * as they narrow the list; state does not, since a filed Issue may be closed by now. Null when no
- * repository is a plain `owner/name`.
- */
-export function issueRecentCountsGraphQlDocument(input: {
-  readonly repositories: ReadonlyArray<string>;
-  /** An ISO instant GitHub's search takes, such as `2026-11-19T22:00:00Z`. */
-  readonly since: string;
-  readonly query?: string | undefined;
-  readonly labels?: ReadonlyArray<string> | undefined;
-  readonly milestone?: string | undefined;
-}): GraphQlDocument | null {
-  return aliasedGraphQlDocument({
-    operation: "query",
-    name: "IssueRecentCounts",
-    alias: "recent",
-    key: (item) => item.position,
-    items: input.repositories.flatMap((repository, index) => {
-      const q = issueSearchQuery({
-        repositories: [repository],
-        state: "all",
-        query: input.query,
-        labels: input.labels,
-        milestone: input.milestone,
-      });
-      return q === null
-        ? []
-        : [
-            { position: index * 2, q: `${q} created:>=${input.since}` },
-            { position: index * 2 + 1, q: `${q} closed:>=${input.since}` },
-          ];
-    }),
-    variables: (item) => ({ q: ["String!", item.q] }),
-    field: ({ q }) => `search(query: ${q}, type: ISSUE, first: 1) { issueCount }`,
-  });
-}
-
-export const decodeIssueRecentCountsJson = Schema.decodeUnknownResult(
-  Schema.fromJsonString(
-    Schema.Struct({
-      data: Schema.Record(
-        Schema.String,
-        Schema.UndefinedOr(Schema.NullOr(Schema.Struct({ issueCount: Schema.Number }))),
-      ),
-    }),
-  ),
-);
-
-/** Each repository both of whose counts GitHub answered, by its position in the document. */
-export function issueRecentCountsOf<Repository>(
-  repositories: ReadonlyArray<Repository>,
-  data: Readonly<Record<string, { readonly issueCount: number } | null | undefined>>,
-): Array<{ readonly repository: Repository; readonly filed: number; readonly closed: number }> {
-  return repositories.flatMap((repository, index) => {
-    const filed = data[`recent${index * 2}`]?.issueCount;
-    const closed = data[`recent${index * 2 + 1}`]?.issueCount;
-    return filed === undefined || closed === undefined ? [] : [{ repository, filed, closed }];
-  });
-}
-
 const LINK_FIELDS = "number title url state stateReason repository { nameWithOwner }";
 
 /**
@@ -566,13 +504,18 @@ export function reviewStatusOf(
  * The combined state of every check and commit status on the head commit, the review mark
  * included; undefined for a commit without any, or in a state this does not know.
  */
-function checkStateOf(commit: GitHubReviewCommit | null | undefined): IssueCheckState | undefined {
-  switch (commit?.statusCheckRollup?.state) {
+/**
+ * What the head commit's combined state alone establishes. A failed rollup establishes nothing:
+ * GitHub reports failure as soon as one check fails, while others still run, so `failure` comes
+ * only from `pullRequestCheckVerdictsOf`. Undefined for the branch's own commit being unknown.
+ */
+function checkStateOf(commit: GitHubReviewCommit | null): IssueCheckState | undefined {
+  if (commit === null || commit.statusCheckRollup === undefined) return undefined;
+  switch (commit.statusCheckRollup?.state) {
+    case undefined:
+      return "none";
     case "SUCCESS":
       return "success";
-    case "FAILURE":
-    case "ERROR":
-      return "failure";
     case "PENDING":
     case "EXPECTED":
       return "pending";
@@ -581,11 +524,141 @@ function checkStateOf(commit: GitHubReviewCommit | null | undefined): IssueCheck
   }
 }
 
+const rollupFailed = (commit: GitHubReviewCommit | null) =>
+  commit?.statusCheckRollup?.state === "FAILURE" || commit?.statusCheckRollup?.state === "ERROR";
+
+/** The head GitHub reports, when the branch still points at it. */
+const headOf = (node: Pick<ClosingPullRequestNode, "headRef" | "headRefOid">) => {
+  const target = node.headRef?.target ?? null;
+  return target?.oid === node.headRefOid ? target : null;
+};
+
+/** Contexts read per pull request: GitHub's page ceiling. Pull requests here carry 33 to 43. */
+const CHECK_CONTEXT_PAGE = 100;
+/** Pull requests whose contexts one list page reads; the rest keep their checks unknown. */
+const CHECK_CONTEXT_PULL_REQUESTS = 20;
+
+/**
+ * URLs of the pull requests in a search answer whose failed rollup has to be looked into: open,
+ * ready and reviewed ones, since only those can be the user's move. Closing pull requests come
+ * from `rows`, thread-linked ones from the aliases in `raw`.
+ */
+export function unsettledCheckUrlsOf(
+  rows: GitHubIssueSearchJson | null,
+  raw: string,
+): ReadonlyArray<string> {
+  const answer = decodeAnswerFields(raw);
+  const linked =
+    answer._tag === "None"
+      ? []
+      : Object.entries(answer.value.data).flatMap(([alias, value]) => {
+          if (!alias.startsWith("linked")) return [];
+          const node = decodeLinkedAlias(value);
+          return node._tag === "Some" ? [node.value] : [];
+        });
+  const closing = (rows?.data.search.nodes ?? []).flatMap(
+    (issue) => issue.closedByPullRequestsReferences.nodes,
+  );
+  return [
+    ...new Set(
+      [...closing, ...linked].flatMap((node) => {
+        if (node === null || node.state !== "OPEN" || node.isDraft) return [];
+        const head = headOf(node);
+        return rollupFailed(head) && reviewStatusOf(head)?.state === "success" ? [node.url] : [];
+      }),
+    ),
+  ].slice(0, CHECK_CONTEXT_PULL_REQUESTS);
+}
+
+/** Every check and status of each pull request's head, one alias per URL. Null for no URL. */
+export function pullRequestChecksGraphQlDocument(
+  urls: ReadonlyArray<string>,
+): GraphQlDocument | null {
+  return resourceDocument({
+    name: "IssuePullRequestChecks",
+    alias: "checks",
+    items: urls.map((url, position) => ({ position, url })),
+    type: "PullRequest",
+    fields: `headRefOid headRef { target { ... on Commit { oid statusCheckRollup {
+      contexts(first: ${CHECK_CONTEXT_PAGE}) { totalCount nodes { __typename ... on CheckRun { status } ... on StatusContext { state } } }
+    } } } }`,
+  });
+}
+
+const CheckContexts = Schema.Struct({
+  headRefOid: Schema.String,
+  headRef: Schema.NullOr(
+    Schema.Struct({
+      target: Schema.NullOr(
+        Schema.Struct({
+          oid: Schema.optional(Schema.String),
+          statusCheckRollup: Schema.optional(
+            Schema.NullOr(
+              Schema.Struct({
+                contexts: Schema.Struct({
+                  totalCount: Schema.Number,
+                  nodes: Schema.Array(
+                    Schema.NullOr(
+                      Schema.Struct({
+                        status: Schema.optional(Schema.String),
+                        state: Schema.optional(Schema.String),
+                      }),
+                    ),
+                  ),
+                }),
+              }),
+            ),
+          ),
+        }),
+      ),
+    }),
+  ),
+});
+
+export const decodePullRequestChecksJson = Schema.decodeUnknownResult(
+  Schema.fromJsonString(Schema.Struct({ data: Schema.Record(Schema.String, Schema.Unknown) })),
+);
+const decodeCheckContexts = Schema.decodeUnknownOption(CheckContexts);
+
+/**
+ * Per URL, what its head's contexts establish: `pending` when one still runs, `failure` when all
+ * of them were read and all have ended. No entry when the read cannot tell: the head moved, a
+ * context was not returned, or more exist than one page holds.
+ */
+export function pullRequestCheckVerdictsOf(
+  urls: ReadonlyArray<string>,
+  data: Readonly<Record<string, unknown>>,
+): ReadonlyMap<string, "pending" | "failure"> {
+  const verdicts = new Map<string, "pending" | "failure">();
+  urls.forEach((url, position) => {
+    const read = decodeCheckContexts(data[`checks${position}`]);
+    if (read._tag === "None") return;
+    const target = read.value.headRef?.target ?? null;
+    const contexts =
+      target?.oid === read.value.headRefOid ? target.statusCheckRollup?.contexts : undefined;
+    if (contexts === undefined) return;
+    // A check run ends as COMPLETED; a commit status still to arrive is PENDING or EXPECTED.
+    const running = contexts.nodes.some(
+      (context) =>
+        (context?.status !== undefined && context.status !== "COMPLETED") ||
+        context?.state === "PENDING" ||
+        context?.state === "EXPECTED",
+    );
+    if (running) verdicts.set(url, "pending");
+    else if (
+      contexts.nodes.every((context) => context !== null) &&
+      contexts.totalCount <= contexts.nodes.length
+    ) {
+      verdicts.set(url, "failure");
+    }
+  });
+  return verdicts;
+}
+
 export function pullRequestOf(host: string, node: ClosingPullRequestNode): IssuePullRequest {
   // The branch can have moved past the head GitHub last synced; only the head's own mark and
   // checks count.
-  const target = node.headRef?.target ?? null;
-  const head = target?.oid === node.headRefOid ? target : null;
+  const head = headOf(node);
   const checks = checkStateOf(head);
   return {
     host,

@@ -50,6 +50,8 @@ test(
         "Reviewed, checks running",
         "Blocked by 2 open Issues",
         "Waiting for review",
+        // The reviewed draft: paused work, not a merge to wait for.
+        "Paused",
       ]) {
         await expect(says(reason)).toBeVisible();
       }

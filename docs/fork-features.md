@@ -821,7 +821,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
 ```json
 {
   "id": "issues-status",
-  "purpose": "Compute each Issue's status and whose move it is from GitHub, labels, links and thread activity; group and filter the Issues view by it, count the week's flow, and wire linked threads and Start thread.",
+  "purpose": "Compute each Issue's status and whose move it is from GitHub, labels, links and thread activity; group and filter the Issues view by it, and wire linked threads and Start thread.",
   "issues": [
     "https://github.com/toolboxmd/t3code/issues/29",
     "https://github.com/toolboxmd/chromeria/issues/171",
@@ -843,7 +843,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "packages/contracts/src/issueStatus.ts",
     "scripts/scenarios/issues-view-groups-by-whose-move.e2e.ts",
     "scripts/scenarios/issues-view-pending-request-is-your-move.e2e.ts",
-    "scripts/scenarios/issues-view-states-the-weeks-flow.e2e.ts"
+    "scripts/scenarios/issues-view-row-link-stays-reachable-on-narrow-rows.e2e.ts"
   ],
   "upstreamFiles": [],
   "sharedFiles": [
@@ -861,7 +861,6 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "blockedBy",
     "statusCheckRollup",
     "needs-user",
-    "recentCounts",
     "statuses",
     "pull-requests route",
     "pendingBackgroundTasks"

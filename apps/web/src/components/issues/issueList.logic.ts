@@ -38,17 +38,6 @@ export interface MergedIssueList {
    * any of them posted is trusted.
    */
   readonly trustedLogins: ReadonlyMap<string, ReadonlySet<string>>;
-  /**
-   * The week's filed and closed Issues per `repositoryKey`, once each however many servers list
-   * the repository. A repository no server counted is missing.
-   */
-  readonly recentCounts: ReadonlyMap<string, IssueWeekFlow>;
-}
-
-/** Issues filed and closed over the last 7 days: the week's flow, not a change in the open total. */
-export interface IssueWeekFlow {
-  readonly filed: number;
-  readonly closed: number;
 }
 
 export interface IssueListFilters {
@@ -184,7 +173,6 @@ export function mergeIssueLists(
   const nextCursors = new Map<EnvironmentId, GitHubIssueListCursors>();
   const linkedPullRequests = new Map<string, IssuePullRequest>();
   const trustedLogins = new Map<string, Set<string>>();
-  const recentCounts = new Map<string, IssueWeekFlow>();
   for (const [environmentId, result] of values) {
     const viewers = new Map(
       result.viewers.map(({ host, login }) => [host.toLowerCase(), login.toLowerCase()]),
@@ -213,11 +201,6 @@ export function mergeIssueLists(
       unsupportedSeen.add(key);
       unsupported.set(host.toLowerCase(), (unsupported.get(host.toLowerCase()) ?? 0) + 1);
     }
-    // Every server counts the same repository on GitHub; the first answer stands for all.
-    for (const { host, repository, filed, closed } of result.recentCounts ?? []) {
-      const key = repositoryKey(host, repository);
-      if (!recentCounts.has(key)) recentCounts.set(key, { filed, closed });
-    }
     for (const error of result.errors) errors.push({ environmentId, ...error });
     if (Object.keys(result.nextCursors).length > 0) {
       nextCursors.set(environmentId, result.nextCursors);
@@ -233,27 +216,24 @@ export function mergeIssueLists(
     nextCursors,
     linkedPullRequests,
     trustedLogins,
-    recentCounts,
   };
 }
 
 /**
- * The week's flow over `repositories` (`repositoryKey`s), or null when any of them has no count:
- * a server that predates the counts, or a count GitHub did not answer, is unknown and never zero.
+ * What the count above the list may be called. The rows are every open Issue of the listed
+ * repositories only when State is Open and GitHub was asked for nothing narrower: text, labels and
+ * a milestone are searched on GitHub, so under them the rows are `matching` Issues and say nothing
+ * of the open total. Any other State is just what is `listed`.
  */
-export function issueWeekFlow(
-  repositories: ReadonlyArray<string>,
-  recentCounts: ReadonlyMap<string, IssueWeekFlow>,
-): IssueWeekFlow | null {
-  let filed = 0;
-  let closed = 0;
-  for (const key of new Set(repositories)) {
-    const counted = recentCounts.get(key);
-    if (counted === undefined) return null;
-    filed += counted.filed;
-    closed += counted.closed;
-  }
-  return repositories.length === 0 ? null : { filed, closed };
+export function issueNumbersScope(
+  input: Pick<GitHubIssueListInput, "state" | "query" | "labels" | "milestone">,
+): "open" | "matching" | "listed" {
+  if (input.state !== "open") return "listed";
+  return input.query === undefined &&
+    (input.labels?.length ?? 0) === 0 &&
+    input.milestone === undefined
+    ? "open"
+    : "matching";
 }
 
 const STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;

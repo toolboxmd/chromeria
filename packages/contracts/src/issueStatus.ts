@@ -88,7 +88,7 @@ const ISSUE_WAITING_LABEL = "waiting";
 export interface IssueGroupPullRequest<PullRequest> extends IssueStatusPullRequest {
   /** What the caller opens for this pull request. */
   readonly ref: PullRequest;
-  /** The head commit's combined check state; absent when it is unknown or the head has none. */
+  /** Whether the head commit's checks finished; absent when that is not known. */
   readonly checks?: IssueCheckState | undefined;
 }
 
@@ -142,16 +142,16 @@ export interface IssueGrouping<Thread, PullRequest> {
 /**
  * The group table, first match wins. The rule that wins supplies group, reason and target
  * together, so the three cannot disagree. A mark set on purpose (the two labels, a pending
- * request) outranks what activity suggests. A reviewed pull request is the user's move only once
- * its checks are not demonstrably running, and never while it is a draft.
+ * request) outranks what activity suggests. A reviewed pull request is the user's move only on
+ * evidence that its checks finished, and never while it is a draft.
  */
 export function issueGroupOf<Thread, PullRequest>(
   input: IssueGroupInput<Thread, PullRequest>,
 ): IssueGrouping<Thread, PullRequest> {
   const status = issueStatusOf({ ...input, linkedThreadCount: input.threads.length });
   const issue = { kind: "issue" } as const;
-  const statusReason = (openBlockerCount = 0) =>
-    ({ kind: "status", status, openBlockerCount }) as const;
+  const statusReason = (openBlockerCount = 0, named: IssueStatus = status) =>
+    ({ kind: "status", status: named, openBlockerCount }) as const;
   if (status === "done" || status === "not-planned") {
     return { group: status, status, reason: null, target: issue };
   }
@@ -199,7 +199,10 @@ export function issueGroupOf<Thread, PullRequest>(
       target: { kind: "pull-request", pullRequest: inChecks.ref },
     };
   }
-  const held = reviewed[0];
+  // Unknown checks are no evidence either way: such a pull request falls through to Stalled.
+  const held = reviewed.find(
+    (pullRequest) => pullRequest.checks !== undefined && pullRequest.checks !== "pending",
+  );
   if (held !== undefined) {
     return {
       group: "your-move",
@@ -232,7 +235,11 @@ export function issueGroupOf<Thread, PullRequest>(
     return {
       group: "stalled",
       status,
-      reason: statusReason(),
+      // A reviewed draft waits for no merge: with nobody working it is paused work.
+      reason: statusReason(
+        0,
+        status === "waiting-for-merge" && reviewed.length === 0 ? "paused" : status,
+      ),
       target: { kind: "pull-request", pullRequest: pullRequest.ref },
     };
   }
@@ -252,6 +259,10 @@ export function issueGroupOf<Thread, PullRequest>(
       reason: { kind: "last-thread-archived" },
       target: { kind: "thread", thread: archived.ref },
     };
+  }
+  // A task branch on its own: a caller can know of one without holding its thread.
+  if (input.hasTaskBranch) {
+    return { group: "stalled", status, reason: statusReason(), target: issue };
   }
   return { group: "nobody-on-it", status, reason: null, target: issue };
 }

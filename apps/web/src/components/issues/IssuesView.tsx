@@ -46,6 +46,7 @@ import {
 } from "../pullRequest/PullRequestListRow";
 import type { PullRequestFilterOption } from "../pullRequest/PullRequestListFilters";
 import { resolveFilterOptions } from "../pullRequest/pullRequestListOptions";
+import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { PullRequestLabelChip } from "../pullRequest/pullRequestPresentation";
 import { Button } from "../ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
@@ -64,7 +65,7 @@ import {
   environmentIdsWithCapability,
   issueCountCertainty,
   issueKey,
-  issueWeekFlow,
+  issueNumbersScope,
   matchesIssueFilters,
   repositoryKey,
   sortIssues,
@@ -311,15 +312,6 @@ export function IssuesView() {
   // that only narrow the rows shown.
   const openCount = (data?.entries ?? []).filter((entry) => entry.state === "open").length;
   const staleCount = staleIssueCount(data?.entries ?? [], now);
-  const weekFlow =
-    data === null
-      ? null
-      : issueWeekFlow(
-          filters.repository === undefined
-            ? data.repositories.map(({ host, repository }) => repositoryKey(host, repository))
-            : [filters.repository.toLowerCase()],
-          data.recentCounts,
-        );
   const facets = collectIssueFacets(data?.entries ?? []);
   const projectRepositories = new Set(
     (data?.repositories ?? []).map((repository) =>
@@ -397,46 +389,34 @@ export function IssuesView() {
       : issueMarkdownCwd(projects, selected.environmentId, selected.reference);
 
   const shown = marked(visible.length, shownCertainty);
+  const numbersScope = issueNumbersScope(baseInput);
   const numbers = (
     <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-2 text-xs text-muted-foreground">
       <span>
-        {preferences.state !== "open"
-          ? shownCertainty === "final"
-            ? gt("{count, plural, one {{count} Issue} other {{count} Issues}}", {
-                count: visible.length,
-              })
-            : shownCertainty === "floor"
-              ? gt("{count}+ Issues", { count: visible.length })
-              : gt("~{count} Issues", { count: visible.length })
-          : visible.length !== openCount
-            ? // Filters that only narrow the rows shown leave the total of open Issues in sight.
-              gt("{shown} of {total} open Issues", {
-                shown,
-                total: marked(openCount, rowCertainty),
-              })
-            : shownCertainty === "final"
-              ? gt("{count, plural, one {{count} open Issue} other {{count} open Issues}}", {
-                  count: openCount,
+        {numbersScope === "matching"
+          ? // GitHub narrowed the list, so these are the matches, not the open total.
+            gt("Matching Issues: {count}", { count: shown })
+          : numbersScope === "listed"
+            ? shownCertainty === "final"
+              ? gt("{count, plural, one {{count} Issue} other {{count} Issues}}", {
+                  count: visible.length,
                 })
-              : gt("{count} open Issues", { count: shown })}
+              : shownCertainty === "floor"
+                ? gt("{count}+ Issues", { count: visible.length })
+                : gt("~{count} Issues", { count: visible.length })
+            : visible.length !== openCount
+              ? // Filters that only narrow the rows shown leave the total of open Issues in sight.
+                gt("{shown} of {total} open Issues", {
+                  shown,
+                  total: marked(openCount, rowCertainty),
+                })
+              : shownCertainty === "final"
+                ? gt("{count, plural, one {{count} open Issue} other {{count} open Issues}}", {
+                    count: openCount,
+                  })
+                : gt("{count} open Issues", { count: shown })}
       </span>
-      {/* The week's flow, not a change in the open total: a reopened Issue grows the pile
-          without being filed. */}
-      {weekFlow === null ? (
-        list.isPending ? null : (
-          <span>
-            <T>Last 7 days: not counted</T>
-          </span>
-        )
-      ) : (
-        <span>
-          {gt("Last 7 days: {filed} filed, {closed} closed", {
-            filed: weekFlow.filed,
-            closed: weekFlow.closed,
-          })}
-        </span>
-      )}
-      {preferences.state === "open" ? (
+      {numbersScope === "open" ? (
         <span>
           {gt("Not updated for 30 days: {count}", { count: marked(staleCount, rowCertainty) })}
         </span>
@@ -753,7 +733,9 @@ interface IssueRowProps {
 
 /** A link in the row's second line, above the row's own hit area. */
 const ISSUE_ROW_ACTION_CLASS =
-  "relative shrink-0 rounded-sm font-medium text-foreground underline decoration-muted-foreground/60 underline-offset-2 outline-none hover:decoration-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset";
+  "relative inline-flex shrink-0 items-center gap-1 rounded-sm font-medium text-foreground underline decoration-muted-foreground/60 underline-offset-2 outline-none hover:decoration-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset";
+/** Its words show only on a row wide enough for the longest translation beside the reason. */
+const ISSUE_ROW_ACTION_TEXT_CLASS = "hidden @3xl/issue-row:inline";
 
 /** What the row's own action opens: the thread or pull request its grouping names, by a key. */
 const targetKey = ({ target }: IssueRowGrouping) =>
@@ -798,6 +780,11 @@ const IssueRow = memo(function IssueRow({
   const gt = useGT();
   const messages = useMessages();
   const { group, status, reason, target } = grouping;
+  const openThread = gt("Open thread", { $context: "link on an Issue row" });
+  const openPullRequest =
+    target.kind === "pull-request"
+      ? gt("Open pull request #{number}", { number: String(target.pullRequest.number) })
+      : "";
   return (
     <div
       className={cn(
@@ -806,7 +793,8 @@ const IssueRow = memo(function IssueRow({
         selected && "bg-accent text-accent-foreground",
       )}
     >
-      <IssueStatusGlyph status={status} />
+      {/* The glyph of the status the row names, where it names one. */}
+      <IssueStatusGlyph status={reason?.kind === "status" ? reason.status : status} />
       <PullRequestRowLines
         number={<span className={PULL_REQUEST_ROW_NUMBER_CLASS}>#{entry.number}</span>}
         title={
@@ -844,26 +832,31 @@ const IssueRow = memo(function IssueRow({
               </span>
             ) : null}
             {/* The one thing the reason points at, beside it so the title keeps its width. The
-                row itself opens the Issue. */}
+                row itself opens the Issue. A narrow row shows the link as its icon alone, which
+                the line cannot clip. */}
             {target.kind === "thread" ? (
               <Link
                 className={ISSUE_ROW_ACTION_CLASS}
+                aria-label={openThread}
                 to="/$environmentId/$threadId"
                 params={buildThreadRouteParams(
                   scopeThreadRef(target.thread.environmentId, target.thread.id),
                 )}
               >
-                <T context="link on an Issue row">Open thread</T>
+                <MessageSquareIcon aria-hidden className="size-3.5" />
+                <span className={ISSUE_ROW_ACTION_TEXT_CLASS}>{openThread}</span>
               </Link>
             ) : target.kind === "pull-request" ? (
               <a
                 className={ISSUE_ROW_ACTION_CLASS}
+                aria-label={openPullRequest}
                 href={target.pullRequest.url}
                 target="_blank"
                 rel="noreferrer"
                 onClick={(event) => onOpenPullRequest(event, target.pullRequest.url)}
               >
-                {gt("Open pull request #{number}", { number: String(target.pullRequest.number) })}
+                <PullRequestGlyph.pullRequest aria-hidden className="size-3.5" />
+                <span className={ISSUE_ROW_ACTION_TEXT_CLASS}>{openPullRequest}</span>
               </a>
             ) : null}
             {/* Shrinks away before the reason does, so a narrow row cuts these first. */}

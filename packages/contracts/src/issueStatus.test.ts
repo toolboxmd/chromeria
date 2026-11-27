@@ -276,8 +276,8 @@ describe("issueGroupOf: every rule of the group table", () => {
       ["your-move", "reviewed-not-merged", "pr:7"],
     ],
     [
-      "7: reviewed with checks unknown, as from an older server",
-      { pullRequests: [reviewed(7)] },
+      "7: reviewed, and its head has no checks at all",
+      { pullRequests: [reviewed(7, "none")] },
       ["your-move", "reviewed-not-merged", "pr:7"],
     ],
     ["8: open native blockers", { openBlockerCount: 3 }, ["blocked", "blocked:3", "issue"]],
@@ -305,6 +305,11 @@ describe("issueGroupOf: every rule of the group table", () => {
       "9: a thread that only discussed it",
       { threads: [linked("t")] },
       ["stalled", "status:discussion", "thread:t"],
+    ],
+    [
+      "9: a task branch on its own, with no thread and no pull request held",
+      { hasTaskBranch: true },
+      ["stalled", "status:paused", "issue"],
     ],
     [
       "9: an archived-only linked thread",
@@ -395,9 +400,19 @@ describe("issueGroupOf: first match wins", () => {
 describe("issueGroupOf: what never makes it the user's move", () => {
   it.each<[string, Partial<GroupInput>, ReturnType<typeof read>]>([
     [
-      "a draft with a review mark success, whatever its checks",
+      "a draft with a review mark success, whatever its checks: paused work, not a merge to wait for",
       { pullRequests: [groupPr(7, { isDraft: true, reviewMark: "success", checks: "success" })] },
+      ["stalled", "status:paused", "pr:7"],
+    ],
+    [
+      "a reviewed pull request whose checks are unknown, as from an older server",
+      { pullRequests: [reviewed(7)] },
       ["stalled", "status:waiting-for-merge", "pr:7"],
+    ],
+    [
+      "unknown checks beside a pull request whose checks finished: the finished one decides",
+      { pullRequests: [reviewed(7), reviewed(8, "failure")] },
+      ["your-move", "reviewed-not-merged", "pr:8"],
     ],
     [
       "a pending request on an archived thread",

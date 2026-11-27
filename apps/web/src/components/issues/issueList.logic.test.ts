@@ -13,7 +13,7 @@ import {
   issueCountCertainty,
   issueKey,
   issueListPages,
-  issueWeekFlow,
+  issueNumbersScope,
   matchesIssueFilters,
   mergeIssueLists,
   repositoryKey,
@@ -213,48 +213,17 @@ describe("mergeIssueLists", () => {
 });
 
 describe("the line of numbers", () => {
-  const T3CODE = repositoryKey("github.com", "toolboxmd/t3code");
-  const AGENTSMD = repositoryKey("github.com", "toolboxmd/agentsmd");
-  const agentsmd = {
-    host: "github.com",
-    repository: "toolboxmd/agentsmd",
-    projectId: "project-2" as ProjectId,
-    projectTitle: "agentsmd",
-  };
-  const counted = (repository: string, filed: number, closed: number) => ({
-    host: "github.com",
-    repository,
-    filed,
-    closed,
-  });
-
-  it("counts a repository two servers list once in the week's flow", () => {
-    const merged = mergeIssueLists([
-      [ENV_A, result([], { recentCounts: [counted("toolboxmd/t3code", 3, 1)] })],
-      [
-        ENV_B,
-        result([], {
-          repositories: [result([]).repositories[0]!, agentsmd],
-          recentCounts: [counted("Toolboxmd/T3code", 3, 1), counted("toolboxmd/agentsmd", 2, 0)],
-        }),
-      ],
-      // A further page carries no counts; the listing's own still stand.
-      [ENV_A, result([])],
-    ])!;
-    expect(issueWeekFlow([T3CODE, AGENTSMD], merged.recentCounts)).toEqual({ filed: 5, closed: 1 });
-    // Narrowed to one repository, the flow is that repository's.
-    expect(issueWeekFlow([AGENTSMD], merged.recentCounts)).toEqual({ filed: 2, closed: 0 });
-  });
-
-  it("leaves the week's flow unknown, not zero, when a listed repository was not counted", () => {
-    // ENV_B predates the counts, and the read of one of ENV_A's repositories failed.
-    const merged = mergeIssueLists([
-      [ENV_A, result([], { recentCounts: [counted("toolboxmd/t3code", 3, 1)] })],
-      [ENV_B, result([], { repositories: [agentsmd] })],
-    ])!;
-    expect(issueWeekFlow([T3CODE, AGENTSMD], merged.recentCounts)).toBeNull();
-    expect(issueWeekFlow([T3CODE], merged.recentCounts)).toEqual({ filed: 3, closed: 1 });
-    expect(issueWeekFlow([], merged.recentCounts)).toBeNull();
+  it.each([
+    [{ state: "open" }, "open"],
+    [{ state: "open", labels: [] }, "open"],
+    // GitHub searches these, so the rows are matches and not the repositories' open Issues.
+    [{ state: "open", labels: ["bug"] }, "matching"],
+    [{ state: "open", query: "tree" }, "matching"],
+    [{ state: "open", milestone: "M1" }, "matching"],
+    [{ state: "closed" }, "listed"],
+    [{ state: "all", labels: ["bug"] }, "listed"],
+  ] as const)("calls the rows of %j %s", (input, expected) => {
+    expect(issueNumbersScope(input)).toBe(expected);
   });
 
   it("counts open Issues nobody updated for 30 days", () => {

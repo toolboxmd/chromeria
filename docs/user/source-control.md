@@ -99,22 +99,34 @@ written to GitHub. The first rule that applies wins, and the row's second line s
 | Agents working | A linked thread works now                                                                    | Its status, and any open blockers   |
 | Agents working | An open pull request is in review                                                            | In review                           |
 | Agents working | An open pull request, not a draft, passed review and its checks are running                  | Reviewed, checks running            |
-| Your move      | An open pull request, not a draft, passed review and its checks are not running              | Reviewed, not merged                |
+| Your move      | An open pull request, not a draft, passed review and its checks have finished                | Reviewed, not merged                |
 | Blocked        | An open Issue blocks it on GitHub                                                            | Blocked by N open Issues            |
-| Stalled        | A thread is linked, or a task branch or open pull request exists, and none of the above fits | Its status                          |
+| Stalled        | A thread is linked, or a task branch or open pull request exists, and none of the above fits | Its status (see below)              |
 | Nobody on it   | Nothing was started                                                                          |                                     |
 
 The two labels are yours and your agents' to set; Chromeria only reads them, from an Issue's first 20
 labels. A thread that ended its turn with a question in plain text is not a pending request, so its
-Issue shows as Stalled until someone adds `needs-user`. A Stalled row whose linked threads are all
-archived says so instead of its status. A row whose reason names a thread or a pull request has a
-button that opens it; the row itself opens the Issue.
+Issue shows as Stalled until someone adds `needs-user`.
 
-Above the list, one line counts the open Issues, the Issues filed and closed in the last 7 days,
-and the open Issues nobody updated for 30 days, across the listed repositories. Filed and closed
-are the week's flow, not the change in the open total: a reopened Issue grows the pile without being
-filed. A count ends in `+` while more Issues are still being read, and a group's count starts with
-`~` until every Issue and its threads are read, because a row can still move to another group.
+A reviewed pull request is your move only when Chromeria can tell its checks have finished: all of
+them ended, or its head has none. While one still runs the Issue stays with the agents, also when
+another check has already failed. When that cannot be told, for example from a server that predates
+this, the Issue shows as Stalled with the status Waiting for merge.
+
+A Stalled row names its status, with two exceptions. A reviewed draft says Paused: a draft waits for
+no merge. A row with no open pull request whose linked threads are all archived says "Last linked
+thread archived".
+
+When the reason names a thread or a pull request, a link right after it opens that thread or pull
+request; on a narrow row the link shows as an icon. Clicking anywhere else on the row opens the
+Issue.
+
+Above the list, one line counts the open Issues of the listed repositories and how many of them
+nobody updated for 30 days. With a Status, Linked or Parent filter it reads "5 of 113 open Issues".
+A search text, label or milestone is searched on GitHub, so the line then counts the matching Issues
+and names no open total. A count ends in `+` while more Issues are still being read, and a group's
+count starts with `~` until every Issue and its threads are read, because a row can still move to
+another group.
 
 The status a row names is the first of these that applies:
 
