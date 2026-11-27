@@ -156,6 +156,8 @@ flowchart TD
     WRR["Headless page rendering"]
     %% WRR: #442
     WR --- WRR
+    IWM["Issues grouped by whose move"]
+    %% IWM: #1009
 
     T3P --- PZ
     T3T --- VT
@@ -182,6 +184,7 @@ flowchart TD
     T3R --- PRN
     T3M --- OAG
     T3M --- WR
+    T3C --- IWM
     T3S --- EP
     EP --- DR
     EP --- XM

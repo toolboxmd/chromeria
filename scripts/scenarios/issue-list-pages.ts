@@ -3,9 +3,26 @@
 import type { Browser } from "@e2e-dev/web";
 
 /**
- * One answer to a page read: its Issue numbers and where the search carries on, or a failure.
- * A type alias, not an interface: only that passes as the init script's JSON argument.
+ * What an Issue carries beyond its number. Type aliases here, not interfaces: only those pass as
+ * the init script's JSON argument.
  */
+type IssueFacts = {
+  labels?: Array<string>;
+  openBlockerCount?: number;
+  /** The Issue it is a sub-Issue of, which the parent tree indents it under. */
+  parent?: number;
+  /** A pull request closing it; a review mark is the viewer's own, so it is trusted. */
+  pullRequest?: {
+    number: number;
+    isDraft?: boolean;
+    review?: "pending" | "success" | "failure";
+    checks?: "pending" | "success" | "failure" | "none";
+  };
+  /** Ids of threads linked to it; with any, the helper answers the linked-thread reads itself. */
+  threads?: Array<string>;
+};
+
+/** One answer to a page read: its Issue numbers and where the search carries on, or a failure. */
 type IssuePageAnswer = {
   issues: Array<number>;
   next?: string;
@@ -16,15 +33,16 @@ type IssuePageAnswer = {
 /**
  * Answers every `githubIssues.list` read in the page: `plan.first` for a listing and
  * `plan[cursor]` for a continuation. A read takes the next answer of its list; the last repeats.
- * The first `failedThreadReads` reads of the rows' linked threads fail; later ones reach the server.
+ * The first `failedThreadReads` reads of the rows' linked threads fail; later ones reach the
+ * server, unless `facts` links threads, which the helper then answers.
  */
 export function answerIssueListPages(
   browser: Browser,
   plan: Record<string, Array<IssuePageAnswer>>,
-  failedThreadReads = 0,
+  options: { failedThreadReads?: number; facts?: Record<number, IssueFacts> } = {},
 ) {
   return browser.addInitScript(
-    ({ answersByPage, failedThreadReads }) => {
+    ({ answersByPage, failedThreadReads, facts }) => {
       const SEARCH = "github.com#0";
       const repository = {
         host: "github.com",
@@ -44,7 +62,7 @@ export function answerIssueListPages(
           _tag: string;
           id: string;
           tag: string;
-          payload: { cursors?: Record<string, string> };
+          payload: { cursors?: Record<string, string>; issues?: Array<{ number: number }> };
         } | null = typeof data === "string" ? JSON.parse(data) : null;
         const reply = (exit: unknown) =>
           queueMicrotask(() =>
@@ -57,8 +75,32 @@ export function answerIssueListPages(
         const failure = (error: object) => ({ _tag: "Failure", cause: [{ _tag: "Fail", error }] });
         if (request?._tag === "Request" && request.tag === "issueLinks.threadsForIssues") {
           threadReads += 1;
-          if (threadReads > failedThreadReads) return send.call(this, data);
-          return reply(failure({ _tag: "IssueLinkError", detail: "The links database is busy." }));
+          if (threadReads <= failedThreadReads) {
+            return reply(
+              failure({ _tag: "IssueLinkError", detail: "The links database is busy." }),
+            );
+          }
+          if (!Object.values(facts).some(({ threads }) => threads !== undefined)) {
+            return send.call(this, data);
+          }
+          return reply({
+            _tag: "Success",
+            value: {
+              issues: (request.payload.issues ?? []).map(({ number }) => ({
+                host: repository.host,
+                repository: repository.repository,
+                number,
+                threads: (facts[number]?.threads ?? []).map((id) => ({
+                  id,
+                  projectId: repository.projectId,
+                  title: `Thread on Issue ${number}`,
+                  archivedAt: null,
+                  sources: ["manual"],
+                  pullRequests: [],
+                })),
+              })),
+            },
+          });
         }
         if (request?._tag !== "Request" || request.tag !== "githubIssues.list") {
           return send.call(this, data);
@@ -86,24 +128,63 @@ export function answerIssueListPages(
                     answer.failure === "github"
                       ? [{ host: "github.com", message: "GitHub API rate limit exceeded." }]
                       : [],
-                  entries: answer.issues.map((number) => ({
-                    ...repository,
-                    number,
-                    title: `Open Issue ${number}`,
-                    url: `https://github.com/example/demo/issues/${number}`,
-                    state: "open",
-                    author: null,
-                    labels: [],
-                    milestone: null,
-                    commentCount: 0,
-                    createdAt: "2026-10-01T00:00:00.000Z",
-                    updatedAt: "2026-10-01T00:00:00.000Z",
-                    parent: null,
-                    subIssues: [],
-                    subIssueCount: 0,
-                    openBlockerCount: 0,
-                    closingPullRequests: [],
-                  })),
+                  entries: answer.issues.map((number) => {
+                    const {
+                      labels = [],
+                      openBlockerCount = 0,
+                      parent,
+                      pullRequest,
+                    } = facts[number] ?? {};
+                    return {
+                      ...repository,
+                      number,
+                      title: `Open Issue ${number}`,
+                      url: `https://github.com/example/demo/issues/${number}`,
+                      state: "open",
+                      author: null,
+                      labels: labels.map((name) => ({ name, color: "ededed" })),
+                      milestone: null,
+                      commentCount: 0,
+                      createdAt: "2026-10-01T00:00:00.000Z",
+                      updatedAt: "2026-10-01T00:00:00.000Z",
+                      parent:
+                        parent === undefined
+                          ? null
+                          : {
+                              host: repository.host,
+                              repository: repository.repository,
+                              number: parent,
+                              title: `Open Issue ${parent}`,
+                              url: `https://github.com/example/demo/issues/${parent}`,
+                              state: "open",
+                            },
+                      subIssues: [],
+                      subIssueCount: 0,
+                      openBlockerCount,
+                      closingPullRequests:
+                        pullRequest === undefined
+                          ? []
+                          : [
+                              {
+                                host: repository.host,
+                                repository: repository.repository,
+                                number: pullRequest.number,
+                                url: `https://github.com/example/demo/pull/${pullRequest.number}`,
+                                state: "open",
+                                isDraft: pullRequest.isDraft ?? false,
+                                headRefName: `feat/${number}-work`,
+                                headSha: "abc123",
+                                review:
+                                  pullRequest.review === undefined
+                                    ? null
+                                    : { state: pullRequest.review, creator: "octocat" },
+                                ...(pullRequest.checks === undefined
+                                  ? {}
+                                  : { checks: pullRequest.checks }),
+                              },
+                            ],
+                    };
+                  }),
                   nextCursors: answer.next === undefined ? {} : { [SEARCH]: answer.next },
                   matchCounts: answer.failure === "github" ? {} : { [SEARCH]: matches },
                 },
@@ -111,6 +192,10 @@ export function answerIssueListPages(
         );
       };
     },
-    { answersByPage: plan, failedThreadReads },
+    {
+      answersByPage: plan,
+      failedThreadReads: options.failedThreadReads ?? 0,
+      facts: options.facts ?? {},
+    },
   );
 }

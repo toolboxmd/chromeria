@@ -5,7 +5,13 @@ import { Atom } from "effect/reactivity";
 import { issueLinkEnvironment } from "~/state/issueLinks";
 import { createMergedEnvironmentQuery } from "~/state/pullRequests";
 import { environmentThreadShells } from "~/state/threads";
-import { issueThreadTargets, mergeIssueRowThreads, workingThreadKeysOf } from "./issueStatus.logic";
+import {
+  issueThreadTargets,
+  mergeIssueRowThreads,
+  waitingThreadKeysOf,
+  waitingThreadsOf,
+  workingThreadKeysOf,
+} from "./issueStatus.logic";
 
 const useThreadsForIssuesQuery = createMergedEnvironmentQuery(
   "web-issues:threads-for-issues",
@@ -17,9 +23,14 @@ const workingThreadKeysAtom = Atom.make((get) =>
   workingThreadKeysOf(get(environmentThreadShells.threadShellsAtom)),
 ).pipe(Atom.withLabel("web-issues:working-thread-keys"));
 
+/** Likewise for who waits on the user: a pending approval or question, on any connected server. */
+const waitingThreadKeysAtom = Atom.make((get) =>
+  waitingThreadKeysOf(get(environmentThreadShells.threadShellsAtom)),
+).pipe(Atom.withLabel("web-issues:waiting-thread-keys"));
+
 /**
  * The loaded rows' linked threads, read in batches from every server that keeps Issue links, and
- * which threads work now. Both feed the computed status; no GitHub read happens here.
+ * which threads work now or wait on the user. All feed the row's group; no GitHub read happens here.
  */
 export function useIssueRowThreads(
   entries: Parameters<typeof issueThreadTargets>[0],
@@ -30,9 +41,11 @@ export function useIssueRowThreads(
   const threadsByIssue = mergeIssueRowThreads(query.values);
   const workingKey = useAtomValue(workingThreadKeysAtom);
   const working = new Set(workingKey.length === 0 ? [] : workingKey.split("\n"));
+  const waiting = waitingThreadsOf(useAtomValue(waitingThreadKeysAtom));
   return {
     threadsByIssue,
     working,
+    waiting,
     /** A batch has yet to answer for the first time, so some rows still lack their threads. */
     loading: query.isPending && query.values.length < targets.length,
     // The first server that could not answer, so a view can say whose threads it is missing.

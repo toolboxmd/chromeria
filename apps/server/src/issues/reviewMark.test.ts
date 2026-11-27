@@ -75,6 +75,90 @@ describe("pullRequestOf", () => {
     expect(pullRequestOf("github.com", moved).review).toBeNull();
   });
 
+  /** A rollup as GitHub answers it: the combined state and its contexts counted by state. */
+  const rollup = (
+    state: string,
+    runs: Record<string, number> = {},
+    statuses: Record<string, number> = {},
+    totalCount = [...Object.values(runs), ...Object.values(statuses)].reduce((a, b) => a + b, 0),
+  ) => ({
+    state,
+    contexts: {
+      totalCount,
+      checkRunCountsByState: Object.entries(runs).map(([state, count]) => ({ state, count })),
+      statusContextCountsByState: Object.entries(statuses).map(([state, count]) => ({
+        state,
+        count,
+      })),
+    },
+  });
+  type Rollup = NonNullable<
+    NonNullable<Parameters<typeof pullRequestOf>[1]["headRef"]>["target"]
+  >["statusCheckRollup"];
+  const checksOf = (statusCheckRollup: Rollup, oid = "abc123") =>
+    pullRequestOf("github.com", {
+      ...node,
+      headRef: { target: { ...commit("SUCCESS", "lukemaj"), statusCheckRollup, oid } },
+    });
+
+  it.each([
+    ["every check ended and passed", rollup("SUCCESS", { SUCCESS: 20, SKIPPED: 10 }), "success"],
+    [
+      "every check ended and one failed",
+      rollup("FAILURE", { SUCCESS: 20, FAILURE: 1, CANCELLED: 1 }, { SUCCESS: 1 }),
+      "failure",
+    ],
+    // GitHub reads FAILURE as soon as one check fails, while others still run.
+    [
+      "a failed rollup with a run in progress",
+      rollup("FAILURE", { FAILURE: 1, IN_PROGRESS: 3 }),
+      "pending",
+    ],
+    [
+      "a failed rollup with a status to arrive",
+      rollup("FAILURE", { SUCCESS: 2 }, { FAILURE: 1, PENDING: 1 }),
+      "pending",
+    ],
+    ["a queued run", rollup("PENDING", { QUEUED: 1, SUCCESS: 1 }), "pending"],
+    ["a required status still expected", rollup("EXPECTED", { SUCCESS: 1 }), "pending"],
+    ["a rollup with nothing in it", rollup("SUCCESS"), "none"],
+    ["a head nothing reported on", null, "none"],
+  ] as const)("reads the head's checks, %s, as %s", (_label, statusCheckRollup, expected) => {
+    expect(checksOf(statusCheckRollup).checks).toBe(expected);
+  });
+
+  it.each([
+    ["a state it does not know", rollup("SUCCESS", { SOMETHING_NEW: 1, SUCCESS: 1 })],
+    ["counts that do not account for every check", rollup("FAILURE", { FAILURE: 1 }, {}, 3)],
+    ["a combined state it does not know", rollup("SOMETHING_NEW", { SUCCESS: 1 })],
+    ["a failed rollup without counts", { state: "FAILURE" }],
+    [
+      "counts GitHub left out",
+      {
+        ...rollup("FAILURE"),
+        contexts: { totalCount: 1, checkRunCountsByState: null, statusContextCountsByState: [] },
+      },
+    ],
+  ])("leaves the checks unknown for %s", (_label, statusCheckRollup) => {
+    expect(checksOf(statusCheckRollup)).not.toHaveProperty("checks");
+  });
+
+  // One commit node carries both, so a push between two reads cannot pair one commit's review
+  // with another commit's checks.
+  it("reads the review mark and the checks from one commit, or neither", () => {
+    const ended = rollup("FAILURE", { FAILURE: 1 });
+    expect(checksOf(ended)).toMatchObject({ review: { state: "success" }, checks: "failure" });
+    // The branch moved past the head GitHub reports: that commit's mark and checks both drop.
+    const moved = checksOf(ended, "def");
+    expect(moved.review).toBeNull();
+    expect(moved).not.toHaveProperty("checks");
+    const document = issueSearchGraphQlDocument({ rows: 1, q: "is:issue" }).query;
+    expect(document).toContain(
+      "... on Commit { oid statusCheckRollup { state contexts(first: 1) { totalCount checkRunCountsByState { state count } statusContextCountsByState { state count } } } status { context(",
+    );
+    expect(document.match(/statusCheckRollup/gu)).toHaveLength(1);
+  });
+
   it.each([
     ["MERGED", "merged"],
     ["CLOSED", "closed"],

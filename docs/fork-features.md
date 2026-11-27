@@ -821,10 +821,11 @@ only when that file set changes; this is not an exhaustive history of follow-ups
 ```json
 {
   "id": "issues-status",
-  "purpose": "Compute each Issue's status from GitHub, links and thread activity; group and filter the Issues view by it and wire linked threads and Start thread.",
+  "purpose": "Compute each Issue's status and whose move it is from GitHub, labels, links and thread activity; group and filter the Issues view by it, and wire linked threads and Start thread.",
   "issues": [
     "https://github.com/toolboxmd/t3code/issues/29",
-    "https://github.com/toolboxmd/chromeria/issues/171"
+    "https://github.com/toolboxmd/chromeria/issues/171",
+    "https://github.com/toolboxmd/chromeria/issues/1009"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/36",
@@ -839,7 +840,10 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/web/src/components/issues/issueStatus.logic.ts",
     "apps/web/src/components/issues/useIssueRowThreads.ts",
     "packages/contracts/src/issueStatus.test.ts",
-    "packages/contracts/src/issueStatus.ts"
+    "packages/contracts/src/issueStatus.ts",
+    "scripts/scenarios/issues-view-groups-by-whose-move.e2e.ts",
+    "scripts/scenarios/issues-view-pending-request-is-your-move.e2e.ts",
+    "scripts/scenarios/issues-view-row-link-stays-reachable-on-narrow-rows.e2e.ts"
   ],
   "upstreamFiles": [],
   "sharedFiles": [
@@ -855,6 +859,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "closedByPullRequestsReferences",
     "issueDependenciesSummary",
     "blockedBy",
+    "statusCheckRollup",
+    "needs-user",
     "statuses",
     "pull-requests route",
     "pendingBackgroundTasks"

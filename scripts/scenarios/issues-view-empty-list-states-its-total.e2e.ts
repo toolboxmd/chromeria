@@ -13,7 +13,7 @@ test(
     await t3.open("/pull-requests?view=issues");
     await screen.getByText("No Issues match.", { exact: true }).waitFor({ timeout: 60_000 });
     try {
-      await expect(screen.getByText("0 Issues", { exact: true })).toBeVisible();
+      await expect(screen.getByText("0 open Issues", { exact: true })).toBeVisible();
     } finally {
       await app.screenshot("empty-list");
     }

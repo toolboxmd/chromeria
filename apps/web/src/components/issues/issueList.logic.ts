@@ -219,6 +219,55 @@ export function mergeIssueLists(
   };
 }
 
+/**
+ * What the count above the list may be called. Text, labels and a milestone are searched on
+ * GitHub, so under them the rows are `matching` Issues, whatever State is set to. Otherwise the
+ * rows are every `open` Issue of the listed repositories when State is Open, and just what is
+ * `listed` for any other State.
+ */
+export function issueNumbersScope(
+  input: Pick<GitHubIssueListInput, "state" | "query" | "labels" | "milestone">,
+): "open" | "matching" | "listed" {
+  if (
+    input.query !== undefined ||
+    (input.labels?.length ?? 0) > 0 ||
+    input.milestone !== undefined
+  ) {
+    return "matching";
+  }
+  return input.state === "open" ? "open" : "listed";
+}
+
+const STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Open Issues among the rows that nobody updated for 30 days. */
+export function staleIssueCount(
+  entries: ReadonlyArray<Pick<GitHubIssueListEntry, "state" | "updatedAt">>,
+  now: number,
+): number {
+  return entries.filter(
+    (entry) => entry.state === "open" && now - Date.parse(entry.updatedAt) >= STALE_AFTER_MS,
+  ).length;
+}
+
+/**
+ * How far a count over the loaded rows can be trusted. Rows only arrive, so a count of rows is a
+ * `floor` until every page is read. A count that depends on which group a row is in is
+ * `unsettled` until every page and every linked-thread read has answered: a later page can carry
+ * the pull request, and a thread read the thread, that moves a row already shown.
+ */
+export function issueCountCertainty(input: {
+  /** Every page of every search is read, with no error. */
+  readonly rowsComplete: boolean;
+  /** Every linked-thread read answered. */
+  readonly threadsRead: boolean;
+  /** The count depends on rows' groups or links: a group's count, or a total under such a filter. */
+  readonly byGroup: boolean;
+}): "final" | "floor" | "unsettled" {
+  if (input.byGroup) return input.rowsComplete && input.threadsRead ? "final" : "unsettled";
+  return input.rowsComplete ? "final" : "floor";
+}
+
 export function matchesIssueFilters(
   entry: GitHubIssueListEntry,
   filters: IssueListFilters,

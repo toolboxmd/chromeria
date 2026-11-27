@@ -65,6 +65,14 @@ export const IssueReviewStatus = Schema.Struct({
 export type IssueReviewStatus = typeof IssueReviewStatus.Type;
 
 /**
+ * Whether the checks and commit statuses on a pull request's head commit have finished: `pending`
+ * while any of them still runs, `success` or `failure` once all have ended, `none` for a head
+ * nothing reported on.
+ */
+export const IssueCheckState = Schema.Literals(["pending", "success", "failure", "none"]);
+export type IssueCheckState = typeof IssueCheckState.Type;
+
+/**
  * A pull request as the list's own GraphQL page reads it: one that closes the Issue
  * (`Closes #N`), or one linked to a thread of this server.
  */
@@ -78,6 +86,11 @@ export const IssuePullRequest = Schema.Struct({
   headRefName: Schema.String,
   headSha: Schema.NullOr(TrimmedNonEmptyString),
   review: Schema.NullOr(IssueReviewStatus),
+  /**
+   * The head commit's check state. Absent when the server could not establish it, and from
+   * servers that predate it: a reader then knows neither that checks run nor that they finished.
+   */
+  checks: Schema.optional(IssueCheckState),
 });
 export type IssuePullRequest = typeof IssuePullRequest.Type;
 

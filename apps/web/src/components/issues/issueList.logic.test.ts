@@ -10,12 +10,15 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildIssueTree,
   collectIssueFacets,
+  issueCountCertainty,
   issueKey,
   issueListPages,
+  issueNumbersScope,
   matchesIssueFilters,
   mergeIssueLists,
   repositoryKey,
   sortIssues,
+  staleIssueCount,
   type EnvironmentIssueEntry,
   type IssueListTarget,
   type IssueTreeNode,
@@ -206,6 +209,54 @@ describe("mergeIssueLists", () => {
       ],
     ]);
     expect(merged?.unsupported).toEqual([{ host: "gitlab.com", repositoryCount: 2 }]);
+  });
+});
+
+describe("the line of numbers", () => {
+  it.each([
+    [{ state: "open" }, "open"],
+    [{ state: "open", labels: [] }, "open"],
+    // GitHub searches these, so the rows are matches and not the repositories' open Issues.
+    [{ state: "open", labels: ["bug"] }, "matching"],
+    [{ state: "open", query: "tree" }, "matching"],
+    [{ state: "open", milestone: "M1" }, "matching"],
+    // Whatever State is set to: a search is a search.
+    [{ state: "closed", labels: ["bug"] }, "matching"],
+    [{ state: "closed", milestone: "M1" }, "matching"],
+    [{ state: "all", query: "tree" }, "matching"],
+    [{ state: "closed" }, "listed"],
+    [{ state: "all", labels: [] }, "listed"],
+  ] as const)("calls the rows of %j %s", (input, expected) => {
+    expect(issueNumbersScope(input)).toBe(expected);
+  });
+
+  it("counts open Issues nobody updated for 30 days", () => {
+    const now = Date.parse("2026-11-26T12:00:00Z");
+    const updated = (updatedAt: string, state: GitHubIssueListEntry["state"] = "open") =>
+      entry(1, { updatedAt, state });
+    expect(
+      staleIssueCount(
+        [
+          updated("2026-10-27T12:00:00Z"),
+          updated("2026-10-27T12:00:01Z"),
+          updated("2026-09-01T00:00:00Z"),
+          updated("2026-09-01T00:00:00Z", "done"),
+        ],
+        now,
+      ),
+    ).toBe(2);
+  });
+
+  it.each([
+    // A count of rows only grows while a page is missing, as after a failed further page.
+    [{ rowsComplete: false, threadsRead: true, byGroup: false }, "floor"],
+    [{ rowsComplete: true, threadsRead: false, byGroup: false }, "final"],
+    // A later page or thread read can move a row already shown into another group.
+    [{ rowsComplete: false, threadsRead: true, byGroup: true }, "unsettled"],
+    [{ rowsComplete: true, threadsRead: false, byGroup: true }, "unsettled"],
+    [{ rowsComplete: true, threadsRead: true, byGroup: true }, "final"],
+  ] as const)("trusts a count under %j as %s", (input, expected) => {
+    expect(issueCountCertainty(input)).toBe(expected);
   });
 });
 

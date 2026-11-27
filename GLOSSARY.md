@@ -261,6 +261,18 @@ A child doing implementation work; one of the Prism roles.
 A child that reviews a candidate and returns a verdict.
 _Avoid_: approver
 
+**needs-user**:
+The Issue label for work only the user can decide or act on, with the exact
+question or action in the Issue's Human summary. Chromeria lists such Issues
+under Your move.
+_Avoid_: ready-for-human, waiting (for the user)
+
+**waiting**:
+The Issue label for work a date or a third party's reply or action holds, with
+that cause and the next recheck time stated in the Issue. A dependency on
+another Issue is a native blocker instead.
+_Avoid_: blocked (for a date or a third party), deferred
+
 **Feature map**:
 A project's `docs/map.md`: one Mermaid flowchart of its parts. The Map tab shows
 author-asserted live capabilities and other-project context, and colours tracked

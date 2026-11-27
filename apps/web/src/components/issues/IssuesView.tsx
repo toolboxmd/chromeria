@@ -6,11 +6,11 @@ import {
   type GitHubIssueListState,
   type IssuePullRequest,
   type GitHubIssueRef,
-  type IssueStatus,
-  issueStatusOf,
+  type IssueGroup,
+  issueGroupOf,
   parseIssueUrl,
 } from "@t3tools/contracts";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import {
   CalendarArrowDownIcon,
   ChevronRightIcon,
@@ -25,11 +25,13 @@ import {
   SearchIcon,
 } from "lucide-react";
 import { msg, T, useGT, useMessages } from "gt-react";
-import { memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 
 import { RelativeTime } from "~/components/RelativeTime";
 import { isElectron } from "~/env";
+import { useOpenChangeRequestLink } from "~/lib/openPullRequestLink";
 import { cn } from "~/lib/utils";
+import { PULL_REQUESTS_PANEL_REF } from "~/rightPanelStore";
 import { useAllEnvironmentShellsBootstrapped, useProjects } from "~/state/entities";
 import { useEnvironments } from "~/state/environments";
 import { issueDetailRead, useIssueList } from "~/state/githubIssues";
@@ -44,6 +46,7 @@ import {
 } from "../pullRequest/PullRequestListRow";
 import type { PullRequestFilterOption } from "../pullRequest/PullRequestListFilters";
 import { resolveFilterOptions } from "../pullRequest/pullRequestListOptions";
+import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import { PullRequestLabelChip } from "../pullRequest/pullRequestPresentation";
 import { Button } from "../ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "../ui/input-group";
@@ -60,22 +63,33 @@ import {
   buildIssueTree,
   collectIssueFacets,
   environmentIdsWithCapability,
+  issueCountCertainty,
   issueKey,
+  issueNumbersScope,
   matchesIssueFilters,
   repositoryKey,
   sortIssues,
+  staleIssueCount,
   type EnvironmentIssueEntry,
   type IssueTreeNode,
 } from "./issueList.logic";
 import { publishIssuePaletteSource } from "./issuePaletteStore";
 import { issueMarkdownCwd, resolveIssuePanelEnvironment } from "./issueLinks.logic";
-import { ISSUE_STATUS_PRESENTATION, IssueStateGlyph, IssueStatusGlyph } from "./issuePresentation";
 import {
-  COLLAPSED_ISSUE_STATUSES,
-  groupIssuesByStatus,
-  issueStatusInputOf,
-  matchesIssueStatusFilters,
+  ISSUE_GROUP_PRESENTATION,
+  IssueGroupGlyph,
+  issueReasonLabel,
+  IssueStateGlyph,
+  IssueStatusGlyph,
+} from "./issuePresentation";
+import {
+  COLLAPSED_ISSUE_GROUPS,
+  groupIssues,
+  issueGroupInputOf,
+  matchesIssueGroupFilters,
+  type IssueRowGrouping,
   type IssueRowThread,
+  type IssueThreadRef,
 } from "./issueStatus.logic";
 import {
   ISSUE_STATE_OPTIONS,
@@ -145,9 +159,18 @@ const NO_LOGINS: ReadonlySet<string> = new Set();
 const NO_LINKED_PULL_REQUESTS: ReadonlyMap<string, IssuePullRequest> = new Map();
 
 interface IssueRowFacts {
-  readonly status: IssueStatus;
+  readonly grouping: IssueRowGrouping;
   readonly threads: ReadonlyArray<IssueRowThread>;
 }
+
+const NOBODY_ON_IT: IssueRowFacts = {
+  grouping: { group: "nobody-on-it", status: "to-do", reason: null, target: { kind: "issue" } },
+  threads: NO_THREADS,
+};
+
+/** A count with the mark of how far it can be trusted: `12`, `12+` while rows arrive, `~12`. */
+const marked = (count: number, certainty: ReturnType<typeof issueCountCertainty>) =>
+  certainty === "floor" ? `${count}+` : certainty === "unsettled" ? `~${count}` : String(count);
 
 /** The Issues half of the Pull Requests page (`/pull-requests?view=issues`). GitHub only. */
 export function IssuesView() {
@@ -174,7 +197,9 @@ export function IssuesView() {
   const [searchValue, setSearchValue] = useState("");
   const query = useDebouncedValue(searchValue.trim(), SEARCH_DEBOUNCE_MS);
   const [filters, setFilters] = useState<IssueMenuFilters>({});
-  const [collapsed, setCollapsed] = useState<ReadonlySet<IssueStatus>>(COLLAPSED_ISSUE_STATUSES);
+  const [collapsed, setCollapsed] = useState<ReadonlySet<IssueGroup>>(COLLAPSED_ISSUE_GROUPS);
+  // The instant "not updated for 30 days" is measured from; Refresh takes a new one.
+  const [now, setNow] = useState(() => Date.now());
   const navigate = useNavigate();
   const search = useSearch({ from: "/_chat/pull-requests" });
 
@@ -225,34 +250,36 @@ export function IssuesView() {
   );
   const data = list.data;
 
-  const refresh = () => list.refresh();
+  const refresh = () => {
+    setNow(Date.now());
+    list.refresh();
+  };
 
   const linkEnvironments = new Set(environmentIdsWithCapability(environments, "issueLinks"));
   const rowThreads = useIssueRowThreads(data?.entries ?? [], linkEnvironments);
-  const { threadsByIssue, working } = rowThreads;
-  // Status is computed from every row, the pull requests every page carries and every row's
-  // threads, so a group count can move either way until all of them are read. The total only
-  // grows while rows are missing, unless a status or linked filter ties it to those facts too.
+  const { threadsByIssue, working, waiting } = rowThreads;
+  // A row's group is computed from every row, the pull requests every page carries and every
+  // row's threads, so a group count can move either way until all of them are read. The total
+  // only grows while rows are missing, unless a group or linked filter ties it to those facts too.
   const rowsComplete =
     data !== null && list.rows === "complete" && list.error === null && data.errors.length === 0;
-  const groupsFinal = rowsComplete && !rowThreads.loading && rowThreads.error === null;
-  const totalCount =
-    (filters.statuses?.length ?? 0) > 0 || filters.linked !== undefined
-      ? groupsFinal
-        ? "final"
-        : "unsettled"
-      : rowsComplete
-        ? "final"
-        : "floor";
+  const threadsRead = !rowThreads.loading && rowThreads.error === null;
+  const groupCertainty = issueCountCertainty({ rowsComplete, threadsRead, byGroup: true });
+  const rowCertainty = issueCountCertainty({ rowsComplete, threadsRead, byGroup: false });
+  const shownCertainty =
+    (filters.groups?.length ?? 0) > 0 || filters.linked !== undefined
+      ? groupCertainty
+      : rowCertainty;
   const facts = (() => {
     const byKey = new Map<string, IssueRowFacts>();
     for (const entry of data?.entries ?? []) {
       const threads = threadsByIssue.get(issueKey(entry)) ?? NO_THREADS;
       byKey.set(issueKey(entry), {
         threads,
-        status: issueStatusOf(
-          issueStatusInputOf(entry, threads, {
+        grouping: issueGroupOf(
+          issueGroupInputOf(entry, threads, {
             working,
+            waiting,
             linkedPullRequests: data!.linkedPullRequests,
             trustedLogins: data!.trustedLogins.get(issueKey(entry)) ?? NO_LOGINS,
           }),
@@ -262,7 +289,7 @@ export function IssuesView() {
     return byKey;
   })();
   const factsOf = (entry: EnvironmentIssueEntry): IssueRowFacts =>
-    facts.get(issueKey(entry)) ?? { status: "to-do", threads: NO_THREADS };
+    facts.get(issueKey(entry)) ?? NOBODY_ON_IT;
 
   const visible =
     data === null
@@ -270,17 +297,21 @@ export function IssuesView() {
       : sortIssues(
           data.entries.filter((entry) => {
             if (!matchesIssueFilters(entry, filters)) return false;
-            const { status, threads } = factsOf(entry);
-            return matchesIssueStatusFilters(
-              { status, linkedThreadCount: threads.length },
+            const { grouping, threads } = factsOf(entry);
+            return matchesIssueGroupFilters(
+              { group: grouping.group, linkedThreadCount: threads.length },
               filters,
             );
           }),
           preferences.sort,
         );
-  const statusGroups = preferences.groupByParent
+  const groups = preferences.groupByParent
     ? null
-    : groupIssuesByStatus(visible, (entry) => factsOf(entry).status);
+    : groupIssues(visible, (entry) => factsOf(entry).grouping.group);
+  // The line of numbers counts every loaded row and each repository once, whatever the filters
+  // that only narrow the rows shown.
+  const openCount = (data?.entries ?? []).filter((entry) => entry.state === "open").length;
+  const staleCount = staleIssueCount(data?.entries ?? [], now);
   const facets = collectIssueFacets(data?.entries ?? []);
   const projectRepositories = new Set(
     (data?.repositories ?? []).map((repository) =>
@@ -291,11 +322,13 @@ export function IssuesView() {
 
   const open = (entry: EnvironmentIssueEntry) =>
     select({ environmentId: entry.environmentId, url: entry.url });
-  const openThread = (thread: IssueRowThread) =>
+  const openThread = (thread: IssueThreadRef) =>
     void navigate({
       to: "/$environmentId/$threadId",
       params: buildThreadRouteParams(scopeThreadRef(thread.environmentId, thread.id)),
     });
+  // The side panel's opener: the in-app panel where a server reads the pull request, else GitHub.
+  const openPullRequest = useOpenChangeRequestLink(undefined, PULL_REQUESTS_PANEL_REF);
   const { resolve: resolveStart, start: startFromIssue } = useStartThreadFromIssue();
   const readDetail = useAtomCommand(issueDetailRead, { reportFailure: false });
   // The row whose thread is being started; its button waits and repeat clicks do nothing.
@@ -322,13 +355,13 @@ export function IssuesView() {
     const target = resolveStart(entry);
     return "reason" in target ? target.reason : null;
   };
-  const renderRow = (entry: EnvironmentIssueEntry, showStatusLabel: boolean) => {
-    const { status, threads } = factsOf(entry);
+  const renderRow = (entry: EnvironmentIssueEntry, showGroupLabel: boolean) => {
+    const { grouping, threads } = factsOf(entry);
     return (
       <IssueRow
         entry={entry}
-        status={status}
-        showStatusLabel={showStatusLabel}
+        grouping={grouping}
+        showGroupLabel={showGroupLabel}
         threads={threads}
         showProject={projectRepositories.size > 1}
         selected={selectedKey === issueKey(entry)}
@@ -337,6 +370,7 @@ export function IssuesView() {
         startBusy={startingKey !== null}
         onOpen={open}
         onOpenThread={openThread}
+        onOpenPullRequest={openPullRequest}
         onStart={startFromEntry}
       />
     );
@@ -354,15 +388,39 @@ export function IssuesView() {
       ? null
       : issueMarkdownCwd(projects, selected.environmentId, selected.reference);
 
-  const total = (
-    <p className="flex items-center gap-1.5 px-2 text-xs text-muted-foreground">
-      {totalCount === "final"
-        ? gt("{count, plural, one {{count} Issue} other {{count} Issues}}", {
-            count: visible.length,
-          })
-        : totalCount === "floor"
-          ? gt("{count}+ Issues", { count: visible.length })
-          : gt("~{count} Issues", { count: visible.length })}
+  const shown = marked(visible.length, shownCertainty);
+  const numbersScope = issueNumbersScope(baseInput);
+  const numbers = (
+    <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-2 text-xs text-muted-foreground">
+      <span>
+        {numbersScope === "matching"
+          ? // GitHub narrowed the list, so these are the matches, not the open total.
+            gt("Matching Issues: {count}", { count: shown })
+          : numbersScope === "listed"
+            ? shownCertainty === "final"
+              ? gt("{count, plural, one {{count} Issue} other {{count} Issues}}", {
+                  count: visible.length,
+                })
+              : shownCertainty === "floor"
+                ? gt("{count}+ Issues", { count: visible.length })
+                : gt("~{count} Issues", { count: visible.length })
+            : visible.length !== openCount
+              ? // Filters that only narrow the rows shown leave the total of open Issues in sight.
+                gt("{shown} of {total} open Issues", {
+                  shown,
+                  total: marked(openCount, rowCertainty),
+                })
+              : shownCertainty === "final"
+                ? gt("{count, plural, one {{count} open Issue} other {{count} open Issues}}", {
+                    count: openCount,
+                  })
+                : gt("{count} open Issues", { count: shown })}
+      </span>
+      {numbersScope === "open" ? (
+        <span>
+          {gt("Not updated for 30 days: {count}", { count: marked(staleCount, rowCertainty) })}
+        </span>
+      ) : null}
       {(list.isPending && !rowsComplete) || rowThreads.loading ? (
         <Spinner size="xs" aria-label={gt("Loading more Issues")} />
       ) : null}
@@ -399,35 +457,34 @@ export function IssuesView() {
       </EmptyState>
     ) : (
       <>
-        {total}
+        {numbers}
         <EmptyState>{gt("No Issues match.")}</EmptyState>
       </>
     );
   } else {
     body = (
       <>
-        {total}
+        {numbers}
         <ul className="flex flex-col">
           {tree === null
-            ? (statusGroups ?? []).map((group) => (
-                <IssueStatusGroup
-                  key={group.status}
-                  status={group.status}
-                  count={group.entries.length}
-                  final={groupsFinal}
-                  collapsed={collapsed.has(group.status)}
+            ? (groups ?? []).map(({ group, entries }) => (
+                <IssueGroupSection
+                  key={group}
+                  group={group}
+                  count={marked(entries.length, groupCertainty)}
+                  collapsed={collapsed.has(group)}
                   onToggle={() =>
                     setCollapsed((previous) => {
                       const next = new Set(previous);
-                      if (!next.delete(group.status)) next.add(group.status);
+                      if (!next.delete(group)) next.add(group);
                       return next;
                     })
                   }
                 >
-                  {group.entries.map((entry) => (
+                  {entries.map((entry) => (
                     <li key={issueKey(entry)}>{renderRow(entry, false)}</li>
                   ))}
-                </IssueStatusGroup>
+                </IssueGroupSection>
               ))
             : tree.map((node) => (
                 <IssueTreeItem key={node.key} node={node} depth={0} renderRow={renderRow} />
@@ -619,18 +676,16 @@ function EmptyState({ children }: { children: ReactNode }) {
   );
 }
 
-function IssueStatusGroup({
-  status,
+function IssueGroupSection({
+  group,
   count,
-  final,
   collapsed,
   onToggle,
   children,
 }: {
-  status: IssueStatus;
-  count: number;
-  /** False while a fact that can move a row between groups is unread: the count may rise or fall. */
-  final: boolean;
+  group: IssueGroup;
+  /** Marked `~` while a fact that can move a row between groups is unread. */
+  count: string;
   collapsed: boolean;
   onToggle: () => void;
   children: ReactNode;
@@ -648,36 +703,20 @@ function IssueStatusGroup({
           aria-hidden
           className={cn("size-3.5 transition-transform", !collapsed && "rotate-90")}
         />
-        <IssueStatusGlyph status={status} className="size-3.5" />
-        <span>{messages(ISSUE_STATUS_PRESENTATION[status].label)}</span>
-        <span className="tabular-nums">
-          {final ? null : "~"}
-          {count}
-        </span>
+        <IssueGroupGlyph group={group} className="size-3.5" />
+        <span>{messages(ISSUE_GROUP_PRESENTATION[group].label)}</span>
+        <span className="tabular-nums">{count}</span>
       </button>
       {collapsed ? null : <ul className="flex flex-col">{children}</ul>}
     </li>
   );
 }
 
-const IssueRow = memo(function IssueRow({
-  entry,
-  status,
-  showStatusLabel,
-  threads,
-  showProject,
-  selected,
-  startDisabledReason,
-  starting,
-  startBusy,
-  onOpen,
-  onOpenThread,
-  onStart,
-}: {
+interface IssueRowProps {
   entry: EnvironmentIssueEntry;
-  status: IssueStatus;
-  /** Status groups already say it; the parent tree does not. */
-  showStatusLabel: boolean;
+  grouping: IssueRowGrouping;
+  /** Group headers already say it; the parent tree does not. */
+  showGroupLabel: boolean;
   threads: ReadonlyArray<IssueRowThread>;
   showProject: boolean;
   selected: boolean;
@@ -687,11 +726,65 @@ const IssueRow = memo(function IssueRow({
   /** Some row's thread is being started; one start at a time. */
   startBusy: boolean;
   onOpen: (entry: EnvironmentIssueEntry) => void;
-  onOpenThread: (thread: IssueRowThread) => void;
+  onOpenThread: (thread: IssueThreadRef) => void;
+  onOpenPullRequest: (event: MouseEvent<HTMLElement>, url: string) => void;
   onStart: (entry: EnvironmentIssueEntry) => Promise<void>;
-}) {
+}
+
+/** A link in the row's second line, above the row's own hit area. */
+const ISSUE_ROW_ACTION_CLASS =
+  "relative inline-flex shrink-0 items-center gap-1 rounded-sm font-medium text-foreground underline decoration-muted-foreground/60 underline-offset-2 outline-none hover:decoration-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset";
+/** Its words show only on a row wide enough for the longest translation beside the reason. */
+const ISSUE_ROW_ACTION_TEXT_CLASS = "hidden @3xl/issue-row:inline";
+
+/** What the row's own action opens: the thread or pull request its grouping names, by a key. */
+const targetKey = ({ target }: IssueRowGrouping) =>
+  target.kind === "thread"
+    ? `thread ${target.thread.environmentId} ${target.thread.id}`
+    : target.kind === "pull-request"
+      ? `pull-request ${target.pullRequest.url}`
+      : "issue";
+
+/**
+ * A grouping is computed anew whenever any thread starts or stops, so rows compare what it says,
+ * not which object says it: a row whose own facts did not change does not render again.
+ */
+function sameIssueRow(previous: IssueRowProps, next: IssueRowProps) {
+  for (const key of Object.keys(next) as Array<keyof IssueRowProps>) {
+    if (key !== "grouping" && !Object.is(previous[key], next[key])) return false;
+  }
+  const [a, b] = [previous.grouping, next.grouping];
+  return (
+    a.group === b.group &&
+    a.status === b.status &&
+    targetKey(a) === targetKey(b) &&
+    JSON.stringify(a.reason) === JSON.stringify(b.reason)
+  );
+}
+
+const IssueRow = memo(function IssueRow({
+  entry,
+  grouping,
+  showGroupLabel,
+  threads,
+  showProject,
+  selected,
+  startDisabledReason,
+  starting,
+  startBusy,
+  onOpen,
+  onOpenThread,
+  onOpenPullRequest,
+  onStart,
+}: IssueRowProps) {
   const gt = useGT();
   const messages = useMessages();
+  const { group, status, reason, target } = grouping;
+  const openThread = gt("Open thread", { $context: "link on an Issue row" });
+  const openPullRequest =
+    target.kind === "pull-request"
+      ? gt("Open pull request #{number}", { number: String(target.pullRequest.number) })
+      : "";
   return (
     <div
       className={cn(
@@ -700,34 +793,74 @@ const IssueRow = memo(function IssueRow({
         selected && "bg-accent text-accent-foreground",
       )}
     >
-      <button
-        type="button"
-        aria-current={selected ? "true" : undefined}
-        // Its hit area covers the row, so the update time beside the threads opens the Issue too.
-        className="flex min-w-0 flex-1 items-center gap-2 text-left after:absolute after:inset-0"
-        onClick={() => onOpen(entry)}
-      >
-        <IssueStatusGlyph status={status} />
-        <PullRequestRowLines
-          number={<span className={PULL_REQUEST_ROW_NUMBER_CLASS}>#{entry.number}</span>}
-          title={entry.title}
-          status={
-            <>
-              {showStatusLabel ? (
-                <span className="text-muted-foreground">
-                  {messages(ISSUE_STATUS_PRESENTATION[status].label)}
-                </span>
-              ) : null}
-              {entry.subIssueCount > 0 ? (
-                <span className="inline-flex items-center gap-0.5 text-muted-foreground">
-                  <LayersIcon aria-hidden className="size-3" />
-                  {entry.subIssueCount}
-                </span>
-              ) : null}
-            </>
-          }
-          meta={
-            <>
+      {/* The glyph of the status the row names, where it names one. */}
+      <IssueStatusGlyph status={reason?.kind === "status" ? reason.status : status} />
+      <PullRequestRowLines
+        number={<span className={PULL_REQUEST_ROW_NUMBER_CLASS}>#{entry.number}</span>}
+        title={
+          <button
+            type="button"
+            aria-current={selected ? "true" : undefined}
+            // Its hit area covers the row, so the second line and the update time open the Issue
+            // too. Only the title is inside it: the second line holds a link of its own.
+            className="block max-w-full truncate text-left after:absolute after:inset-0"
+            onClick={() => onOpen(entry)}
+          >
+            {entry.title}
+          </button>
+        }
+        status={
+          <>
+            {showGroupLabel ? (
+              <span className="text-muted-foreground">
+                {messages(ISSUE_GROUP_PRESENTATION[group].label)}
+              </span>
+            ) : null}
+            {entry.subIssueCount > 0 ? (
+              <span className="inline-flex items-center gap-0.5 text-muted-foreground">
+                <LayersIcon aria-hidden className="size-3" />
+                {entry.subIssueCount}
+              </span>
+            ) : null}
+          </>
+        }
+        meta={
+          <>
+            {reason !== null ? (
+              <span className="min-w-0 truncate font-medium text-foreground/80">
+                {issueReasonLabel(reason, messages)}
+              </span>
+            ) : null}
+            {/* The one thing the reason points at, beside it so the title keeps its width. The
+                row itself opens the Issue. A narrow row shows the link as its icon alone, which
+                the line cannot clip. */}
+            {target.kind === "thread" ? (
+              <Link
+                className={ISSUE_ROW_ACTION_CLASS}
+                aria-label={openThread}
+                to="/$environmentId/$threadId"
+                params={buildThreadRouteParams(
+                  scopeThreadRef(target.thread.environmentId, target.thread.id),
+                )}
+              >
+                <MessageSquareIcon aria-hidden className="size-3.5" />
+                <span className={ISSUE_ROW_ACTION_TEXT_CLASS}>{openThread}</span>
+              </Link>
+            ) : target.kind === "pull-request" ? (
+              <a
+                className={ISSUE_ROW_ACTION_CLASS}
+                aria-label={openPullRequest}
+                href={target.pullRequest.url}
+                target="_blank"
+                rel="noreferrer"
+                onClick={(event) => onOpenPullRequest(event, target.pullRequest.url)}
+              >
+                <PullRequestGlyph.pullRequest aria-hidden className="size-3.5" />
+                <span className={ISSUE_ROW_ACTION_TEXT_CLASS}>{openPullRequest}</span>
+              </a>
+            ) : null}
+            {/* Shrinks away before the reason does, so a narrow row cuts these first. */}
+            <span className="flex min-w-0 shrink-[9999] items-center gap-1.5 overflow-hidden">
               {entry.author ? <span className="shrink-0">{entry.author}</span> : null}
               {showProject ? <span className="shrink-0 truncate">{entry.repository}</span> : null}
               {entry.milestone ? (
@@ -736,10 +869,10 @@ const IssueRow = memo(function IssueRow({
               {entry.labels.slice(0, 3).map((label) => (
                 <PullRequestLabelChip key={label.name} label={label} />
               ))}
-            </>
-          }
-        />
-      </button>
+            </span>
+          </>
+        }
+      />
       {threads.length > 0 ? (
         // The title keeps its room: a narrow row shows the threads as icons, a narrower one only
         // the first, with the rest behind the count.
@@ -823,7 +956,7 @@ const IssueRow = memo(function IssueRow({
       </span>
     </div>
   );
-});
+}, sameIssueRow);
 
 function IssueTreeItem({
   node,
@@ -832,7 +965,7 @@ function IssueTreeItem({
 }: {
   node: IssueTreeNode;
   depth: number;
-  renderRow: (entry: EnvironmentIssueEntry, showStatusLabel: boolean) => ReactNode;
+  renderRow: (entry: EnvironmentIssueEntry, showGroupLabel: boolean) => ReactNode;
 }) {
   const gt = useGT();
   return (

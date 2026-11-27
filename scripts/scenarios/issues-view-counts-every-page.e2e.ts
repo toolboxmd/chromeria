@@ -17,10 +17,10 @@ test(
     await t3.open("/pull-requests?view=issues");
     await screen.getByText("Open Issue 3", { exact: true }).waitFor({ timeout: 60_000 });
     try {
-      // None of them has a thread or a pull request, so To do is the only group.
+      // None of them has a thread or a pull request, so Nobody on it is the only group.
       await expect(browser.locator("button[aria-expanded] .tabular-nums")).toHaveText("3");
     } finally {
-      await app.screenshot("to-do-count");
+      await app.screenshot("group-count");
     }
   },
 );

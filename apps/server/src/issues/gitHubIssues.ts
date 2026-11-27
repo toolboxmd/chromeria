@@ -1,5 +1,6 @@
 import type {
   GitHubIssueDetail,
+  IssueCheckState,
   IssueLink,
   GitHubIssueListSort,
   GitHubIssueListState,
@@ -88,8 +89,13 @@ export function issueSearchQuery(input: {
 
 const LINK_FIELDS = "number title url state stateReason repository { nameWithOwner }";
 
-/** A commit's review mark and who posted it; trust is decided against the query's viewer. */
-const COMMIT_REVIEW_FIELDS = `oid status { context(name: "${REVIEW_MARK_CONTEXT}") { state creator { login } } }`;
+const STATE_COUNTS = "{ state count }";
+/**
+ * One commit's review mark, who posted it, and its checks: their combined state and how many are
+ * in each state. Read together from one node, so the mark and the checks are the same commit's.
+ * Trust in the mark is decided against the query's viewer.
+ */
+const COMMIT_REVIEW_FIELDS = `oid statusCheckRollup { state contexts(first: 1) { totalCount checkRunCountsByState ${STATE_COUNTS} statusContextCountsByState ${STATE_COUNTS} } } status { context(name: "${REVIEW_MARK_CONTEXT}") { state creator { login } } }`;
 
 const PULL_REQUEST_FIELDS = `number url state isDraft headRefName headRefOid repository { nameWithOwner }
             headRef { target { ... on Commit { ${COMMIT_REVIEW_FIELDS} } } }`;
@@ -332,9 +338,26 @@ const LinkNode = Schema.Struct({
 });
 type LinkNode = typeof LinkNode.Type;
 
+const CheckStateCount = Schema.Struct({ state: Schema.String, count: Schema.Number });
+
 // A non-commit target answers `{}`, which this reads as no mark.
 const ReviewCommit = Schema.Struct({
   oid: Schema.optional(Schema.String),
+  // Null for a commit no check or status ever reported on.
+  statusCheckRollup: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        state: Schema.String,
+        contexts: Schema.optional(
+          Schema.Struct({
+            totalCount: Schema.Number,
+            checkRunCountsByState: Schema.NullOr(Schema.Array(CheckStateCount)),
+            statusContextCountsByState: Schema.NullOr(Schema.Array(CheckStateCount)),
+          }),
+        ),
+      }),
+    ),
+  ),
   status: Schema.optional(
     Schema.NullOr(
       Schema.Struct({
@@ -494,10 +517,67 @@ export function reviewStatusOf(
   }
 }
 
-export function pullRequestOf(host: string, node: ClosingPullRequestNode): IssuePullRequest {
-  // The branch can have moved past the head GitHub last synced; only the head's own mark counts.
+/**
+ * The combined state of every check and commit status on the head commit, the review mark
+ * included; undefined for a commit without any, or in a state this does not know.
+ */
+/** A check run in one of these has not ended; a commit status in one has not arrived. */
+const RUNNING_CHECK_STATES = new Set(["IN_PROGRESS", "PENDING", "QUEUED", "WAITING", "EXPECTED"]);
+const ENDED_CHECK_STATES = new Set([
+  "ACTION_REQUIRED",
+  "CANCELLED",
+  "COMPLETED",
+  "ERROR",
+  "FAILURE",
+  "NEUTRAL",
+  "SKIPPED",
+  "STALE",
+  "STARTUP_FAILURE",
+  "SUCCESS",
+  "TIMED_OUT",
+]);
+
+/**
+ * Whether the head commit's checks have finished, from GitHub's own counts of them by state. The
+ * combined state alone cannot say: it reads FAILURE as soon as one check fails, while others still
+ * run. Undefined when the counts do not account for every check, or name a state this does not
+ * know.
+ */
+function checkStateOf(commit: GitHubReviewCommit | null): IssueCheckState | undefined {
+  if (commit === null || commit.statusCheckRollup === undefined) return undefined;
+  const rollup = commit.statusCheckRollup;
+  if (rollup === null) return "none";
+  const stillToArrive = rollup.state === "PENDING" || rollup.state === "EXPECTED";
+  const counts =
+    rollup.contexts?.checkRunCountsByState == null ||
+    rollup.contexts.statusContextCountsByState == null
+      ? null
+      : [...rollup.contexts.checkRunCountsByState, ...rollup.contexts.statusContextCountsByState];
+  if (counts === null || rollup.contexts === undefined)
+    return stillToArrive ? "pending" : undefined;
+  const counted = counts.filter(({ count }) => count > 0);
+  if (stillToArrive || counted.some(({ state }) => RUNNING_CHECK_STATES.has(state))) {
+    return "pending";
+  }
+  const ended = counted.every(({ state }) => ENDED_CHECK_STATES.has(state));
+  const total = counted.reduce((sum, { count }) => sum + count, 0);
+  if (!ended || total !== rollup.contexts.totalCount) return undefined;
+  if (total === 0) return "none";
+  if (rollup.state === "SUCCESS") return "success";
+  return rollup.state === "FAILURE" || rollup.state === "ERROR" ? "failure" : undefined;
+}
+
+/** The head GitHub reports, when the branch still points at it. */
+const headOf = (node: Pick<ClosingPullRequestNode, "headRef" | "headRefOid">) => {
   const target = node.headRef?.target ?? null;
-  const head = target?.oid === node.headRefOid ? target : null;
+  return target?.oid === node.headRefOid ? target : null;
+};
+
+export function pullRequestOf(host: string, node: ClosingPullRequestNode): IssuePullRequest {
+  // The branch can have moved past the head GitHub last synced; only the head's own mark and
+  // checks count.
+  const head = headOf(node);
+  const checks = checkStateOf(head);
   return {
     host,
     repository: node.repository.nameWithOwner,
@@ -508,6 +588,7 @@ export function pullRequestOf(host: string, node: ClosingPullRequestNode): Issue
     headRefName: node.headRefName,
     headSha: node.headRefOid || null,
     review: reviewStatusOf(head),
+    ...(checks === undefined ? {} : { checks }),
   };
 }
 
