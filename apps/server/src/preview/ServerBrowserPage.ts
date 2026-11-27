@@ -2,6 +2,7 @@
 
 import {
   type BrowserRecordingFrameRate,
+  PreviewWatchError,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   type PreviewAutomationClickInput,
   type PreviewAutomationConsoleEntry,
@@ -20,11 +21,13 @@ import {
   type PreviewAutomationUploadInput,
   type PreviewAutomationWaitForInput,
 } from "@t3tools/contracts";
-import { constVoid } from "effect/Function";
 import * as Schema from "effect/Schema";
+import { constVoid } from "effect/Function";
 import type { CDPSession, ConsoleMessage, Frame, Locator, Page } from "playwright-core";
 import * as NodeCrypto from "node:crypto";
 import * as NodeUtil from "node:util";
+import { previewViewportSize } from "./ServerBrowserContexts.ts";
+import * as HumanInput from "./HumanInput.ts";
 import { BrowserControlInterrupted } from "./SessionControl.ts";
 
 const isBrowserControlInterrupted = Schema.is(BrowserControlInterrupted);
@@ -49,10 +52,17 @@ export class ServerBrowserOperationError extends Schema.TaggedError<ServerBrowse
 
 const isServerBrowserOperationError = Schema.is(ServerBrowserOperationError);
 
+const isWatchError = Schema.is(PreviewWatchError);
 export const toOperationError = (
   cause: unknown,
   timeoutMs?: number,
 ): ServerBrowserOperationError => {
+  if (isWatchError(cause))
+    return new ServerBrowserOperationError({
+      tag: "PreviewWatchError",
+      message: cause.message,
+      detail: { reason: cause.reason },
+    });
   if (isBrowserControlInterrupted(cause))
     return new ServerBrowserOperationError({
       tag: "PreviewAutomationControlInterruptedError",
@@ -128,7 +138,7 @@ const refsFor = (page: Page) => {
   return state;
 };
 
-const targetLocator = (
+export const targetLocator = (
   page: Page,
   input: { readonly locator?: string | undefined; readonly selector?: string | undefined },
 ): Locator | null => {
@@ -155,11 +165,51 @@ const targetLocator = (
   return page.locator(selector);
 };
 
+/** Present on public pages: the pacing source and where the tab's pointer last was. */
+export interface HumanInputPlan {
+  readonly pacing: HumanInput.HumanPacing;
+  readonly from: HumanInput.Point;
+  /** Date.now() time by which the whole call must answer. */
+  readonly deadline: number;
+}
+
+const TRAVEL_BUDGET_MS = 1_500;
+
+/** Travels the pointer to a spot inside the target's box, as a hand would. */
+const travel = async (
+  page: Page,
+  locator: Locator | null,
+  fallback: HumanInput.Point,
+  human: HumanInputPlan,
+  timeout: () => number,
+  authorize: Authorize,
+) => {
+  const box = locator === null ? null : await locator.boundingBox({ timeout: timeout() });
+  const point = box ? HumanInput.pointInBox(box, human.pacing.random) : fallback;
+  // A hidden tab acknowledges each move only on its next frame, about once a second,
+  // so the path stops at its budget and finishes with one move onto the target.
+  const budget =
+    Date.now() + Math.min(TRAVEL_BUDGET_MS, timeout() / 4, (human.deadline - Date.now()) / 4);
+  // Each move is a send, so each one is authorized: a takeover or expiry stops the path.
+  for (const step of HumanInput.pointerPath(human.from, point, human.pacing.random)) {
+    await authorize();
+    if (Date.now() >= budget) {
+      await page.mouse.move(point.x, point.y);
+      break;
+    }
+    await page.mouse.move(step.x, step.y);
+  }
+  return { point, box };
+};
+
 export type PointerReporter = (
   point: { readonly x: number; readonly y: number },
   phase: "move" | "click",
 ) => Promise<void>;
 const noPointer: PointerReporter = async () => {};
+/** Native callers carry their original invocation; ordinary local helpers have none. */
+type Authorize = () => Promise<void>;
+const noAuthorization: Authorize = async () => {};
 
 // Locator.scrollIntoViewIfNeeded resolves its node once and fails when the page replaces it; the
 // input actions after it re-resolve, so the scroll does too, within the same timeout.
@@ -183,12 +233,15 @@ const targetPoint = async (
   locator: Locator | null,
   input: { readonly x?: number | undefined; readonly y?: number | undefined },
   timeout: () => number,
+  authorize: Authorize,
 ) => {
   if (locator === null) return { x: input.x ?? 0, y: input.y ?? 0 };
+  await authorize();
   await scrollIntoView(locator, timeout());
+  await authorize();
   const box = await locator.boundingBox({ timeout: timeout() });
   if (box) return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-  const viewport = page.viewportSize();
+  const viewport = previewViewportSize(page);
   return { x: (viewport?.width ?? 0) / 2, y: (viewport?.height ?? 0) / 2 };
 };
 
@@ -322,13 +375,18 @@ const answered = <A>(promise: Promise<A>) => {
   return Promise.race([promise.catch(() => undefined), late]).finally(() => clearTimeout(timer));
 };
 
-/** Isolated worlds prevent spoofing; desktop out-of-process frames use page worlds. Missing own-frame reads or changed frames fail; other missing reads return undefined. */
-const openReaders = async (page: Page, cdp: CDPSession) => {
+/**
+ * Reads dotted values in isolated worlds through each frame's own CDP session, so page script cannot
+ * change them; an unattachable frame is read in the page's world instead. `read` gives each reader's
+ * values or undefined, and fails if the page's frames don't answer or change.
+ */
+const openReaders = async (page: Page, cdp: CDPSession, authorize: Authorize) => {
   const frames = page.frames();
   const owners = new Map<Frame, CDPSession | null | undefined>(
     await Promise.all(
       frames.map(async (frame) => {
         if (frame === page.mainFrame()) return [frame, cdp] as const;
+        await authorize();
         const session = frameSessions.get(frame) ?? page.context().newCDPSession(frame);
         frameSessions.set(frame, session);
         try {
@@ -351,6 +409,7 @@ const openReaders = async (page: Page, cdp: CDPSession) => {
   const sessionReader = (frame: Frame, session: CDPSession) => {
     const owned = frames.filter((each) => ownerOf(each) === session);
     const open = async () => {
+      await authorize();
       const { frameTree } = await session.send("Page.getFrameTree");
       const ids = (node: typeof frameTree): Array<string> => [
         node.frame.id,
@@ -360,6 +419,7 @@ const openReaders = async (page: Page, cdp: CDPSession) => {
       if (ids(frameTree).length !== owned.length) throw pageChanged();
       return Promise.all(
         ids(frameTree).map(async (frameId) => {
+          await authorize();
           const world = await session.send("Page.createIsolatedWorld", {
             frameId,
             worldName: "t3-preview",
@@ -373,6 +433,7 @@ const openReaders = async (page: Page, cdp: CDPSession) => {
       const values = (contexts ??= open()).then((ids) =>
         Promise.all(
           ids.map(async (contextId) => {
+            await authorize();
             const { result, exceptionDetails } = await session.send("Runtime.evaluate", {
               contextId,
               expression: DOTTED_SCRIPT,
@@ -401,13 +462,17 @@ const openReaders = async (page: Page, cdp: CDPSession) => {
     ...frames.flatMap((frame) => {
       const owner = owners.get(frame);
       if (owner) return owner === cdp ? [] : [sessionReader(frame, owner)];
-      const own = () => frame.evaluate(DOTTED_SCRIPT) as Promise<Array<string>>;
+      const own = async () => {
+        await authorize();
+        return frame.evaluate(DOTTED_SCRIPT) as Promise<Array<string>>;
+      };
       return ownerOf(frame) === null ? [{ frames: [frame], read: own }] : [];
     }),
   ];
   return {
     readers,
     read: async (before?: ReadonlyArray<unknown>) => {
+      await authorize();
       const now = page.frames();
       if (now.length !== frames.length || now.some((frame, i) => frame !== frames[i])) {
         throw pageChanged();
@@ -553,7 +618,9 @@ const readPageMetrics = async (cdp: CDPSession) => {
 export const captureViewport = async (
   cdp: CDPSession,
   options: { readonly format: "png" | "jpeg"; readonly quality?: number },
+  authorize: Authorize = noAuthorization,
 ) => {
+  await authorize();
   const capture = cdp.send("Page.captureScreenshot", {
     format: options.format,
     ...(options.quality === undefined ? {} : { quality: options.quality }),
@@ -647,7 +714,7 @@ type SnapshotInput = {
 /** The scale a page renders at and its viewport in device-independent pixels. */
 const renderingOf = async (input: SnapshotInput) => {
   if (input.renderScale !== "display") {
-    const viewport = input.page.viewportSize() ?? { width: 1280, height: 800 };
+    const viewport = previewViewportSize(input.page) ?? { width: 1280, height: 800 };
     return { renderScale: input.renderScale, viewport };
   }
   // The display ratio a desktop page reports includes its page zoom, and its sizes are CSS pixels.
@@ -666,6 +733,7 @@ const capture = async (
   deadline: number,
   stages: SnapshotStages,
   metadataOnly: boolean,
+  authorize: Authorize,
 ) => {
   const { running } = stages;
   const track = async <A>(stage: SnapshotStage, operation: () => Promise<A>) => {
@@ -683,6 +751,7 @@ const capture = async (
       else running.set(stage, count);
     }
   };
+  await authorize();
   const { renderScale, viewport } = await track("metrics", () => renderingOf(input));
   // A late metrics reply must not begin a capture after viewers have resumed.
   if (Date.now() >= deadline) throw snapshotTimedOut();
@@ -690,25 +759,27 @@ const capture = async (
   const state = refsFor(input.page);
   invalidateRefs(input.page);
   const generation = state.generation;
-  const { readers, read } = await track("frames", () => openReaders(input.page, input.cdp));
+  const { readers, read } = await track("frames", () =>
+    openReaders(input.page, input.cdp, authorize),
+  );
   const before = await track("frames", () => read());
   // Bracket the tree with value reads to detect changes; await tree completion before retrying failed captures.
   const pageAndScreenshot = Promise.all([
     track(
       "page state",
       () =>
-        input.page.evaluate(SNAPSHOT_SCRIPT) as Promise<
+        authorize().then(() => input.page.evaluate(SNAPSHOT_SCRIPT)) as Promise<
           Pick<PreviewAutomationSnapshot, "url" | "title" | "loading" | "visibleText">
         >,
     ),
     // A cheap real frame still sizes the screenshot; computing it from metrics drifted from the PNG.
     track("screenshot", () =>
       metadataOnly
-        ? captureViewport(input.cdp, { format: "jpeg", quality: 10 }).then((data) => ({
+        ? captureViewport(input.cdp, { format: "jpeg", quality: 10 }, authorize).then((data) => ({
             data,
             full: undefined,
           }))
-        : captureViewport(input.cdp, { format: "png" }).then(async (full) =>
+        : captureViewport(input.cdp, { format: "png" }, authorize).then(async (full) =>
             scale < 1
               ? {
                   data: await shrinkPng(input.cdp, full, scale),
@@ -720,6 +791,7 @@ const capture = async (
   ]);
   void pageAndScreenshot.catch(constVoid);
   // Leaves time for the second read; a frame that never loads holds the tree until then.
+  await authorize();
   const tree = await track("accessibility tree", () =>
     input.page.ariaSnapshot({
       mode: "ai",
@@ -736,15 +808,18 @@ const capture = async (
   const unread = readers.flatMap((reader, i) => (after[i] ? [] : reader.frames));
   const filled = /^\s*- iframe (?:\[active\] )?\[ref=(\S+?)\].*:$/gm;
   for (const [, ref] of unread.length ? tree.matchAll(filled) : []) {
+    await authorize();
     const iframe = await track("frames", () =>
       input.page.locator(`aria-ref=${ref}`).elementHandle({ timeout: 2_000 }),
     );
     if (!iframe) throw pageChanged();
+    await authorize();
     const frame = await track("frames", () => iframe.contentFrame());
     void iframe.dispose().catch(constVoid);
     if (frame && unread.includes(frame)) throw frameUnanswered();
   }
   const [page, { full, data }] = await pageAndScreenshot;
+  await authorize();
   if (state.generation !== generation) throw pageChanged();
   const mask = (text: string) => (dotted ? text.replace(dotted, MASKED_VALUE) : text);
   // Redacted before the cut, so a payload crossing it can't leave its start showing, and before
@@ -777,7 +852,8 @@ const capture = async (
 /** Snapshots begun per page; observers' snapshots aren't queued, so two can overlap. */
 const snapshotTurns = new WeakMap<Page, number>();
 
-const runSnapshot = async (input: SnapshotInput, metadataOnly: boolean) => {
+const runSnapshot = async (input: SnapshotInput, metadataOnly: boolean, authorize: Authorize) => {
+  await authorize();
   const deadline = Date.now() + SNAPSHOT_TIMEOUT_MS;
   const stages: SnapshotStages = { running: new Map(), timedOut: new Set() };
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -786,13 +862,21 @@ const runSnapshot = async (input: SnapshotInput, metadataOnly: boolean) => {
   });
   const turn = (snapshotTurns.get(input.page) ?? 0) + 1;
   snapshotTurns.set(input.page, turn);
-  // Retry only before the deadline and the next snapshot, whose refs a later retry would revoke.
-  const captured = capture(input, deadline, stages, metadataOnly).catch((cause: unknown) =>
-    Date.now() < deadline &&
-    snapshotTurns.get(input.page) === turn &&
-    !(cause instanceof Error && cause.message === VALUE_TOO_LONG)
-      ? capture(input, deadline, stages, metadataOnly)
-      : Promise.reject(cause),
+  // A page that changed mid-capture, like one rotating ads, has usually settled by a second
+  // try. None starts late or after another snapshot began, since it would revoke the refs of
+  // whichever snapshot came next.
+  const captured = capture(input, deadline, stages, metadataOnly, authorize).catch(
+    async (cause: unknown) => {
+      // A refused invocation must escape the snapshot's page/frame retry policy.
+      await authorize();
+      if (
+        Date.now() < deadline &&
+        snapshotTurns.get(input.page) === turn &&
+        !(cause instanceof Error && cause.message === VALUE_TOO_LONG)
+      )
+        return capture(input, deadline, stages, metadataOnly, authorize);
+      throw cause;
+    },
   );
   try {
     return await Promise.race([captured, expired]);
@@ -803,24 +887,26 @@ const runSnapshot = async (input: SnapshotInput, metadataOnly: boolean) => {
   }
 };
 
-export const snapshot = (input: SnapshotInput) =>
-  runSnapshot(input, false) as Promise<PreviewAutomationSnapshot>;
+export const snapshot = (input: SnapshotInput, authorize: Authorize = noAuthorization) =>
+  runSnapshot(input, false, authorize) as Promise<PreviewAutomationSnapshot>;
 
-export const snapshotMetadata = (input: SnapshotInput) =>
-  runSnapshot(input, true) as Promise<PreviewAutomationSnapshotMetadata>;
+export const snapshotMetadata = (input: SnapshotInput, authorize: Authorize = noAuthorization) =>
+  runSnapshot(input, true, authorize) as Promise<PreviewAutomationSnapshotMetadata>;
 
 /** Return when a dialog opens; waiting for the action to finish would block until dialog resolution. */
 export const click = async (
   page: Page,
   input: PreviewAutomationClickInput,
   pointer: PointerReporter = noPointer,
+  authorize: Authorize = noAuthorization,
+  human?: HumanInputPlan,
 ): Promise<{ readonly x: number; readonly y: number }> => {
   // One deadline across steps keeps the reply inside the broker's grace; Playwright reads 0 as none.
   const deadline = Date.now() + (input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const remaining = () => Math.max(1, deadline - Date.now());
   const locator = targetLocator(page, input);
   try {
-    return await clickTarget(page, locator, input, remaining, pointer);
+    return await clickTarget(page, locator, input, remaining, pointer, authorize, human);
   } catch (cause) {
     throw locator === null ? cause : await namedTargetTimeout(locator, input, cause);
   }
@@ -871,10 +957,24 @@ const clickTarget = async (
   input: PreviewAutomationClickInput,
   timeout: () => number,
   pointer: PointerReporter,
+  authorize: Authorize,
+  human?: HumanInputPlan,
 ) => {
-  const point = await targetPoint(page, locator, input, timeout);
+  let point = await targetPoint(page, locator, input, timeout, authorize);
+  if (human) {
+    await authorize();
+    const traveled = await travel(page, locator, point, human, timeout, authorize);
+    point = traveled.point;
+  }
+  await authorize();
   await pointer(point, "click");
-  const options = { button: input.button ?? "left", clickCount: input.clickCount ?? 1 } as const;
+  const options = {
+    button: input.button ?? "left",
+    clickCount: input.clickCount ?? 1,
+    ...(human ? { delay: HumanInput.pressMs(human.pacing.random) } : {}),
+  } as const;
+  await authorize();
+  // The locator click keeps Playwright's actionability, hit-target checks and hit point.
   const clicked =
     locator === null
       ? page.mouse.click(point.x, point.y, options)
@@ -977,12 +1077,28 @@ const valueOnlyInput = (
 };
 
 // Keys reach pages that build their value from keydown. Line breaks stay text: Enter would submit the form.
-const typeKeys = async (page: Page, text: string, timeoutMs: number, deadline: number) => {
+const typeKeys = async (
+  page: Page,
+  text: string,
+  timeoutMs: number,
+  deadline: number,
+  authorize: Authorize,
+  human?: HumanInputPlan,
+) => {
   let typed = 0;
+  let keyIndex = 0;
+  // A person's cadence, planned to use at most half of what the deadline leaves.
+  const delays = human
+    ? HumanInput.keyDelays(text, (deadline - Date.now()) / 2, human.pacing.random)
+    : [];
   for (const [index, part] of text.split(/([\r\n]+)/u).entries()) {
     // Keys cost about a millisecond each, so long text is sent in pieces that stop at the deadline.
-    const pieces = index % 2 === 1 ? [part] : (part.match(/[^]{1,64}/gu) ?? []);
+    const pieces = index % 2 === 1 ? [part] : human ? [...part] : (part.match(/[^]{1,64}/gu) ?? []);
     for (const piece of pieces) {
+      const delay = delays[keyIndex];
+      keyIndex += [...piece].length;
+      if (human && delay) await human.pacing.sleep(delay);
+      // Checked after the wait, so a late wake never sends a key past the deadline.
       if (Date.now() >= deadline) {
         const reason = `Typing stopped after ${typed} of ${text.length} characters, which the field now holds. Type the rest in another call or raise timeoutMs.`;
         throw new ServerBrowserOperationError({
@@ -991,6 +1107,7 @@ const typeKeys = async (page: Page, text: string, timeoutMs: number, deadline: n
           detail: { timeoutMs, reason },
         });
       }
+      await authorize();
       if (index % 2 === 1) await page.keyboard.insertText(piece);
       else await page.keyboard.type(piece);
       typed += piece.length;
@@ -998,7 +1115,12 @@ const typeKeys = async (page: Page, text: string, timeoutMs: number, deadline: n
   }
 };
 
-export const type = async (page: Page, input: PreviewAutomationTypeInput) => {
+export const type = async (
+  page: Page,
+  input: PreviewAutomationTypeInput,
+  authorize: Authorize = noAuthorization,
+  human?: HumanInputPlan,
+) => {
   // One deadline across steps keeps the reply inside the broker's grace; Playwright reads 0 as none.
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
@@ -1008,14 +1130,17 @@ export const type = async (page: Page, input: PreviewAutomationTypeInput) => {
     // Pickers and sliders take a value such as 2026-01-31 only from fill, and some reject an empty one.
     const timeout = remaining();
     if (await pageAnswer(locator.evaluate(valueOnlyInput, undefined, { timeout }), timeout)) {
+      await authorize();
       await locator.fill(input.text, { timeout: remaining() });
       return;
     }
     // fill follows a label to its control and leaves that control focused for the keys.
+    await authorize();
     await locator.fill("", { timeout: remaining() });
-    await typeKeys(page, input.text, timeoutMs, deadline);
+    await typeKeys(page, input.text, timeoutMs, deadline, authorize, human);
     return;
   }
+  await authorize();
   const focused =
     locator === null
       ? // A `*:focus` locator needs Playwright's utility world, which some desktop tabs never get.
@@ -1028,34 +1153,49 @@ export const type = async (page: Page, input: PreviewAutomationTypeInput) => {
     });
   }
   if (input.clear) {
+    await authorize();
     await page.keyboard.press("ControlOrMeta+A");
+    await authorize();
     await page.keyboard.press("Delete");
   }
-  await typeKeys(page, input.text, timeoutMs, deadline);
+  await typeKeys(page, input.text, timeoutMs, deadline, authorize, human);
 };
 
 export const hover = async (
   page: Page,
   input: PreviewAutomationHoverInput,
   pointer: PointerReporter = noPointer,
-) => {
+  authorize: Authorize = noAuthorization,
+  human?: HumanInputPlan,
+): Promise<HumanInput.Point> => {
   const deadline = Date.now() + (input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const remaining = () => Math.max(1, deadline - Date.now());
   const locator = targetLocator(page, input);
-  await pointer(await targetPoint(page, locator, input, remaining), "move");
+  let point = await targetPoint(page, locator, input, remaining, authorize);
+  if (human) {
+    await authorize();
+    point = (await travel(page, locator, point, human, remaining, authorize)).point;
+  }
+  await authorize();
+  await pointer(point, "move");
+  await authorize();
   if (locator === null) {
     await page.mouse.move(input.x ?? 0, input.y ?? 0);
-    return;
+    return point;
   }
   await locator.hover({ timeout: remaining() });
+  return point;
 };
 
 export const select = async (
   page: Page,
   input: PreviewAutomationSelectInput,
+  authorize: Authorize = noAuthorization,
 ): Promise<PreviewAutomationSelectResult> => {
   const locator = targetLocator(page, input)!;
   const timeout = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // Each entry matches an option by value first, then by its visible label.
+  await authorize();
   const options = await locator.evaluate(
     (element) =>
       element.tagName === "SELECT"
@@ -1082,6 +1222,7 @@ export const select = async (
       tag: "PreviewAutomationTargetNotEditableError",
       message: "This element is not a <select>. Click a custom dropdown, then click its option.",
     });
+  await authorize();
   return { selected: await locator.selectOption(values, { timeout }) };
 };
 
@@ -1089,38 +1230,135 @@ export const drag = async (
   page: Page,
   input: PreviewAutomationDragInput,
   pointer: PointerReporter = noPointer,
+  authorize: Authorize = noAuthorization,
 ) => {
   const deadline = Date.now() + (input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const remaining = () => Math.max(1, deadline - Date.now());
   const source = targetLocator(page, { locator: input.source })!;
   const target = targetLocator(page, { locator: input.target })!;
-  await pointer(await targetPoint(page, source, {}, remaining), "move");
+  const point = await targetPoint(page, source, {}, remaining, authorize);
+  await authorize();
+  await pointer(point, "move");
   // Observe drag rejection immediately; an unhandled rejection during cursor movement exits the server.
   // Chromium delivers a single move before dragstart; steps give the page mousemoves during the drag.
+  await authorize();
   const dragFailure = source.dragTo(target, { timeout: remaining(), steps: 5 }).then(
     () => null,
     (error: unknown) => ({ error }),
   );
-  const end = await target.boundingBox({ timeout: remaining() }).catch(() => null);
-  if (end) await pointer({ x: end.x + end.width / 2, y: end.y + end.height / 2 }, "move");
-  const failure = await dragFailure;
+  let failure;
+  try {
+    await authorize();
+    const end = await target.boundingBox({ timeout: remaining() }).catch(() => null);
+    if (end) {
+      await authorize();
+      await pointer({ x: end.x + end.width / 2, y: end.y + end.height / 2 }, "move");
+    }
+  } finally {
+    // An already dispatched drag must settle before the tab's control queue drains.
+    failure = await dragFailure;
+  }
   if (failure) throw failure.error;
 };
 
-export const setInputFiles = async (page: Page, input: PreviewAutomationUploadInput) => {
+/** Sets files on one file input; false when no locator or selector names one. */
+export const setInputFiles = async (
+  page: Page,
+  input: Omit<PreviewAutomationUploadInput, "paths" | "artifacts"> & {
+    readonly paths: ReadonlyArray<string>;
+  },
+  authorize: Authorize = noAuthorization,
+) => {
   const locator = targetLocator(page, input);
   if (locator === null) return false;
+  await authorize();
   await locator.setInputFiles([...input.paths], { timeout: input.timeoutMs ?? DEFAULT_TIMEOUT_MS });
   return true;
 };
 
-export const press = async (page: Page, input: PreviewAutomationPressInput) => {
+export const press = async (
+  page: Page,
+  input: PreviewAutomationPressInput,
+  authorize: Authorize = noAuthorization,
+) => {
+  await authorize();
   await page.keyboard.press([...(input.modifiers ?? []), input.key].join("+"));
 };
 
-export const scroll = async (page: Page, input: PreviewAutomationScrollInput) => {
+export const scroll = async (
+  page: Page,
+  input: PreviewAutomationScrollInput,
+  authorize: Authorize = noAuthorization,
+  human?: HumanInputPlan,
+) => {
   const delta = [input.deltaX ?? 0, input.deltaY ?? 0] as const;
   const locator = targetLocator(page, input);
+  await authorize();
+  // Wheel events scroll what is under the pointer, so only a page scroll over no
+  // scrollable box uses them; elsewhere the page scrolls as before.
+  const pointerOverBox =
+    locator === null && human
+      ? await page.evaluate(
+          `(() => {
+            let start = document.elementFromPoint(${human.from.x}, ${human.from.y});
+            // Shadow roots hide their scroll boxes from the document's hit test.
+            while (start && start.shadowRoot) {
+              const inner = start.shadowRoot.elementFromPoint(${human.from.x}, ${human.from.y});
+              if (!inner || inner === start) break;
+              start = inner;
+            }
+            // A frame's scrollable content cannot be seen from here.
+            if (start && ["IFRAME", "FRAME", "OBJECT", "EMBED"].includes(start.tagName)) return true;
+            for (let node = start; node && node !== document.scrollingElement && node !== document.body; node = node.parentElement ?? node.getRootNode().host) {
+              const style = getComputedStyle(node);
+              if (/(auto|scroll)/.test(style.overflowY + style.overflowX) && (node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth)) return true;
+            }
+            return false;
+          })()`,
+        )
+      : true;
+  if (locator === null && human && pointerOverBox === false) {
+    // As with pointer travel, a hidden tab's slow frames end the wheel early.
+    const budget = Date.now() + Math.min(TRAVEL_BUDGET_MS, (human.deadline - Date.now()) / 4);
+    const position = () => page.evaluate("[scrollX, scrollY]") as Promise<[number, number]>;
+    const before = await position();
+    // The wheel goes to the probed point, wherever the pointer was left.
+    await authorize();
+    await page.mouse.move(human.from.x, human.from.y);
+    for (const [x, y] of HumanInput.wheelSteps(delta[0], delta[1], human.pacing.random)) {
+      if (Date.now() >= budget) break;
+      await authorize();
+      await page.mouse.wheel(x, y);
+      await human.pacing.sleep(30 + human.pacing.random() * 60);
+    }
+    // What the page still owes is measured once its scrolling settles: a box the probe
+    // cannot see, such as one in a closed shadow root, may have taken some notches.
+    // A wheel lands on the page's next frames, which a hidden tab draws about once a second.
+    await Promise.race([
+      page.evaluate(
+        "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))",
+      ),
+      new Promise((resolve) => setTimeout(resolve, 2_500)),
+    ]).catch(() => undefined);
+    let after = await position();
+    // Settled means unchanged for half a second: a page may take the gesture and scroll
+    // itself a little later, and filling in before it does would scroll twice.
+    for (let check = 0, still = 0; check < 20 && still < 5; check++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const now = await position();
+      still = now[0] === after[0] && now[1] === after[1] ? still + 1 : 0;
+      after = now;
+    }
+    const left = [delta[0] - (after[0] - before[0]), delta[1] - (after[1] - before[1])];
+    // The rest goes by scrollBy; an expired or taken-over call fails rather than stopping short.
+    if (Math.abs(left[0]!) >= 1 || Math.abs(left[1]!) >= 1) {
+      await authorize();
+      await page.evaluate(`scrollBy(${left[0]}, ${left[1]})`);
+    }
+    return;
+  }
+  // The probe above awaited the page, so authority is checked again right before the scroll.
+  if (human) await authorize();
   if (locator === null) {
     // Page-side code is passed as source: the server compiles without DOM types.
     await page.evaluate(`scrollBy(${delta[0]}, ${delta[1]})`);
@@ -1154,14 +1392,19 @@ export const evaluate = async (
   cdp: CDPSession,
   input: PreviewAutomationEvaluateInput,
   timeoutMs: number,
+  authorize: Authorize = noAuthorization,
+  world: "isolated" | "main" = "main",
 ) => {
+  await authorize();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
+  let dispatched = false;
   const expired = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       timedOut = true;
-      // Stops a busy script; an awaited promise is abandoned and settles unread.
-      void cdp.send("Runtime.terminateExecution").catch(constVoid);
+      // Stops this call's busy script; before dispatch there is none, and the page's own
+      // scripts are left alone. An awaited promise is abandoned and settles unread.
+      if (dispatched) void cdp.send("Runtime.terminateExecution").catch(constVoid);
       reject(
         new ServerBrowserOperationError({
           tag: "PreviewAutomationTimeoutError",
@@ -1170,46 +1413,85 @@ export const evaluate = async (
       );
     }, timeoutMs);
   });
-  const params = {
-    expression: input.expression,
-    awaitPromise: input.awaitPromise ?? true,
-    returnByValue: true,
-  };
-  // The devtools console's replMode allows top-level await but returns a trailing promise unawaited,
-  // so it only retries what the page's parser rejected. A parse error has a scriptId but no stack and
-  // ran nothing; a browser-internal rejection has neither.
-  const evaluation = cdp.send("Runtime.evaluate", params).then((classic) => {
-    const failure = classic.exceptionDetails;
-    const unparsed =
-      failure?.exception?.className === "SyntaxError" &&
-      failure.scriptId !== undefined &&
-      failure.stackTrace === undefined;
-    return unparsed && !timedOut && input.expression.includes("await")
-      ? cdp.send("Runtime.evaluate", { ...params, replMode: true })
-      : classic;
-  });
-  void evaluation.catch(constVoid);
-  const result = await Promise.race([evaluation, expired]).finally(() => clearTimeout(timer));
-  if (result.exceptionDetails) {
-    throw new ServerBrowserOperationError({
-      tag: "PreviewAutomationExecutionError",
-      message: result.exceptionDetails.exception?.description ?? result.exceptionDetails.text,
+  // Settled when nobody waits on it, so a refusal before the race never goes unhandled.
+  void expired.catch(constVoid);
+  try {
+    // A world of its own shares the DOM, but pages cannot see the agent's globals or wrappers.
+    // Its setup runs under the same deadline, and authority is checked again before dispatch.
+    const isolated =
+      world === "isolated"
+        ? cdp.send("Page.getFrameTree").then(({ frameTree }) =>
+            cdp.send("Page.createIsolatedWorld", {
+              frameId: frameTree.frame.id,
+              worldName: "t3-agent",
+            }),
+          )
+        : undefined;
+    if (isolated) void isolated.catch(constVoid);
+    const contextId = isolated
+      ? (await Promise.race([isolated, expired])).executionContextId
+      : undefined;
+    await Promise.race([authorize(), expired]);
+    if (timedOut)
+      throw new ServerBrowserOperationError({
+        tag: "PreviewAutomationTimeoutError",
+        message: `Evaluation did not finish within ${timeoutMs}ms and was stopped.`,
+      });
+    const params = {
+      expression: input.expression,
+      awaitPromise: input.awaitPromise ?? true,
+      returnByValue: true,
+      ...(contextId === undefined ? {} : { contextId }),
+    };
+    // The devtools console's replMode allows top-level await but returns a trailing promise unawaited,
+    // so it only retries what the page's parser rejected. A parse error has a scriptId but no stack and
+    // ran nothing; a browser-internal rejection has neither.
+    dispatched = true;
+    const evaluation = cdp.send("Runtime.evaluate", params).then(async (classic) => {
+      const failure = classic.exceptionDetails;
+      const unparsed =
+        failure?.exception?.className === "SyntaxError" &&
+        failure.scriptId !== undefined &&
+        failure.stackTrace === undefined;
+      if (!unparsed || timedOut || !input.expression.includes("await")) return classic;
+      // The parse failure ran nothing, so the retry is the first run: it is authorized again,
+      // and until it is sent an expiry has no script of this call to stop.
+      dispatched = false;
+      await authorize();
+      if (timedOut) throw new Error("Evaluation expired before its retry.");
+      dispatched = true;
+      return cdp.send("Runtime.evaluate", { ...params, replMode: true });
     });
+    void evaluation.catch(constVoid);
+    const result = await Promise.race([evaluation, expired]);
+    if (result.exceptionDetails) {
+      throw new ServerBrowserOperationError({
+        tag: "PreviewAutomationExecutionError",
+        message: result.exceptionDetails.exception?.description ?? result.exceptionDetails.text,
+      });
+    }
+    const value =
+      "value" in result.result ? result.result.value : (result.result.description ?? null);
+    const actualBytes = Buffer.byteLength(JSON.stringify(value ?? null), "utf8");
+    if (actualBytes > MAX_EVALUATION_BYTES) {
+      throw new ServerBrowserOperationError({
+        tag: "PreviewAutomationResultTooLargeError",
+        message: `Evaluation result is ${actualBytes} bytes; the limit is ${MAX_EVALUATION_BYTES}.`,
+        detail: { maximumBytes: MAX_EVALUATION_BYTES },
+      });
+    }
+    return value;
+  } finally {
+    // Every way out stops the timer, so no termination reaches a tab after the request ended.
+    clearTimeout(timer);
   }
-  const value =
-    "value" in result.result ? result.result.value : (result.result.description ?? null);
-  const actualBytes = Buffer.byteLength(JSON.stringify(value ?? null), "utf8");
-  if (actualBytes > MAX_EVALUATION_BYTES) {
-    throw new ServerBrowserOperationError({
-      tag: "PreviewAutomationResultTooLargeError",
-      message: `Evaluation result is ${actualBytes} bytes; the limit is ${MAX_EVALUATION_BYTES}.`,
-      detail: { maximumBytes: MAX_EVALUATION_BYTES },
-    });
-  }
-  return value;
 };
 
-export const waitFor = async (page: Page, input: PreviewAutomationWaitForInput) => {
+export const waitFor = async (
+  page: Page,
+  input: PreviewAutomationWaitForInput,
+  authorize: Authorize = noAuthorization,
+) => {
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const locator = targetLocator(page, input);
   const { text, urlIncludes } = input;
@@ -1241,7 +1523,16 @@ export const waitFor = async (page: Page, input: PreviewAutomationWaitForInput) 
   });
   try {
     for (;;) {
-      const results = await Promise.race([Promise.all(checks.map((check) => check())), expired]);
+      const results = await Promise.race([
+        Promise.all(
+          checks.map(async (check) => {
+            await authorize();
+            return check();
+          }),
+        ),
+        expired,
+      ]);
+      await authorize();
       if (results.every(Boolean)) return;
       await Promise.race([new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS)), expired]);
     }
