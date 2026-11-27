@@ -34,6 +34,8 @@ import {
   type SampleRun,
   shellOutput,
   namedPathsLine,
+  plannedSamples,
+  sampleCapMessage,
   shellRequest,
   shellResponsesRequest,
   summarize,
@@ -426,6 +428,28 @@ const failed = (expect: Parameters<typeof gradeSample>[0], run: SampleRun) =>
   gradeSample(expect, run)
     .filter((check) => !check.pass)
     .map((check) => check.check);
+
+it("callsInOrder needs each expected call after the one before it", () => {
+  const expect = {
+    calls: [
+      { tool: "preview_type", args: { text: "cat" } },
+      { tool: "preview_press", args: { key: "Enter" } },
+    ],
+    callsInOrder: true,
+  };
+  const run = (tools: ReadonlyArray<"type" | "press">): SampleRun => ({
+    calls: tools.map((tool, step) =>
+      tool === "type"
+        ? { step, tool: "preview_type", input: { text: "cat" } }
+        : { step, tool: "preview_press", input: { key: "Enter" } },
+    ),
+    text: "",
+    stopReason: "end_turn",
+  });
+  assert.deepEqual(failed(expect, run(["type", "press"])), []);
+  assert.deepEqual(failed(expect, run(["press", "type", "press"])), []);
+  assert.deepEqual(failed(expect, run(["press", "type"])), ["callsInOrder"]);
+});
 
 it("passes a good run and names every rule a bad run breaks", () => {
   const expect = {
@@ -1893,7 +1917,7 @@ it.effect("builds the secrets cases, each citing a finding and grading secret ha
       );
       assert.match(
         String(testCase.source?.finding ?? testCase.source?.issue),
-        /^(?:secret-field-2026-1[01] |pingdotgg\/t3code#\d+$)/,
+        /^(?:secret-field-2026-1[01] |(?:pingdotgg\/t3code|toolboxmd\/chromeria)#\d+$)/,
         testCase.id,
       );
       assert.isTrue(testCase.expect.secret?.chatAsk, testCase.id);
@@ -3912,6 +3936,17 @@ it("leaves errored samples out of pass rates and lists them in the summary", () 
   assert.include(summary, "input 30");
 });
 
+it("refuses a run that plans more samples than the cap", () => {
+  assert.equal(plannedSamples(10, undefined), 30);
+  assert.equal(plannedSamples(10, 1), 10);
+  const message = sampleCapMessage(696, undefined);
+  assert.include(message ?? "", "696");
+  assert.include(message ?? "", "--max-samples");
+  assert.include(sampleCapMessage(31, undefined) ?? "", "31");
+  assert.isUndefined(sampleCapMessage(30, undefined));
+  assert.isUndefined(sampleCapMessage(696, 1000));
+});
+
 it.each(["couldn't", "couldn’t", "can’t"])(
   "accepts a typographic apostrophe in FAIL-AFTER-hub's disclosure: %s",
   (word) => {
@@ -5397,5 +5432,56 @@ it.each([
       finalText: `Agent device access is off. ${instruction} Start a new agent session.`,
     }),
     [],
+  );
+});
+
+it("the site-search case needs the query typed, then submitted, then the results read", () => {
+  const line = NodeFS.readFileSync(new URL("./cases/computer-use.ndjson", import.meta.url), "utf8")
+    .split("\n")
+    .find((entry) => entry.includes('"id": "cu-child-searches-through-the-page"'));
+  const testCase = decodeDeviceCase(line ?? "");
+  const run = (
+    submit: { tool: string; input: Record<string, unknown> },
+    observed = true,
+  ): SampleRun => ({
+    calls: [
+      { step: 0, tool: "preview_open", input: {}, failed: false, output: "" },
+      {
+        step: 1,
+        tool: "preview_type",
+        input: { locator: "aria-ref=e4", text: "karma dla kota 2 kg" },
+        failed: false,
+        output: "",
+      },
+      { step: 2, ...submit, failed: false, output: "" },
+      ...(observed
+        ? [{ step: 3, tool: "preview_snapshot", input: {}, failed: false, output: "" }]
+        : []),
+    ],
+    text: "Kot Classic 2 kg, 29,49 zł",
+    finalText: "Kot Classic 2 kg, 29,49 zł",
+    stopReason: "end_turn",
+  });
+  const failing = (submit: { tool: string; input: Record<string, unknown> }, observed = true) =>
+    gradeSample(testCase.expect, run(submit, observed))
+      .filter((check) => !check.pass)
+      .map((check) => check.check);
+  assert.deepEqual(failing({ tool: "preview_press", input: { key: "Enter" } }), []);
+  assert.deepEqual(
+    failing({ tool: "preview_act", input: { action: "click", locator: "aria-ref=e5" } }),
+    [],
+  );
+  assert.include(
+    failing({ tool: "preview_act", input: { action: "hover", locator: "aria-ref=e5" } }).join(),
+    "preview_press|preview_act|preview_click",
+  );
+  // A right-click opens a menu, not the results; and the results must be read after it.
+  assert.include(
+    failing({ tool: "preview_click", input: { locator: "aria-ref=e5", button: "right" } }).join(),
+    "preview_press|preview_act|preview_click",
+  );
+  assert.include(
+    failing({ tool: "preview_press", input: { key: "Enter" } }, false).join(),
+    "callsInOrder",
   );
 });
