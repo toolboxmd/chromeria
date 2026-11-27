@@ -80,6 +80,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("ServerEnvironmen
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const platform = yield* HostProcess.Platform;
+      // The server reports the resolved prefix; macOS temp dirs sit behind the /var symlink.
       const baseDir = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
       const prefix = `${baseDir}/node`;
       const entry = `${prefix}/lib/node_modules/t3/dist/bin.mjs`;
