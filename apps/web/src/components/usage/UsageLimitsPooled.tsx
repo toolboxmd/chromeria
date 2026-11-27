@@ -243,7 +243,7 @@ function SegmentPopover({
           ))}
         </div>
       ) : null}
-      {account.driver === "codex" ? <PrismUseCredits account={account} /> : null}
+      {account.driver === "codex" ? <PrismUseCredits account={account} now={now} /> : null}
     </div>
   );
 }

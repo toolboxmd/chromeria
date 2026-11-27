@@ -13115,6 +13115,8 @@
   "c6cf1b06e0433ca3": "설정 진행률",
   "e0167c02ca493094": "{step}, {number}단계, {summary}",
   "6389dee75a7cb536": "{step}, {number}단계",
+  "8edd2c5dde58b31e": "크레딧: 무제한 ({readAt} 기준)",
+  "7682961aa8d6edc5": "남은 크레딧: {balance} ({readAt} 기준)",
   "c76a048e53cf574b": "{machines}에서는 변경되지 않았습니다.",
   "b1c0b2d22c97dc7f": "크레딧 사용",
   "e899e924889a82ee": "요금제 창을 모두 사용하면 Prism이 크레딧으로 Codex를 실행할 수 있습니다.",

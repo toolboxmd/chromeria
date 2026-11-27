@@ -665,6 +665,38 @@ it.layer(
       }),
     );
 
+    it.effect("carries the credits the usage read reports, in whole credits", () =>
+      Effect.gen(function* () {
+        const creditsFor = (
+          credits: { hasCredits: boolean; unlimited: boolean; balance?: string | null } | null,
+        ) =>
+          checkCodexProviderStatus(defaultCodexSettings, () =>
+            Effect.succeed(
+              makeCodexProbeSnapshot({
+                nativeUsage: true,
+                rateLimits: { snapshot: {}, resetCredits: null, credits },
+              }),
+            ),
+          ).pipe(Effect.map((status) => [status.credits?.balance, status.credits?.readAt]));
+        const paid = { hasCredits: true, unlimited: false };
+
+        const [balance, readAt] = yield* creditsFor({ ...paid, balance: "4321.5000000000" });
+        assert.strictEqual(balance, 4322);
+        assert.strictEqual(readAt, DateTime.formatIso(yield* DateTime.now));
+        assert.strictEqual((yield* creditsFor({ ...paid, unlimited: true }))[0], "unlimited");
+        for (const none of [
+          null,
+          paid,
+          { ...paid, balance: null },
+          { ...paid, balance: "0" },
+          { ...paid, balance: "not a number" },
+          { hasCredits: false, unlimited: false, balance: "77" },
+        ]) {
+          assert.deepStrictEqual(yield* creditsFor(none), [undefined, undefined]);
+        }
+      }),
+    );
+
     it.effect("labels the plan the usage read reports over the cached login plan", () =>
       Effect.gen(function* () {
         const statusWithUsagePlan = (planType: string | null) =>

@@ -1,4 +1,9 @@
-import type { ServerProvider, ServerSettings, ServerSettingsError } from "@t3tools/contracts";
+import type {
+  ServerProvider,
+  ServerProviderCredits,
+  ServerSettings,
+  ServerSettingsError,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -12,6 +17,22 @@ import type { ProviderDriverError } from "../provider/Errors.ts";
 export const READ_BOUND = Duration.seconds(10);
 
 type CodexRateLimits = Extract<CodexAccountLimits, { readonly route: "native" }>["rateLimits"];
+
+/**
+ * The credits a usage read reported, for display. Like Codex's own status view: whole credits,
+ * and nothing for a login without credits or without a balance above zero.
+ */
+export function codexCreditsShown(
+  credits: CodexRateLimits["credits"],
+  readAt: string,
+): ServerProviderCredits | undefined {
+  if (credits == null) return undefined;
+  if (credits.unlimited) return { readAt, balance: "unlimited" };
+  const balance = Math.round(Number(credits.balance ?? ""));
+  return credits.hasCredits && Number.isSafeInteger(balance) && balance > 0
+    ? { readAt, balance }
+    : undefined;
+}
 
 type AccountLimitsRead = Effect.Effect<CodexAccountLimits, ProviderDriverError>;
 

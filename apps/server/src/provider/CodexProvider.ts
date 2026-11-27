@@ -58,6 +58,7 @@ import {
   type CodexResetCreditsSummary,
 } from "./codexUsageLimits.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { codexCreditsShown } from "../prism/CodexCredits.ts";
 import packageJson from "../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
 
@@ -70,6 +71,7 @@ type CodexRateLimitsProbe =
         | undefined;
       readonly resetCredits: CodexResetCreditsSummary | null | undefined;
       readonly accountId?: string | null | undefined;
+      readonly credits?: CodexSchema.V2GetAccountRateLimitsResponse["rateLimits"]["credits"];
     }
   | { readonly failure: string };
 
@@ -771,6 +773,7 @@ const readCodexRateLimits = (
             rateLimitsByLimitId: response.rateLimitsByLimitId,
             resetCredits: response.rateLimitResetCredits,
             accountId: response.accountId,
+            credits: (response.rateLimitsByLimitId?.codex ?? response.rateLimits).credits,
           }
         : { failure: "Codex did not answer the usage request." },
     ),
@@ -1189,7 +1192,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
             checkedAt,
           });
 
-  return buildServerProvider({
+  const provider = buildServerProvider({
     presentation: CODEX_PRESENTATION,
     enabled: codexSettings.enabled,
     checkedAt,
@@ -1228,6 +1231,11 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       ...(managedAuth ? {} : { usageLimits }),
     },
   });
+  const credits =
+    managedAuth || !snapshot.rateLimits || "failure" in snapshot.rateLimits
+      ? undefined
+      : codexCreditsShown(snapshot.rateLimits.credits, checkedAt);
+  return credits ? { ...provider, credits } : provider;
 });
 
 export { makePendingCodexProvider };

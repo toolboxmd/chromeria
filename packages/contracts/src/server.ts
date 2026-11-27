@@ -256,6 +256,13 @@ export const ServerProviderUpdateState = Schema.Struct({
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
+/** Chromeria: what a Codex login can still spend on credits, in whole credits, and when it was read. */
+export const ServerProviderCredits = Schema.Struct({
+  readAt: IsoDateTime,
+  balance: Schema.Union([Schema.Literal("unlimited"), PositiveInt]),
+});
+export type ServerProviderCredits = typeof ServerProviderCredits.Type;
+
 export const ServerProvider = Schema.Struct({
   // Only instanceId is stable enough for provider routing.
   instanceId: ProviderInstanceId,
@@ -327,6 +334,7 @@ export const ServerProvider = Schema.Struct({
    */
   workspaceRescannedAt: Schema.optionalKey(IsoDateTime),
   usageLimits: Schema.optional(ServerProviderUsageLimits),
+  credits: Schema.optionalKey(ServerProviderCredits),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   compatibilityAdvisory: Schema.optionalKey(ServerProviderCompatibilityAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),

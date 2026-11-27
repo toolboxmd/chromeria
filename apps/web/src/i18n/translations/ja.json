@@ -13119,6 +13119,8 @@
   "c6cf1b06e0433ca3": "セットアップの進行状況",
   "e0167c02ca493094": "{step}、ステップ {number}、{summary}",
   "6389dee75a7cb536": "{step}、ステップ {number}",
+  "8edd2c5dde58b31e": "クレジット: 無制限（{readAt} 時点）",
+  "7682961aa8d6edc5": "残りクレジット: {balance}（{readAt} 時点）",
   "c76a048e53cf574b": "{machines} では変更されませんでした。",
   "b1c0b2d22c97dc7f": "クレジットを使用",
   "e899e924889a82ee": "プランの枠を使い切ると、Prism はクレジットで Codex を実行できます。",
