@@ -1,3 +1,5 @@
+import * as DesktopCookieMirror from "../preview/DesktopCookieMirror.ts";
+import * as DesktopRenewalStore from "./DesktopRenewalStore.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -94,7 +96,13 @@ const runStubbedDesktop = (stub: StubbedDesktop) =>
     const quitting = yield* Ref.make(false);
     const runApp = DesktopApp.program
       .pipe(
-        Effect.provide(NodeCrypto.layer),
+        Effect.provide(
+          Layer.mergeAll(
+            NodeCrypto.layer,
+            Layer.mock(DesktopCookieMirror.DesktopCookieMirror, {}),
+            Layer.mock(DesktopRenewalStore.DesktopRenewalStore, {}),
+          ),
+        ),
         Effect.provideService(DesktopAppIdentity.DesktopAppIdentity, {
           resolveUserDataPath: Effect.succeed("/isolated/userdata"),
           configure: stub.record("identity"),

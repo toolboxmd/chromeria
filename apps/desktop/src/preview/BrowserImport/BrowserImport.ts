@@ -19,6 +19,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import { ChildProcessSpawner } from "effect/process";
 
+import { isAntiBotVerdictCookie } from "@t3tools/shared/browserCookieMirror";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type { ManagedPolicyFileError } from "@t3tools/shared/managedPolicyFile";
 
@@ -162,6 +163,10 @@ export const writeCookies = Effect.fn("BrowserImport.writeCookies")(function* (
   let skipped = read.undecryptable;
   const skippedDomains = new Set(read.undecryptableHosts);
   for (const cookie of read.cookies) {
+    if (isAntiBotVerdictCookie(cookie.name)) {
+      skipped += 1;
+      continue;
+    }
     const written = yield* Effect.tryPromise({
       try: () =>
         session.cookies.set({
@@ -180,7 +185,13 @@ export const writeCookies = Effect.fn("BrowserImport.writeCookies")(function* (
         new BrowserCookieWriteError({ url: cookie.url, cookieName: cookie.name, cause }),
     }).pipe(
       Effect.as(true),
-      Effect.tapError((error) => Effect.logDebug(error.message, { cause: error.cause })),
+      Effect.tapError((error) =>
+        Effect.logDebug("Browser cookie import write failed.", {
+          host: cookieHost(error.url),
+          name: error.name,
+          code: error._tag,
+        }),
+      ),
       Effect.catchTags({ BrowserCookieWriteError: () => Effect.succeed(false) }),
     );
     if (written) {
@@ -196,8 +207,10 @@ export const writeCookies = Effect.fn("BrowserImport.writeCookies")(function* (
       try: () => session.cookies.flushStore(),
       catch: (cause) => new BrowserCookieFlushError({ cause }),
     }).pipe(
-      Effect.tapError((error) =>
-        Effect.logWarning("Imported cookies could not be flushed to disk", { cause: error.cause }),
+      Effect.tapError(() =>
+        Effect.logWarning("Imported cookies could not be flushed to disk", {
+          code: "cookie-flush-failed",
+        }),
       ),
       Effect.ignore,
     );

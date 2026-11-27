@@ -1,4 +1,6 @@
 import * as NodeEvents from "node:events";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- A raw socket stalls a response body mid-read, which routed fixtures cannot.
+import * as NodeHttp from "node:http";
 import * as NodeVM from "node:vm";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Playwright download mocks perform real file operations outside the Effect runtime.
 import * as NodeFSP from "node:fs/promises";
@@ -10,6 +12,7 @@ import { it } from "@effect/vitest";
 import {
   type BrowserRecordingFrameRate,
   EnvironmentId,
+  PreviewCredentialError,
   PreviewTabId,
   ProviderInstanceId,
   ThreadId,
@@ -21,7 +24,6 @@ import {
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Scope from "effect/Scope";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -30,6 +32,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { chromium, type BrowserContext, type Page } from "playwright-core";
@@ -38,13 +41,18 @@ import { beforeEach, expect, vi } from "vite-plus/test";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as Broker from "../mcp/PreviewAutomationBroker.ts";
+import * as PeerAuthority from "../peer/PeerAuthority.ts";
+import * as CredentialVault from "./CredentialVault.ts";
 import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
+import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
+import { settlementLayer, settleThread } from "./BrowserSettlement.testkit.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 
-vi.mock("./ServerBrowserContexts.ts", () => ({
+vi.mock("./ServerBrowserContexts.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./ServerBrowserContexts.ts")>()),
   presentAsChrome: async () => {},
   ServerBrowserContexts: class {
     private readonly onClose: ((context: BrowserContext) => void) | undefined;
@@ -55,6 +63,7 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
       if (realContextOverride) return realContextOverride;
       contextRequests.push({ profileId, isolated: isolationKey !== undefined });
       if (contextFailure) throw contextFailure;
+      contextStarted?.();
       await contextGate?.promise;
       const context = makeContext(this.onClose);
       const setupFailure = pageSetupFailure;
@@ -71,7 +80,6 @@ vi.mock("./ServerBrowserContexts.ts", () => ({
     }
     async connectDesktopPage(endpoint: string) {
       const context = makeContext(undefined, desktopPageUrl);
-      context.page.viewportSize.mockReturnValue(null);
       const browser = { close: vi.fn(async () => {}) };
       desktopConnections.push({ endpoint, context, browser });
       desktopConnectionStarted?.resolve();
@@ -118,6 +126,7 @@ function makeSession(
         events.emit("Fetch.authRequired", initialAuthChallenge);
       }
       if (method === "Page.getNavigationHistory") return { currentIndex: 0, entries: [{}] };
+      if (method === "Target.getTargetInfo") return { targetInfo: { browserContextId: "context" } };
       if (method === "Page.getLayoutMetrics") return { cssVisualViewport: { pageX: 0, pageY: 0 } };
       if (method === "Page.captureScreenshot") {
         if ((input as { format: string }).format === "jpeg" && heldStill) await heldStill();
@@ -183,7 +192,6 @@ function makeContext(onClose?: (context: BrowserContext) => void, initialUrl = "
   const setChooserFiles = vi.fn(async (_files: unknown) => {});
   const sessions: ReturnType<typeof makeSession>[] = [];
   let url = initialUrl;
-  let viewport: ReturnType<Page["viewportSize"]> = { width: 1280, height: 800 };
   const cssViewport = { width: 1920, height: 1080 };
   let closed = false;
   let contextClosed = false;
@@ -217,10 +225,7 @@ function makeContext(onClose?: (context: BrowserContext) => void, initialUrl = "
       url = next;
     },
     title: vi.fn(async () => "test page"),
-    viewportSize: vi.fn(() => viewport),
-    setViewportSize: vi.fn(async (size: typeof viewport) => {
-      viewport = size;
-    }),
+    viewportSize: vi.fn((): ReturnType<Page["viewportSize"]> => null),
     goto: vi.fn(async (next: string, _options?: { timeout?: number; waitUntil?: string }) => {
       const pending = initialNavigation;
       initialNavigation = null;
@@ -233,6 +238,7 @@ function makeContext(onClose?: (context: BrowserContext) => void, initialUrl = "
     reload: vi.fn(async () => {}),
     emulateMedia: vi.fn(async () => {}),
     waitForLoadState: vi.fn(async (_state?: string, _options?: { timeout?: number }) => {}),
+    content: vi.fn(async () => "<h1>Existing account page</h1><p>Private reading fixture</p>"),
     evaluate: vi.fn(async () => ({
       url,
       title: "test page",
@@ -294,8 +300,9 @@ function makeContext(onClose?: (context: BrowserContext) => void, initialUrl = "
     page,
     sessions,
     cssViewport,
+    // Permission overrides go through the browser's own session.
+    browser: () => ({ newBrowserCDPSession: async () => ({ send: async () => ({}) }) }),
     newPage: async () => page as unknown as Page,
-    grantPermissions: vi.fn(async () => {}),
     newCDPSession: async (target: unknown) => {
       const session = makeSession(
         target === page ? undefined : (target as ReturnType<typeof makeFrame>),
@@ -394,11 +401,13 @@ function makeEncoderPage() {
 const contexts: ReturnType<typeof makeContext>[] = [];
 let encoderPageOverride: Page | undefined;
 let realContextOverride: BrowserContext | undefined;
+
 const encoderStreams: Array<{ frameRate: number | undefined; bitsPerSecond: number }> = [];
 let decodeGate: PromiseWithResolvers<void> | null = null;
 const contextRequests: Array<{ profileId: string; isolated: boolean }> = [];
-let contextGate: PromiseWithResolvers<void> | null = null;
 let heldStill: (() => Promise<void>) | null = null;
+let contextGate: PromiseWithResolvers<void> | null = null;
+let contextStarted: (() => void) | null = null;
 let pageCopy = "";
 let keyCopy = "";
 let focusedFrame: ReturnType<typeof makeFrame> | null = null;
@@ -406,6 +415,7 @@ let contextFailure: Error | null = null;
 let pageSetupFailure: Error | null = null;
 let initialNavigation: (() => Promise<void>) | null = null;
 let initialAuthChallenge: typeof basicChallenge | null = null;
+let vaultValue: string | null = null;
 let desktopRendersNext = false;
 let desktopPageUrl = "about:blank";
 let desktopConnectionGate: PromiseWithResolvers<void> | null = null;
@@ -439,7 +449,7 @@ const desktopTurns = new NodeEvents.EventEmitter();
 const desktopConnections: Array<{
   endpoint: string;
   context: ReturnType<typeof makeContext>;
-  browser: { close: ReturnType<typeof vi.fn> };
+  browser: { close: ReturnType<typeof vi.fn<() => Promise<void>>> };
 }> = [];
 const testThread = {
   threadId: ThreadId.make("browser-test-thread"),
@@ -459,8 +469,19 @@ const asSession = (providerSessionId: string) => ({
   thread: { ...testThread, providerSessionId },
 });
 const dependencies = Layer.mergeAll(
+  settlementLayer,
   Broker.layer,
+  Layer.succeed(CredentialVault.CredentialVault, {
+    uris: () => Effect.succeed(["example.test"]),
+    read: () =>
+      Effect.suspend(() =>
+        vaultValue === null
+          ? Effect.fail(new PreviewCredentialError({ reason: "vaultNotConfigured" }))
+          : Effect.succeed(vaultValue),
+      ),
+  }),
   Manager.layer,
+  Layer.mock(SecretRequests.SecretRequests)({}),
   Layer.succeed(ServerEnvironment.ServerEnvironment, {
     getEnvironmentId: Effect.succeed(scope.environmentId),
     getDescriptor: Effect.die("unused descriptor"),
@@ -605,10 +626,12 @@ beforeEach(() => {
   contextRequests.length = 0;
   contextGate = null;
   heldStill = null;
+  contextStarted = null;
   contextFailure = null;
   pageSetupFailure = null;
   initialNavigation = null;
   initialAuthChallenge = null;
+  vaultValue = null;
   pageCopy = "";
   keyCopy = "";
   focusedFrame = null;
@@ -650,6 +673,136 @@ it.effect("tells the desktop once per thread when its agent turns start and end"
   }).pipe(Effect.scoped, Effect.provide(layer)),
 );
 
+it.live.each([
+  { baseline: "1", reason: undefined, cleanupThrows: false },
+  { baseline: "undefined", reason: "malformed_payload", cleanupThrows: false },
+  { baseline: "'x'.repeat(1024 * 1024)", reason: "overflow", cleanupThrows: false },
+  { baseline: "undefined", reason: "malformed_payload", cleanupThrows: true },
+])("page watch cleans up before detaching CDP: %j", ({ baseline, reason, cleanupThrows }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const source = new EventTarget();
+      const realm = NodeVM.createContext({ TextEncoder, source, callbacks: 0, cleanups: 0 });
+      const events = new NodeEvents.EventEmitter();
+      const commands: string[] = [];
+      let detached = false;
+      let dispose: (() => void) | undefined;
+      const session = {
+        ...makeSession(undefined, { width: 1280, height: 720 }),
+        on: vi.fn((name: string, listener: () => void) => events.on(name, listener)),
+        off: vi.fn((name: string, listener: () => void) => events.off(name, listener)),
+        detach: vi.fn(async () => {
+          commands.push("detach");
+          detached = true;
+        }),
+        send: vi.fn(async (method: string, input?: unknown): Promise<Record<string, unknown>> => {
+          commands.push(method);
+          if (detached) throw new Error("CDP session detached");
+          const params = input as Record<string, unknown>;
+          if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+          if (method === "Runtime.enable")
+            events.emit("Runtime.executionContextCreated", {
+              context: { id: 17, auxData: { isDefault: true, frameId: "main" } },
+            });
+          if (method === "Runtime.addBinding") {
+            const name = String(params.name);
+            realm[name] = (payload: string) =>
+              events.emit("Runtime.bindingCalled", { name, payload, executionContextId: 17 });
+          }
+          if (method === "Runtime.evaluate") {
+            dispose = NodeVM.runInContext(String(params.expression), realm) as () => void;
+            return { result: { type: "function", objectId: "cleanup-17" } };
+          }
+          if (method === "Runtime.callFunctionOn") dispose?.();
+          return {};
+        }),
+      };
+      vi.spyOn(contexts[0]!, "newCDPSession").mockResolvedValue(session);
+      const start = broker.invoke<{ watchId: string; epoch: string }>({
+        scope,
+        tabId,
+        operation: "watchStart",
+        input: {
+          subscription: `(emit) => {
+            const listener = () => { globalThis.callbacks++; emit(1); };
+            source.addEventListener('change', listener);
+            emit(${baseline});
+            return () => {
+              globalThis.cleanups++;
+              source.removeEventListener('change', listener);
+              ${cleanupThrows ? "throw new Error('cleanup failed');" : ""}
+            };
+          }`,
+        },
+      });
+      if (reason) {
+        expect(yield* start.pipe(Effect.flip)).toMatchObject({ reason });
+      } else {
+        const started = yield* start;
+        source.dispatchEvent(new Event("change"));
+        expect(realm.callbacks).toBe(1);
+        yield* broker.invoke({ scope, tabId, operation: "watchStop", input: started });
+        const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+        yield* viewer.input({ type: "takeControl" });
+        const before = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          tabId,
+          operation: "status",
+          input: {},
+        });
+        const retained = yield* browser.readWatch!(
+          {
+            ...started,
+            threadId: scope.thread.threadId,
+            after: 0,
+            timeoutMs: 0,
+          },
+          Effect.void,
+        ).pipe(Effect.flip);
+        expect(retained).toMatchObject({ reason: "stopped" });
+        yield* broker.invoke({ scope, tabId, operation: "watchStop", input: started });
+        const refused = yield* broker
+          .invoke<void>({
+            scope,
+            tabId,
+            operation: "watchStart",
+            input: { subscription: "(emit) => emit(1)" },
+          })
+          .pipe(Effect.flip);
+        expect(refused).toMatchObject({ reason: "humanControl" });
+        const after = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          tabId,
+          operation: "status",
+          input: {},
+        });
+        expect(after.control).toEqual(before.control);
+      }
+      expect(realm.cleanups).toBe(1);
+      const callbacks = realm.callbacks;
+      source.dispatchEvent(new Event("change"));
+      expect(realm.callbacks).toBe(callbacks);
+      expect(session.detach).toHaveBeenCalledTimes(1);
+      expect(commands.indexOf("Runtime.callFunctionOn")).toBeLessThan(commands.indexOf("detach"));
+      expect(commands).toContain("Runtime.releaseObject");
+      expect(commands).toContain("Runtime.removeBinding");
+      expect(events.listenerCount("Runtime.bindingCalled")).toBe(0);
+    }).pipe(
+      Effect.provide(
+        layer.pipe(
+          Layer.provide(
+            Layer.mock(PeerAuthority.PeerAuthority)({
+              recheckInvocation: (invocation) => Effect.succeed(invocation),
+              acquirePreviewWatchAuthority: () => Effect.succeed(Effect.void),
+            }),
+          ),
+        ),
+      ),
+    ),
+  ),
+);
+
 it.effect("preview_open reports its navigation timeout instead of the request budget", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -686,54 +839,48 @@ it.effect("preview_open reports its navigation timeout instead of the request bu
   ).pipe(Effect.provide(layer)),
 );
 
-it.effect(
-  "an initial download stays available after preview_open reports the navigation error",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const { broker, tabId } = yield* ready;
-        const manager = yield* Manager.PreviewManager;
-        const released = Promise.withResolvers<void>();
-        initialNavigation = async () => {
-          contexts[1]!.page.emit("download", {
-            failure: async () => null,
-            delete: async () => released.resolve(),
-            saveAs: (path: string) => NodeFSP.writeFile(path, "a,b"),
-            suggestedFilename: () => "report.csv",
-            url: () => "http://localhost:1337/report.csv",
-          });
-          throw new Error("page.goto: Download is starting");
-        };
-        const error = yield* broker
-          .invoke<PreviewAutomationStatus>({
-            scope,
-            operation: "open",
-            input: {
-              url: "http://localhost:1337/report.csv",
-              reuseExistingTab: false,
-              open: false,
-            },
-          })
-          .pipe(Effect.flip);
-        expect(error.message).toContain("Download is starting");
-        yield* Effect.promise(() => released.promise);
-        const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
-        expect(sessions).toHaveLength(2);
-        const downloadTabId = PreviewTabId.make(sessions.find((tab) => tab.tabId !== tabId)!.tabId);
-        const status = yield* broker.invoke<PreviewAutomationStatus>({
-          scope,
-          tabId: downloadTabId,
-          operation: "status",
-          input: {},
+it.live("an initial download stays available after preview_open reports the navigation error", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const released = Promise.withResolvers<void>();
+      initialNavigation = async () => {
+        contexts[1]!.page.emit("download", {
+          failure: async () => null,
+          delete: async () => released.resolve(),
+          saveAs: (path: string) => NodeFSP.writeFile(path, "a,b"),
+          suggestedFilename: () => "report.csv",
+          url: () => "http://localhost:1337/report.csv",
         });
-        expect(status.downloads).toEqual([
-          expect.objectContaining({ fileName: "report.csv", sizeBytes: 3 }),
-        ]);
-        expect(
-          yield* (yield* FileSystem.FileSystem).readFileString(status.downloads![0]!.path),
-        ).toBe("a,b");
-      }),
-    ).pipe(Effect.provide(layer)),
+        throw new Error("page.goto: Download is starting");
+      };
+      const error = yield* broker
+        .invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { url: "http://localhost:1337/report.csv", reuseExistingTab: false, open: false },
+        })
+        .pipe(Effect.flip);
+      expect(error.message).toContain("Download is starting");
+      yield* Effect.promise(() => released.promise);
+      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+      expect(sessions).toHaveLength(2);
+      const downloadTabId = PreviewTabId.make(sessions.find((tab) => tab.tabId !== tabId)!.tabId);
+      const status = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId: downloadTabId,
+        operation: "status",
+        input: {},
+      });
+      expect(status.downloads).toEqual([
+        expect.objectContaining({ fileName: "report.csv", sizeBytes: 3 }),
+      ]);
+      expect(
+        yield* (yield* FileSystem.FileSystem).readFileString(status.downloads![0]!.path!),
+      ).toBe("a,b");
+    }),
+  ).pipe(Effect.provide(layer)),
 );
 
 it.effect.each([
@@ -802,11 +949,20 @@ it.effect("a desktop status answers with the last viewport while the renderer ca
   Effect.scoped(
     Effect.gen(function* () {
       const { broker } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
       desktopRendersNext = true;
-      const opened = yield* broker.invoke<PreviewAutomationStatus>({
+      // Agent-opened tabs run in the server browser, so a human tab is the desktop one.
+      const opened = yield* manager.open({
+        threadId: scope.thread.threadId,
+        runtime: "server",
+        url: "https://example.com/",
+      });
+      const tabId = PreviewTabId.make(opened.tabId);
+      yield* broker.invoke<PreviewAutomationStatus>({
         scope,
-        operation: "open",
-        input: { url: "https://example.com/", reuseExistingTab: false, show: false },
+        tabId,
+        operation: "status",
+        input: {},
       });
       const measuring = Promise.withResolvers<void>();
       desktopSizeAnswer = () => {
@@ -822,7 +978,7 @@ it.effect("a desktop status answers with the last viewport while the renderer ca
       const result = yield* broker
         .invoke<PreviewAutomationStatus>({
           scope,
-          tabId: opened.tabId!,
+          tabId,
           operation: "status",
           input: {},
         })
@@ -970,10 +1126,15 @@ it.effect("a tab the desktop does not draw is marked headless, so the desktop st
       const { broker, tabId } = yield* ready;
       const manager = yield* Manager.PreviewManager;
       desktopRendersNext = true;
-      const desktopTab = yield* broker.invoke<PreviewAutomationStatus>({
+      const desktopTab = yield* manager.open({
+        threadId: scope.thread.threadId,
+        runtime: "server",
+      });
+      yield* broker.invoke<PreviewAutomationStatus>({
         scope,
+        tabId: PreviewTabId.make(desktopTab.tabId),
         operation: "open",
-        input: { reuseExistingTab: false, show: false },
+        input: { open: false },
       });
       const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
       const headlessOf = (id: string | null) =>
@@ -1005,19 +1166,21 @@ it.effect("a server started without the desktop browser channel marks its tabs h
   ),
 );
 
-it.effect("an agent's tab the reloaded desktop dropped goes back to the desktop", () =>
+// Agent tabs never reach the desktop here (preview-chrome-for-testing), so this guards a person's tab.
+it.effect("a person's tab the reloaded desktop dropped goes back to the desktop", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const { broker } = yield* ready;
       const manager = yield* Manager.PreviewManager;
       const threadId = scope.thread.threadId;
       desktopRendersNext = true;
-      const opened = yield* broker.invoke<PreviewAutomationStatus>({
-        scope,
-        operation: "open",
-        input: { url: "https://example.com/?t=1", reuseExistingTab: false, open: false },
+      const opened = yield* manager.open({
+        threadId,
+        url: "https://example.com/?t=1",
+        runtime: "server",
       });
-      const tabId = PreviewTabId.make(opened.tabId!);
+      const tabId = PreviewTabId.make(opened.tabId);
+      yield* broker.invoke({ scope, tabId, operation: "status", input: {} });
       // The renderer reloads on another thread: its webview goes, and it only mounts this
       // thread's tabs again once a preview event for the thread reaches it.
       yield* Effect.promise(() => desktopDetachReady.promise);
@@ -1071,6 +1234,30 @@ it.effect("a desktop tab left on the system appearance clears Playwright's light
       expect(context.page.emulateMedia).toHaveBeenCalledWith({ colorScheme: null });
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "an agent tab uses the host's time for system appearance and honors an explicit choice",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const hour = vi.spyOn(Date.prototype, "getHours").mockReturnValue(23);
+        yield* Effect.addFinalizer(() => Effect.sync(() => hour.mockRestore()));
+        const { broker, tabId } = yield* ready;
+        const { page } = contexts[0]!;
+        expect(page.emulateMedia).toHaveBeenLastCalledWith({ colorScheme: "dark" });
+
+        const setAppearance = (colorScheme: "light" | "dark" | "system") =>
+          broker.invoke({ scope, tabId, operation: "setColorScheme", input: { colorScheme } });
+        yield* setAppearance("light");
+        expect(page.emulateMedia).toHaveBeenLastCalledWith({ colorScheme: "light" });
+        hour.mockReturnValue(12);
+        yield* setAppearance("dark");
+        expect(page.emulateMedia).toHaveBeenLastCalledWith({ colorScheme: "dark" });
+        yield* setAppearance("system");
+        expect(page.emulateMedia).toHaveBeenLastCalledWith({ colorScheme: "light" });
+      }),
+    ).pipe(Effect.provide(layer)),
 );
 
 it.effect("a desktop page that loaded before the server attached reports its loaded title", () =>
@@ -1517,7 +1704,7 @@ it.effect("enforces provider ownership and explicit targets when a session has m
         operation: "evaluate",
         input: { expression: "owned()" },
       });
-      expect(result).toBe("evaluated");
+      expect(result).toMatchObject({ value: "evaluated" });
       expect(contexts).toHaveLength(2);
 
       const manager = yield* Manager.PreviewManager;
@@ -1579,7 +1766,7 @@ it.effect("a first still that never returns does not stall the tab's later captu
   ).pipe(Effect.provide(layer)),
 );
 
-it.effect("keeps a tab's zoom when its viewer resizes", () =>
+it.effect("keeps the fixed viewport when zoom returns to 100%", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const browser = yield* ServerBrowser.ServerBrowser;
@@ -1587,18 +1774,68 @@ it.effect("keeps a tab's zoom when its viewer resizes", () =>
       const { tabId } = yield* manager.open({
         threadId: scope.thread.threadId,
         runtime: "server",
+        viewport: { _tag: "freeform", width: 390, height: 844 },
         zoomFactor: 1.5,
       });
       const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
       yield* viewer.input({ type: "takeControl" });
       const cdp = contexts[0]!.sessions[0]!;
-      cdp.send.mockClear();
-      // Resizing the page resets Chromium's device metrics, so zoom must be applied again.
-      yield* viewer.input({ type: "resize", width: 390, height: 844 });
       expect(cdp.send).toHaveBeenCalledWith(
         "Emulation.setDeviceMetricsOverride",
-        expect.objectContaining({ deviceScaleFactor: 3 }),
+        expect.objectContaining({ width: 260, height: 563, deviceScaleFactor: 3 }),
       );
+      cdp.send.mockClear();
+      const resetViewport = Stream.fromQueue(viewer.output).pipe(
+        Stream.filter(
+          (item) => item._tag === "viewport" && item.width === 390 && item.height === 844,
+        ),
+        Stream.runHead,
+      );
+      yield* manager.adjust({ threadId: scope.thread.threadId, tabId, zoomFactor: 1 });
+      expect(Option.isSome(yield* resetViewport)).toBe(true);
+      expect(cdp.send.mock.calls.filter(([method]) => method.startsWith("Emulation."))).toEqual([
+        [
+          "Emulation.setDeviceMetricsOverride",
+          { width: 390, height: 844, deviceScaleFactor: 2, mobile: false },
+        ],
+      ]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("tells the viewer when taking or releasing control fails", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, tabId } = yield* ready;
+      let authorized = true;
+      const viewer = yield* browser.attachViewer({
+        ...viewerInput(tabId, true),
+        authorize: async () => {
+          if (!authorized) throw new Error("grant revoked");
+        },
+      });
+      const failure = (action: "take" | "release") =>
+        Stream.fromQueue(viewer.output).pipe(
+          Stream.filter((output) => output._tag === "controlFailed"),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.map((outputs) =>
+            expect([...outputs]).toEqual([{ _tag: "controlFailed", action }]),
+          ),
+        );
+      authorized = false;
+      yield* viewer.input({ type: "takeControl" });
+      yield* failure("take");
+      authorized = true;
+      yield* viewer.input({ type: "takeControl" });
+      authorized = false;
+      yield* viewer.input({ type: "releaseControl" });
+      yield* failure("release");
+      // A stalled viewer whose queue is full of frames still learns of the failure.
+      const acked = stallViewer(viewer);
+      yield* viewer.input({ type: "releaseControl" });
+      yield* failure("release");
+      yield* acked;
     }),
   ).pipe(Effect.provide(layer)),
 );
@@ -1610,8 +1847,8 @@ it.effect(
       Effect.gen(function* () {
         const { browser, tabId } = yield* ready;
         const viewer = yield* browser.attachViewer(viewerInput(tabId, false));
-        const page = contexts[0]!.page;
-        page.setViewportSize.mockClear();
+        const pageSession = contexts[0]!.sessions[0]!;
+        pageSession.send.mockClear();
         const session = contexts[0]!.sessions.at(-1)!;
         session.send.mockClear();
         for (const message of [
@@ -1621,7 +1858,10 @@ it.effect(
           { type: "viewport", setting: { _tag: "freeform", width: 390, height: 844 } },
         ])
           yield* viewer.input(message);
-        expect(page.setViewportSize).not.toHaveBeenCalled();
+        expect(pageSession.send).not.toHaveBeenCalledWith(
+          "Emulation.setVisibleSize",
+          expect.anything(),
+        );
         expect(session.send.mock.calls.some(([method]) => method.startsWith("Input."))).toBe(false);
         const outputs = yield* Stream.fromQueue(viewer.output).pipe(
           Stream.takeUntil((output) => output._tag === "frame"),
@@ -1641,7 +1881,10 @@ it.effect(
         expect(contexts[0]!.sessions.at(-1)!.send).toHaveBeenCalledWith("Input.insertText", {
           text: "typed",
         });
-        expect(page.setViewportSize).toHaveBeenCalledWith({ width: 390, height: 844 });
+        expect(pageSession.send).toHaveBeenCalledWith("Emulation.setVisibleSize", {
+          width: 390,
+          height: 844,
+        });
         yield* operator.input({ type: "releaseControl" });
       }),
     ).pipe(Effect.provide(layer)),
@@ -1688,7 +1931,7 @@ it.effect(
           reason: "humanControl",
         });
         finish.resolve({ result: { value: "finished" } });
-        expect(yield* Fiber.join(running)).toBe("finished");
+        expect(yield* Fiber.join(running)).toMatchObject({ value: "finished" });
         yield* Fiber.join(takeover);
         yield* viewer.input({ type: "releaseControl" });
         const stale = yield* broker
@@ -1703,7 +1946,7 @@ it.effect(
             operation: "evaluate",
             input: { expression: "resumed()" },
           }),
-        ).toBe("evaluated");
+        ).toMatchObject({ value: "evaluated" });
       }),
     ).pipe(Effect.provide(layer)),
 );
@@ -1836,7 +2079,7 @@ it.effect("reports a pending dialog without evaluating the page and resolves it 
       });
       expect(page.goto).toHaveBeenCalledTimes(1);
       yield* broker.invoke({ scope, tabId, operation: "dialog", input: { accept: true } });
-      expect(yield* Fiber.join(blockedAction)).toBe(true);
+      expect(yield* Fiber.join(blockedAction)).toMatchObject({ value: true });
       expect(dialog.accept).toHaveBeenCalledTimes(1);
       const resolved = yield* broker.invoke<PreviewAutomationStatus>({
         scope,
@@ -2011,11 +2254,14 @@ it.effect("closing a desktop tab during setup unloads its page before disconnect
       const gate = (desktopConnectionGate = Promise.withResolvers<void>());
       const started = (desktopConnectionStarted = Promise.withResolvers<void>());
       yield* Effect.addFinalizer(() => Effect.sync(() => gate.resolve()));
+      // Agents' own tabs are server pages, so the desktop tab comes from a person.
+      const desktopTab = yield* manager.open({ threadId: testThread.threadId, runtime: "server" });
       const opening = yield* broker
-        .invoke<PreviewAutomationStatus>({
+        .invoke({
           scope,
+          tabId: PreviewTabId.make(desktopTab.tabId),
           operation: "open",
-          input: { reuseExistingTab: false, open: false },
+          input: { open: false },
         })
         .pipe(Effect.result, Effect.forkScoped);
       yield* Effect.promise(() => started.promise);
@@ -2047,7 +2293,7 @@ it.effect("closing a desktop tab during setup unloads its page before disconnect
   ).pipe(Effect.provide(layer)),
 );
 
-it.effect.each(["agent", "client", "all", "concurrent"] as const)(
+it.effect.each(["client", "all", "concurrent"] as const)(
   "closing a desktop tab waits for unload before removal (%s)",
   (source) =>
     Effect.scoped(
@@ -2055,12 +2301,13 @@ it.effect.each(["agent", "client", "all", "concurrent"] as const)(
         const { broker } = yield* ready;
         const manager = yield* Manager.PreviewManager;
         desktopRendersNext = true;
-        const opened = yield* broker.invoke<PreviewAutomationStatus>({
-          scope,
-          operation: "open",
-          input: { reuseExistingTab: false, open: false },
+        // Agents' own tabs are server pages, so the desktop tab comes from a person.
+        const desktopTab = yield* manager.open({
+          threadId: testThread.threadId,
+          runtime: "server",
         });
-        const tabId = PreviewTabId.make(opened.tabId!);
+        const tabId = PreviewTabId.make(desktopTab.tabId);
+        yield* broker.invoke({ scope, tabId, operation: "open", input: { open: false } });
         const { context, browser } = desktopConnections[0]!;
         const page = context.page;
         // The desktop removes the webview once the session closes, dropping an unload in progress.
@@ -2075,13 +2322,11 @@ it.effect.each(["agent", "client", "all", "concurrent"] as const)(
         page.unloadGate = Promise.withResolvers<void>();
         const close = () => manager.close({ threadId: testThread.threadId, tabId });
         const closing = yield* (
-          source === "agent"
-            ? broker.invoke({ scope, tabId, operation: "close", input: {} })
-            : source === "all"
-              ? manager.close({ threadId: testThread.threadId })
-              : source === "concurrent"
-                ? Effect.all([close(), close()], { concurrency: "unbounded", discard: true })
-                : close()
+          source === "all"
+            ? manager.close({ threadId: testThread.threadId })
+            : source === "concurrent"
+              ? Effect.all([close(), close()], { concurrency: "unbounded", discard: true })
+              : close()
         ).pipe(Effect.forkScoped);
         // The page finishes unloading once the server listens for it, or too late if it never does.
         yield* Effect.promise(() =>
@@ -2138,34 +2383,27 @@ it.effect("closing a tab with an unsaved-changes guard still closes it", () =>
   ).pipe(Effect.provide(layer)),
 );
 
-it.effect("a tab whose renderer crashes stays open instead of vanishing", () =>
+it.live("a person's popup from an agent's tab stays a server page the desktop cannot host", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const { browser, broker, tabId } = yield* ready;
-      const url = `https://example.com/app?${"a".repeat(3000)}`;
-      contexts[0]!.page.commit(url);
-      yield* Effect.promise(() => contexts[0]!.page.emitAsync("crash"));
-      const status = yield* broker.invoke<PreviewAutomationStatus>({
-        scope,
-        tabId,
-        operation: "status",
-        input: {},
-      });
-      expect(status.tabId).toBe(tabId);
-      expect(status.loadError).toEqual({
-        url: url.slice(0, 2048),
-        code: -2,
-        description: "Page crashed",
-      });
-      // The crashed page cannot load anything again, so Reload goes to the page that replaced it.
+      const { browser, tabId } = yield* ready;
       const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
       yield* viewer.input({ type: "takeControl" });
-      yield* viewer.input({ type: "reload" });
-      expect(contexts[1]!.page.goto).toHaveBeenCalledWith(url, expect.anything());
+      const popup = makeContext();
+      const manager = yield* Manager.PreviewManager;
+      const events = yield* manager.subscribeEvents;
+      contexts[0]!.page.emit("popup", popup.page);
+      let event = yield* PubSub.take(events);
+      while (event.type !== "opened" || event.snapshot.tabId === tabId)
+        event = yield* PubSub.take(events);
+      const popupTab = event.snapshot;
+      const sessions = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
+      expect(popupTab.automationOwner).toBeUndefined();
+      expect(popupTab.serverPage).toBe(true);
+      expect(sessions.find((session) => session.tabId === tabId)?.serverPage).toBe(true);
     }),
   ).pipe(Effect.provide(layer)),
 );
-
 it.effect("a tab opened to a file the browser cannot show reports the file to download", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -2377,27 +2615,27 @@ it.effect.each([
   {
     name: "hover burst before a click",
     inputs: [
-      ...Array.from({ length: 120 }, (_, x) => ({
+      ...Array.from({ length: 40 }, (_, x) => ({
         type: "mouse",
         action: "move",
         x,
         buttons: 0,
         button: "none",
       })),
-      { type: "mouse", action: "down", x: 119, buttons: 1, button: "left" },
-      { type: "mouse", action: "up", x: 119, buttons: 0, button: "left" },
+      { type: "mouse", action: "down", x: 39, buttons: 1, button: "left" },
+      { type: "mouse", action: "up", x: 39, buttons: 0, button: "left" },
     ],
     expected: [
       { type: "mouseMoved", x: -1 },
-      { type: "mouseMoved", x: 119 },
-      { type: "mousePressed", x: 119 },
-      { type: "mouseReleased", x: 119 },
+      { type: "mouseMoved", x: 39 },
+      { type: "mousePressed", x: 39 },
+      { type: "mouseReleased", x: 39 },
     ],
   },
   {
     name: "wheel burst before a click",
     inputs: [
-      ...Array.from({ length: 120 }, () => ({
+      ...Array.from({ length: 40 }, () => ({
         type: "wheel",
         x: 100,
         y: 200,
@@ -2409,7 +2647,7 @@ it.effect.each([
     ],
     expected: [
       { type: "mouseMoved", x: -1 },
-      { type: "mouseWheel", x: 100, y: 200, deltaX: 0, deltaY: 1440 },
+      { type: "mouseWheel", x: 100, y: 200, deltaX: 0, deltaY: 480 },
       { type: "mousePressed", x: 100 },
       { type: "mouseReleased", x: 100 },
     ],
@@ -2533,6 +2771,138 @@ it.effect.each([
       );
       expect(dispatched).toHaveLength(testCase.expected.length);
       expect(dispatched).toMatchObject(testCase.expected);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  { type: "mouse", action: "move", x: 7, button: "none", buttons: 0 },
+  { type: "wheel", x: 7, deltaY: 12 },
+])("fences queued coalesced $type input and releases its reservations", (input) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, tabId } = yield* ready;
+      let authorized = true;
+      let pauseAuthorization: (() => Promise<void>) | undefined;
+      const viewer = yield* browser.attachViewer({
+        ...viewerInput(tabId, true),
+        authorize: async () => {
+          const pause = pauseAuthorization;
+          pauseAuthorization = undefined;
+          await pause?.();
+          if (!authorized) throw new Error("grant revoked");
+        },
+      });
+      yield* viewer.input({ type: "takeControl" });
+      const session = contexts[0]!.sessions.at(-1)!;
+      const send = session.send.getMockImplementation()!;
+      const started = Promise.withResolvers<void>();
+      const finish = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => finish.resolve()));
+      session.send.mockClear();
+      session.send.mockImplementationOnce(async (method, payload) => {
+        started.resolve();
+        await finish.promise;
+        return send(method, payload);
+      });
+      const running = yield* viewer
+        .input({ type: "text", text: "running" })
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* Effect.promise(() => started.promise);
+      const waiting = yield* Effect.forEach(Array.from({ length: 63 }), () =>
+        viewer.input(input).pipe(Effect.forkScoped({ startImmediately: true })),
+      );
+      expect(yield* viewer.input(input).pipe(Effect.flip)).toMatchObject({
+        _tag: "BrowserInputOverloaded",
+      });
+      authorized = false;
+      finish.resolve();
+      yield* Effect.forEach([running, ...waiting], Fiber.join);
+      expect(session.send.mock.calls.filter(([method]) => method.startsWith("Input."))).toEqual([
+        ["Input.insertText", { text: "running" }],
+      ]);
+      authorized = true;
+      yield* viewer.input(input);
+      expect(session.send).toHaveBeenCalledWith(
+        "Input.dispatchMouseEvent",
+        expect.objectContaining({ x: 7 }),
+      );
+
+      session.send.mockClear();
+      const blocked = Promise.withResolvers<void>();
+      const unblock = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => unblock.resolve()));
+      session.send.mockImplementationOnce(async (method, payload) => {
+        blocked.resolve();
+        await unblock.promise;
+        return send(method, payload);
+      });
+      const active = yield* viewer
+        .input({ type: "text", text: "active" })
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* Effect.promise(() => blocked.promise);
+      const stale = yield* viewer.input(input).pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* Queue.clear(viewer.output);
+      const released = yield* viewer
+        .input({ type: "releaseControl" })
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      const releasedControl = yield* Queue.take(viewer.output);
+      expect(releasedControl).toMatchObject({ _tag: "control", controller: "agent" });
+      const retaken = yield* viewer
+        .input({ type: "takeControl" })
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      expect(yield* Queue.take(viewer.output)).toMatchObject({
+        _tag: "control",
+        controller: "you",
+      });
+      unblock.resolve();
+      yield* Effect.forEach([active, stale, released, retaken], Fiber.join);
+      expect(session.send.mock.calls.filter(([method]) => method.startsWith("Input."))).toEqual([
+        ["Input.insertText", { text: "active" }],
+      ]);
+      yield* viewer.input(input);
+      expect(session.send).toHaveBeenCalledWith(
+        "Input.dispatchMouseEvent",
+        expect.objectContaining({ x: 7 }),
+      );
+      session.send.mockClear();
+      const authorizing = Promise.withResolvers<void>();
+      const proceed = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => proceed.resolve()));
+      pauseAuthorization = async () => {
+        authorizing.resolve();
+        await proceed.promise;
+      };
+      const authorizingInput = yield* viewer
+        .input(input)
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      yield* Effect.promise(() => authorizing.promise);
+      yield* Queue.clear(viewer.output);
+      const releaseDuringAuthorization = yield* viewer
+        .input({ type: "releaseControl" })
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      expect(yield* Queue.take(viewer.output)).toMatchObject({
+        _tag: "control",
+        controller: "agent",
+      });
+      const retakeDuringAuthorization = yield* viewer
+        .input({ type: "takeControl" })
+        .pipe(Effect.forkScoped({ startImmediately: true }));
+      expect(yield* Queue.take(viewer.output)).toMatchObject({
+        _tag: "control",
+        controller: "you",
+      });
+      proceed.resolve();
+      yield* Effect.forEach(
+        [authorizingInput, releaseDuringAuthorization, retakeDuringAuthorization],
+        Fiber.join,
+      );
+      expect(session.send.mock.calls.filter(([method]) => method.startsWith("Input."))).toEqual([]);
+      yield* viewer.input(input);
+      expect(session.send).toHaveBeenCalledWith(
+        "Input.dispatchMouseEvent",
+        expect.objectContaining({ x: 7 }),
+      );
     }),
   ).pipe(Effect.provide(layer)),
 );
@@ -2919,6 +3289,128 @@ it.live("a click on a native select offers its options to the viewer and takes i
   ).pipe(Effect.provide(layer)),
 );
 
+it.live("a viewer's input looks like a person's, and only clipboard-write is granted", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { viewer, click, evaluate } = yield* realSelectPage(
+        `<input id="field" style="position: absolute; left: 40px; top: 20px; width: 200px">
+        <script>
+          window.seen = [];
+          for (const type of ["keydown", "keyup"])
+            addEventListener(type, (event) => seen.push(type + ":" + event.keyCode));
+          addEventListener("pointerdown", (event) => seen.push("pressure:" + event.pressure));
+        </script>`,
+      );
+      yield* click(140, 30);
+      yield* viewer.input({ type: "key", action: "down", key: "b", code: "KeyB", text: "b" });
+      yield* viewer.input({ type: "key", action: "up", key: "b", code: "KeyB" });
+      // A key still held when the viewer lets go is released with its own code too.
+      yield* viewer.input({ type: "key", action: "down", key: "c", code: "KeyC", text: "c" });
+      yield* viewer.input({ type: "releaseControl" });
+      expect(yield* evaluate("seen")).toEqual([
+        "pressure:0.5",
+        "keydown:66",
+        "keyup:66",
+        "keydown:67",
+        "keyup:67",
+      ]);
+      expect(
+        yield* evaluate(
+          `Promise.all(["notifications", "geolocation", "clipboard-write"].map((name) => navigator.permissions.query({ name }).then((state) => state.state)))`,
+        ),
+        "other permissions stay at their default",
+      ).toEqual(["prompt", "prompt", "granted"]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("clipboard-write stays granted in a tab after another tab of its profile closes", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      realContextOverride = yield* Effect.promise(() => chromiumBrowser.newContext());
+      const broker = yield* Broker.PreviewAutomationBroker;
+      const open = () =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false, profileId: "default" },
+        });
+      const first = PreviewTabId.make((yield* open()).tabId!);
+      const second = PreviewTabId.make((yield* open()).tabId!);
+      yield* broker.invoke({ scope, operation: "close", input: {}, tabId: first });
+      expect(
+        yield* broker.invoke({
+          scope,
+          operation: "evaluate",
+          input: {
+            expression:
+              "navigator.permissions.query({ name: 'clipboard-write' }).then((s) => s.state)",
+          },
+          tabId: second,
+        }),
+      ).toMatchObject({ value: "granted" });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live(
+  "a failed clipboard-write grant is retried, and tabs opening together share one grant",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const chromiumBrowser = yield* Effect.acquireRelease(
+          Effect.promise(() => chromium.launch({ headless: true })),
+          (launched) => Effect.promise(() => launched.close()),
+        );
+        const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+        realContextOverride = context;
+        const realSession = chromiumBrowser.newBrowserCDPSession.bind(chromiumBrowser);
+        let sessions = 0;
+        let grants = 0;
+        chromiumBrowser.newBrowserCDPSession = async () => {
+          sessions++;
+          if (sessions === 1) throw new Error("no browser session");
+          const session = await realSession();
+          const send = session.send.bind(session) as (...args: unknown[]) => Promise<unknown>;
+          Object.assign(session, {
+            send: (method: string, ...rest: unknown[]) => {
+              if (method === "Browser.setPermission") grants++;
+              return send(method, ...rest);
+            },
+          });
+          return session;
+        };
+        const broker = yield* Broker.PreviewAutomationBroker;
+        const open = () =>
+          broker.invoke<PreviewAutomationStatus>({
+            scope,
+            operation: "open",
+            input: { reuseExistingTab: false, show: false, profileId: "default" },
+          });
+        const state = (tabId: PreviewTabId) =>
+          broker.invoke({
+            scope,
+            operation: "evaluate",
+            input: {
+              expression:
+                "navigator.permissions.query({ name: 'clipboard-write' }).then((s) => s.state)",
+            },
+            tabId,
+          });
+        expect(yield* Effect.exit(open())).toMatchObject({ _tag: "Failure" });
+        const [first, second] = yield* Effect.all([open(), open()], { concurrency: 2 });
+        expect(sessions).toBe(2);
+        expect(grants, "tabs opening together share one grant").toBe(1);
+        expect(yield* state(PreviewTabId.make(first.tabId!))).toMatchObject({ value: "granted" });
+        expect(yield* state(PreviewTabId.make(second.tabId!))).toMatchObject({ value: "granted" });
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
 it.live("a relayed select press reaches page handlers, and a page can keep its own press", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -3135,6 +3627,1266 @@ it.live("navigating away or releasing control withdraws an offered select menu",
       expect(yield* output("selectMenuClosed"), "releasing control withdraws its offer").toEqual([
         { _tag: "selectMenuClosed", id: held!.id },
       ]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live(
+  "an anti-bot check holds its site until a human passes it, and a navigation never clears it",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const chromiumBrowser = yield* Effect.acquireRelease(
+          Effect.promise(() => chromium.launch({ headless: true })),
+          (launched) => Effect.promise(() => launched.close()),
+        );
+        const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+        const requests: Array<string> = [];
+        let challenged = true;
+        yield* Effect.promise(() =>
+          context.route("https://*.shop.test/**", (route) => {
+            requests.push(route.request().url());
+            return route.fulfill(
+              challenged
+                ? {
+                    status: 403,
+                    contentType: "text/html",
+                    body: `<title>shop.test</title><script>var dd={'rt':'c','cid':'x','t':'fe'}</script>
+                    <iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+                  }
+                : {
+                    status: 200,
+                    contentType: "text/html",
+                    body: "<title>Results</title><p>ok</p>",
+                  },
+            );
+          }),
+        );
+        realContextOverride = context;
+        const { browser, broker, tabId } = yield* ready;
+        const manager = yield* Manager.PreviewManager;
+        const invoke = (operation: string, input: unknown) =>
+          broker.invoke<PreviewAutomationStatus>({
+            scope,
+            operation: operation as never,
+            input,
+            tabId,
+          });
+
+        const met = yield* Effect.flip(
+          invoke("navigate", { url: "https://www.shop.test/search?q=cat+food" }),
+        );
+        expect(met, "the triggering call reports the check").toMatchObject({
+          _tag: "PreviewAutomationControlInterruptedError",
+          reason: "antiBotChallenge",
+        });
+        expect(met.message).toContain("Do not retry");
+        const [session] = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
+        expect(session?.siteHold).toMatchObject({ site: "shop.test", vendor: "datadome" });
+        expect(session?.revealRequest?.force, "the tab is shown to the user").toBe(true);
+        expect((yield* invoke("status", {})).siteHold?.kind).toBe("challenge");
+
+        const sent = requests.length;
+        for (const [operation, input] of [
+          ["navigate", { url: "https://api.shop.test/other" }],
+          ["scroll", { direction: "down" }],
+          ["evaluate", { expression: "1" }],
+        ] as const)
+          expect(yield* Effect.flip(invoke(operation, input))).toMatchObject({
+            reason: "antiBotChallenge",
+          });
+        expect(
+          yield* Effect.flip(invoke("close", {})),
+          "the agent cannot end the hold by closing its tab",
+        ).toMatchObject({ reason: "antiBotChallenge" });
+        expect(
+          yield* Effect.flip(
+            broker.invoke<PreviewAutomationStatus>({
+              scope,
+              operation: "open",
+              input: { url: "https://shop.test/", reuseExistingTab: false, show: false },
+            }),
+          ),
+          "a fresh isolated tab cannot retry the held site",
+        ).toMatchObject({ reason: "antiBotChallenge" });
+        expect(requests.length, "a held site gets no request").toBe(sent);
+
+        // A persistent-profile tab, so closing it leaves the shared test context open.
+        const spare = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false, profileId: "default" },
+        });
+        const events = yield* manager.subscribeEvents;
+        yield* settleThread(scope.thread.threadId);
+        let closedEvent = yield* PubSub.take(events);
+        while (closedEvent.type !== "closed") closedEvent = yield* PubSub.take(events);
+        expect(closedEvent.tabId, "settlement closes the spare tab").toBe(spare.tabId);
+        expect(
+          (yield* manager.list({ threadId: scope.thread.threadId })).sessions.map(
+            (each) => each.tabId,
+          ),
+          "and keeps the tab that holds its site for the person",
+        ).toContain(tabId);
+
+        yield* Effect.promise(() =>
+          context.route("https://elsewhere.test/**", (route) =>
+            route.fulfill({
+              status: 200,
+              contentType: "text/html",
+              body: "<title>Elsewhere</title>",
+            }),
+          ),
+        );
+        const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+        const page = context.pages()[0]!;
+        yield* viewer.input({ type: "takeControl" });
+        yield* Effect.promise(() => page.goto("https://elsewhere.test/"));
+        yield* viewer.input({ type: "releaseControl" });
+        expect(
+          (yield* manager.list({ threadId: scope.thread.threadId })).sessions[0]?.siteHold,
+          "a release on another site proves nothing about the held one",
+        ).toBeDefined();
+        yield* viewer.input({ type: "takeControl" });
+        challenged = false;
+        yield* Effect.promise(() => page.goto("https://www.shop.test/search?q=cat+food"));
+        expect(
+          (yield* invoke("status", {})).siteHold,
+          "a clean navigation alone does not clear the hold",
+        ).toBeDefined();
+        yield* viewer.input({ type: "releaseControl" });
+        // The banner goes once the release verified the clean page.
+        let update = yield* PubSub.take(events);
+        while (update.type !== "navigated" || update.snapshot.siteHold !== undefined)
+          update = yield* PubSub.take(events);
+        expect((yield* invoke("status", {})).siteHold).toBeUndefined();
+        yield* invoke("navigate", { url: "https://api.shop.test/other" });
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
+it.live("a release trusts only a committed document, whatever its fragment", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      let answer: "challenge" | "noContent" | "clean" = "challenge";
+      yield* Effect.promise(() =>
+        context.route("https://shop.test/**", (route) =>
+          route.fulfill(
+            answer === "challenge"
+              ? {
+                  status: 403,
+                  contentType: "text/html",
+                  body: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+                }
+              : answer === "noContent"
+                ? { status: 204 }
+                : { status: 200, contentType: "text/html", body: "<p>ok</p>" },
+          ),
+        ),
+      );
+      realContextOverride = context;
+      const { browser, broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const held = () =>
+        manager
+          .list({ threadId: scope.thread.threadId })
+          .pipe(Effect.map(({ sessions }) => sessions[0]?.siteHold));
+      yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "https://shop.test/a" },
+          tabId,
+        }),
+      );
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      const page = context.pages()[0]!;
+      yield* viewer.input({ type: "takeControl" });
+      // A 204 commits nothing, and a history change is no new document: the check stays on screen.
+      answer = "noContent";
+      yield* Effect.promise(() => page.goto("https://shop.test/a").catch(() => undefined));
+      yield* Effect.promise(() => page.evaluate(`history.pushState(null, "", "/a")`));
+      yield* viewer.input({ type: "releaseControl" });
+      expect(yield* held(), "the check is still on screen").toBeDefined();
+      yield* viewer.input({ type: "takeControl" });
+      answer = "clean";
+      yield* Effect.promise(() => page.goto("https://shop.test/clean#results"));
+      // A release answers once it verified or kept its hold.
+      yield* viewer.input({ type: "releaseControl" });
+      expect(yield* held()).toBeUndefined();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+/** Two profile tabs on one public site; `/api` answers only when the test lets it. */
+const queuedSiteActions = (apiAnswer: "challenge" | "ok") =>
+  Effect.gen(function* () {
+    const chromiumBrowser = yield* Effect.acquireRelease(
+      Effect.promise(() => chromium.launch({ headless: true })),
+      (launched) => Effect.promise(() => launched.close()),
+    );
+    const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+    const apiHit = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<void>();
+    yield* Effect.promise(() =>
+      context.route("https://shop.example.com/**", async (route) => {
+        if (!route.request().url().endsWith("/api"))
+          return route.fulfill({
+            status: 200,
+            contentType: "text/html",
+            body: '<div style="height:4000px">shop</div>',
+          });
+        apiHit.resolve();
+        await answer.promise;
+        return route.fulfill(
+          apiAnswer === "challenge"
+            ? {
+                status: 403,
+                headers: { "x-datadome": "protected" },
+                contentType: "text/html",
+                body: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+              }
+            : { status: 200, contentType: "application/json", body: "{}" },
+        );
+      }),
+    );
+    realContextOverride = context;
+    const browser = yield* ServerBrowser.ServerBrowser;
+    const broker = yield* Broker.PreviewAutomationBroker;
+    const open = () =>
+      broker.invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "open",
+        input: {
+          url: "https://shop.example.com/",
+          reuseExistingTab: false,
+          show: false,
+          profileId: "default",
+        },
+      });
+    const first = PreviewTabId.make((yield* open()).tabId!);
+    const second = PreviewTabId.make((yield* open()).tabId!);
+    // The first tab's action holds the site until `/api` answers.
+    const running = yield* broker
+      .invoke<unknown>({
+        scope,
+        operation: "evaluate",
+        input: { expression: "fetch('/api').then((response) => response.status)" },
+        tabId: first,
+      })
+      .pipe(Effect.exit, Effect.forkScoped);
+    yield* Effect.promise(() => apiHit.promise);
+    const queued = yield* broker
+      .invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "scroll",
+        input: { deltaY: 300 },
+        tabId: second,
+      })
+      .pipe(Effect.flip, Effect.forkScoped);
+    const scrolled = () =>
+      Effect.promise(() => context.pages()[1]!.evaluate("scrollY") as Promise<number>);
+    return { browser, second, running, queued, answer, scrolled };
+  });
+
+it.live("a person who takes a fresh tab during its open keeps it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      const requested = Promise.withResolvers<void>();
+      const answer = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => answer.resolve()));
+      yield* Effect.promise(() =>
+        context.route("https://shop.example.com/**", async (route) => {
+          requested.resolve();
+          await answer.promise;
+          return route.fulfill({ status: 200, contentType: "text/html", body: "<p>ok</p>" });
+        }),
+      );
+      realContextOverride = context;
+      const browser = yield* ServerBrowser.ServerBrowser;
+      const broker = yield* Broker.PreviewAutomationBroker;
+      const manager = yield* Manager.PreviewManager;
+      const opening = yield* broker
+        .invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: {
+            url: "https://shop.example.com/",
+            reuseExistingTab: false,
+            show: false,
+            profileId: "default",
+          },
+        })
+        .pipe(Effect.exit, Effect.forkScoped);
+      // The tab exists and its page is loading while the open holds the site's turn.
+      yield* Effect.promise(() => requested.promise);
+      const [session] = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
+      const viewer = yield* browser.attachViewer(viewerInput(session!.tabId, true));
+      yield* viewer.input({ type: "takeControl" });
+      answer.resolve();
+      yield* Fiber.join(opening);
+      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+      expect(
+        sessions.map((each) => each.tabId),
+        "the person's tab stays",
+      ).toContain(session!.tabId);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a fresh public open that meets a challenge keeps its tab and hold for the person", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      // A Cloudflare challenge whose body never finishes, under a public name.
+      const server = NodeHttp.createServer((_, response) => {
+        response.writeHead(403, { "content-type": "text/html", "cf-mitigated": "challenge" });
+        response.write("<title>Just a moment...</title>");
+      });
+      yield* Effect.acquireRelease(
+        Effect.promise(() => new Promise<void>((done) => server.listen(0, "127.0.0.1", done))),
+        () =>
+          Effect.sync(() => {
+            server.closeAllConnections();
+            server.close();
+          }),
+      );
+      const port = (server.address() as { port: number }).port;
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          chromium.launch({
+            headless: true,
+            args: [`--host-resolver-rules=MAP shop.example.com 127.0.0.1:${port}`],
+          }),
+        ),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      realContextOverride = yield* Effect.promise(() => chromiumBrowser.newContext());
+      const broker = yield* Broker.PreviewAutomationBroker;
+      const manager = yield* Manager.PreviewManager;
+      yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: {
+            url: "http://shop.example.com/",
+            reuseExistingTab: false,
+            show: false,
+            profileId: "default",
+            timeoutMs: 3_000,
+          },
+        }),
+      );
+      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+      expect(
+        sessions.map((each) => each.siteHold?.site),
+        "the tab stays, holding the site",
+      ).toEqual(["example.com"]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a check another tab meets stops a same-site action queued behind it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { queued, answer, scrolled } = yield* queuedSiteActions("challenge");
+      answer.resolve();
+      expect(yield* Fiber.join(queued)).toMatchObject({ reason: "antiBotChallenge" });
+      expect(yield* scrolled(), "the queued scroll never reached the page").toBe(0);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a person taking the tab stops an action queued for its site", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, second, running, queued, answer, scrolled } = yield* queuedSiteActions("ok");
+      const viewer = yield* browser.attachViewer(viewerInput(second, true));
+      yield* viewer.input({ type: "takeControl" });
+      answer.resolve();
+      yield* Fiber.join(running);
+      expect(yield* Fiber.join(queued)).toMatchObject({ reason: "humanControl" });
+      expect(yield* scrolled(), "the queued scroll never reached the page").toBe(0);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a check that a same-site API call answers holds the site without a navigation", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      yield* Effect.promise(() =>
+        context.route("https://shop.test/**", (route) =>
+          route.request().url().endsWith("/api/search")
+            ? route.fulfill({
+                status: 403,
+                contentType: "application/json",
+                headers: { "x-dd-b": "1" },
+                body: JSON.stringify({
+                  url: "https://geo.captcha-delivery.com/captcha/?initialCid=x",
+                }),
+              })
+            : route.fulfill({
+                status: 200,
+                contentType: "text/html",
+                body: "<title>Shop</title><button onclick=\"fetch('/api/search')\">Search</button>",
+              }),
+        ),
+      );
+      realContextOverride = context;
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const invoke = (operation: string, input: unknown) =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: operation as never,
+          input,
+          tabId,
+        });
+      yield* invoke("navigate", { url: "https://shop.test/" });
+      const events = yield* manager.subscribeEvents;
+      yield* Effect.ignore(invoke("click", { locator: "button" }));
+      let update = yield* PubSub.take(events);
+      while (update.type !== "navigated" || update.snapshot.siteHold === undefined)
+        update = yield* PubSub.take(events);
+      expect(update.snapshot.siteHold).toMatchObject({ site: "shop.test", vendor: "datadome" });
+      expect(yield* Effect.flip(invoke("evaluate", { expression: "1" }))).toMatchObject({
+        reason: "antiBotChallenge",
+      });
+      const viewer = yield* (yield* ServerBrowser.ServerBrowser).attachViewer(
+        viewerInput(tabId, true),
+      );
+      yield* viewer.input({ type: "takeControl" });
+      yield* viewer.input({ type: "releaseControl" });
+      expect(
+        (yield* invoke("status", {})).siteHold,
+        "releasing on the page that loaded before the check keeps the hold",
+      ).toBeDefined();
+      // A newer page that meets the check again keeps the hold too.
+      const page = context.pages()[0]!;
+      yield* viewer.input({ type: "takeControl" });
+      yield* Effect.promise(() => page.reload());
+      yield* Effect.promise(() =>
+        Promise.all([page.waitForResponse(/\/api\/search$/), page.click("button")]),
+      );
+      yield* viewer.input({ type: "releaseControl" });
+      expect(
+        (yield* invoke("status", {})).siteHold,
+        "the check met again after the reload keeps the hold",
+      ).toBeDefined();
+      yield* viewer.input({ type: "takeControl" });
+      yield* Effect.promise(() => page.reload());
+      yield* viewer.input({ type: "releaseControl" });
+      expect((yield* invoke("status", {})).siteHold, "a clean reload clears it").toBeUndefined();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live.each([
+  {
+    name: "a check another tab of the profile meets again",
+    secondBody: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+  },
+] as const)("$name keeps the hold", ({ secondBody }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      let challenged = false;
+      let secondAnswer: string | undefined;
+      yield* Effect.promise(() =>
+        context.route("https://shop.test/**", (route) =>
+          route.fulfill(
+            secondAnswer !== undefined
+              ? { status: 403, contentType: "text/html", body: secondAnswer }
+              : challenged
+                ? {
+                    status: 403,
+                    contentType: "text/html",
+                    body: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+                  }
+                : { status: 200, contentType: "text/html", body: "<p>ok</p>" },
+          ),
+        ),
+      );
+      realContextOverride = context;
+      const browser = yield* ServerBrowser.ServerBrowser;
+      const broker = yield* Broker.PreviewAutomationBroker;
+      const open = () =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: {
+            url: "https://shop.test/",
+            reuseExistingTab: false,
+            show: false,
+            profileId: "default",
+          },
+        });
+      const first = PreviewTabId.make((yield* open()).tabId!);
+      yield* open();
+      const [firstPage, secondPage] = context.pages();
+      challenged = true;
+      yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "https://shop.test/a" },
+          tabId: first,
+        }),
+      );
+      const viewer = yield* browser.attachViewer(viewerInput(first, true));
+      yield* viewer.input({ type: "takeControl" });
+      challenged = false;
+      yield* Effect.promise(() => firstPage!.goto("https://shop.test/clean"));
+      // The person's other tab meets the check again after that clean load.
+      secondAnswer = secondBody;
+      yield* Effect.promise(() => secondPage!.reload());
+      yield* viewer.input({ type: "releaseControl" });
+      const status = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "status",
+        input: {},
+        tabId: first,
+      });
+      expect(status.siteHold, "the site still shows its check in the profile").toBeDefined();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a challenge its header decides holds the site while its body never finishes", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = NodeHttp.createServer((_, response) => {
+        response.writeHead(403, { "content-type": "text/html", "cf-mitigated": "challenge" });
+        response.write("<title>Just a moment...</title>");
+      });
+      yield* Effect.acquireRelease(
+        Effect.promise(() => new Promise<void>((done) => server.listen(0, "127.0.0.1", done))),
+        () =>
+          Effect.sync(() => {
+            server.closeAllConnections();
+            server.close();
+          }),
+      );
+      const port = (server.address() as { port: number }).port;
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          chromium.launch({
+            headless: true,
+            args: [`--host-resolver-rules=MAP shop.test 127.0.0.1:${port}`],
+          }),
+        ),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      realContextOverride = yield* Effect.promise(() => chromiumBrowser.newContext());
+      const { broker, tabId } = yield* ready;
+      const met = yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "http://shop.test/", readiness: "domContentLoaded", timeoutMs: 8_000 },
+          tabId,
+        }),
+      );
+      expect(met).toMatchObject({ reason: "antiBotChallenge" });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a challenge whose body arrives late still holds the site", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = NodeHttp.createServer((_, response) => {
+        response.writeHead(403, { "content-type": "text/html" });
+        response.write("<html>");
+        // @effect-diagnostics-next-line globalTimers:off -- The fixture server sends its body late.
+        const late = setTimeout(
+          () =>
+            response.end(
+              `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+            ),
+          6_000,
+        );
+        response.on("close", () => clearTimeout(late));
+      });
+      yield* Effect.acquireRelease(
+        Effect.promise(() => new Promise<void>((done) => server.listen(0, "127.0.0.1", done))),
+        () =>
+          Effect.sync(() => {
+            server.closeAllConnections();
+            server.close();
+          }),
+      );
+      const port = (server.address() as { port: number }).port;
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          chromium.launch({
+            headless: true,
+            args: [`--host-resolver-rules=MAP shop.test 127.0.0.1:${port}`],
+          }),
+        ),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      realContextOverride = yield* Effect.promise(() => chromiumBrowser.newContext());
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const events = yield* manager.subscribeEvents;
+      // The request ends before the body does; it does not report the page as clean.
+      yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "http://shop.test/", readiness: "domContentLoaded", timeoutMs: 3_000 },
+          tabId,
+        }),
+      );
+      const held = () =>
+        manager
+          .list({ threadId: scope.thread.threadId })
+          .pipe(Effect.map(({ sessions }) => sessions[0]?.siteHold));
+      while ((yield* held()) === undefined) yield* PubSub.take(events);
+      expect(yield* held()).toMatchObject({ site: "shop.test", vendor: "datadome" });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("releasing one site keeps the banner of another site the tab still holds", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      let shopChallenged = true;
+      const challenge = {
+        status: 403,
+        contentType: "text/html",
+        body: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+      };
+      yield* Effect.promise(() =>
+        context.route("https://*/**", (route) => {
+          const url = route.request().url();
+          if (url.startsWith("https://other.test/") || shopChallenged)
+            return route.fulfill(challenge);
+          return route.fulfill({ status: 200, contentType: "text/html", body: "<p>ok</p>" });
+        }),
+      );
+      realContextOverride = context;
+      const { browser, broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "https://shop.test/" },
+          tabId,
+        }),
+      );
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      const page = context.pages()[0]!;
+      yield* viewer.input({ type: "takeControl" });
+      yield* Effect.promise(() => page.goto("https://other.test/"));
+      shopChallenged = false;
+      yield* Effect.promise(() => page.goto("https://shop.test/"));
+      const events = yield* manager.subscribeEvents;
+      yield* viewer.input({ type: "releaseControl" });
+      let update = yield* PubSub.take(events);
+      while (update.type !== "navigated" || update.snapshot.siteHold?.site !== "other.test")
+        update = yield* PubSub.take(events);
+      expect(update.snapshot.siteHold).toMatchObject({ site: "other.test" });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("clearing a hold on a page still showing its check clears it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      yield* Effect.promise(() =>
+        context.route("https://shop.test/**", (route) =>
+          route.fulfill({
+            status: 403,
+            contentType: "text/html",
+            headers: { "cf-mitigated": "challenge" },
+            body: "<title>Just a moment...</title>",
+          }),
+        ),
+      );
+      realContextOverride = context;
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "https://shop.test/" },
+          tabId,
+        }),
+      );
+      // A page stuck in a dialog cannot answer; the person's override needs nothing from it.
+      const page = context.pages()[0]!;
+      yield* Effect.promise(() =>
+        Promise.all([
+          page.waitForEvent("dialog"),
+          page.evaluate("setTimeout(() => alert('stuck'))"),
+        ]),
+      );
+      yield* manager.adjust({ threadId: scope.thread.threadId, tabId, clear: "siteHold" });
+      // The dialog is answered; the agent acts again.
+      yield* broker.invoke({ scope, operation: "dialog", input: { accept: true }, tabId });
+      expect(
+        yield* broker.invoke({ scope, operation: "evaluate", input: { expression: "1" }, tabId }),
+        "an omitted world stays the main world, even on a public page",
+      ).toEqual({ value: 1, evaluatedIn: "main" });
+      const [session] = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
+      expect(session?.siteHold).toBeUndefined();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+/** A main-document answer whose body the test finishes, so the server is still reading it. */
+const pendingDocument = (page: { mainFrame(): unknown }, url: string) => {
+  const body = Promise.withResolvers<string>();
+  return {
+    body,
+    response: {
+      url: () => url,
+      status: () => 403,
+      headers: () => ({ "content-type": "text/html" }),
+      text: () => body.promise,
+      request: () => ({
+        method: () => "GET",
+        url: () => url,
+        isNavigationRequest: () => true,
+        frame: () => page.mainFrame(),
+      }),
+    },
+  };
+};
+const DATADOME_CHECK = `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`;
+
+it.live("an open whose page never finishes loading reports the tab, not an expired request", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = NodeHttp.createServer((_, response) => {
+        response.writeHead(200, { "content-type": "text/html" });
+        response.write("<title>Slow</title><p>still loading");
+      });
+      yield* Effect.acquireRelease(
+        Effect.promise(() => new Promise<void>((done) => server.listen(0, "127.0.0.1", done))),
+        () =>
+          Effect.sync(() => {
+            server.closeAllConnections();
+            server.close();
+          }),
+      );
+      const port = (server.address() as { port: number }).port;
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          chromium.launch({
+            headless: true,
+            args: [`--host-resolver-rules=MAP shop.test 127.0.0.1:${port}`],
+          }),
+        ),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      realContextOverride = yield* Effect.promise(() => chromiumBrowser.newContext());
+      yield* ServerBrowser.ServerBrowser;
+      const broker = yield* Broker.PreviewAutomationBroker;
+      yield* Effect.yieldNow;
+      // `load` never fires, so the wait for it uses the whole budget; the open still happened.
+      const opened = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "open",
+        input: { url: "http://shop.test/", reuseExistingTab: false, show: false },
+        timeoutMs: 2_000,
+      });
+      expect(opened.tabId).toBeDefined();
+      expect(opened.url).toBe("http://shop.test/");
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("an action that finished stays a success while a check it started is still read", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const page = contexts[0]!.page;
+      const session = contexts[0]!.sessions[0]!;
+      const check = pendingDocument(page, "https://shop.test/next");
+      yield* Effect.addFinalizer(() => Effect.sync(() => check.body.resolve("")));
+      const realNow = performance.now.bind(performance);
+      const clock = vi.spyOn(performance, "now");
+      yield* Effect.addFinalizer(() => Effect.sync(() => clock.mockRestore()));
+      const send = session.send.getMockImplementation()!;
+      session.send.mockImplementation(async (method, input) => {
+        if (
+          method !== "Runtime.evaluate" ||
+          (input as { expression?: string }).expression !== "submit()"
+        )
+          return send(method, input);
+        // The submit starts a navigation whose answer is still being read when the request's
+        // time runs out.
+        page.emit("response", check.response);
+        clock.mockImplementation(() => realNow() + 60_000);
+        return { result: { value: "submitted" } };
+      });
+      expect(
+        yield* broker.invoke({
+          scope,
+          tabId,
+          operation: "evaluate",
+          input: { expression: "submit()" },
+        }),
+      ).toMatchObject({ value: "submitted" });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a page watch keeps reading after its setup request's deadline", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const source = new EventTarget();
+      const realm = NodeVM.createContext({ TextEncoder, source });
+      const events = new NodeEvents.EventEmitter();
+      let dispose: (() => void) | undefined;
+      const session = {
+        ...makeSession(undefined, { width: 1280, height: 720 }),
+        on: vi.fn((name: string, listener: () => void) => events.on(name, listener)),
+        off: vi.fn((name: string, listener: () => void) => events.off(name, listener)),
+        send: vi.fn(async (method: string, input?: unknown): Promise<Record<string, unknown>> => {
+          const params = input as Record<string, unknown>;
+          if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+          if (method === "Runtime.enable")
+            events.emit("Runtime.executionContextCreated", {
+              context: { id: 17, auxData: { isDefault: true, frameId: "main" } },
+            });
+          if (method === "Runtime.addBinding") {
+            const name = String(params.name);
+            realm[name] = (payload: string) =>
+              events.emit("Runtime.bindingCalled", { name, payload, executionContextId: 17 });
+          }
+          if (method === "Runtime.evaluate") {
+            dispose = NodeVM.runInContext(String(params.expression), realm) as () => void;
+            return { result: { type: "function", objectId: "cleanup-17" } };
+          }
+          if (method === "Runtime.callFunctionOn") dispose?.();
+          return {};
+        }),
+      };
+      vi.spyOn(contexts[0]!, "newCDPSession").mockResolvedValue(session);
+      const started = yield* broker.invoke<{ watchId: string; epoch: string }>({
+        scope,
+        tabId,
+        operation: "watchStart",
+        input: {
+          subscription: `(emit) => {
+            const listener = () => emit(2);
+            source.addEventListener('change', listener);
+            emit(1);
+            return () => source.removeEventListener('change', listener);
+          }`,
+        },
+      });
+      // The setup request's deadline passes; the watch outlives it.
+      const realNow = performance.now.bind(performance);
+      const clock = vi
+        .spyOn(performance, "now")
+        .mockImplementation(() => realNow() + 60 * 60 * 1000);
+      yield* Effect.addFinalizer(() => Effect.sync(() => clock.mockRestore()));
+      source.dispatchEvent(new Event("change"));
+      const read = yield* browser.readWatch!(
+        { ...started, threadId: scope.thread.threadId, after: 0, timeoutMs: 0 },
+        Effect.void,
+      );
+      expect(read.events.map((event) => event.value)).toEqual([1, 2]);
+    }).pipe(
+      Effect.provide(
+        layer.pipe(
+          Layer.provide(
+            Layer.mock(PeerAuthority.PeerAuthority)({
+              recheckInvocation: (invocation) => Effect.succeed(invocation),
+              acquirePreviewWatchAuthority: () => Effect.succeed(Effect.void),
+            }),
+          ),
+        ),
+      ),
+    ),
+  ),
+);
+
+it.effect("navigate sends nothing once its budget ran out during the last hold check", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const page = contexts[0]!.page;
+      const session = contexts[0]!.sessions[0]!;
+      // The busy-page probe runs right before the last hold check. That check still finds
+      // time left; every later read finds the budget spent.
+      const realNow = performance.now.bind(performance);
+      let readsSinceProbe = -1;
+      const clock = vi.spyOn(performance, "now").mockImplementation(() => {
+        if (readsSinceProbe < 0) return realNow();
+        readsSinceProbe++;
+        return realNow() + (readsSinceProbe > 1 ? 60 * 60 * 1000 : 0);
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(() => clock.mockRestore()));
+      const send = session.send.getMockImplementation()!;
+      session.send.mockImplementation(async (method, input) => {
+        if (method === "Runtime.evaluate" && (input as { expression?: string }).expression === "0")
+          readsSinceProbe = 0;
+        return send(method, input);
+      });
+      const sent = page.goto.mock.calls.length;
+      const expired = yield* broker
+        .invoke<PreviewAutomationStatus>({
+          scope,
+          tabId,
+          operation: "navigate",
+          input: { url: "https://shop.test/" },
+        })
+        .pipe(Effect.flip);
+      expect(expired).toMatchObject({ _tag: "PreviewAutomationTimeoutError" });
+      expect(page.goto, "a spent budget sends no navigation").toHaveBeenCalledTimes(sent);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("settlement keeps a tab whose check is still read after the action fence lapsed", () => {
+  // The site-hold clock is read from `Date.now` when the browser starts.
+  const clock = vi.spyOn(Date, "now");
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const spare = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "open",
+        input: { reuseExistingTab: false, show: false },
+      });
+      const check = pendingDocument(contexts[0]!.page, "https://shop.test/");
+      yield* Effect.addFinalizer(() => Effect.sync(() => check.body.resolve("")));
+      clock.mockReturnValue(1_000);
+      contexts[0]!.page.emit("response", check.response);
+      // The body is still unread after the 10 s fence that holds actions back.
+      clock.mockReturnValue(12_000);
+      const events = yield* manager.subscribeEvents;
+      yield* settleThread(scope.thread.threadId);
+      let closed = yield* PubSub.take(events);
+      while (closed.type !== "closed") closed = yield* PubSub.take(events);
+      expect(closed.tabId, "settlement closes the tab with nothing pending").toBe(spare.tabId);
+      const kept = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId,
+        operation: "status",
+        input: {},
+      });
+      expect(kept.tabId, "and keeps the tab whose verdict may still hold its site").toBe(tabId);
+    }),
+  ).pipe(Effect.provide(layer), Effect.ensuring(Effect.sync(() => clock.mockRestore())));
+});
+
+it.effect("a full server keeps an idle tab whose check is still being read", () => {
+  // The site-hold clock is read from `Date.now` when the browser starts.
+  const now = vi.spyOn(Date, "now");
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* Broker.PreviewAutomationBroker;
+      yield* ServerBrowser.ServerBrowser;
+      yield* Effect.yieldNow;
+      const open = (providerSessionId: string) =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope: asSession(providerSessionId),
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+      const opened: Array<string> = [];
+      const releases = yield* Queue.unbounded<string>();
+      for (let index = 0; index < 32; index++) {
+        now.mockReturnValue(index);
+        const { tabId } = yield* open(`agent-${Math.floor(index / 8)}`);
+        opened.push(tabId!);
+        contexts.at(-1)!.page.on("close", () => Queue.offerUnsafe(releases, tabId!));
+      }
+      // The longest idle tab met an answer whose body has not finished.
+      const check = pendingDocument(contexts[0]!.page, "https://shop.test/");
+      yield* Effect.addFinalizer(() => Effect.sync(() => check.body.resolve("")));
+      contexts[0]!.page.emit("response", check.response);
+      now.mockReturnValue(31 * 60 * 1000);
+      expect((yield* open("agent-new")).tabId).toBeDefined();
+      expect(yield* Queue.take(releases), "the next idle tab gives up its slot").toBe(opened[1]);
+    }),
+  ).pipe(Effect.provide(layer), Effect.ensuring(Effect.sync(() => now.mockRestore())));
+});
+
+it.effect("a check read before a person's clear still keeps the holds that cover it", () => {
+  const now = vi.spyOn(Date, "now");
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const events = yield* manager.subscribeEvents;
+      const heldOn = function* (tab: string) {
+        let update = yield* PubSub.take(events);
+        while (
+          update.type !== "navigated" ||
+          update.tabId !== tab ||
+          update.snapshot.siteHold === undefined
+        )
+          update = yield* PubSub.take(events);
+        return Date.parse(update.snapshot.siteHold.since);
+      };
+      const isolatedPage = contexts[0]!.page;
+      // The isolated tab meets the check and holds the site in its own cookie jar.
+      const first = pendingDocument(isolatedPage, "https://shop.test/a");
+      first.body.resolve(DATADOME_CHECK);
+      isolatedPage.emit("response", first.response);
+      yield* heldOn(tabId);
+      // The thread's profile tab meets it too: a second hold, in the profile.
+      const profileTab = PreviewTabId.make(
+        (yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false, profileId: "default" },
+        })).tabId!,
+      );
+      const profilePage = contexts[1]!.page;
+      const second = pendingDocument(profilePage, "https://shop.test/b");
+      second.body.resolve(DATADOME_CHECK);
+      profilePage.emit("response", second.response);
+      // Times below count from when that hold began.
+      const base = yield* heldOn(profileTab);
+      // The isolated tab meets the check again; its body is still being read when the person
+      // clears that tab's hold, which dismisses the answer for the isolated jar.
+      const late = pendingDocument(isolatedPage, "https://shop.test/c");
+      isolatedPage.emit("response", late.response);
+      yield* manager.adjust({ threadId: scope.thread.threadId, tabId, clear: "siteHold" });
+      // The person loads a clean page in the profile tab, then the late check is classified.
+      let shownAt = base + 60_000;
+      profilePage.commit("https://shop.test/clean");
+      profilePage.evaluate.mockImplementation((async (script: unknown) =>
+        String(script).includes("getEntriesByType")
+          ? { status: 200, startedAt: shownAt }
+          : {
+              url: profilePage.url(),
+              title: "test page",
+              loading: false,
+              visibleText: "",
+            }) as never);
+      now.mockReturnValue(base + 120_000);
+      late.body.resolve(DATADOME_CHECK);
+      const viewer = yield* browser.attachViewer(viewerInput(profileTab, true));
+      const status = () =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          tabId: profileTab,
+          operation: "status",
+          input: {},
+        });
+      yield* viewer.input({ type: "takeControl" });
+      yield* viewer.input({ type: "releaseControl" });
+      expect(
+        (yield* status()).siteHold,
+        "the clean page loaded before the check covered tabs met again",
+      ).toBeDefined();
+      shownAt = base + 180_000;
+      yield* viewer.input({ type: "takeControl" });
+      yield* viewer.input({ type: "releaseControl" });
+      expect((yield* status()).siteHold, "a newer clean page releases it").toBeUndefined();
+    }),
+  ).pipe(Effect.provide(layer), Effect.ensuring(Effect.sync(() => now.mockRestore())));
+});
+
+it.live(
+  "a page watch's later reads are not bound by the deadline of the request that started it",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const chromiumBrowser = yield* Effect.acquireRelease(
+          Effect.promise(() => chromium.launch({ headless: true })),
+          (launched) => Effect.promise(() => launched.close()),
+        );
+        const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+        yield* Effect.promise(() =>
+          context.route("https://shop.test/**", (route) =>
+            route.fulfill({ status: 200, contentType: "text/html", body: "<p>shop</p>" }),
+          ),
+        );
+        realContextOverride = context;
+        const { browser, broker, tabId } = yield* ready;
+        yield* broker.invoke({
+          scope,
+          tabId,
+          operation: "navigate",
+          input: { url: "https://shop.test/" },
+        });
+        const started = yield* broker.invoke<{ watchId: string; epoch: string }>({
+          scope,
+          tabId,
+          operation: "watchStart",
+          timeoutMs: 1_000,
+          input: {
+            subscription: "(emit) => { window.ping = () => emit('later'); return () => {}; }",
+          },
+        });
+        // Waited page-side, so the setup request's deadline passes without a test clock.
+        yield* Effect.promise(() =>
+          context.pages()[0]!.evaluate("new Promise((done) => setTimeout(done, 1_500)).then(ping)"),
+        );
+        const read = yield* browser.readWatch!(
+          { ...started, threadId: scope.thread.threadId, after: 0, timeoutMs: 5_000 },
+          Effect.void,
+        );
+        expect(read.events.map((event) => event.value)).toEqual(["later"]);
+      }).pipe(
+        Effect.provide(
+          layer.pipe(
+            Layer.provide(
+              Layer.mock(PeerAuthority.PeerAuthority)({
+                recheckInvocation: (invocation) => Effect.succeed(invocation),
+                acquirePreviewWatchAuthority: () => Effect.succeed(Effect.void),
+              }),
+            ),
+          ),
+        ),
+      ),
+    ),
+);
+
+it.live.each([
+  { name: "closes its unclaimed tab", answer: "clean", waitMs: 8_000, kept: false },
+  { name: "keeps a tab holding the site's check", answer: "check", waitMs: 8_000, kept: true },
+  // Refused after the classification fence lapsed, while the body still never finished.
+  {
+    name: "keeps a tab whose check is still being read",
+    answer: "unread",
+    waitMs: 12_000,
+    kept: true,
+  },
+] as const)("a fresh open refused before it starts $name", ({ answer, waitMs, kept }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const requested = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => release.resolve()));
+      // The page commits at once; its image holds the load, and so the open's turn, until released.
+      const server = NodeHttp.createServer(async (request, response) => {
+        if (request.url === "/slow") {
+          requested.resolve();
+          await release.promise;
+          return response.writeHead(404).end();
+        }
+        if (request.url !== "/") return response.writeHead(404).end();
+        const body = `<p>shop</p><img src="/slow">`;
+        if (answer === "clean") {
+          response.writeHead(200, { "content-type": "text/html" });
+          return response.end(body);
+        }
+        if (answer === "check") {
+          response.writeHead(403, { "content-type": "text/html", "cf-mitigated": "challenge" });
+          return response.end(`<title>Just a moment...</title>${body}`);
+        }
+        // A possible check whose body never finishes is never classified, and never loads.
+        response.writeHead(403, { "content-type": "text/html" });
+        response.write(body);
+      });
+      yield* Effect.acquireRelease(
+        Effect.promise(() => new Promise<void>((done) => server.listen(0, "127.0.0.1", done))),
+        () =>
+          Effect.sync(() => {
+            server.closeAllConnections();
+            server.close();
+          }),
+      );
+      const port = (server.address() as { port: number }).port;
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          chromium.launch({
+            headless: true,
+            args: [`--host-resolver-rules=MAP shop.example.com 127.0.0.1:${port}`],
+          }),
+        ),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      realContextOverride = context;
+      const broker = yield* Broker.PreviewAutomationBroker;
+      const manager = yield* Manager.PreviewManager;
+      // The server answers the open last, after its tab was kept or closed.
+      const answered = Promise.withResolvers<void>();
+      const respond = broker.respond;
+      const spy = vi.spyOn(broker, "respond").mockImplementation((input) => {
+        if (!input.ok && /retired|before it could start/.test(input.error?.message ?? ""))
+          answered.resolve();
+        return respond(input);
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+      const opening = yield* broker
+        .invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          timeoutMs: 6_000,
+          input: {
+            url: "http://shop.example.com/",
+            reuseExistingTab: false,
+            show: false,
+            profileId: "default",
+          },
+        })
+        .pipe(Effect.exit, Effect.forkScoped);
+      yield* Effect.promise(() => requested.promise);
+      const [session] = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
+      const tabId = PreviewTabId.make(session!.tabId);
+      // A wait on the same tab holds its queue past the open's deadline; the page reports
+      // when the wait first reads its text.
+      const page = context.pages()[0]!;
+      yield* Effect.promise(() =>
+        page.waitForURL("http://shop.example.com/", { waitUntil: "commit" }),
+      );
+      yield* Effect.promise(() =>
+        page.evaluate(
+          `Object.defineProperty(document, "body", { get: () => ((window.read = true), null) })`,
+        ),
+      );
+      const waiting = yield* broker
+        .invoke({
+          scope,
+          tabId,
+          operation: "waitFor",
+          timeoutMs: waitMs + 5_000,
+          input: { text: "never shown", timeoutMs: waitMs },
+        })
+        .pipe(Effect.exit, Effect.forkScoped);
+      yield* Effect.promise(() => page.waitForFunction("window.read === true"));
+      release.resolve();
+      yield* Fiber.join(waiting);
+      yield* Effect.promise(() => answered.promise);
+      expect(Exit.isFailure(yield* Fiber.join(opening))).toBe(true);
+      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+      expect(sessions.map((each) => each.tabId).includes(tabId)).toBe(kept);
     }),
   ).pipe(Effect.provide(layer)),
 );
@@ -3496,12 +5248,15 @@ it.effect("a desktop tab reports the size the desktop draws after a resize", () 
       const failReads = () => Promise.reject(new Error("Cannot find context with specified id"));
       desktopSizeAnswer = failReads;
       desktopRendersNext = true;
-      const opened = yield* broker.invoke<PreviewAutomationStatus>({
+      // Agent-opened tabs run in the server browser, so a human tab is the desktop one.
+      const opened = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
+      const tabId = PreviewTabId.make(opened.tabId);
+      yield* broker.invoke<PreviewAutomationStatus>({
         scope,
-        operation: "open",
-        input: { reuseExistingTab: false, show: false },
+        tabId,
+        operation: "status",
+        input: {},
       });
-      const tabId = PreviewTabId.make(opened.tabId!);
       const { context } = desktopConnections.at(-1)!;
       const cdp = context.sessions[0]!;
       const events = yield* manager.subscribeEvents;
@@ -3780,6 +5535,80 @@ it.effect("the tab the desktop shows is visible and picked for agents without a 
   ).pipe(Effect.provide(layer)),
 );
 
+it.live("an agent's tab runs in the server browser without waiting for the desktop", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const manager = yield* Manager.PreviewManager;
+      yield* ServerBrowser.ServerBrowser;
+      yield* Effect.yieldNow;
+      desktopRendersNext = true;
+      const entered = Promise.withResolvers<void>();
+      contextStarted = () => entered.resolve();
+      yield* manager.open({
+        threadId: scope.thread.threadId,
+        runtime: "server",
+        automationOwner: "agent-desktop",
+        reveal: false,
+      });
+      yield* Effect.promise(() => entered.promise);
+      expect(desktopConnections).toEqual([]);
+      // The desktop was never asked to attach, so its next tab is still pending.
+      expect(desktopRendersNext).toBe(true);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+it.effect("manager-opened agent tabs retain authorization and capacity admission", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const manager = yield* Manager.PreviewManager;
+      const browser = yield* ServerBrowser.ServerBrowser;
+      const closed = yield* Queue.unbounded<string | undefined>();
+      const realClose = manager.close;
+      const close = vi
+        .spyOn(manager, "close")
+        .mockImplementation((input) =>
+          realClose(input).pipe(Effect.tap(() => Queue.offer(closed, input.tabId))),
+        );
+      yield* Effect.addFinalizer(() => Effect.sync(() => close.mockRestore()));
+      const refused = yield* manager.open({
+        threadId: scope.thread.threadId,
+        runtime: "server",
+        automationOwner: "manager-agent",
+        authorize: async () => {
+          throw new Error("grant retired");
+        },
+      });
+      expect(yield* Queue.take(closed)).toBe(refused.tabId);
+      expect(contexts).toEqual([]);
+      const retained: Array<string> = [];
+      for (let index = 0; index < 8; index++) {
+        const snapshot = yield* manager.open({
+          threadId: scope.thread.threadId,
+          runtime: "server",
+          automationOwner: "manager-agent",
+        });
+        yield* browser.attachViewer(viewerInput(snapshot.tabId, false));
+        retained.push(snapshot.tabId);
+      }
+      const overflow = yield* manager.open({
+        threadId: scope.thread.threadId,
+        runtime: "server",
+        automationOwner: "manager-agent",
+      });
+      expect(yield* Queue.take(closed)).toBe(overflow.tabId);
+      expect(contexts).toHaveLength(8);
+      expect(
+        (yield* manager.list({ threadId: scope.thread.threadId })).sessions.map((tab) => tab.tabId),
+      ).toEqual(retained);
+      expect(
+        yield* browser.attachViewer(viewerInput(overflow.tabId, false)).pipe(Effect.flip),
+      ).toMatchObject({
+        _tag: "ServerBrowserTabNotFoundError",
+      });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "agents read a human's tab with no arguments and act on it only while nobody drives",
   () =>
@@ -3926,6 +5755,213 @@ it.effect("preview_open reports a hidden desktop tab it reveals as visible", () 
   ).pipe(Effect.provide(layer)),
 );
 
+it.live("settlement closes only the thread's unwatched agent tabs and permits reopening", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const open = (targetScope = scope) =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope: targetScope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+      const second = yield* open();
+      const watched = yield* open();
+      yield* browser.attachViewer(viewerInput(watched.tabId!, false));
+      const controlled = yield* open();
+      const controller = yield* browser.attachViewer(viewerInput(controlled.tabId!, true));
+      yield* controller.input({ type: "takeControl" });
+      const human = yield* manager.open({ threadId: testThread.threadId, runtime: "server" });
+      yield* broker.invoke({ scope, tabId: human.tabId, operation: "status", input: {} });
+      const otherScope = {
+        ...scope,
+        thread: { ...testThread, threadId: ThreadId.make("other-thread") },
+      };
+      const other = yield* open(otherScope);
+      const events = yield* manager.subscribeEvents;
+      yield* settleThread(testThread.threadId);
+      const closed = new Set<string>();
+      while (closed.size < 2) {
+        const event = yield* PubSub.take(events);
+        if (event.type === "closed") closed.add(event.tabId);
+      }
+      expect(closed).toEqual(new Set([tabId, second.tabId]));
+      expect(contexts[0]!.page.close).toHaveBeenCalled();
+      expect(contexts[1]!.page.close).toHaveBeenCalled();
+      const status = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId: watched.tabId!,
+        operation: "status",
+        input: {},
+      });
+      expect(status.tabs?.map((tab) => tab.tabId).toSorted()).toEqual(
+        [watched.tabId, controlled.tabId, human.tabId].toSorted(),
+      );
+      expect(
+        (yield* manager.list({ threadId: otherScope.thread.threadId })).sessions.map(
+          (tab) => tab.tabId,
+        ),
+      ).toEqual([other.tabId]);
+      const reopened = yield* open();
+      expect(reopened.tabId).not.toBe(tabId);
+      expect(
+        yield* broker.invoke({
+          scope,
+          tabId: reopened.tabId!,
+          operation: "evaluate",
+          input: { expression: "1" },
+        }),
+      ).toMatchObject({ value: "evaluated" });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live(
+  "settlement also disposes agent tabs that were still opening, then allows a fresh open",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, tabId } = yield* ready;
+        const manager = yield* Manager.PreviewManager;
+        const events = yield* manager.subscribeEvents;
+        contextGate = Promise.withResolvers<void>();
+        const entered = Promise.withResolvers<void>();
+        contextStarted = () => entered.resolve();
+        const open = broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+        const opening = yield* open.pipe(Effect.exit, Effect.forkScoped);
+        let event = yield* PubSub.take(events);
+        while (event.type !== "opened") event = yield* PubSub.take(events);
+        const pendingId = event.tabId;
+        yield* Effect.promise(() => entered.promise);
+        yield* settleThread(testThread.threadId);
+        event = yield* PubSub.take(events);
+        while (event.type !== "closed" || event.tabId !== tabId) event = yield* PubSub.take(events);
+        contextGate.resolve();
+        contextGate = null;
+        expect((yield* Fiber.join(opening))._tag).toBe("Failure");
+        event = yield* PubSub.take(events);
+        while (event.type !== "closed" || event.tabId !== pendingId)
+          event = yield* PubSub.take(events);
+        expect(contexts[1]!.page.close).toHaveBeenCalled();
+        expect((yield* manager.list({ threadId: testThread.threadId })).sessions).toEqual([]);
+        expect((yield* open).available).toBe(true);
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
+it.live("an agent's tab stays human-controlled across viewer disconnects and passive reads", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const viewerScope = yield* Scope.make();
+      const viewer = yield* browser
+        .attachViewer(viewerInput(tabId, true))
+        .pipe(Effect.provideService(Scope.Scope, viewerScope));
+      yield* viewer.input({ type: "takeControl" });
+      const status = () =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          tabId,
+          operation: "status",
+          input: {},
+        });
+      expect((yield* status()).control?.owner).toBe("human");
+      yield* Scope.close(viewerScope, Exit.void);
+      expect((yield* status()).control?.owner).toBe("human");
+      const generation = (yield* status()).control?.generation;
+      yield* broker.invoke({ scope, tabId, operation: "snapshot", input: {} });
+      const refused = yield* broker
+        .invoke<void>({
+          scope,
+          tabId,
+          operation: "navigate",
+          input: { url: "https://example.com" },
+        })
+        .pipe(Effect.flip);
+      expect(refused).toMatchObject({ reason: "humanControl" });
+      expect((yield* status()).control).toMatchObject({ owner: "human", generation });
+      // Reopening the panel shows the human claim the agent is waiting on, so it can be released.
+      const reconnected = yield* browser.attachViewer(viewerInput(tabId, true));
+      expect((yield* status()).control).toMatchObject({ owner: "human", generation });
+      expect(yield* Queue.clear(reconnected.output)).toContainEqual(
+        expect.objectContaining({ _tag: "control", controller: "you", canOperate: true }),
+      );
+      yield* reconnected.input({ type: "text", text: "human input" });
+      yield* reconnected.input({ type: "releaseControl" });
+      expect((yield* status()).control?.owner).toBe("agent");
+      yield* broker.invoke({
+        scope,
+        tabId,
+        operation: "navigate",
+        input: { url: "https://example.com" },
+      });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a human claim moves to the human's other open panel when its panel closes", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const status = () =>
+        broker.invoke<PreviewAutomationStatus>({ scope, tabId, operation: "status", input: {} });
+      // A thread switch can open the next panel before the previous one detaches.
+      const watcher = yield* browser.attachViewer(viewerInput(tabId, false));
+      const firstScope = yield* Scope.make();
+      const first = yield* browser
+        .attachViewer(viewerInput(tabId, true))
+        .pipe(Effect.provideService(Scope.Scope, firstScope));
+      yield* first.input({ type: "takeControl" });
+      const second = yield* browser.attachViewer(viewerInput(tabId, true));
+      expect(
+        (yield* Queue.takeAll(second.output)).findLast((item) => item._tag === "control"),
+      ).toMatchObject({ controller: "another-viewer" });
+      yield* Queue.clear(watcher.output);
+      yield* Scope.close(firstScope, Exit.void);
+      expect((yield* status()).control?.owner).toBe("human");
+      expect(
+        (yield* Queue.takeAll(second.output)).findLast((item) => item._tag === "control"),
+      ).toMatchObject({ controller: "you" });
+      // A read-only viewer never holds the claim; it only sees another viewer drive.
+      expect(
+        (yield* Queue.takeAll(watcher.output)).findLast((item) => item._tag === "control"),
+      ).toMatchObject({ controller: "another-viewer", canOperate: false });
+      yield* second.input({ type: "releaseControl" });
+      expect((yield* status()).control?.owner).toBe("agent");
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("an agent can snapshot its own tab while a human drives without changing control", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      yield* viewer.input({ type: "takeControl" });
+      const before = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId,
+        operation: "status",
+        input: {},
+      });
+      yield* broker.invoke({ scope, tabId, operation: "snapshot", input: {} });
+      const after = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId,
+        operation: "status",
+        input: {},
+      });
+      expect(after.control).toEqual(before.control);
+      expect(after.control?.owner).toBe("human");
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.effect("a session's own tab stays its default while other sessions' tabs are listed", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -3947,6 +5983,92 @@ it.effect("a session's own tab stays its default while other sessions' tabs are 
           expect.objectContaining({ tabId: other.tabId, owner: "agent", ownedByCaller: false }),
         ]),
       );
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live(
+  "session research reuses the selected controller and cannot read another profile or a human-controlled tab",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const browser = yield* ServerBrowser.ServerBrowser;
+        const broker = yield* Broker.PreviewAutomationBroker;
+        yield* Effect.yieldNow;
+        const opened = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false, profileId: "default" },
+        });
+        const tabId = PreviewTabId.make(opened.tabId!);
+        const page = contexts[0]!.page;
+        page.goto.mockClear();
+        const read = (profileId = "default") =>
+          broker.invoke<object>({
+            scope,
+            tabId,
+            operation: "readPage",
+            input: { profileId, url: "https://account.example/reading" },
+          });
+        yield* read("incognito").pipe(Effect.flip);
+        expect(page.goto).not.toHaveBeenCalled();
+        expect(yield* read()).toMatchObject({
+          profileId: "default",
+          tabId,
+          finalUrl: "https://account.example/reading",
+          html: expect.stringContaining("Private reading fixture"),
+        });
+        expect(contextRequests).toEqual([{ profileId: "default", isolated: false }]);
+        expect(page.goto).toHaveBeenCalledTimes(1);
+        const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+        yield* viewer.input({ type: "takeControl" });
+        expect(yield* read().pipe(Effect.flip)).toMatchObject({ reason: "humanControl" });
+        expect(page.goto).toHaveBeenCalledTimes(1);
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
+it.live("session research discards HTML when a human takes control during extraction", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const browser = yield* ServerBrowser.ServerBrowser;
+      const broker = yield* Broker.PreviewAutomationBroker;
+      yield* Effect.yieldNow;
+      const opened = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "open",
+        input: { reuseExistingTab: false, show: false, profileId: "default" },
+      });
+      const tabId = PreviewTabId.make(opened.tabId!);
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      contexts[0]!.page.content.mockImplementationOnce(async () => {
+        entered.resolve();
+        await release.promise;
+        return "private content after takeover";
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(() => release.resolve()));
+      const reading = yield* broker
+        .invoke({
+          scope,
+          tabId,
+          operation: "readPage",
+          input: {
+            profileId: "default",
+            url: "https://account.example/reading",
+          },
+        })
+        .pipe(Effect.exit, Effect.forkScoped);
+      yield* Effect.promise(() => entered.promise);
+      const taking = yield* viewer.input({ type: "takeControl" }).pipe(Effect.forkScoped);
+      let control = yield* Queue.take(viewer.output);
+      while (control._tag !== "control" || control.controller !== "you")
+        control = yield* Queue.take(viewer.output);
+      release.resolve();
+      const exit = yield* Fiber.join(reading);
+      expect(exit._tag).toBe("Failure");
+      yield* Fiber.join(taking);
     }),
   ).pipe(Effect.provide(layer)),
 );
@@ -4288,15 +6410,18 @@ it.effect.each([
       yield* Effect.promise(() => sessionStarted.promise);
       const popup = makeContext();
       const resized = Promise.withResolvers<void>();
-      const setViewportSize = popup.page.setViewportSize;
-      popup.page.setViewportSize = vi.fn(async (size) => {
-        await setViewportSize(size);
-        if (size?.width === 900) resized.resolve();
-      });
       const newCDPSession = popup.newCDPSession;
       popup.newCDPSession = async (target) => {
         await launchGate.promise;
-        return newCDPSession(target);
+        const session = await newCDPSession(target);
+        const send = session.send;
+        session.send = vi.fn(async (method, input) => {
+          if (method === "Emulation.setVisibleSize" && (input as { width: number }).width === 900) {
+            resized.resolve();
+          }
+          return send(method, input);
+        });
+        return session;
       };
       contexts[0]!.page.emit("popup", popup.page);
       const last = yield* open().pipe(Effect.result, Effect.forkScoped);
@@ -4354,6 +6479,52 @@ it.effect.each([
       expect(status.tabs).toHaveLength(limit);
     }),
   ).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["desktop", "context", "cdp"] as const)(
+  "authorization refusal after acquiring $0 cleans up unpublished tab resources",
+  (stage) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const browser = yield* ServerBrowser.ServerBrowser;
+        const manager = yield* Manager.PreviewManager;
+        const refused = Promise.withResolvers<void>();
+        desktopRendersNext = stage === "desktop";
+        const snapshot = yield* manager.open({
+          threadId: scope.thread.threadId,
+          runtime: "server",
+          ...(stage === "desktop" ? {} : { profileId: "incognito" }),
+          authorize: async () => {
+            const acquired =
+              stage === "desktop"
+                ? desktopConnections.length > 0
+                : stage === "context"
+                  ? contexts.length > 0
+                  : (contexts.at(-1)?.sessions.length ?? 0) > 0;
+            if (acquired) {
+              refused.resolve();
+              throw new Error("setup grant revoked");
+            }
+          },
+        });
+        yield* Effect.promise(() => refused.promise);
+        expect(
+          yield* browser.attachViewer(viewerInput(snapshot.tabId, false)).pipe(Effect.result),
+        ).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "ServerBrowserLaunchError" },
+        });
+        if (stage === "desktop") {
+          expect(desktopConnections[0]!.browser.close).toHaveBeenCalledOnce();
+          expect(releasedDesktopTabs).toContain(snapshot.tabId);
+        } else {
+          const context = contexts.at(-1)!;
+          expect(context.close).toHaveBeenCalledOnce();
+          expect(context.page.isClosed()).toBe(true);
+          if (stage === "cdp") expect(context.sessions[0]!.detach).toHaveBeenCalledOnce();
+        }
+      }),
+    ).pipe(Effect.provide(layer)),
 );
 
 it.effect("failed session and browser launches release capacity, as does closing a tab", () =>
@@ -4425,18 +6596,23 @@ it.effect("a full server takes back the slot of the longest idle agent tab nobod
       yield* Effect.yieldNow;
       const now = vi.spyOn(Date, "now").mockReturnValue(0);
       yield* Effect.addFinalizer(() => Effect.sync(() => now.mockRestore()));
-      const open = (providerSessionId: string) => {
-        desktopRendersNext = true;
-        return broker.invoke<PreviewAutomationStatus>({
+      const open = (providerSessionId: string) =>
+        broker.invoke<PreviewAutomationStatus>({
           scope: asSession(providerSessionId),
           operation: "open",
-          input: { reuseExistingTab: false, open: false },
+          input: { reuseExistingTab: false, show: false },
         });
-      };
       const opened: Array<string> = [];
+      const closedTabs: Array<string> = [];
+      const releases = yield* Queue.unbounded<string>();
       for (let index = 0; index < 32; index++) {
         now.mockReturnValue(index);
-        opened.push((yield* open(`agent-${Math.floor(index / 8)}`)).tabId!);
+        const { tabId } = yield* open(`agent-${Math.floor(index / 8)}`);
+        opened.push(tabId!);
+        contexts.at(-1)!.page.on("close", () => {
+          closedTabs.push(tabId!);
+          Queue.offerUnsafe(releases, tabId!);
+        });
       }
 
       now.mockReturnValue(100);
@@ -4447,33 +6623,27 @@ it.effect("a full server takes back the slot of the longest idle agent tab nobod
         input: {},
       });
 
-      // Inside the idle window every desktop tab keeps its slot.
+      // Inside the idle window every server tab keeps its slot.
       now.mockReturnValue(29 * 60 * 1000);
       expect(yield* open("agent-new").pipe(Effect.flip)).toMatchObject({ reason: "tabLimit" });
-      expect(releasedDesktopTabs).toEqual([]);
+      expect(closedTabs).toEqual([]);
 
       now.mockReturnValue(31 * 60 * 1000);
       // A session at its own limit couldn't use a freed slot, so nothing closes for it.
       expect(yield* open("agent-3").pipe(Effect.flip)).toMatchObject({ reason: "tabLimit" });
-      expect(releasedDesktopTabs).toEqual([]);
+      expect(closedTabs).toEqual([]);
       // Tabs a desktop window shows keep their slots however long they sit idle.
       for (const tabId of opened) shownDesktopTabs.add(tabId);
       expect(yield* open("agent-new").pipe(Effect.flip)).toMatchObject({ reason: "tabLimit" });
-      expect(releasedDesktopTabs).toEqual([]);
+      expect(closedTabs).toEqual([]);
       shownDesktopTabs.clear();
       shownDesktopTabs.add(opened[1]!);
-      desktopConnections[2]!.context.page.beforeUnload = "listen";
+      contexts[2]!.page.beforeUnload = "listen";
       const events = yield* manager.subscribeEvents;
-      const releases = yield* Queue.unbounded<string>();
-      const recordRelease = (tabId: string) => Queue.offerUnsafe(releases, tabId);
-      desktopDetaches.on("release", recordRelease);
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => desktopDetaches.off("release", recordRelease)),
-      );
       const fresh = yield* open("agent-new");
       expect(fresh.tabId).toBeDefined();
       expect(yield* Queue.take(releases)).toBe(opened[2]);
-      expect(desktopConnections[2]!.context.page.unloadEvents).toEqual([
+      expect(contexts[2]!.page.unloadEvents).toEqual([
         "beforeunload",
         "pagehide",
         "visibilitychange",
@@ -4482,14 +6652,14 @@ it.effect("a full server takes back the slot of the longest idle agent tab nobod
         Stream.filter((event) => event.type === "closed" && event.tabId === opened[2]),
         Stream.runHead,
       );
-      expect(releasedDesktopTabs).toEqual([opened[2]]);
+      expect(closedTabs).toEqual([opened[2]]);
       const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
       expect(sessions.map((session) => session.tabId).toSorted()).toEqual(
         [...opened.filter((tabId) => tabId !== opened[2]), fresh.tabId!].toSorted(),
       );
 
       // A second open must reclaim a different tab while the first page is unloading.
-      const closingPage = desktopConnections[3]!.context.page;
+      const closingPage = contexts[3]!.page;
       closingPage.beforeUnload = "listen";
       closingPage.unloadGate = Promise.withResolvers<void>();
       const closeRequests = yield* Queue.unbounded<void>();
@@ -4502,7 +6672,6 @@ it.effect("a full server takes back the slot of the longest idle agent tab nobod
       yield* Effect.addFinalizer(() => Effect.sync(() => closeSpy.mockRestore()));
       const firstOpen = yield* open("agent-concurrent").pipe(Effect.forkScoped);
       yield* Queue.take(closeRequests);
-      yield* Effect.promise(() => closingPage.pagehideWatched.promise);
       const secondOpen = yield* open("agent-concurrent").pipe(Effect.forkScoped);
       yield* Queue.take(closeRequests);
       closingPage.unloadGate.resolve();
@@ -4622,19 +6791,28 @@ it.effect("reports why a page failed to load while the tab shows the error page"
   ).pipe(Effect.provide(layer)),
 );
 
-it.effect("preview_open rejects a desktop navigation that failed before automation attached", () =>
+it.live("preview_open rejects a server page whose navigation failed, without leaking the URL", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const { broker, tabId } = yield* ready;
       const manager = yield* Manager.PreviewManager;
-      const channel = yield* DesktopChannel.DesktopBrowserChannel;
-      desktopRendersNext = true;
-      desktopPageUrl = "chrome-error://chromewebdata/";
       const failure = {
         ...certificateError,
         url: "https://user:secret@device.local/?token=private#fragment",
       };
-      using _failure = vi.spyOn(channel, "loadFailure").mockReturnValue(failure);
+      initialNavigation = async () => {
+        const page = contexts.at(-1)!.page;
+        const request = {
+          url: () => failure.url,
+          method: () => "GET",
+          isNavigationRequest: () => true,
+          frame: () => page,
+          failure: () => ({ errorText: "net::ERR_CERT_AUTHORITY_INVALID" }),
+        };
+        page.emit("request", request);
+        page.emit("requestfailed", request);
+        page.url = () => "chrome-error://chromewebdata/";
+      };
       const error = yield* broker
         .invoke<PreviewAutomationStatus>({
           scope,
@@ -4649,6 +6827,159 @@ it.effect("preview_open rejects a desktop navigation that failed before automati
       expect(JSON.stringify(error)).not.toMatch(/secret|private|fragment/);
       const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
       expect(sessions.map((session) => session.tabId)).toEqual([tabId]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("opens mirrored profiles after a server restart with no desktop connected", () =>
+  Effect.gen(function* () {
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const browser = yield* ServerBrowser.ServerBrowser;
+        for (const profile of [
+          { id: "default", name: "Chrome account", kind: "persistent" },
+          { id: "chrome-work", name: "Work", kind: "persistent" },
+        ] as const) {
+          yield* browser.mirrorCookies({
+            environmentId: scope.environmentId,
+            sequence: 0,
+            profile,
+            mutations: [],
+          });
+        }
+        expect(contextRequests).toEqual([]);
+      }).pipe(Effect.provide(ServerBrowser.layer)),
+    );
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        yield* ServerBrowser.ServerBrowser;
+        const broker = yield* Broker.PreviewAutomationBroker;
+        yield* Effect.yieldNow;
+        const work = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { profileId: "Work", reuseExistingTab: false, show: false },
+        });
+        const defaultProfile = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+        expect(work.profiles).toContainEqual({ id: "chrome-work", name: "Work" });
+        expect(defaultProfile.defaultProfileId).toBe("default");
+        expect(contextRequests).toEqual([
+          { profileId: "chrome-work", isolated: false },
+          { profileId: "default", isolated: false },
+        ]);
+      }).pipe(Effect.provide(Layer.fresh(ServerBrowser.layer))),
+    );
+  }).pipe(Effect.scoped, Effect.provide(dependencies)),
+);
+
+const SENTINEL = "sentinel-Pass+&=#?% 42";
+const expectNoSentinel = (value: unknown) => {
+  const text = JSON.stringify(value);
+  for (const form of [
+    SENTINEL,
+    encodeURIComponent(SENTINEL),
+    JSON.stringify(SENTINEL).slice(1, -1),
+  ])
+    expect(text).not.toContain(form);
+};
+
+/** A fake login input that takes the vault value, and a locator that clicks and waits. */
+const fakeLoginInput = (page: ReturnType<typeof makeContext>["page"]) => {
+  let value = "";
+  const frame = { url: () => "https://login.example.test/", isDetached: () => false };
+  const handle = {
+    evaluate: async () => ({ tag: "input", type: "password" }),
+    isEditable: async () => true,
+    ownerFrame: async () => frame,
+    fill: async (next: string) => {
+      value = next;
+    },
+    inputValue: async () => value,
+    dispose: async () => {},
+  };
+  const locator = {
+    elementHandle: async () => handle,
+    scrollIntoViewIfNeeded: async () => {},
+    boundingBox: async () => ({ x: 0, y: 0, width: 10, height: 10 }),
+    click: vi.fn(async () => {}),
+    count: async () => 1,
+  };
+  page.locator.mockImplementation(() => locator as never);
+  Object.assign(page, { keyboard: { press: vi.fn(async () => {}) } });
+  return { value: () => value, locator };
+};
+
+const openPopup = (opener: ReturnType<typeof makeContext>["page"], openerTabId: string) =>
+  Effect.gen(function* () {
+    const manager = yield* Manager.PreviewManager;
+    const events = yield* manager.subscribeEvents;
+    const popup = makeContext();
+    opener.emit("popup", popup.page);
+    let event = yield* PubSub.take(events);
+    while (event.type !== "opened" || event.tabId === openerTabId)
+      event = yield* PubSub.take(events);
+    const tabId = PreviewTabId.make(event.tabId);
+    // Looking the tab up waits until it exists and listens for its own popups.
+    const broker = yield* Broker.PreviewAutomationBroker;
+    yield* broker
+      .invoke({ scope, tabId, operation: "evaluate", input: { expression: "1" } })
+      .pipe(Effect.ignore);
+    return { popup, tabId };
+  });
+
+const fillPassword = (broker: Broker.PreviewAutomationBroker["Service"], tabId: PreviewTabId) =>
+  broker.invoke({
+    scope,
+    tabId,
+    operation: "fillCredential",
+    input: { item: "Example", field: "password", locator: "#pw" },
+  });
+
+it.effect("a fill leaves its tab and related tabs readable and returns no value", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      vaultValue = SENTINEL;
+      const input = fakeLoginInput(contexts[0]!.page);
+      const popup = yield* openPopup(contexts[0]!.page, tabId);
+      const filled = yield* fillPassword(broker, tabId);
+      expect(filled).toEqual({
+        filled: true,
+        item: "Example",
+        field: "password",
+        site: "example.test",
+        tabId,
+      });
+      expectNoSentinel(filled);
+      expect(input.value()).toBe(SENTINEL);
+      for (const target of [tabId, popup.tabId]) {
+        const status = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          tabId: target,
+          operation: "status",
+          input: {},
+        });
+        expect(status.tabId).toBe(target);
+        const snapshot = yield* broker.invoke<PreviewAutomationSnapshot>({
+          scope,
+          tabId: target,
+          operation: "snapshot",
+          input: {},
+        });
+        expect(snapshot.screenshot.data).toBe(PNG_HEADER);
+        expect(
+          yield* broker.invoke({
+            scope,
+            tabId: target,
+            operation: "evaluate",
+            input: { expression: "1" },
+          }),
+        ).toMatchObject({ value: "evaluated" });
+      }
     }),
   ).pipe(Effect.provide(layer)),
 );
@@ -4836,4 +7167,32 @@ it.live("a page's title change without navigation reaches its session", () =>
       });
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.scoped),
+);
+
+it.effect("a tab whose renderer crashes stays open instead of vanishing", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const url = `https://example.com/app?${"a".repeat(3000)}`;
+      contexts[0]!.page.commit(url);
+      yield* Effect.promise(() => contexts[0]!.page.emitAsync("crash"));
+      const status = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId,
+        operation: "status",
+        input: {},
+      });
+      expect(status.tabId).toBe(tabId);
+      expect(status.loadError).toEqual({
+        url: url.slice(0, 2048),
+        code: -2,
+        description: "Page crashed",
+      });
+      // The crashed page cannot load anything again, so Reload goes to the page that replaced it.
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      yield* viewer.input({ type: "takeControl" });
+      yield* viewer.input({ type: "reload" });
+      expect(contexts[1]!.page.goto).toHaveBeenCalledWith(url, expect.anything());
+    }),
+  ).pipe(Effect.provide(layer)),
 );
