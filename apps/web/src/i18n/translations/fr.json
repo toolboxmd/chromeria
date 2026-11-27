@@ -13168,6 +13168,8 @@
   "c6cf1b06e0433ca3": "Progression de la configuration",
   "e0167c02ca493094": "{step}, étape {number}, {summary}",
   "6389dee75a7cb536": "{step}, étape {number}",
+  "8edd2c5dde58b31e": "Crédits : illimités (relevé {readAt})",
+  "7682961aa8d6edc5": "Crédits restants : {balance} (relevé {readAt})",
   "c76a048e53cf574b": "Non modifié sur {machines}.",
   "b1c0b2d22c97dc7f": "Utiliser les crédits",
   "e899e924889a82ee": "Quand les fenêtres du forfait sont épuisées, Prism peut exécuter Codex avec vos crédits.",

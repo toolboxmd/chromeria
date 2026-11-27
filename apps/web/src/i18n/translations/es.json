@@ -13163,6 +13163,8 @@
   "c6cf1b06e0433ca3": "Progreso de la configuración",
   "e0167c02ca493094": "{step}, paso {number}, {summary}",
   "6389dee75a7cb536": "{step}, paso {number}",
+  "8edd2c5dde58b31e": "Créditos: ilimitados (leído {readAt})",
+  "7682961aa8d6edc5": "Créditos restantes: {balance} (leído {readAt})",
   "c76a048e53cf574b": "Sin cambios en {machines}.",
   "b1c0b2d22c97dc7f": "Usar créditos",
   "e899e924889a82ee": "Cuando las ventanas del plan se agotan, Prism puede ejecutar Codex con tus créditos.",

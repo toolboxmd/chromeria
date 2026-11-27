@@ -1370,6 +1370,10 @@ describe("server state projection", () => {
 
   it.effect("starts from cached configuration and persists the live projection", () =>
     Effect.gen(function* () {
+      // An account's credits come from a live snapshot only: never stored, never restored.
+      const provider = { instanceId: "codex", driver: "codex" };
+      const credited = (balance: number) =>
+        [{ ...provider, credits: { readAt: "2026-11-26T15:30:00.000Z", balance } }] as never;
       const events = yield* Queue.unbounded<ServerConfigStreamEvent>();
       const client = {
         [WS_METHODS.subscribeServerConfig]: () => Stream.fromQueue(events),
@@ -1390,7 +1394,7 @@ describe("server state projection", () => {
         loadThread: () => Effect.succeedNone,
         saveThread: () => Effect.void,
         removeThread: () => Effect.void,
-        loadServerConfig: () => Effect.succeedSome(CONFIG),
+        loadServerConfig: () => Effect.succeedSome({ ...CONFIG, providers: credited(111) }),
         saveServerConfig: (_environmentId, config) => Queue.offer(savedConfigs, config),
         loadVcsRefs: () => Effect.succeedNone,
         saveVcsRefs: () => Effect.void,
@@ -1405,9 +1409,12 @@ describe("server state projection", () => {
             Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
             Effect.provideService(Persistence.EnvironmentCacheStore, cache),
           );
-          expect(Option.getOrThrow(yield* SubscriptionRef.get(state)).config).toBe(CONFIG);
+          expect(Option.getOrThrow(yield* SubscriptionRef.get(state)).config).toEqual({
+            ...CONFIG,
+            providers: [provider],
+          });
 
-          const providers: ServerConfig["providers"] = [];
+          const providers: ServerConfig["providers"] = credited(222);
           yield* Queue.offer(events, {
             version: 1,
             type: "providerStatuses",
@@ -1428,7 +1435,7 @@ describe("server state projection", () => {
         }),
       );
 
-      expect((yield* Queue.take(savedConfigs)).providers).toEqual([]);
+      expect((yield* Queue.take(savedConfigs)).providers).toEqual([provider]);
     }),
   );
 

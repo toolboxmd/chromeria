@@ -23,6 +23,7 @@ import {
   shouldRecommendDatabaseCompaction,
   type UsageSummary,
   type WorkflowRunsSnapshot,
+  withoutProviderCredits,
   SCHEDULED_TASK_RUNS_WS_METHODS,
   WS_METHODS,
 } from "@t3tools/contracts";
@@ -530,6 +531,13 @@ function withFetchedMachineCatalogs(
   return changed ? { ...projection, config: { ...projection.config, providers } } : projection;
 }
 
+/** A cache may neither store an account's credits nor bring back ones an older build stored. */
+function withoutCredits(config: ServerConfig): ServerConfig {
+  return config.providers.some((provider) => provider.credits !== undefined)
+    ? { ...config, providers: config.providers.map(withoutProviderCredits) }
+    : config;
+}
+
 // Configs are JSON-shaped. Missing and undefined object fields persist identically.
 function sameCacheValue(previous: unknown, next: unknown): boolean {
   if (previous === next) return true;
@@ -586,11 +594,14 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
       ),
     );
     const state = yield* SubscriptionRef.make<Option.Option<ServerConfigProjection>>(
-      Option.map(cachedConfig, (cached) => ({
-        config: withoutEnvironmentThemes(cached),
-        latestEvent: cachedConfigSnapshotEvent(withoutEnvironmentThemes(cached)),
-        source: "cache" as const,
-      })),
+      Option.map(cachedConfig, (stored) => {
+        const cached = withoutCredits(stored);
+        return {
+          config: withoutEnvironmentThemes(cached),
+          latestEvent: cachedConfigSnapshotEvent(withoutEnvironmentThemes(cached)),
+          source: "cache" as const,
+        };
+      }),
     );
     const persistence = yield* Queue.sliding<ServerConfig>(1);
     const pendingPersistence = yield* Ref.make<Option.Option<ServerConfig>>(Option.none());
@@ -607,7 +618,7 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
         lastEventLoopStall: _stall,
         serverTime: _serverTime,
         ...cacheable
-      } = config;
+      } = withoutCredits(config);
       if (lastPersisted !== undefined && sameCacheValue(lastPersisted, cacheable)) {
         return true;
       }

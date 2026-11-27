@@ -5,6 +5,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
+  type ServerProviderCredits,
   UsageLimitSourceId,
 } from "@t3tools/contracts";
 import { AtomRegistry } from "effect/reactivity";
@@ -130,8 +131,18 @@ function setup(
     readonly rocky?: Record<string, boolean>;
     readonly cavallo?: Record<string, boolean>;
   },
-  options: { readonly hub?: boolean; readonly realCommand?: boolean } = {},
+  options: {
+    readonly hub?: boolean;
+    readonly realCommand?: boolean;
+    /** What the usage read of the owner's login reported, by machine. */
+    readonly credits?: {
+      readonly bestia?: ServerProviderCredits;
+      readonly rocky?: ServerProviderCredits;
+    };
+  } = {},
 ) {
+  const credited = (provider: ServerProvider, credits: ServerProviderCredits | undefined) =>
+    credits ? { ...provider, credits } : provider;
   state.deniedEnvironments = new Set();
   state.failingEnvironments = new Set();
   state.silentEnvironments = new Set();
@@ -156,8 +167,12 @@ function setup(
       environment(
         "Bestia",
         [
-          account("codex_work", "codex", "Codex Work"),
-          account("claude_work", "claudeAgent", "Claude Work"),
+          credited(account("codex_work", "codex", "Codex Work"), options.credits?.bestia),
+          // Only the Codex driver reports credits; another driver's never show.
+          credited(account("claude_work", "claudeAgent", "Claude Work"), {
+            readAt: "2026-11-26T15:59:00.000Z",
+            balance: 777,
+          }),
         ],
         saved.bestia,
       ),
@@ -167,11 +182,15 @@ function setup(
       environment(
         "Rocky",
         [
-          account("codex_main", "codex", "Codex Main"),
-          account("codex_other", "codex", "Codex Other", {
-            email: "other@example.com",
-            workspaceId: "ws_owner",
-          }),
+          credited(account("codex_main", "codex", "Codex Main"), options.credits?.rocky),
+          // Another login's credits never show on the owner's account.
+          credited(
+            account("codex_other", "codex", "Codex Other", {
+              email: "other@example.com",
+              workspaceId: "ws_owner",
+            }),
+            { readAt: "2026-11-26T15:59:00.000Z", balance: 999 },
+          ),
         ],
         saved.rocky,
       ),
@@ -246,6 +265,57 @@ it.each([
     .toHaveAccessibleDescription(
       "When the plan windows are spent, Prism may run Codex on your credits.",
     );
+});
+
+/** The time of day as the browser's own formatter writes it, in the test's zone. */
+const timeOfDay = (iso: string) =>
+  new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
+
+it.each([
+  {
+    name: "the balance of the freshest read among the login's machines",
+    credits: {
+      bestia: { readAt: "2026-11-26T15:00:00.000Z", balance: 111 },
+      rocky: { readAt: "2026-11-26T15:30:00.000Z", balance: 12_345 },
+    },
+    line: `Credits left: 12,345 (read ${timeOfDay("2026-11-26T15:30:00.000Z")})`,
+  },
+  {
+    name: "unlimited",
+    credits: { bestia: { readAt: "2026-11-26T15:30:00.000Z", balance: "unlimited" as const } },
+    line: `Credits: unlimited (read ${timeOfDay("2026-11-26T15:30:00.000Z")})`,
+  },
+  { name: "nothing when no read answered", credits: {}, line: null },
+  {
+    name: "nothing once a newer read found none, whatever an older read showed",
+    credits: {
+      bestia: { readAt: "2026-11-26T15:00:00.000Z", balance: 555 },
+      rocky: { readAt: "2026-11-26T15:30:00.000Z", balance: "none" as const },
+    },
+    line: null,
+  },
+  {
+    // Rocky's usage was read at 16:00 and its reply carried no credits, so it tells nothing.
+    name: "an older balance while a newer usage reply on another machine carried no credits",
+    credits: { bestia: { readAt: "2026-11-26T15:00:00.000Z", balance: 555 } },
+    line: `Credits left: 555 (read ${timeOfDay("2026-11-26T15:00:00.000Z")})`,
+  },
+])("shows the login's credits under the switch: $name", async ({ credits, line }) => {
+  await using screen = await render(setup({}, { credits }));
+  await userEvent.click(screen.getByRole("button", { name: /^Codex Work: 80% left/ }));
+
+  await expect.element(useCredits()).toBeVisible();
+  if (line) await expect.element(page.getByText(line, { exact: true })).toBeVisible();
+  else await expect.element(page.getByText(/^Credits/)).not.toBeInTheDocument();
+});
+
+it("shows no credits on another provider's account", async () => {
+  await using screen = await render(setup({}));
+  await userEvent.click(screen.getByRole("button", { name: /^Claude Work: 80% left/ }));
+
+  await expect.element(page.getByText("Signed in")).toBeVisible();
+  await expect.element(useCredits()).not.toBeInTheDocument();
+  await expect.element(page.getByText(/^Credits/)).not.toBeInTheDocument();
 });
 
 it("writes off for the named instance and the same login on every machine, from the keyboard too", async () => {

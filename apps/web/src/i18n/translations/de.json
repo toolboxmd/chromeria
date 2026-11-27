@@ -13170,6 +13170,8 @@
   "c6cf1b06e0433ca3": "Einrichtungsfortschritt",
   "e0167c02ca493094": "{step}, Schritt {number}, {summary}",
   "6389dee75a7cb536": "{step}, Schritt {number}",
+  "8edd2c5dde58b31e": "Guthaben: unbegrenzt (abgelesen {readAt})",
+  "7682961aa8d6edc5": "Verbleibendes Guthaben: {balance} (abgelesen {readAt})",
   "c76a048e53cf574b": "Nicht geändert auf {machines}.",
   "b1c0b2d22c97dc7f": "Guthaben verwenden",
   "e899e924889a82ee": "Wenn die Fenster des Plans ausgeschöpft sind, darf Prism Codex mit deinem Guthaben ausführen.",

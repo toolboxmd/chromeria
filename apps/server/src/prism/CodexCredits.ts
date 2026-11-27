@@ -1,4 +1,9 @@
-import type { ServerProvider, ServerSettings, ServerSettingsError } from "@t3tools/contracts";
+import type {
+  ServerProvider,
+  ServerProviderCredits,
+  ServerSettings,
+  ServerSettingsError,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -12,6 +17,24 @@ import type { ProviderDriverError } from "../provider/Errors.ts";
 export const READ_BOUND = Duration.seconds(10);
 
 type CodexRateLimits = Extract<CodexAccountLimits, { readonly route: "native" }>["rateLimits"];
+
+/**
+ * The whole rule for what one usage answer publishes about credits. Undefined means the answer
+ * does not tell (no `credits`, or credits without a readable balance), so it must not hide what
+ * another read told; `none` means it told there is nothing to spend.
+ */
+export function codexCreditsShown(
+  credits: CodexRateLimits["credits"],
+  readAt: string,
+): ServerProviderCredits | undefined {
+  if (credits == null) return undefined;
+  if (credits.unlimited) return { readAt, balance: "unlimited" };
+  if (!credits.hasCredits) return { readAt, balance: "none" };
+  const text = credits.balance?.trim();
+  const balance = text ? Math.round(Number(text)) : Number.NaN;
+  if (!Number.isSafeInteger(balance)) return undefined;
+  return { readAt, balance: balance >= 1 ? balance : "none" };
+}
 
 type AccountLimitsRead = Effect.Effect<CodexAccountLimits, ProviderDriverError>;
 

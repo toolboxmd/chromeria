@@ -1,4 +1,9 @@
-import type { EnvironmentId, ProviderInstanceId, ServerSettings } from "@t3tools/contracts";
+import type {
+  EnvironmentId,
+  ProviderInstanceId,
+  ServerProviderCredits,
+  ServerSettings,
+} from "@t3tools/contracts";
 import {
   instancesWithRedeemedLogin,
   type RedeemedResetEnvironment,
@@ -70,4 +75,28 @@ export function shownCreditUse(targets: ReadonlyArray<CreditUseTarget>): "on" | 
     targets.flatMap((target) => target.instances.map((instance) => instance.useCredits)),
   );
   return values.size > 1 ? "mixed" : values.has(false) ? "off" : "on";
+}
+
+/**
+ * What the freshest usage read among the login's instances said about credits. A read that found
+ * nothing to spend takes part, so it hides an older balance; an instance whose read failed or
+ * never ran carries no answer and leaves the others standing. Null when no instance has one.
+ */
+export function shownCredits(
+  environments: ReadonlyMap<EnvironmentId, CreditUseEnvironment>,
+  targets: ReadonlyArray<CreditUseTarget>,
+): ServerProviderCredits | null {
+  const reads = targets.flatMap((target) =>
+    (environments.get(target.environmentId)?.serverConfig?.providers ?? []).flatMap((provider) =>
+      provider.credits &&
+      target.instances.some((instance) => instance.instanceId === provider.instanceId)
+        ? [provider.credits]
+        : [],
+    ),
+  );
+  return reads.reduce<ServerProviderCredits | null>(
+    (freshest, read) =>
+      freshest && Date.parse(freshest.readAt) >= Date.parse(read.readAt) ? freshest : read,
+    null,
+  );
 }

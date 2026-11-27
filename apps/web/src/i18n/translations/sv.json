@@ -13176,6 +13176,8 @@
   "c6cf1b06e0433ca3": "Konfigurationsförlopp",
   "e0167c02ca493094": "{step}, steg {number}, {summary}",
   "6389dee75a7cb536": "{step}, steg {number}",
+  "8edd2c5dde58b31e": "Krediter: obegränsat (avläst {readAt})",
+  "7682961aa8d6edc5": "Krediter kvar: {balance} (avläst {readAt})",
   "c76a048e53cf574b": "Inte ändrat på {machines}.",
   "b1c0b2d22c97dc7f": "Använd krediter",
   "e899e924889a82ee": "När planens fönster är förbrukade får Prism köra Codex på dina krediter.",

@@ -13194,6 +13194,8 @@
   "c6cf1b06e0433ca3": "设置进度",
   "e0167c02ca493094": "{step}，第 {number} 步，{summary}",
   "6389dee75a7cb536": "{step}，第 {number} 步",
+  "8edd2c5dde58b31e": "额度：无限（读取于 {readAt}）",
+  "7682961aa8d6edc5": "剩余额度：{balance}（读取于 {readAt}）",
   "c76a048e53cf574b": "{machines} 上未更改。",
   "b1c0b2d22c97dc7f": "使用额度",
   "e899e924889a82ee": "套餐窗口用完后，Prism 可以使用你的额度运行 Codex。",

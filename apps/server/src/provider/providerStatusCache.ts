@@ -2,6 +2,7 @@ import {
   type ProviderInstanceId,
   type ServerProvider,
   ServerProvider as ServerProviderSchema,
+  withoutProviderCredits,
 } from "@t3tools/contracts";
 import { causeErrorTag } from "@t3tools/shared/observability";
 import * as Effect from "effect/Effect";
@@ -126,7 +127,7 @@ export const readProviderStatusCache = Effect.fn("providerStatusCache.readProvid
             path: filePath,
             errorTag: causeErrorTag(cause),
           }).pipe(Effect.as(undefined)),
-        onSuccess: Effect.succeed,
+        onSuccess: (provider) => Effect.succeed(withoutProviderCredits(provider)),
       }),
     );
   },
@@ -136,7 +137,9 @@ export const writeProviderStatusCache = (input: {
   readonly filePath: string;
   readonly provider: ServerProvider;
 }) => {
-  const { updateState: _updateState, ...cacheableProvider } = input.provider;
+  const { updateState: _updateState, ...cacheableProvider } = withoutProviderCredits(
+    input.provider,
+  );
   return writeFileStringAtomically({
     filePath: input.filePath,
     contents: `${JSON.stringify(cacheableProvider, null, 2)}\n`,
