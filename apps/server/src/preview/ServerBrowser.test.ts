@@ -1,4 +1,5 @@
 import * as NodeEvents from "node:events";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- A raw socket stalls a response body mid-read, which routed fixtures cannot.
 import * as NodeHttp from "node:http";
 import * as NodeVM from "node:vm";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Playwright download mocks perform real file operations outside the Effect runtime.
