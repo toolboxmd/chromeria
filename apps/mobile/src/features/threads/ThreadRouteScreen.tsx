@@ -1,6 +1,7 @@
 import * as Dialog from "../../components/ui/Dialog";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { useRememberThreadProject } from "./useRememberThreadProject";
+import { executionPurposeOf, savedPurposeIntentForScope } from "@t3tools/contracts";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
 import { buildProjectThreadStartTurnInput } from "../../lib/projectThreadStartTurn";
@@ -97,6 +98,7 @@ import { useSelectedThreadWorktree } from "../../state/use-selected-thread-workt
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { resolveMergeBackTargetThreadId } from "@t3tools/client-runtime/state/thread-relationships";
 import { resolveLatestMergeBackRun } from "@t3tools/client-runtime/state/thread-workflows";
+import { threadStopInput } from "@t3tools/client-runtime/spectrum-stop";
 import { threadEnvironment } from "../../state/threads";
 import {
   EMPTY_ENVIRONMENT_THREAD_STATE,
@@ -548,6 +550,8 @@ function ThreadRouteContent(
   // The title it had at delegation, until this client sees the parent itself.
   const delegatedFromThread = useThreadShell(delegatedFromRef);
   const headerSubtitle = [
+    // Fork (toolboxmd/chromeria#319): the thread started as a bare launch.
+    selectedThreadDetail?.thread.bare ? gt("Bare") : null,
     selectedThreadProject?.title ?? null,
     selectedEnvironmentConnection?.environmentLabel ?? null,
     // A linked environment's delegated task names its parent; other linked work its origin.
@@ -688,20 +692,15 @@ function ThreadRouteContent(
     void navigation.navigate("Connections");
   };
   const handleStopThread = () => {
+    const input = selectedThread && threadStopInput(selectedThread, composer.interruptibleRunId);
     if (
       !selectedThread ||
       !readEnvironmentScope(selectedThread.environmentId, AuthOrchestrationOperateScope) ||
-      composer.interruptibleRunId === null
+      !input
     ) {
       return;
     }
-    return interruptThreadTurn({
-      environmentId: selectedThread.environmentId,
-      input: {
-        threadId: selectedThread.id,
-        runId: composer.interruptibleRunId,
-      },
-    });
+    return interruptThreadTurn({ environmentId: selectedThread.environmentId, input });
   };
 
   const handleResumeQueue = async () => {
@@ -871,6 +870,7 @@ function ThreadRouteContent(
           environmentId: String(creation.environmentId),
           projectId: String(creation.creation.projectId),
           ...(selectedThreadProject ? { title: selectedThreadProject.title } : {}),
+          ...(creation.creation.promachos === true ? { promachos: "1" } : {}),
         },
       }),
     );
@@ -924,23 +924,31 @@ function ThreadRouteContent(
     const metadata = makeTurnCommandMetadata();
     const launched = await startLocalThread({
       environmentId: selectedThread.environmentId,
-      input: buildProjectThreadStartTurnInput({
-        ...metadata,
-        projectId: selectedThread.projectId,
-        projectCwd: selectedThreadProject.workspaceRoot,
-        text: setupMessage.text,
-        titleText: selectedThread.title,
-        ...(setupMessage.context ? { context: setupMessage.context } : {}),
-        uploadedAttachments: setupMessage.attachments,
-        modelSelection: selectedThread.modelSelection,
-        runtimeMode: selectedThread.runtimeMode,
-        interactionMode: selectedThread.interactionMode,
-        workspaceMode: "local",
-        branch: null,
-        worktreePath: null,
-        startFromOrigin: false,
-        worktreeBranchName: "",
-      }),
+      input: {
+        ...buildProjectThreadStartTurnInput({
+          ...metadata,
+          projectId: selectedThread.projectId,
+          projectCwd: selectedThreadProject.workspaceRoot,
+          text: setupMessage.text,
+          titleText: selectedThread.title,
+          ...(setupMessage.context ? { context: setupMessage.context } : {}),
+          uploadedAttachments: setupMessage.attachments,
+          modelSelection: selectedThread.modelSelection,
+          runtimeMode: selectedThread.runtimeMode,
+          interactionMode: selectedThread.interactionMode,
+          workspaceMode: "local",
+          branch: null,
+          worktreePath: null,
+          startFromOrigin: false,
+          worktreeBranchName: "",
+          bare: selectedThreadDetail?.thread.bare !== undefined,
+        }),
+        purposeIntent: savedPurposeIntentForScope(
+          executionPurposeOf(
+            selectedThreadDetail?.runs.find((run) => run.id === setupMessage.runId) ?? {},
+          ).scope,
+        ),
+      },
     });
     localResendBusy.current = false;
     if (launched._tag !== "Success") return;
@@ -1052,6 +1060,8 @@ function ThreadRouteContent(
         header={
           props.inspectorPresentation ? null : (
             <ThreadHeader
+              projectId={selectedThread.projectId}
+              thread={selectedThread}
               title={selectedThread.title}
               subtitle={threadStatusLabel ?? headerSubtitle}
               gitControls={threadGitControlProps}
@@ -1110,7 +1120,10 @@ function ThreadRouteContent(
         connectionStateLabel={routeConnectionState}
         historyControls={historyControls}
         activeThreadBusy={composer.activeThreadBusy}
-        canStopThread={awaitingBootstrapTurn || composer.interruptibleRunId !== null}
+        canStopThread={
+          awaitingBootstrapTurn ||
+          threadStopInput(selectedThread, composer.interruptibleRunId) !== null
+        }
         queuedRunEdit={composer.queuedRunEdit}
         composerDraftKey={composer.composerDraftKey}
         followUpBehavior={composer.followUpBehavior}
