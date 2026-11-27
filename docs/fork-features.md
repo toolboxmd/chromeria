@@ -4289,7 +4289,7 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/issues/993",
     "https://github.com/toolboxmd/chromeria/issues/996"
   ],
-  "prs": ["https://github.com/toolboxmd/chromeria/compare/feat/site-hold...feat/human-input"],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/1006"],
   "newFiles": [
     "apps/server/src/preview/HumanInput.test.ts",
     "apps/server/src/preview/HumanInput.ts"
