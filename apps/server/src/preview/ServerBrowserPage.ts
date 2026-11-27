@@ -1393,15 +1393,18 @@ export const evaluate = async (
   input: PreviewAutomationEvaluateInput,
   timeoutMs: number,
   authorize: Authorize = noAuthorization,
+  world: "isolated" | "main" = "main",
 ) => {
   await authorize();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
+  let dispatched = false;
   const expired = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       timedOut = true;
-      // Stops a busy script; an awaited promise is abandoned and settles unread.
-      void cdp.send("Runtime.terminateExecution").catch(constVoid);
+      // Stops this call's busy script; before dispatch there is none, and the page's own
+      // scripts are left alone. An awaited promise is abandoned and settles unread.
+      if (dispatched) void cdp.send("Runtime.terminateExecution").catch(constVoid);
       reject(
         new ServerBrowserOperationError({
           tag: "PreviewAutomationTimeoutError",
@@ -1410,45 +1413,78 @@ export const evaluate = async (
       );
     }, timeoutMs);
   });
-  const params = {
-    expression: input.expression,
-    awaitPromise: input.awaitPromise ?? true,
-    returnByValue: true,
-  };
-  // The devtools console's replMode allows top-level await but returns a trailing promise unawaited,
-  // so it only retries what the page's parser rejected. A parse error has a scriptId but no stack and
-  // ran nothing; a browser-internal rejection has neither.
-  const evaluation = cdp.send("Runtime.evaluate", params).then(async (classic) => {
-    const failure = classic.exceptionDetails;
-    const unparsed =
-      failure?.exception?.className === "SyntaxError" &&
-      failure.scriptId !== undefined &&
-      failure.stackTrace === undefined;
-    if (!unparsed || timedOut || !input.expression.includes("await")) return classic;
-    // The parse failure ran nothing, so the retry is the first run: it is authorized again.
-    await authorize();
-    if (timedOut) throw new Error("Evaluation expired before its retry.");
-    return cdp.send("Runtime.evaluate", { ...params, replMode: true });
-  });
-  void evaluation.catch(constVoid);
-  const result = await Promise.race([evaluation, expired]).finally(() => clearTimeout(timer));
-  if (result.exceptionDetails) {
-    throw new ServerBrowserOperationError({
-      tag: "PreviewAutomationExecutionError",
-      message: result.exceptionDetails.exception?.description ?? result.exceptionDetails.text,
+  // Settled when nobody waits on it, so a refusal before the race never goes unhandled.
+  void expired.catch(constVoid);
+  try {
+    // A world of its own shares the DOM, but pages cannot see the agent's globals or wrappers.
+    // Its setup runs under the same deadline, and authority is checked again before dispatch.
+    const isolated =
+      world === "isolated"
+        ? cdp.send("Page.getFrameTree").then(({ frameTree }) =>
+            cdp.send("Page.createIsolatedWorld", {
+              frameId: frameTree.frame.id,
+              worldName: "t3-agent",
+            }),
+          )
+        : undefined;
+    if (isolated) void isolated.catch(constVoid);
+    const contextId = isolated
+      ? (await Promise.race([isolated, expired])).executionContextId
+      : undefined;
+    await Promise.race([authorize(), expired]);
+    if (timedOut)
+      throw new ServerBrowserOperationError({
+        tag: "PreviewAutomationTimeoutError",
+        message: `Evaluation did not finish within ${timeoutMs}ms and was stopped.`,
+      });
+    const params = {
+      expression: input.expression,
+      awaitPromise: input.awaitPromise ?? true,
+      returnByValue: true,
+      ...(contextId === undefined ? {} : { contextId }),
+    };
+    // The devtools console's replMode allows top-level await but returns a trailing promise unawaited,
+    // so it only retries what the page's parser rejected. A parse error has a scriptId but no stack and
+    // ran nothing; a browser-internal rejection has neither.
+    dispatched = true;
+    const evaluation = cdp.send("Runtime.evaluate", params).then(async (classic) => {
+      const failure = classic.exceptionDetails;
+      const unparsed =
+        failure?.exception?.className === "SyntaxError" &&
+        failure.scriptId !== undefined &&
+        failure.stackTrace === undefined;
+      if (!unparsed || timedOut || !input.expression.includes("await")) return classic;
+      // The parse failure ran nothing, so the retry is the first run: it is authorized again,
+      // and until it is sent an expiry has no script of this call to stop.
+      dispatched = false;
+      await authorize();
+      if (timedOut) throw new Error("Evaluation expired before its retry.");
+      dispatched = true;
+      return cdp.send("Runtime.evaluate", { ...params, replMode: true });
     });
+    void evaluation.catch(constVoid);
+    const result = await Promise.race([evaluation, expired]);
+    if (result.exceptionDetails) {
+      throw new ServerBrowserOperationError({
+        tag: "PreviewAutomationExecutionError",
+        message: result.exceptionDetails.exception?.description ?? result.exceptionDetails.text,
+      });
+    }
+    const value =
+      "value" in result.result ? result.result.value : (result.result.description ?? null);
+    const actualBytes = Buffer.byteLength(JSON.stringify(value ?? null), "utf8");
+    if (actualBytes > MAX_EVALUATION_BYTES) {
+      throw new ServerBrowserOperationError({
+        tag: "PreviewAutomationResultTooLargeError",
+        message: `Evaluation result is ${actualBytes} bytes; the limit is ${MAX_EVALUATION_BYTES}.`,
+        detail: { maximumBytes: MAX_EVALUATION_BYTES },
+      });
+    }
+    return value;
+  } finally {
+    // Every way out stops the timer, so no termination reaches a tab after the request ended.
+    clearTimeout(timer);
   }
-  const value =
-    "value" in result.result ? result.result.value : (result.result.description ?? null);
-  const actualBytes = Buffer.byteLength(JSON.stringify(value ?? null), "utf8");
-  if (actualBytes > MAX_EVALUATION_BYTES) {
-    throw new ServerBrowserOperationError({
-      tag: "PreviewAutomationResultTooLargeError",
-      message: `Evaluation result is ${actualBytes} bytes; the limit is ${MAX_EVALUATION_BYTES}.`,
-      detail: { maximumBytes: MAX_EVALUATION_BYTES },
-    });
-  }
-  return value;
 };
 
 export const waitFor = async (

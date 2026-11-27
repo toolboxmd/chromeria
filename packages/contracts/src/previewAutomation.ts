@@ -614,12 +614,21 @@ export const PreviewAutomationActInput = Schema.Struct({
 });
 export type PreviewAutomationActInput = typeof PreviewAutomationActInput.Type;
 
+export const PreviewEvaluateWorld = Schema.Literals(["isolated", "main"]);
+export type PreviewEvaluateWorld = typeof PreviewEvaluateWorld.Type;
+
 export const PreviewAutomationEvaluateInput = Schema.Struct({
   ...PreviewAutomationTabTargetFields,
   expression: Schema.String.check(Schema.isTrimmed())
     .check(Schema.isNonEmpty())
     .check(Schema.isMaxLength(64_000)),
   awaitPromise: Schema.optional(Schema.Boolean.annotate({ description: "Default true." })),
+  world: Schema.optional(
+    PreviewEvaluateWorld.annotate({
+      description:
+        "Default 'main'. 'isolated' shares the DOM but not page variables, and pages cannot see its globals.",
+    }),
+  ),
 });
 export type PreviewAutomationEvaluateInput = typeof PreviewAutomationEvaluateInput.Type;
 

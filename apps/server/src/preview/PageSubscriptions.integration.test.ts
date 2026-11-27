@@ -291,8 +291,12 @@ integration(
         f.setShell(liveThreadShell(threadId));
         yield* f.stop(dom);
         expect(
-          yield* f.invoke<boolean>("evaluate", { expression: "window.cleaned === true" }, first),
-        ).toBe(true);
+          yield* f.invoke<{ value: boolean }>(
+            "evaluate",
+            { expression: "window.cleaned === true" },
+            first,
+          ),
+        ).toMatchObject({ value: true });
         expect((yield* Effect.result(f.read(dom)))._tag).toBe("Failure");
       }),
     ),

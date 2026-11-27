@@ -474,7 +474,9 @@ describe.skipIf(!executable)("credential login in a real browser", () => {
           reason: "serverBrowserOnly",
         });
         expect(yield* Effect.promise(() => desktop.page!.inputValue("#pw"))).toBe("");
-        expect(yield* invoke(broker)(tabId, "evaluate", { expression: "1" })).toBe(1);
+        expect(yield* invoke(broker)(tabId, "evaluate", { expression: "1" })).toMatchObject({
+          value: 1,
+        });
       }),
     );
   });

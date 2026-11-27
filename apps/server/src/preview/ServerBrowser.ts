@@ -4532,13 +4532,19 @@ const make = Effect.gen(function* () {
           throw cause;
         }
       }
-      case "evaluate":
-        return ServerBrowserPage.evaluate(
+      case "evaluate": {
+        const evaluateInput = input as PreviewAutomationEvaluateInput;
+        const world = evaluateInput.world ?? "main";
+        const value = await ServerBrowserPage.evaluate(
           tab.cdp,
-          input as PreviewAutomationEvaluateInput,
-          request.timeoutMs,
+          evaluateInput,
+          // Time spent queued counts: the caller stops waiting at the request's deadline.
+          Math.max(1, deadlineMs - performance.now()),
           authorize,
+          world,
         );
+        return { value, evaluatedIn: world };
+      }
       case "waitFor":
         return ServerBrowserPage.waitFor(
           tab.page,

@@ -4305,3 +4305,30 @@ sources and reasons.
   "keywords": ["pageClass", "keyDelays", "pointerPath", "SiteActionGate"]
 }
 ```
+
+## evaluate-world
+
+```json
+{
+  "id": "evaluate-world",
+  "purpose": "Let preview_evaluate run in an isolated world on request, keeping the main world by default, and prove navigator.webdriver is false in server and desktop tabs.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/993",
+    "https://github.com/toolboxmd/chromeria/issues/997"
+  ],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/1011"],
+  "newFiles": ["apps/desktop/src/preview/ElectronWebdriver.integration.test.ts"],
+  "upstreamFiles": [],
+  "sharedFiles": [
+    "apps/server/src/mcp/toolkits/preview/handlers.ts",
+    "apps/server/src/mcp/toolkits/preview/tools.ts",
+    "apps/server/src/preview/ServerBrowser.test.ts",
+    "apps/server/src/preview/ServerBrowser.ts",
+    "apps/server/src/preview/ServerBrowserContexts.integration.test.ts",
+    "apps/server/src/preview/ServerBrowserPage.test.ts",
+    "apps/server/src/preview/ServerBrowserPage.ts",
+    "packages/contracts/src/previewAutomation.ts"
+  ],
+  "keywords": ["evaluatedIn", "PreviewEvaluateWorld", "t3-agent"]
+}
+```

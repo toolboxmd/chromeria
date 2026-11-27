@@ -39,6 +39,7 @@ const PAGE = `<!doctype html><script src="/app.js"></script><script>
     (await navigator.serviceWorker.ready).active.postMessage("ua");
     const high = await navigator.userAgentData.getHighEntropyValues(["fullVersionList", "uaFullVersion", "formFactors", "platformVersion"]);
     return {
+      webdriver: navigator.webdriver,
       page: navigator.userAgent,
       brands: navigator.userAgentData.brands.map((brand) => brand.brand),
       fullVersionList: high.fullVersionList,
@@ -240,7 +241,7 @@ describe.skipIf(!testChromium)("ServerBrowserContexts on Chrome for Testing", ()
     },
   );
 
-  it("presents one Chrome identity to the page, its workers and every request", async () => {
+  it("presents one Chrome identity, without the webdriver flag, to the page, its workers and every request", async () => {
     await withPool("identity", async (pool) => {
       const context = await pool.contextFor("default");
       const page = await context.newPage();
@@ -250,6 +251,7 @@ describe.skipIf(!testChromium)("ServerBrowserContexts on Chrome for Testing", ()
       await expectFullChrome(page);
       type Brands = Array<{ brand: string; version: string }>;
       const seen = await page.evaluate<{
+        webdriver: boolean;
         page: string;
         brands: string[];
         fullVersionList: Brands;
@@ -263,6 +265,7 @@ describe.skipIf(!testChromium)("ServerBrowserContexts on Chrome for Testing", ()
       }>("window.results");
       const userAgent = pool.identity.userAgent;
       expect(userAgent).toMatch(/ Chrome\/\d+\.0\.0\.0 Safari\/537\.36$/);
+      expect(seen.webdriver).toBe(false);
       expect(seen.page).toBe(userAgent);
       for (const [name, [workerAgent]] of Object.entries({
         dedicated: seen.dedicated,

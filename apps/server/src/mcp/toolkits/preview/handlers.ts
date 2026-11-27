@@ -1,4 +1,4 @@
-import { PreviewAutomationSelectResult } from "@t3tools/contracts";
+import { PreviewAutomationSelectResult, type PreviewEvaluateWorld } from "@t3tools/contracts";
 import * as PeerAuthority from "../../../peer/PeerAuthority.ts";
 import * as ServerBrowser from "../../../preview/ServerBrowser.ts";
 import { externalReplay, requestDigest } from "../../McpRequestReceipts.ts";
@@ -75,6 +75,16 @@ const decodePortableDownloads = Schema.decodeUnknownEffect(
     }),
   ),
 );
+
+const isReportedEvaluation = (
+  result: unknown,
+): result is { readonly value: unknown; readonly evaluatedIn: PreviewEvaluateWorld } =>
+  typeof result === "object" &&
+  result !== null &&
+  Object.keys(result).length === 2 &&
+  "value" in result &&
+  "evaluatedIn" in result &&
+  (result.evaluatedIn === "isolated" || result.evaluatedIn === "main");
 
 const invoke = Effect.fn("PreviewToolkit.invoke")(function* <A>(
   operation: PreviewAutomationOperation,
@@ -584,10 +594,15 @@ const handlers = {
     "preview",
     ({ tabId, ...input }) =>
       invoke<unknown>("evaluate", input, undefined, tabId).pipe(
-        Effect.map(({ result, toolIcon }) => ({
-          value: result ?? null,
-          ...(toolIcon ? { toolIcon } : {}),
-        })),
+        Effect.map(({ result, toolIcon }) => {
+          // Browsers built before the world option return the bare value.
+          const reported = isReportedEvaluation(result) ? result : undefined;
+          return {
+            value: (reported ? reported.value : result) ?? null,
+            ...(reported ? { world: reported.evaluatedIn } : {}),
+            ...(toolIcon ? { toolIcon } : {}),
+          };
+        }),
       ),
     "external-unknown",
   ),

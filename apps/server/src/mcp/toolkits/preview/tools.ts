@@ -23,6 +23,7 @@ import {
   PreviewAutomationDialogInput,
   PreviewAutomationError,
   PreviewAutomationEvaluateInput,
+  PreviewEvaluateWorld,
   PreviewAutomationFillCredentialInput,
   PreviewAutomationFillCredentialResult,
   PreviewAutomationSaveSecretInput,
@@ -361,12 +362,13 @@ export const PreviewEvaluateResult = Schema.Struct({
   value: Schema.Unknown.annotate({
     description: "The JSON-serializable value the expression produced, or null.",
   }),
+  world: Schema.optional(PreviewEvaluateWorld),
 });
 
 const PreviewEvaluateTool = browserTool(
   Tool.make("preview_evaluate", {
     description:
-      "Run JavaScript in the page. It can change page state. Returns `{value}`, up to 64 KB. Needs your tab, or an unclaimed one. To read a tab the user drives, use `preview_snapshot`. Page tools write only on user request. Show results with `html_render`, never page tools. Save a secret the page shows, such as an API key, with `preview_save_secret` instead of reading it." +
+      "Run JavaScript in the page. It can change page state. Returns `{value, world}`, up to 64 KB. Pass `world:'isolated'` to run where the page cannot see your globals; it shares the DOM but not page variables or bindings such as `document.modelContext`. Needs your tab, or an unclaimed one. To read a tab the user drives, use `preview_snapshot`. Page tools write only on user request. Show results with `html_render`, never page tools. Save a secret the page shows, such as an API key, with `preview_save_secret` instead of reading it." +
       COMPUTER_USE_HINT,
     parameters: McpRouting.parameters(PreviewAutomationEvaluateInput),
     success: PreviewEvaluateResult,

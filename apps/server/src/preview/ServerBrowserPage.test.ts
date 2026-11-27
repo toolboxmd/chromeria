@@ -230,6 +230,30 @@ describe("server browser capture deadlines", () => {
 });
 
 describe("evaluate authority", () => {
+  it("sends nothing when its authority ends before dispatch, and leaves no timer behind", async () => {
+    vi.useFakeTimers();
+    try {
+      const sent: string[] = [];
+      const cdp = { send: async (method: string) => (sent.push(method), {}) };
+      let calls = 0;
+      const authorize = async () => {
+        if (++calls === 2) throw new Error("revoked");
+      };
+      await expect(
+        ServerBrowserPage.evaluate(
+          cdp as unknown as Parameters<typeof ServerBrowserPage.evaluate>[0],
+          { expression: "1" },
+          1_000,
+          authorize,
+        ),
+      ).rejects.toThrow("revoked");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(sent).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("authorizes the top-level-await retry, the first run of the expression", async () => {
     const sent: string[] = [];
     const cdp = {
@@ -248,7 +272,7 @@ describe("evaluate authority", () => {
     };
     let calls = 0;
     const authorize = async () => {
-      if (++calls === 2) throw new Error("held");
+      if (++calls === 3) throw new Error("held");
     };
     await expect(
       ServerBrowserPage.evaluate(
@@ -259,6 +283,87 @@ describe("evaluate authority", () => {
       ),
     ).rejects.toThrow("held");
     expect(sent).toEqual(["Runtime.evaluate"]);
+  });
+
+  it("expiring while the top-level-await retry waits for authority stops no page script", async () => {
+    vi.useFakeTimers();
+    try {
+      for (const world of ["main", "isolated"] as const) {
+        const sent: string[] = [];
+        const cdp = {
+          send: async (method: string) => {
+            sent.push(method);
+            if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+            if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
+            return {
+              result: { type: "undefined" },
+              exceptionDetails: {
+                text: "Uncaught",
+                scriptId: "1",
+                exception: { className: "SyntaxError", description: "await is only valid" },
+              },
+            };
+          },
+        };
+        let calls = 0;
+        const held = Promise.withResolvers<void>();
+        const authorize = () => (++calls === 3 ? held.promise : Promise.resolve());
+        const evaluating = ServerBrowserPage.evaluate(
+          cdp as unknown as Parameters<typeof ServerBrowserPage.evaluate>[0],
+          { expression: "await 1" },
+          1_000,
+          authorize,
+          world,
+        );
+        const outcome = expect(evaluating).rejects.toThrow("did not finish");
+        await vi.advanceTimersByTimeAsync(1_500);
+        held.resolve();
+        await outcome;
+        expect(
+          sent.filter((method) => method.startsWith("Runtime.")),
+          world,
+        ).toEqual(["Runtime.evaluate"]);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("expiring while its last check is pending stops no page script and sends nothing", async () => {
+    vi.useFakeTimers();
+    try {
+      for (const world of ["main", "isolated"] as const) {
+        const sent: string[] = [];
+        const cdp = {
+          send: async (method: string) => {
+            sent.push(method);
+            if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+            if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
+            return {};
+          },
+        };
+        let calls = 0;
+        const held = Promise.withResolvers<void>();
+        const authorize = () => (++calls === 2 ? held.promise : Promise.resolve());
+        const evaluating = ServerBrowserPage.evaluate(
+          cdp as unknown as Parameters<typeof ServerBrowserPage.evaluate>[0],
+          { expression: "1" },
+          1_000,
+          authorize,
+          world,
+        );
+        const outcome = expect(evaluating).rejects.toThrow("did not finish");
+        await vi.advanceTimersByTimeAsync(1_500);
+        held.resolve();
+        await outcome;
+        expect(
+          sent.filter((method) => method.startsWith("Runtime.")),
+          world,
+        ).toEqual([]);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -759,6 +864,24 @@ describe("server browser element refs", () => {
       5_000,
     );
     expect(result).toBe("Ready");
+  });
+
+  it("evaluates in an isolated world that shares the DOM but not page variables", async () => {
+    await page.setContent(
+      "<title>Ready</title><script>window.pageSecret = 42; document.modelContext = {};</script>",
+    );
+    const run = (expression: string, world?: "isolated" | "main") =>
+      ServerBrowserPage.evaluate(cdp, { expression }, 5_000, undefined, world);
+    const probe = "[document.title, typeof window.pageSecret, typeof document.modelContext]";
+    expect(await run(probe, "isolated")).toEqual(["Ready", "undefined", "undefined"]);
+    expect(await run(probe, "main")).toEqual(["Ready", "number", "object"]);
+    expect(await run(probe)).toEqual(["Ready", "number", "object"]);
+    await run("window.agentOnly = 1; document.body.dataset.agent = 'seen'", "isolated");
+    expect(await run("[typeof window.agentOnly, document.body.dataset.agent]", "main")).toEqual([
+      "undefined",
+      "seen",
+    ]);
+    expect(await run("await Promise.resolve(); document.title", "isolated")).toBe("Ready");
   });
 
   it("returns object contents even when a legacy caller asks for a remote reference", async () => {
