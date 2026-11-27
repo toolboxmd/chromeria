@@ -230,8 +230,8 @@ export interface IssueCountsTarget {
 /** What a server's listing says now of the repositories it holds. */
 export interface IssueListing {
   readonly environmentId: EnvironmentId;
-  /** `answered`: its latest read did. `unreachable`: not connected, or that read failed. */
-  readonly state: "answered" | "unreachable" | "pending";
+  /** `failed`: connected, and its latest read failed. `pending`: connected, no read settled. */
+  readonly state: "answered" | "pending" | "failed" | "disconnected";
   /** Repository keys of its latest answer, sorted, kept through a failed reread; null for none. */
   readonly repositories: ReadonlyArray<string> | null;
 }
@@ -245,9 +245,12 @@ export function issueListingOf(input: {
 }): IssueListing {
   return {
     environmentId: input.environmentId,
-    state:
-      !input.connected || input.failed
-        ? "unreachable"
+    // A server that dropped its connection keeps its reads waiting with their last answer, so
+    // the read alone would still look answered.
+    state: !input.connected
+      ? "disconnected"
+      : input.failed
+        ? "failed"
         : input.answer === null
           ? "pending"
           : "answered",
@@ -266,24 +269,25 @@ export interface IssueListingScope {
 }
 
 /**
- * Each listing server's scope: what its listing says now, and `held`, the scopes as last worked
- * out, where it says nothing. A listing read again for a new sort, search, filter or State keeps
- * its server's scope until it answers, and an unreachable server keeps the repositories it last
- * listed. A server no longer listing is dropped.
+ * The scope of each server the counts must cover: what its listing says now, and `held`, the
+ * scopes as last worked out, where it says nothing. A listing read again keeps its server's scope
+ * until it answers, and a server that stopped answering keeps the repositories it last listed.
+ * A server not connected that has listed nothing adds no rows to the view, and has no scope here.
  */
 export function issueListingScopes(
   listings: ReadonlyArray<IssueListing>,
   held: ReadonlyArray<IssueListingScope>,
 ): ReadonlyArray<IssueListingScope> {
-  return listings.map(({ environmentId, state, repositories }) => {
+  return listings.flatMap(({ environmentId, state, repositories }) => {
     const last = held.find((scope) => scope.environmentId === environmentId);
-    if (state === "answered") return { environmentId, repositories, answering: true };
-    if (state === "pending") return last ?? { environmentId, repositories: null, answering: false };
-    return {
-      environmentId,
-      repositories: repositories ?? last?.repositories ?? null,
-      answering: false,
-    };
+    if (state === "answered") return [{ environmentId, repositories, answering: true }];
+    if (state === "pending") {
+      return [last ?? { environmentId, repositories: null, answering: false }];
+    }
+    const listed = repositories ?? last?.repositories ?? null;
+    return listed === null && state === "disconnected"
+      ? []
+      : [{ environmentId, repositories: listed, answering: false }];
   });
 }
 

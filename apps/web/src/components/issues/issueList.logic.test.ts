@@ -25,6 +25,8 @@ import {
   sortIssues,
   staleIssueCount,
   type EnvironmentIssueEntry,
+  type IssueListing,
+  type IssueListingScope,
   type IssueListTarget,
   type IssueTreeNode,
   environmentIdsWithCapability,
@@ -253,7 +255,16 @@ describe("the line of numbers", () => {
       { state: "answered", repositories: ["github.com acme/api", "github.com acme/web"] },
     ],
     ["a connected server yet to answer", { connected: true }, { state: "pending" }],
-    ["a failed read with no answer before it", { connected: true, failed: true }, {}],
+    [
+      "a failed read with no answer before it",
+      { connected: true, failed: true },
+      { state: "failed" },
+    ],
+    [
+      "a failed reread that left its answer behind",
+      { connected: true, failed: true, answer: { repositories: [listed("acme/api")] } },
+      { state: "failed", repositories: ["github.com acme/api"] },
+    ],
     [
       // Its reads wait on the connection with their last answer, so the listing itself still
       // looks answered.
@@ -261,17 +272,20 @@ describe("the line of numbers", () => {
       { connected: false, answer: { repositories: [listed("acme/api")] } },
       { repositories: ["github.com acme/api"] },
     ],
-    [
-      "a failed reread that left its answer behind",
-      { connected: true, failed: true, answer: { repositories: [listed("acme/api")] } },
-      { repositories: ["github.com acme/api"] },
-    ],
+    ["a server that is not connected and never answered", { connected: false, failed: true }, {}],
   ] as const)("reads the listing of %s", (_name, input, expected) => {
     expect(issueListingOf({ environmentId: ENV_A, answer: null, failed: false, ...input })).toEqual(
-      { environmentId: ENV_A, state: "unreachable", repositories: null, ...expected },
+      { environmentId: ENV_A, state: "disconnected", repositories: null, ...expected },
     );
   });
 
+  const pendingB = { environmentId: ENV_B, state: "pending", repositories: null } as const;
+  const failedB = { environmentId: ENV_B, state: "failed", repositories: null } as const;
+  const disconnectedB = {
+    environmentId: ENV_B,
+    state: "disconnected",
+    repositories: null,
+  } as const;
   it.each([
     [
       "each answering server's own listing",
@@ -283,31 +297,35 @@ describe("the line of numbers", () => {
       // A new sort, search, filter or State reads the rows again, and the slower server's
       // listing says nothing for a while.
       "the scope held for a server whose listing is being read again",
-      [
-        answered(ENV_A, [ONLY_A, SHARED]),
-        { environmentId: ENV_B, state: "pending", repositories: null },
-      ],
+      [answered(ENV_A, [ONLY_A, SHARED]), pendingB],
       BOTH,
       BOTH,
     ],
     [
-      "nothing for a server that has never answered",
-      [
-        answered(ENV_A, [ONLY_A, SHARED]),
-        { environmentId: ENV_B, state: "pending", repositories: null },
-      ],
+      "unknown for a connected server that has never answered",
+      [answered(ENV_A, [ONLY_A, SHARED]), pendingB],
+      [],
+      [scope(ENV_A, [ONLY_A, SHARED]), scope(ENV_B, null, false)],
+    ],
+    [
+      "unknown for a connected server whose only read failed",
+      [answered(ENV_A, [ONLY_A, SHARED]), failedB],
       [],
       [scope(ENV_A, [ONLY_A, SHARED]), scope(ENV_B, null, false)],
     ],
     [
       // The listing of a new row query has no answer of its own to keep.
-      "the repositories an unreachable server last listed, and that it cannot be asked",
-      [
-        answered(ENV_A, [ONLY_A, SHARED]),
-        { environmentId: ENV_B, state: "unreachable", repositories: null },
-      ],
+      "the repositories a server that stopped answering last listed, and that it cannot be asked",
+      [answered(ENV_A, [ONLY_A, SHARED]), disconnectedB],
       BOTH,
       [scope(ENV_A, [ONLY_A, SHARED]), scope(ENV_B, [ONLY_B, SHARED], false)],
+    ],
+    [
+      // A machine switched off since the page opened adds no rows, so nothing of it is expected.
+      "none for a server that is not connected and has listed nothing",
+      [answered(ENV_A, [ONLY_A, SHARED]), disconnectedB],
+      [scope(ENV_A, [ONLY_A, SHARED]), scope(ENV_B, null, false)],
+      [scope(ENV_A, [ONLY_A, SHARED])],
     ],
     [
       "a new answer in place of the scope held, and no server that stopped listing",
@@ -320,6 +338,49 @@ describe("the line of numbers", () => {
     expect(scopes).toEqual(expected);
     // Worked out again from itself it does not move, so holding it settles.
     expect(issueListingScopes(listings, scopes)).toEqual(scopes);
+  });
+
+  it("counts what is listed while a server is switched off, and never keeps that total once it lists more", () => {
+    const fromA = [ENV_A, counted(100, 9, 4)] as const;
+    const fromB = [ENV_B, counted(13, 3, 5)] as const;
+    const a = answered(ENV_A, [ONLY_A, SHARED]);
+    /** The scopes, the reads they ask for, and the total those reads' answers give. */
+    const step = (
+      listings: ReadonlyArray<IssueListing>,
+      held: ReadonlyArray<IssueListingScope>,
+      answers: ReadonlyArray<readonly [EnvironmentId, GitHubIssueCountsResult]>,
+    ) => {
+      const scopes = issueListingScopes(listings, held);
+      const targets = issueCountTargets(scopes);
+      // A server whose read has no answer yet is being read.
+      const reading = (targets ?? []).length > answers.length;
+      return {
+        scopes,
+        targets,
+        total: issueCountsTotal({ targets, answers, failed: false, reading }),
+      };
+    };
+
+    // The second server has been off since the page opened: the first one's repositories are
+    // the listed ones, and their counts are exact.
+    const off = step([a, disconnectedB], [], [fromA]);
+    expect(off.targets).toEqual([target(ENV_A, ONLY_A, SHARED)]);
+    expect(off.total).toEqual({ ...counted(100, 9, 4), exact: true });
+
+    // It connects: until its listing answers, what it lists is unknown, and so are the numbers.
+    const connecting = step([a, pendingB], off.scopes, [fromA]);
+    expect(connecting.total).toBeNull();
+
+    // It lists a repository only it has: unknown until its own counts answer, then the larger
+    // total. The first server is asked for nothing new.
+    const b = answered(ENV_B, [ONLY_B, SHARED]);
+    const listing = step([a, b], connecting.scopes, [fromA]);
+    expect(listing.targets).toEqual([target(ENV_A, ONLY_A, SHARED), target(ENV_B, ONLY_B)]);
+    expect(listing.total).toBeNull();
+    expect(step([a, b], listing.scopes, [fromA, fromB]).total).toEqual({
+      ...counted(113, 12, 9),
+      exact: true,
+    });
   });
 
   it.each([

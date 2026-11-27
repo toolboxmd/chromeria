@@ -137,12 +137,13 @@ Refresh reads them again, the numbers stay in sight with a `~` in front. If the 
 more open Issues than the total says, the line gives the rows' own count and "Open Issues: unknown"
 until the next Refresh.
 
-The numbers need every listed repository to be counted by a server that answers. A server that is
-offline or failing does not hold them back when another server lists the same repositories. It
-does when it lists a repository no other server has, or when it has been unreachable since the
-page was opened, so the page does not know which repositories it lists. The line then says "Last
-7 days: unknown" instead of a number, as it does when a server is too old to count or GitHub did
-not answer in time. The rows are not affected.
+The totals are for the repositories listed, and need each of them counted by a server that
+answers. A server that stopped answering does not hold them back when another server lists the
+same repositories; it does when it listed a repository no other server has. A server that is not
+connected and has listed nothing since the page was opened adds no rows and no repositories, so the
+numbers go without it. When they cannot be read, the line says "Last 7 days: unknown" instead of
+a number: a connected server has not yet said what it lists, a server is too old to count, or
+GitHub did not answer in time. The rows are not affected.
 
 A count ends in `+` while more Issues are still being read, and a group's count starts with `~`
 until every Issue and its threads are read, because a row can still move to another group.
