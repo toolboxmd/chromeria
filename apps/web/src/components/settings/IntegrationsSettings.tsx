@@ -1,9 +1,11 @@
 import { managedCapabilityDenial } from "@t3tools/client-runtime/contract-labels";
 import { DeviceHostUpdates } from "../device/DeviceHostUpdates";
 import { DeviceToolVersions } from "../device/DeviceToolVersions";
+import { APP_BASE_NAME } from "../../branding";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { DeviceSourcesSettings } from "./DeviceSourcesSettings";
+import { ChromeCookieMirrorStatus } from "./ChromeCookieMirrorStatus";
 import {
   AuthSettingsWriteScope,
   BrowserImportFailureReason,
@@ -699,7 +701,7 @@ function BrowserRecordingFrameRateSetting({ disabled }: { readonly disabled: boo
 
 const LINK_TARGET_LABELS: Readonly<Record<BrowserLinkTarget, string>> = {
   system: msg("Your default browser"),
-  app: "T3 Code",
+  app: APP_BASE_NAME,
 };
 
 function BrowserLinkTargetSetting({ disabled }: { readonly disabled: boolean }) {
@@ -1705,6 +1707,7 @@ export function BrowserSettingsPanel() {
       </SettingsSection>
       <SettingsSection id="browser" title={gt("Browsing")}>
         <SettingsUnavailableGroup message={desktopOnlyMessage}>
+          {isElectron ? <ChromeCookieMirrorStatus /> : null}
           <BrowserProfilesSetting disabled={desktopOnly} />
           <BrowserLinkTargetSetting disabled={desktopOnly} />
           <BrowserAutoShowFloatingPreviewSetting disabled={desktopOnly} />
