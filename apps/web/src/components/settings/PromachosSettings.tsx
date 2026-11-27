@@ -1,0 +1,115 @@
+import { T, useGT, useMessages } from "gt-react";
+import { useEnvironmentProviders } from "../../state/environments";
+import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
+import { getCustomModelOptionsByInstance } from "../../modelSelection";
+import {
+  applyProviderInstanceSettings,
+  deriveProviderInstanceEntries,
+} from "../../providerInstances";
+import { Button } from "../ui/button";
+import { ChromeriaFeatureMark } from "../ChromeriaFeatureMark";
+import { ColorList } from "./ColorList";
+import { colorProviderChoices } from "./ColorPicker.logic";
+import { PromachosHomeSettings } from "./PromachosHomeSettings";
+import { planPromachosReset } from "./PromachosSettings.logic";
+import { SettingsGroup } from "./SettingsGroup";
+import { useSettingsScope } from "./SettingsScopeContext";
+import { SettingsPageContainer, SettingsSection } from "./settingsLayout";
+import { useScopedSettings } from "./useScopedSettings";
+import { useScopedModelDisabledReason } from "./useScopedModelAvailability";
+import { usePrismSettingsSave } from "./usePrismSettingsSave";
+
+export function PromachosSettings() {
+  const gt = useGT();
+  const resolve = useMessages();
+  const { scope, target, targets, environments } = useSettingsScope();
+  const settings = useScopedSettings();
+  const { pendingWrite, saveError, setSaveError, savePlan, saveRole } = usePrismSettingsSave();
+  const providersByEnvironment = useEnvironmentProviders();
+  const providers =
+    (target && providersByEnvironment.get(target.environmentId)) ?? EMPTY_SERVER_PROVIDERS;
+  const entries = applyProviderInstanceSettings(
+    deriveProviderInstanceEntries(providers),
+    settings,
+    target?.projectId ?? null,
+  );
+  const options = getCustomModelOptionsByInstance(settings, providers);
+  const disabledReason = useScopedModelDisabledReason(settings, entries);
+  const providerChoices = colorProviderChoices(entries, options, disabledReason, resolve);
+  const projectScope = scope.kind === "project" || scope.kind === "checkout";
+  return (
+    <SettingsPageContainer width="wide">
+      <PromachosHomeSettings />
+      <SettingsSection
+        id="promachos-colors"
+        // oxlint-disable-next-line t3code/no-untranslated-copy -- Promachos is a product name
+        title="Promachos"
+        titleAction={<ChromeriaFeatureMark />}
+        variant="plain"
+        headerAction={
+          <Button
+            size="xs"
+            variant="ghost-muted"
+            disabled={!target || pendingWrite !== null}
+            onClick={() => {
+              void savePlan(planPromachosReset(scope, environments), {
+                kind: "inherit",
+                roles: ["promachos"],
+              }).catch((cause: unknown) =>
+                setSaveError(
+                  cause instanceof Error
+                    ? cause.message
+                    : gt("Could not reset Promachos settings."),
+                ),
+              );
+            }}
+          >
+            {projectScope
+              ? gt("Use environment Promachos settings")
+              : gt("Reset Promachos settings")}
+          </Button>
+        }
+      >
+        <p className="px-3 text-sm text-muted-foreground sm:px-4">
+          <T>
+            New Promachos conversations use the first Color with capacity; the rest are fallbacks.
+            An empty list uses the model picked in the composer. Changes save automatically.
+          </T>
+        </p>
+        {!target && (
+          <p role="status" className="px-3 text-sm text-muted-foreground sm:px-4">
+            <T>Connect an environment to edit Promachos preferences.</T>
+          </p>
+        )}
+        {saveError && (
+          <p role="alert" className="px-3 text-sm text-destructive sm:px-4">
+            {saveError}
+          </p>
+        )}
+        <SettingsGroup>
+          <div className="space-y-3 p-4">
+            {pendingWrite && (
+              <p role="status" className="text-xs text-muted-foreground">
+                <T>Saving…</T>
+              </p>
+            )}
+            <ColorList
+              // oxlint-disable-next-line t3code/no-untranslated-copy -- Promachos is a product name
+              title="Promachos"
+              saved={settings.prismRoles.promachos.models}
+              providers={providerChoices}
+              disabled={!target}
+              saving={pendingWrite !== null}
+              mixed={targets.some(
+                (candidate) =>
+                  JSON.stringify(candidate.settings.prismRoles.promachos.models) !==
+                  JSON.stringify(settings.prismRoles.promachos.models),
+              )}
+              save={(models) => saveRole({ kind: "models", role: "promachos", models })}
+            />
+          </div>
+        </SettingsGroup>
+      </SettingsSection>
+    </SettingsPageContainer>
+  );
+}
