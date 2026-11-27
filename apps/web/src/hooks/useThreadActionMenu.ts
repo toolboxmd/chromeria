@@ -66,6 +66,7 @@ function failureToast(title: string, error: unknown) {
 }
 
 export function useThreadActionMenu(input: {
+  /** The thread `openMenu` acts on; a list passes null and names its row to `openMenu`. */
   readonly threadRef: ScopedThreadRef | null;
   readonly projectCwd: string | null;
   /** Omitted where no inline title editor is rendered; the rename item is then disabled. */
@@ -73,7 +74,7 @@ export function useThreadActionMenu(input: {
   readonly onFind?: ((threadRef: ScopedThreadRef) => void) | undefined;
   readonly canShareWithGuest: boolean;
 }) {
-  const { threadRef, projectCwd, onStartRename, onFind, canShareWithGuest } = input;
+  const { projectCwd, onStartRename, onFind, canShareWithGuest } = input;
   const router = useRouter();
   const projects = useProjects();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -119,7 +120,8 @@ export function useThreadActionMenu(input: {
   });
 
   /** The thread's menu as of now, and a runner for its actions. Null until the thread loads. */
-  const readMenu = () => {
+  const readMenu = (target?: ScopedThreadRef) => {
+    const threadRef = target ?? input.threadRef;
     if (threadRef === null) return null;
     const thread = readThreadShell(threadRef);
     if (!thread) return null;
@@ -291,7 +293,14 @@ export function useThreadActionMenu(input: {
           return;
         }
         case "copy-path": {
-          const workspacePath = thread.worktreePath ?? projectCwd;
+          const workspacePath =
+            thread.worktreePath ??
+            projectCwd ??
+            projects.find(
+              (candidate) =>
+                candidate.environmentId === thread.environmentId &&
+                candidate.id === thread.projectId,
+            )?.workspaceRoot;
           if (!workspacePath) {
             toastManager.add(
               stackedThreadToast({
@@ -372,11 +381,15 @@ export function useThreadActionMenu(input: {
     return { items, run };
   };
 
-  const openMenu = (position: { x: number; y: number }, source?: ContextMenuSource) => {
+  const openMenu = (
+    position: { x: number; y: number },
+    source?: ContextMenuSource,
+    target?: ScopedThreadRef,
+  ) => {
     void (async () => {
       const api = readLocalApi();
-      if (!api || threadRef === null) return;
-      const menu = readMenu();
+      if (!api || (target ?? input.threadRef) === null) return;
+      const menu = readMenu(target);
       if (!menu) {
         failureToast(
           m(msg("Thread actions unavailable")),

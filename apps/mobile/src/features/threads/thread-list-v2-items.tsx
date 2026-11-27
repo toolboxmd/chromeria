@@ -327,6 +327,12 @@ type ThreadListV2ShelfHeaderProps = {
 const TRIAGE_MENU_ACTION_IDS = new Set(["settle", "snooze", "unsettle", "unsnooze"]);
 
 const SHELF_COPY = {
+  promachos: {
+    label: msg("Promachos", { $context: "thread list section" }),
+    count: msg("{count, plural, one {{count} Promachos thread} other {{count} Promachos threads}}"),
+    collapse: msg("Collapses the Promachos threads."),
+    expand: msg("Expands the Promachos threads."),
+  },
   working: {
     label: msg("Working", { $context: "thread list section" }),
     count: msg("{count, plural, one {{count} working thread} other {{count} working threads}}"),
@@ -369,6 +375,12 @@ function ThreadListV2ShelfHeader(
     />
   );
 }
+
+export const ThreadListV2PromachosShelfHeader = memo(function ThreadListV2PromachosShelfHeader(
+  props: ThreadListV2ShelfHeaderProps,
+) {
+  return <ThreadListV2ShelfHeader {...props} kind="promachos" />;
+});
 
 export const ThreadListV2WorkingShelfHeader = memo(function ThreadListV2WorkingShelfHeader(
   props: ThreadListV2ShelfHeaderProps,

@@ -15,6 +15,7 @@ import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-searc
 import { AnimatedLegendList } from "@legendapp/list/reanimated";
 import { THREAD_LIST_ROW_LAYOUT } from "./threadListAnimations";
 import { useAtomValue } from "@effect/atom-react";
+import { promachosHomeRefsAtom } from "../../state/promachos-home";
 import { useMemo, useRef, useState } from "react";
 import { Platform, StyleSheet, View } from "react-native";
 import { GestureDetector, useNativeGesture } from "react-native-gesture-handler";
@@ -26,7 +27,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { scopedProjectKey, scopedThreadKey } from "../../lib/scopedEntities";
 import { useProjects } from "../../state/entities";
-import { steadyNavigationThreadShellsAtom } from "../../state/threads";
+import { environmentThreadShells, steadyNavigationThreadShellsAtom } from "../../state/threads";
 import { useThreadSearch } from "../../state/queries";
 import { useThreadListV2ShelfPreferences } from "./use-thread-list-v2-shelf-preferences";
 import { useThreadListNow } from "./use-thread-list-now";
@@ -67,6 +68,7 @@ import {
   ThreadListV2SettledShelfHeader,
   ThreadListV2ShowMoreRow,
   ThreadListV2SnoozedShelfHeader,
+  ThreadListV2PromachosShelfHeader,
   ThreadListV2WorkingShelfHeader,
 } from "./thread-list-v2-items";
 import { useThreadRowProviderInstanceResolver } from "./thread-provider-instance";
@@ -132,6 +134,11 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
   const projects = useProjects();
   const threads = useAtomValue(steadyNavigationThreadShellsAtom);
   const selectedThreadKey = useSidebarRowThreadKey(props.selectedThreadKey);
+  const listThreads = useAtomValue(
+    props.searchQuery.trim().length > 0
+      ? environmentThreadShells.visibleThreadShellsAtom
+      : steadyNavigationThreadShellsAtom,
+  );
   const { environments: workspaceEnvironments, state: catalogState } = useWorkspaceState();
   const { savedConnectionsById } = useSavedRemoteConnections();
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
@@ -151,7 +158,8 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     regenerateThreadTitle,
   } = useThreadListActions();
   const pendingTasks = usePendingNewTasks();
-  const launchingThreads = useLaunchingThreads(threads);
+  const launchingThreads = useLaunchingThreads(listThreads);
+  const launchingNavigationThreads = useLaunchingThreads(threads);
   const activeNewTask = useActiveNewTask();
   const queuedThreadKeys = useQueuedThreadKeys();
   const selectDetail = useSelectWorkspaceDetail();
@@ -247,6 +255,8 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     setSettledVisibleCount((count) => count + THREAD_LIST_V2_SETTLED_PAGE_COUNT);
   const {
     loaded: shelfPreferencesLoaded,
+    promachosShelfExpanded,
+    togglePromachosShelf,
     settledShelfExpanded,
     snoozedShelfExpanded,
     workingShelfEnabled,
@@ -255,6 +265,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     toggleSnoozedShelf,
     toggleWorkingShelf,
   } = useThreadListV2ShelfPreferences();
+  const promachosHomeRefs = useAtomValue(promachosHomeRefsAtom);
   const now = useThreadListNow(threads);
   const listEnvironments = useAtomValue(threadListEnvironmentsAtom);
   const {
@@ -278,6 +289,8 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     olderSettledShelf,
   } = useThreadListV2({
     threads: launchingThreads,
+    navigationThreads: launchingNavigationThreads,
+    promachosHomeRefs,
     pendingTasks,
     environmentId: options.selectedEnvironmentId,
     projectRefs: selectedProjectScope === null ? null : selectedProjectScope.projectRefs,
@@ -294,6 +307,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
     shelfPreferencesLoaded,
     workingShelfEnabled,
     workingShelfExpanded,
+    promachosShelfExpanded,
     snoozedShelfExpanded,
     settledShelfExpanded,
     selectedThreadKey,
@@ -490,6 +504,16 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
           />
         );
       }
+      case "v2-promachos-shelf":
+        return (
+          <ThreadListV2PromachosShelfHeader
+            count={item.count}
+            disabled={item.disabled}
+            expanded={item.expanded}
+            onToggle={togglePromachosShelf}
+            pane="sidebar"
+          />
+        );
       case "v2-working-shelf":
         return (
           <ThreadListV2WorkingShelfHeader
@@ -536,7 +560,7 @@ function ThreadNavigationSidebarPane(props: ThreadNavigationSidebarProps) {
   };
   const header = (
     <WorkspaceListHeader
-      accessibilityLabel={gt("{appName}, Threads", { appName: "T3 Code" })}
+      accessibilityLabel={gt("{appName}, Threads", { appName: "Chromeria" })}
       onOpenEnvironments={props.onOpenEnvironmentSettings}
       onOpenSettings={props.onOpenSettings}
       search={{

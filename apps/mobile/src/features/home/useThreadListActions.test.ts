@@ -7,6 +7,7 @@ import {
   ProviderInstanceId,
   RunId,
   ThreadId,
+  type ScopedProjectRef,
   type ThreadTitleRegenerationOutcome,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -24,6 +25,7 @@ const state = vi.hoisted(() => ({
   onArchivedRefresh: undefined as (() => void) | undefined,
   scopes: new Map<string, Set<string>>(),
   shells: [] as EnvironmentThreadShell[],
+  promachosHomeRefs: [] as ScopedProjectRef[],
   requests: [] as {
     action: string;
     environmentId: string;
@@ -76,6 +78,9 @@ vi.mock("../../state/session", () => ({
 vi.mock("../../state/presentation", () => ({
   connectedEnvironmentIdsAtom: "connected-environments",
 }));
+vi.mock("../../state/promachos-home", () => ({
+  promachosHomeRefsAtom: "promachos-home-refs",
+}));
 vi.mock("../../state/server", () => ({
   environmentServerConfigsAtom: "server-configs",
 }));
@@ -94,24 +99,27 @@ vi.mock("../../state/atom-registry", async () => {
             ? state.holdingRows
             : atom === "thread-shells"
               ? state.shells
-              : atom === "queued-thread-keys" || atom === "pending-sync"
-                ? new Set<string>()
-                : new Map(
-                    [...state.scopes.keys()].map((environmentId) => [
-                      environmentId,
-                      {
-                        environment: {
-                          capabilities: {
-                            threadSettlement: true,
-                            threadSnooze: true,
-                            threadPinning: true,
-                            threadPinReorder: true,
-                            threadTitleRegeneration: true,
+              : atom === "promachos-home-refs"
+                ? state.promachosHomeRefs
+                : atom === "queued-thread-keys" || atom === "pending-sync"
+                  ? new Set<string>()
+                  : new Map(
+                      [...state.scopes.keys()].map((environmentId) => [
+                        environmentId,
+                        {
+                          environment: {
+                            capabilities: {
+                              threadSettlement: true,
+                              threadSnooze: true,
+                              threadPinning: true,
+                              threadPinReorder: true,
+                              threadActiveReorder: true,
+                              threadTitleRegeneration: true,
+                            },
                           },
                         },
-                      },
-                    ]),
-                  ),
+                      ]),
+                    ),
   };
   // Real atoms such as composerDraftsAtom go to a real registry; strings are stubbed state.
   return {
@@ -240,6 +248,7 @@ beforeEach(() => {
   ]);
   state.requests = [];
   state.shells = [];
+  state.promachosHomeRefs = [];
   state.dialogs = [];
   state.alerts = [];
   state.afterRequest = undefined;
@@ -698,5 +707,70 @@ describe("thread archive guard", () => {
     state.shells = [thread];
     expect(await useThreadListActions().archiveThread(makeThread())).toBe(false);
     expect(state.requests).toEqual([]);
+  });
+});
+
+describe("Promachos shelf arrangement actions", () => {
+  const home = { environmentId: primaryEnvironmentId, projectId: ProjectId.make("project") };
+  it.each([
+    { state: { pinnedAt: "2026-09-02T00:00:00.000Z" }, action: "unpin" },
+    { state: { settledOverride: "settled" as const }, action: "unsettle" },
+    { state: { snoozedUntil: "2099-01-01T00:00:00.000Z" }, action: "unsnooze" },
+  ])(
+    "returns a Promachos thread with $action without writing positional keys",
+    async ({ state: parked, action }) => {
+      const moved = makeThread(parked);
+      state.promachosHomeRefs = [home];
+      state.shells = [
+        moved,
+        makeThread({ id: ThreadId.make("active"), projectId: ProjectId.make("regular") }),
+      ];
+
+      expect(
+        await useThreadListActions().moveThread(moved, {
+          section: "active",
+          targetId: null,
+          placement: "before",
+        }),
+      ).toBe(true);
+      expect(state.requests).toEqual([
+        {
+          action,
+          environmentId: primaryEnvironmentId,
+          input: {
+            threadId: moved.id,
+            ...(action === "unpin" ? {} : { reason: "user" }),
+          },
+        },
+      ]);
+      expect(state.dropBusy).toBe(false);
+      expect(state.pendingOrder).toBeNull();
+    },
+  );
+
+  it("preserves Active ordering when only another environment has the same project ID as its Promachos home", async () => {
+    const moved = makeThread({ pinnedAt: "2026-09-02T00:00:00.000Z" });
+    state.promachosHomeRefs = [{ ...home, environmentId: otherEnvironmentId }];
+    state.shells = [moved, makeThread({ id: ThreadId.make("active"), activeOrderKey: "m" })];
+
+    expect(
+      await useThreadListActions().moveThread(moved, {
+        section: "active",
+        targetId: null,
+        placement: "before",
+      }),
+    ).toBe(true);
+    expect(state.requests).toEqual([
+      { action: "unpin", environmentId: primaryEnvironmentId, input: { threadId: moved.id } },
+      {
+        action: "reorderActive",
+        environmentId: primaryEnvironmentId,
+        input: {
+          threadId: moved.id,
+          orderKey: expect.any(String),
+        },
+      },
+    ]);
+    expect(state.dropBusy).toBe(false);
   });
 });

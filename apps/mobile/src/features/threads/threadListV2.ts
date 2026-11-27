@@ -33,7 +33,12 @@ import {
   sortPinnedThreadsByOrderKey,
   sortSettledThreads,
 } from "@t3tools/client-runtime/state/thread-sort";
-import { isListedThreadLineage, type EnvironmentId, type ProjectId } from "@t3tools/contracts";
+import {
+  isListedThreadLineage,
+  type EnvironmentId,
+  type ProjectId,
+  type ScopedProjectRef,
+} from "@t3tools/contracts";
 import type { SnoozePresetSetting } from "@t3tools/contracts/settings";
 import type { MenuAction } from "@react-native-menu/menu";
 
@@ -374,6 +379,7 @@ function sortThreadsForListV2<
   T extends {
     readonly id: string;
     readonly createdAt: string;
+    readonly updatedAt: string;
     readonly unsettledAt?: string | null | undefined;
     readonly activeOrderKey?: string | null | undefined;
     readonly environmentId?: string | undefined;
@@ -382,8 +388,15 @@ function sortThreadsForListV2<
   return sortActiveThreadsByOrderKey(threads);
 }
 
+/** The Promachos home's projects, whose unpinned threads sit in his shelf. */
+function promachosProjectKeys(refs: ReadonlyArray<ScopedProjectRef> = []): ReadonlySet<string> {
+  return new Set(refs.map((ref) => `${ref.environmentId}:${ref.projectId}`));
+}
+
+/** Canonical card section for Move up/down, independent of search or scope. */
 export function getThreadListV2OrderedSection(input: {
   readonly threads: readonly EnvironmentThreadShell[];
+  readonly promachosHomeRefs?: ReadonlyArray<ScopedProjectRef>;
   readonly section: "pinned" | "active";
   readonly pendingOrder?: PendingThreadOrder | null;
   readonly now: string;
@@ -392,6 +405,7 @@ export function getThreadListV2OrderedSection(input: {
   readonly queuedThreadKeys?: ReadonlySet<string>;
 }): EnvironmentThreadShell[] {
   const queuedThreadKeys = input.queuedThreadKeys?.size ? input.queuedThreadKeys : undefined;
+  const promachosKeys = promachosProjectKeys(input.promachosHomeRefs);
   const threads = input.threads.filter((thread) => {
     if (thread.archivedAt !== null || !isListedThreadLineage(thread.lineage)) return false;
     if (
@@ -407,6 +421,11 @@ export function getThreadListV2OrderedSection(input: {
     ) {
       return false;
     }
+    if (
+      input.section === "active" &&
+      promachosKeys.has(`${thread.environmentId}:${thread.projectId}`)
+    )
+      return false;
     return (thread.pinnedAt != null) === (input.section === "pinned");
   });
   const ordered =
@@ -434,6 +453,10 @@ export interface ThreadListV2Layout {
   readonly hiddenSettledCount: number;
   /** The settled rows the shelf may list, before its visible limit. */
   readonly listedSettledThreads: ReadonlyArray<EnvironmentThreadShell>;
+  /** Promachos home threads matching the current filters, including collapsed rows. */
+  readonly promachosCount: number;
+  readonly promachosShelfHeaderIndex: number | null;
+  /** Working threads folded away by the Working section beta. */
   readonly workingCount: number;
   readonly workingShelfHeaderIndex: number | null;
   readonly snoozedCount: number;
@@ -468,6 +491,15 @@ export interface ThreadListV2PendingListItem {
   readonly showTrailingDivider: boolean;
 }
 
+export interface ThreadListV2PromachosShelfListItem {
+  readonly type: "v2-promachos-shelf";
+  readonly key: "v2-promachos-shelf";
+  readonly count: number;
+  readonly expanded: boolean;
+  /** See the snoozed shelf header's field. */
+  readonly disabled: boolean;
+}
+
 export interface ThreadListV2WorkingShelfListItem {
   readonly type: "v2-working-shelf";
   readonly key: "v2-working-shelf";
@@ -496,6 +528,7 @@ export interface ThreadListV2SettledShelfListItem {
 export type ThreadListV2ListItem =
   | ThreadListV2ThreadListItem
   | ThreadListV2PendingListItem
+  | ThreadListV2PromachosShelfListItem
   | ThreadListV2WorkingShelfListItem
   | ThreadListV2SnoozedShelfListItem
   | ThreadListV2SettledShelfListItem;
@@ -506,6 +539,7 @@ export function isThreadListV2ListItem(value: {
   return (
     value.type === "v2-thread" ||
     value.type === "v2-pending" ||
+    value.type === "v2-promachos-shelf" ||
     value.type === "v2-working-shelf" ||
     value.type === "v2-snoozed-shelf" ||
     value.type === "v2-settled-shelf"
@@ -542,6 +576,13 @@ export function threadListV2ListItemsAreEqual(
         previous.pendingTask === item.pendingTask &&
         previous.showPendingDivider === item.showPendingDivider &&
         previous.showTrailingDivider === item.showTrailingDivider
+      );
+    case "v2-promachos-shelf":
+      return (
+        previous.type === "v2-promachos-shelf" &&
+        previous.count === item.count &&
+        previous.expanded === item.expanded &&
+        previous.disabled === item.disabled
       );
     case "v2-working-shelf":
       return (
@@ -593,7 +634,10 @@ function resolveThreadListV2ItemTimeLabel(
 export function buildThreadListV2ListItems(input: {
   readonly items: ReadonlyArray<ThreadListV2Item>;
   readonly pendingTasks: ReadonlyArray<PendingNewTask>;
+  readonly promachosCount?: number;
+  readonly promachosShelfHeaderIndex?: number | null;
   readonly workingCount?: number;
+  readonly promachosShelfExpanded?: boolean;
   readonly workingShelfExpanded?: boolean;
   readonly workingShelfHeaderIndex?: number | null;
   readonly snoozedCount?: number;
@@ -656,7 +700,10 @@ export function buildThreadListV2ListItems(input: {
   const settledCount = input.settledCount ?? 0;
   const settledShelfHeaderIndex = input.settledShelfHeaderIndex ?? null;
   const snoozedEnd = settledShelfHeaderIndex ?? threadItems.length;
-  const workingEnd = snoozedShelfHeaderIndex ?? snoozedEnd;
+  const promachosCount = input.promachosCount ?? 0;
+  const promachosShelfHeaderIndex = input.promachosShelfHeaderIndex ?? null;
+  const promachosEnd = snoozedShelfHeaderIndex ?? snoozedEnd;
+  const workingEnd = promachosShelfHeaderIndex ?? promachosEnd;
   const activeEnd = workingShelfHeaderIndex ?? workingEnd;
   const result: ThreadListV2ListItem[] = [...pendingItems, ...threadItems.slice(0, activeEnd)];
   const shelfDisabled = input.shelfPreferencesLoading === true;
@@ -669,6 +716,16 @@ export function buildThreadListV2ListItems(input: {
       disabled: shelfDisabled,
     });
     result.push(...threadItems.slice(workingShelfHeaderIndex, workingEnd));
+  }
+  if (promachosShelfHeaderIndex !== null && promachosCount > 0) {
+    result.push({
+      type: "v2-promachos-shelf",
+      key: "v2-promachos-shelf",
+      count: promachosCount,
+      expanded: input.promachosShelfExpanded === true,
+      disabled: shelfDisabled,
+    });
+    result.push(...threadItems.slice(promachosShelfHeaderIndex, promachosEnd));
   }
   if (snoozedShelfHeaderIndex !== null && snoozedCount > 0) {
     result.push({
@@ -726,6 +783,7 @@ function sortSettledThreadsReusingLast(
 export function buildThreadListV2Items(input: {
   readonly pendingOrder?: PendingThreadOrder | null;
   readonly threads: ReadonlyArray<EnvironmentThreadShell>;
+  readonly promachosHomeRefs?: ReadonlyArray<ScopedProjectRef>;
   readonly environmentId: EnvironmentId | null;
   readonly projectRefs?: ReadonlyArray<{
     readonly environmentId: EnvironmentId;
@@ -738,6 +796,9 @@ export function buildThreadListV2Items(input: {
   readonly settledLimit?: number;
   readonly now: string;
   readonly workingShelfEnabled?: boolean;
+  /** Expands the Promachos shelf into cards. Search also reveals matching rows. */
+  readonly promachosShelfExpanded?: boolean;
+  /** Expands the Working shelf into rows. Collapsed is the default. */
   readonly workingShelfExpanded?: boolean;
   readonly isWorking?: (thread: EnvironmentThreadShell) => boolean;
   readonly inboxReturnAt?: (thread: EnvironmentThreadShell) => number | undefined;
@@ -772,6 +833,8 @@ export function buildThreadListV2Items(input: {
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
   const working: EnvironmentThreadShell[] = [];
+  const promachos: EnvironmentThreadShell[] = [];
+  const promachosKeys = promachosProjectKeys(input.promachosHomeRefs);
   const settled: EnvironmentThreadShell[] = [];
   const snoozed: EnvironmentThreadShell[] = [];
   let nextSnoozeWakeAt: string | null = null;
@@ -826,6 +889,8 @@ export function buildThreadListV2Items(input: {
       settled.push(thread);
     } else if (thread.pinnedAt != null) {
       pinned.push(thread);
+    } else if (promachosKeys.has(`${thread.environmentId}:${thread.projectId}`)) {
+      promachos.push(thread);
     } else if (workingShelfEnabled && (input.isWorking ?? isThreadWorking)(thread)) {
       working.push(thread);
     } else {
@@ -862,6 +927,8 @@ export function buildThreadListV2Items(input: {
       })),
       hiddenSettledCount: 0,
       listedSettledThreads: [],
+      promachosCount: 0,
+      promachosShelfHeaderIndex: null,
       workingCount: 0,
       workingShelfHeaderIndex: null,
       snoozedCount: 0,
@@ -882,6 +949,13 @@ export function buildThreadListV2Items(input: {
       parseTimestampMs(left.snoozedUntil ?? "") - parseTimestampMs(right.snoozedUntil ?? ""),
   );
   const selectedThreadKey = input.selectedThreadKey ?? null;
+  const orderedPromachos = sortThreadsForListV2(promachos);
+  const visiblePromachos =
+    input.promachosShelfExpanded === true || query.length > 0
+      ? orderedPromachos
+      : orderedPromachos.filter(
+          (thread) => `${thread.environmentId}:${thread.id}` === selectedThreadKey,
+        );
   const visibleWorking =
     input.workingShelfExpanded === true
       ? orderedWorking
@@ -955,6 +1029,17 @@ export function buildThreadListV2Items(input: {
       isLast: false,
     });
   }
+  const promachosShelfHeaderIndex = orderedPromachos.length > 0 ? items.length : null;
+  for (const thread of visiblePromachos) {
+    items.push({
+      thread,
+      variant: "card",
+      snoozed: false,
+      pinned: false,
+      wokeAt: resolveThreadListV2WokeAt(thread, { now }),
+      isLast: false,
+    });
+  }
   const snoozedShelfHeaderIndex = orderedSnoozed.length > 0 ? items.length : null;
   for (const thread of visibleSnoozed) {
     items.push({
@@ -985,6 +1070,8 @@ export function buildThreadListV2Items(input: {
     items,
     hiddenSettledCount: Math.max(0, settledTotal - pagedSettled.length),
     listedSettledThreads: listedSettled,
+    promachosCount: orderedPromachos.length,
+    promachosShelfHeaderIndex,
     workingCount: orderedWorking.length,
     workingShelfHeaderIndex,
     snoozedCount: orderedSnoozed.length,

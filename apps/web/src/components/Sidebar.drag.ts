@@ -16,6 +16,7 @@ type Layout = Parameters<SortingStrategy>[0];
 const isShelfHeader = (item: SidebarListItem | undefined) =>
   item?.kind === "marker" &&
   (item.marker === "working-header" ||
+    item.marker === "promachos-header" ||
     item.marker === "snoozed-header" ||
     item.marker === "settled-header");
 
@@ -56,7 +57,9 @@ export function createSidebarCollisionDetection(
       if (pointer.x >= boundary.left && pointer.x <= boundary.right) {
         if (pointer.y < previousY && pointer.y <= boundary.bottom) boundarySection = "pinned";
         else if (pointer.y > previousY && pointer.y >= boundary.top) boundarySection = "active";
-        const nextHeader = (["working-header", "snoozed-header", "settled-header"] as const)
+        const nextHeader = (
+          ["working-header", "promachos-header", "snoozed-header", "settled-header"] as const
+        )
           .map((marker) =>
             args.droppableContainers.find((container) => container.id === sidebarMarkerId(marker)),
           )
@@ -94,6 +97,9 @@ export function createSidebarSortingStrategy(input: {
   enabled?: boolean;
   settledOrder: readonly string[];
   activeOrder?: readonly string[];
+  /** Promachos lifecycle drops return to his shelf instead of the Active order. */
+  promachosOrder?: readonly string[];
+  promachosExpanded?: boolean;
   settledExpanded: boolean;
   settledVisibleCount?: number;
   routeThreadKey?: string | null;
@@ -118,6 +124,7 @@ export function createSidebarSortingStrategy(input: {
       pinned: [],
       active: [],
       working: [],
+      promachos: [],
       snoozed: [],
       settled: [],
     };
@@ -132,7 +139,12 @@ export function createSidebarSortingStrategy(input: {
         }
         continue;
       }
-      if (item.section === "pinned" || item.section === "active" || item.section === "working")
+      if (
+        item.section === "pinned" ||
+        item.section === "active" ||
+        item.section === "working" ||
+        item.section === "promachos"
+      )
         cardHeight ??= rects[index]?.height;
       else slimHeight ??= rects[index]?.height;
       if (item.key !== active.key) groups[item.section].push(item);
@@ -142,9 +154,13 @@ export function createSidebarSortingStrategy(input: {
     cardHeight ??= 82 * scale;
     slimHeight ??= 36 * scale;
     const labelHeight = (input.boundaryLabelHeight ?? 0) * scale;
-    const group = groups[target.section];
-    const order =
-      target.section === "pinned"
+    const promachosReturn =
+      target.section === "active" && input.promachosOrder?.includes(active.key) === true;
+    const destination = promachosReturn ? "promachos" : target.section;
+    const group = groups[destination];
+    const order = promachosReturn
+      ? (input.promachosOrder ?? [])
+      : target.section === "pinned"
         ? target.pinnedOrder
         : target.section === "settled"
           ? input.settledOrder
@@ -154,7 +170,10 @@ export function createSidebarSortingStrategy(input: {
     const index = group.findIndex(
       (item) => (ranks.get(item.key) ?? Number.POSITIVE_INFINITY) > rank,
     );
-    group.splice(index < 0 ? group.length : index, 0, { ...active, section: target.section });
+    group.splice(index < 0 ? group.length : index, 0, { ...active, section: destination });
+    if (promachosReturn && input.promachosExpanded !== true) {
+      groups["promachos"] = groups["promachos"].filter((item) => item.key === input.routeThreadKey);
+    }
     const settledOrder = (
       input.settledOrder.length > 0 ? input.settledOrder : groups.settled.map((item) => item.key)
     ).filter((key) => key !== active.key || target.section === "settled");
@@ -180,6 +199,10 @@ export function createSidebarSortingStrategy(input: {
       marker("working-header");
       projected.push(...groups.working);
     }
+    if (items.some((item) => item.kind === "marker" && item.marker === "promachos-header")) {
+      marker("promachos-header");
+      projected.push(...groups["promachos"]);
+    }
     if (
       groups.snoozed.length > 0 ||
       ((active.section !== "snoozed" || (input.snoozedThreadCount ?? 0) > 1) &&
@@ -195,7 +218,10 @@ export function createSidebarSortingStrategy(input: {
       const rect = index === undefined ? undefined : rects[index];
       const fallback =
         item.kind === "thread" &&
-        (item.section === "pinned" || item.section === "active" || item.section === "working")
+        (item.section === "pinned" ||
+          item.section === "active" ||
+          item.section === "working" ||
+          item.section === "promachos")
           ? cardHeight
           : slimHeight;
       const moved = item.kind === "thread" && item.key === active.key;

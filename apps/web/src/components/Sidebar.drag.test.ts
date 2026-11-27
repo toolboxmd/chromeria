@@ -37,7 +37,12 @@ function layout(
   const rects = items.map((item) => {
     const height =
       item.kind === "thread"
-        ? (item.section === "pinned" || item.section === "active" ? cardHeight : 36) * scale
+        ? (item.section === "pinned" ||
+          item.section === "active" ||
+          item.section === "working" ||
+          item.section === "promachos"
+            ? cardHeight
+            : 36) * scale
         : item.marker === "pinned-header" || item.marker === "pinned-divider"
           ? 0
           : (item.marker.endsWith("placeholder") ? 0 : 32) * scale;
@@ -220,6 +225,109 @@ describe("sidebar collision detection", () => {
 });
 
 describe("sidebar drag projection", () => {
+  it.each([true, false])(
+    "previews pinned promachos unpinning in Promachos with expanded=%s",
+    (expanded) => {
+      const items = [
+        pinnedHeader,
+        thread("promachos-pin", "pinned"),
+        divider,
+        thread("real", "active"),
+        marker("promachos-header"),
+        ...(expanded ? [thread("promachos-other", "promachos")] : []),
+        settledHeader,
+      ];
+      const result = preview(
+        {
+          items,
+          settledOrder: [],
+          settledExpanded: false,
+          promachosOrder: ["promachos-pin", "promachos-other"],
+          promachosExpanded: expanded,
+        },
+        "promachos-pin",
+        "real",
+      );
+      const args = layout(items, "promachos-pin", "real");
+      const headerIndex = items.findIndex(
+        (item) => sidebarListItemId(item) === sidebarMarkerId("promachos-header"),
+      );
+      const realIndex = items.findIndex((item) => sidebarListItemId(item) === "real");
+      const realBottom = args.rects[realIndex]!.bottom + (result.get("real")?.y ?? 0);
+      const headerTop =
+        args.rects[headerIndex]!.top + (result.get(sidebarMarkerId("promachos-header"))?.y ?? 0);
+      expect(headerTop - realBottom).toBe(1);
+      if (expanded) {
+        const otherIndex = items.findIndex((item) => sidebarListItemId(item) === "promachos-other");
+        const otherTop = args.rects[otherIndex]!.top + (result.get("promachos-other")?.y ?? 0);
+        expect(otherTop - headerTop).toBe(116);
+      }
+    },
+  );
+
+  it("opens a new Promachos shelf rather than an Active slot, retaining the selected row while collapsed", () => {
+    const items = [
+      pinnedHeader,
+      thread("promachos-pin", "pinned"),
+      divider,
+      thread("real", "active"),
+      marker("promachos-header"),
+      settledHeader,
+    ];
+    const result = preview(
+      {
+        items,
+        settledOrder: [],
+        settledExpanded: false,
+        promachosOrder: ["promachos-pin"],
+        promachosExpanded: false,
+        routeThreadKey: "promachos-pin",
+      },
+      "promachos-pin",
+      "real",
+    );
+    const args = layout(items, "promachos-pin", "real");
+    const headerIndex = items.findIndex(
+      (item) => sidebarListItemId(item) === sidebarMarkerId("promachos-header"),
+    );
+    const settledIndex = items.findIndex(
+      (item) => sidebarListItemId(item) === sidebarMarkerId("settled-header"),
+    );
+    const headerTop =
+      args.rects[headerIndex]!.top + (result.get(sidebarMarkerId("promachos-header"))?.y ?? 0);
+    const settledTop =
+      args.rects[settledIndex]!.top + (result.get(sidebarMarkerId("settled-header"))?.y ?? 0);
+    expect(settledTop - headerTop).toBe(116);
+  });
+
+  it("preserves the Promachos shelf and full card heights when a neighboring active thread settles", () => {
+    const items = [
+      pinnedHeader,
+      divider,
+      thread("active", "active"),
+      marker("promachos-header"),
+      thread("promachos", "promachos"),
+      settledHeader,
+      thread("settled", "settled"),
+    ];
+    const result = preview(
+      { items, settledOrder: ["active", "settled"], settledExpanded: true },
+      "active",
+      "settled",
+    );
+    expect(result.get(sidebarMarkerId("promachos-header"))?.scaleY).toBe(1);
+    expect(result.get("promachos")?.scaleY).toBe(1);
+    const args = layout(items, "active", "settled");
+    const promachosIndex = items.findIndex((item) => sidebarListItemId(item) === "promachos");
+    const settledIndex = items.findIndex(
+      (item) => sidebarListItemId(item) === sidebarMarkerId("settled-header"),
+    );
+    const promachosBottom = args.rects[promachosIndex]!.bottom + (result.get("promachos")?.y ?? 0);
+    const settledTop =
+      args.rects[settledIndex]!.top + (result.get(sidebarMarkerId("settled-header"))?.y ?? 0);
+    expect(settledTop - promachosBottom).toBe(1);
+  });
+
   it.each([
     ["a2", "a1"],
     ["p", "a1"],
