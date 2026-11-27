@@ -17,11 +17,13 @@ import {
   type ProjectId,
   type ProjectScopedServerSettingKey,
   ProjectSettingsOverrides,
+  withoutUnsetPrismRoles,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
   ServerSettings,
   type ServerSettingsPatch,
+  ThreadId,
   withIdleCompaction,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -235,6 +237,25 @@ function mergeModelSelectionOptionsById(input: {
   return [...merged.entries()].map(([id, value]) => ({ id, value }));
 }
 
+/** Conditional idle-mode writes compare against the modes after this patch's other writes. */
+function mergeIdleModesIfCurrent(
+  modes: ServerSettings["threadIdleModes"],
+  changes: NonNullable<ServerSettingsPatch["threadIdleModesIfCurrent"]>,
+): ServerSettings["threadIdleModes"] {
+  return mergeSettingsEntries(
+    modes,
+    Object.fromEntries(
+      Object.entries(changes).flatMap(([id, change]) => {
+        const current = modes[ThreadId.make(id)];
+        return current?.type === change.expected.type &&
+          current.enabledAt === change.expected.enabledAt
+          ? [[id, change.next]]
+          : [];
+      }),
+    ),
+  );
+}
+
 function mergeSettingsEntries<Value>(
   current: Readonly<Record<string, Value>>,
   patch: Readonly<Record<string, Value | null>>,
@@ -273,13 +294,15 @@ function pickOverrideKeys(entry: ProjectSettingsOverrides | undefined, known: bo
 function mergeProjectSettingsOverridesPatch(
   current: Readonly<Record<string, ProjectSettingsOverrides>>,
   patch: Readonly<Record<string, ProjectSettingsOverrides | null>>,
+  partialPrismRoles: boolean,
 ): Record<string, ProjectSettingsOverrides> {
   const next = new Map(Object.entries(current));
-  for (const [projectId, entry] of Object.entries(patch)) {
-    if (entry === null) {
+  for (const [projectId, written] of Object.entries(patch)) {
+    if (written === null) {
       next.delete(projectId);
       continue;
     }
+    const entry = partialPrismRoles ? written : withoutUnsetPrismRoles(written);
     const storedProviderInstances = current[projectId]?.providerInstances;
     next.set(projectId, {
       // Preserve downgraded storage, but reject new unknown writes so clients can detect unsupported settings.
@@ -401,6 +424,8 @@ export function applyServerSettingsPatch(
     backgroundActivity,
     worktreeCleanup: worktreeCleanupPatch,
     // Merged per entry below; its `null` removals must not reach deepMerge.
+    threadIdleModes: threadIdleModesPatch,
+    threadIdleModesIfCurrent: threadIdleModesIfCurrentPatch,
     usageLimitSources: usageLimitSourcesPatch,
     textGenerators: textGeneratorsPatch,
     secretProviders: secretProvidersPatch,
@@ -412,6 +437,11 @@ export function applyServerSettingsPatch(
     projectAgentBrowserAccessOverrides: _legacyBrowserAccess,
     projectAutoPullOverrides: _legacyAutoPull,
     projectScriptOverrides: _legacyScripts,
+    // A write declaration, not a value: only a declared write sets the marker.
+    prismRoleOverridesPartial: partialPrismRoles,
+    // Fork: replaced whole; a migration fills it only while unset.
+    autoBalance: autoBalancePatch,
+    migrateAutoBalance,
     ...patchForMerge
   } = patch;
   const currentBackgroundActivity = normalizeServerBackgroundActivitySettings(current);
@@ -506,6 +536,10 @@ export function applyServerSettingsPatch(
     ...next,
     favorites,
     providerModelPreferences: nextModelPreferences,
+    autoBalance:
+      autoBalancePatch !== undefined
+        ? autoBalancePatch
+        : (current.autoBalance ?? migrateAutoBalance ?? null),
     ...(worktreeCleanupPatch === undefined
       ? {}
       : {
@@ -595,9 +629,11 @@ export function applyServerSettingsPatch(
               mergeProjectSettingsOverridesPatch(
                 current.projectSettingsOverrides,
                 projectSettingsOverridesPatch,
+                partialPrismRoles === true,
               ),
             ).filter(([, entry]) => Object.keys(entry).length > 0),
           ),
+          ...(partialPrismRoles === true ? { prismRoleOverridesPartial: true } : {}),
         }
       : {}),
     ...(patch.defaultModelSelection !== undefined
@@ -611,6 +647,14 @@ export function applyServerSettingsPatch(
       : {}),
     ...(patch.defaultProjectScripts !== undefined
       ? { defaultProjectScripts: patch.defaultProjectScripts }
+      : {}),
+    ...(threadIdleModesPatch !== undefined || threadIdleModesIfCurrentPatch !== undefined
+      ? {
+          threadIdleModes: mergeIdleModesIfCurrent(
+            mergeSettingsEntries(current.threadIdleModes, threadIdleModesPatch ?? {}),
+            threadIdleModesIfCurrentPatch ?? {},
+          ),
+        }
       : {}),
     ...(usageLimitSourcesPatch !== undefined
       ? {

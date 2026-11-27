@@ -21,6 +21,63 @@ Threads don't require a project. Pick **No project** (or press `mod+alt+n` on we
 - **Background start** (web/desktop): Press `Cmd+Enter` (macOS) or `Ctrl+Enter` (Windows/Linux) in a new thread to submit it and immediately open another draft with the same workspace mode and base branch.
 - **Same prompt, multiple models** (web/desktop, Git projects): `Shift`-click models in a new thread's model picker to select several. Sending starts a separate thread and worktree for each model.
 
+## Track an Issue or PR outcome
+
+Each run records the GitHub Issue or PR it works toward. Agents set it when
+they launch or delegate work; there is no composer control. **Steer** and
+**Restart** continue the running purpose. A message already queued keeps the
+purpose admitted when it was sent.
+
+A parent's continuation of its original delegated work keeps that launch's
+purpose. Your own follow-up in the child uses the child's stored purpose while
+the original parent still receives the result. When linking a PR, an agent can
+declare the outcome it delivers; unlinking the PR withdraws that declaration.
+Linking or unlinking a PR, or withdrawing its declaration, never reassigns runs,
+including runs that already finished. Legacy callers and saved schedules
+without a purpose are recorded as unscoped; choose a purpose before editing a
+legacy schedule.
+
+## Choose what a thread does while idle
+
+The idle control decides what an idle thread does: nothing, keep its prompt cache
+warm, or keep working with Wight mode. On web and desktop it is the ghost icon on
+the right of the chat header, next to the people icon; the icon shows **Warm** or
+**Wight** while one is on. On the phone it is the first menu in the thread's header,
+or under **More** in a Promachos chat.
+Choosing one turns the other off. Agents can turn keep-warm on and off with
+`t3_thread_configure`.
+
+### Keep the prompt cache warm
+
+Use **Keep cache warm** before you step away from a Claude thread for hours. After
+55 quiet minutes T3 Code sends a one-word ping turn in the same session, with the
+thread's own model and settings, so your next message reads the conversation from
+the cache instead of writing it again. The control shows when the next ping is due
+and when it stops by itself. Pings never notify you or mark the thread unread; the
+chat shows them as one gray line, such as "Kept warm, 4 pings".
+
+It stops by itself 24 hours after your last message or after you turned it on,
+whichever is later; at the provider's usage limit; and when you archive or settle
+the thread. The control says which. Only Claude threads offer it, because other
+providers' caches do not last an hour. On a Claude API key the cache lasts 5
+minutes, so the ping does not help there.
+
+### Keep a thread working with Wight mode
+
+Wight sends “continue” with the current time whenever the thread becomes idle.
+Leave the hours timer empty to run until turned off; the phone offers preset
+timers. To change the timer, turn Wight off and on again. Time spent paused counts
+toward the timer; expiry and turning off let the current turn finish.
+
+Set **Wight usage limit** for each instance in **Settings > Providers** on web or
+desktop. Any reported usage window at or above that percentage pauses new Wight
+turns until it drops below. The default is 80%; 0% pauses them. Providers without
+reported usage windows run without an enforceable quota limit, which the control
+shows. Approvals, unanswered questions, plans, interrupts and other errors wait for
+your input. Existing user messages, child reports and answers keep their normal
+delivery. Usage-limit failures wait for reset recovery; Wight never resumes them
+early.
+
 ## Sidebar layout and organization
 
 - **Resize or hide** (web/desktop): Drag the sidebar's right edge past its minimum width to hide it; hover the left window edge and click or drag the handle to bring it back.
@@ -73,7 +130,8 @@ The server automatically links open PRs matching an unsettled thread's branch. O
 ## Usage limits, subagents, and thread details
 
 - **Usage limits**: When a provider hits a rate/usage limit (**Limited**), press **Resume** in an empty composer after reset (or send a message). If the provider reports a reset time, choose **Resume at reset** or **Snooze until reset**—or enable defaults in **Settings → Threads** (**Resume after usage limits** / **Snooze until limits reset**).
-- **Subagents**: Follow delegated work from the conversation card or **Agents**. Stopping a parent thread also stops its delegated subagents. Subagents started internally by the provider are read-only; message the parent thread instead.
+- **Subagents**: Follow delegated work from the conversation card or **Agents**. Stopping a parent thread also stops its delegated subagents; before archiving the parent, wait for its delegated tasks to finish or cancel them. Subagents started internally by the provider are read-only; message the parent thread instead. App-owned delegated child threads accept follow-ups. When a child needs an approval or an answer, its parent asks for it.
+- **Tasks on linked environments**: Open the task from its original conversation to read and answer its questions or approvals. Web, desktop and mobile use your original connection; you do not need to save a separate connection to the destination. Both environments must remain reachable. If a request changed or a response was not confirmed, refresh it before changing your answer. Questions whose provider callback is no longer available explain that limitation instead of accepting an answer.
 - **Running dev servers** (web/desktop): The thread details card lists local servers started by the thread's terminals or Claude agent with their ports. Click one to open it in the browser panel, or **Stop** to end it (macOS/Linux only).
 - **Customize thread details**: Right-click the thread details card or open **Settings → Appearance → Thread details** to show/hide rows.
 
