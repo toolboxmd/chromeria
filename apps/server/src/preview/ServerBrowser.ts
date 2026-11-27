@@ -3065,9 +3065,13 @@ const make = Effect.gen(function* () {
     const startedAt = performance.now();
     const remaining = () => Math.max(1, timeout - (performance.now() - startedAt));
     await leaveBusyPage(tab, tab.cdp, timeout / 2);
-    // The last checks before the request leaves, after any check still being classified.
-    await classifiedBy(tab, Math.min(startedAt + timeout, deadlineMs), url);
-    await beforeRequest();
+    // The last checks before the request leaves, after any check still being classified;
+    // one that began during them is waited for and everything is checked again.
+    for (;;) {
+      await classifiedBy(tab, Math.min(startedAt + timeout, deadlineMs), url);
+      await beforeRequest();
+      if (!siteHolds.classifyingOn(tab.tabId)) break;
+    }
     const held = siteHoldOf(tab, url);
     if (held) throw siteHoldError(held);
     // The navigation's own timeout never outlasts the request's, and a spent budget sends nothing.
@@ -3884,11 +3888,17 @@ const make = Effect.gen(function* () {
               );
               // The site's turn lasts until the page loaded and any check on it is classified.
               await Promise.resolve(opened.initialNavigation).catch(constVoid);
+              // It never spends the time the open needs to clean up a failed tab.
+              const turn = Math.max(
+                1,
+                Math.min(navigationTimeout, deadlineMs - performance.now()) / 2,
+              );
               if (url)
-                await opened.page
-                  .waitForLoadState("load", { timeout: navigationTimeout })
-                  .catch(constVoid);
-              await opened.siteHoldCheck;
+                await opened.page.waitForLoadState("load", { timeout: turn }).catch(constVoid);
+              await Promise.race([
+                opened.siteHoldCheck,
+                new Promise((resolve) => setTimeout(resolve, turn)),
+              ]);
               return opened;
             },
           ));
@@ -3910,6 +3920,7 @@ const make = Effect.gen(function* () {
             if (existing) {
               if (url)
                 await onSite(siteHoldScope(tab), async () => {
+                  const generation = tab.control.generation;
                   if (!tab.control.agentCanActNow(request.agentSessionId!))
                     throw new BrowserControlInterrupted({
                       message: "A human took control of this tab.",
@@ -3919,7 +3930,11 @@ const make = Effect.gen(function* () {
                   // checks it right before the request leaves.
                   await navigate(tab, url, "load", navigationTimeout, async () => {
                     await authorize();
-                    if (!tab.control.agentCanActNow(request.agentSessionId!))
+                    // A person who took the tab and gave it back changed the page under it.
+                    if (
+                      generation !== tab.control.generation ||
+                      !tab.control.agentCanActNow(request.agentSessionId!)
+                    )
                       throw new BrowserControlInterrupted({
                         message: "A human took control of this tab.",
                         reason: "humanControl",
