@@ -560,6 +560,18 @@ describe("server browser element refs", () => {
     });
     await expect.poll(() => page.evaluate("scrollY")).toBe(300);
 
+    // A wheel lands on a later frame than its send returns; the page still moves once.
+    for (let run = 0; run < 3; run++) {
+      await page.evaluate("scrollTo(0, 0)");
+      await ServerBrowserPage.scroll(page, { deltaY: 100 }, undefined, {
+        ...human,
+        from: { x: 700, y: 500 },
+      });
+      // A late wheel would land within the next frames.
+      await page.evaluate("new Promise((done) => setTimeout(done, 1500))");
+      expect(await page.evaluate("scrollY"), `run ${run}`).toBe(100);
+    }
+
     // A closed shadow root and slotted content hide their boxes from the probe; the page still moves.
     for (const mode of ["closed", "partial", "slotted"] as const) {
       const shadow =

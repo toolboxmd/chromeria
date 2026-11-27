@@ -3767,7 +3767,7 @@ const queuedSiteActions = (apiAnswer: "challenge" | "ok") =>
       .invoke<PreviewAutomationStatus>({
         scope,
         operation: "scroll",
-        input: { direction: "down" },
+        input: { deltaY: 300 },
         tabId: second,
       })
       .pipe(Effect.flip, Effect.forkScoped);

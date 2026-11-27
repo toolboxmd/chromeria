@@ -1333,6 +1333,13 @@ export const scroll = async (
     }
     // What the page still owes is measured once its scrolling settles: a box the probe
     // cannot see, such as one in a closed shadow root, may have taken some notches.
+    // A wheel lands on the page's next frames, which a hidden tab draws about once a second.
+    await Promise.race([
+      page.evaluate(
+        "new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))",
+      ),
+      new Promise((resolve) => setTimeout(resolve, 2_500)),
+    ]).catch(() => undefined);
     let after = await position();
     for (let check = 0; check < 10; check++) {
       await new Promise((resolve) => setTimeout(resolve, 50));
