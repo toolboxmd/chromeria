@@ -251,8 +251,23 @@ describe("the line of numbers", () => {
   it.each([
     [
       "a connected server that answered",
-      { connected: true, answer: { repositories: [listed("acme/Web"), listed("acme/api")] } },
+      {
+        connected: true,
+        answer: { repositories: [listed("acme/Web"), listed("acme/api")], errors: [] },
+      },
       { state: "answered", repositories: ["github.com acme/api", "github.com acme/web"] },
+    ],
+    [
+      // The RPC succeeds and still names the repositories; the view shows the refusal with Retry.
+      "a server whose answer carries GitHub's refusal of a search",
+      {
+        connected: true,
+        answer: {
+          repositories: [listed("acme/api")],
+          errors: [{ host: "github.com", message: "Bad credentials" }],
+        },
+      },
+      { state: "failed", repositories: ["github.com acme/api"] },
     ],
     ["a connected server yet to answer", { connected: true }, { state: "pending" }],
     [
@@ -262,14 +277,14 @@ describe("the line of numbers", () => {
     ],
     [
       "a failed reread that left its answer behind",
-      { connected: true, failed: true, answer: { repositories: [listed("acme/api")] } },
+      { connected: true, failed: true, answer: { repositories: [listed("acme/api")], errors: [] } },
       { state: "failed", repositories: ["github.com acme/api"] },
     ],
     [
       // Its reads wait on the connection with their last answer, so the listing itself still
       // looks answered.
       "a server that dropped its connection after answering",
-      { connected: false, answer: { repositories: [listed("acme/api")] } },
+      { connected: false, answer: { repositories: [listed("acme/api")], errors: [] } },
       { repositories: ["github.com acme/api"] },
     ],
     ["a server that is not connected and never answered", { connected: false, failed: true }, {}],
@@ -328,6 +343,16 @@ describe("the line of numbers", () => {
       [scope(ENV_A, [ONLY_A, SHARED])],
     ],
     [
+      // GitHub refuses the first server's searches. It still lists Shared, and cannot count it.
+      "the repositories of a server whose listing carries a GitHub error, and that it cannot be asked",
+      [
+        { environmentId: ENV_A, state: "failed", repositories: [SHARED] },
+        answered(ENV_B, [ONLY_B, SHARED]),
+      ],
+      [],
+      [scope(ENV_A, [SHARED], false), scope(ENV_B, [ONLY_B, SHARED])],
+    ],
+    [
       "a new answer in place of the scope held, and no server that stopped listing",
       [answered(ENV_B, [SHARED])],
       BOTH,
@@ -338,6 +363,26 @@ describe("the line of numbers", () => {
     expect(scopes).toEqual(expected);
     // Worked out again from itself it does not move, so holding it settles.
     expect(issueListingScopes(listings, scopes)).toEqual(scopes);
+  });
+
+  it("gives a repository to the healthy server when GitHub refuses the first server's listing", () => {
+    const refused = (repositories: ReadonlyArray<string>) =>
+      issueListingOf({
+        environmentId: ENV_A,
+        connected: true,
+        failed: false,
+        answer: {
+          repositories: repositories.map((key) => listed(key.split(" ")[1]!)),
+          errors: [{ host: "github.com", message: "Bad credentials" }],
+        },
+      });
+    const b = answered(ENV_B, [ONLY_B, SHARED]);
+    // Both list Shared; the first, which would own it, cannot search GitHub.
+    expect(issueCountTargets(issueListingScopes([refused([SHARED]), b], []))).toEqual([
+      target(ENV_B, ONLY_B, SHARED),
+    ]);
+    // A repository only the refused server lists has nobody to count it.
+    expect(issueCountTargets(issueListingScopes([refused([ONLY_A, SHARED]), b], []))).toBeNull();
   });
 
   it("counts what is listed while a server is switched off, and never keeps that total once it lists more", () => {
@@ -481,6 +526,13 @@ describe("the line of numbers", () => {
       "the whole open list being read again is not final",
       line({ rows: "refreshing", counted: unsettled(113) }),
       { kind: "open", count: unsettled(113) },
+    ],
+    [
+      // The counts read failed or passed its deadline while a server that is away keeps its
+      // pages waiting: no total is claimed, and none stays marked as being read.
+      "rows being read again with no counted total claim none",
+      line({ rows: "refreshing", counted: null }),
+      { kind: "listed", count: final(113), open: null },
     ],
     [
       // An unreachable server keeps its pages waiting; the counts of a server that answers stand.

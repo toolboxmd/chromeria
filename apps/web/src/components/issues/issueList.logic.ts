@@ -230,7 +230,7 @@ export interface IssueCountsTarget {
 /** What a server's listing says now of the repositories it holds. */
 export interface IssueListing {
   readonly environmentId: EnvironmentId;
-  /** `failed`: connected, and its latest read failed. `pending`: connected, no read settled. */
+  /** `failed`: connected, and its latest read failed or GitHub refused a search in it. */
   readonly state: "answered" | "pending" | "failed" | "disconnected";
   /** Repository keys of its latest answer, sorted, kept through a failed reread; null for none. */
   readonly repositories: ReadonlyArray<string> | null;
@@ -240,7 +240,7 @@ export function issueListingOf(input: {
   readonly environmentId: EnvironmentId;
   readonly connected: boolean;
   /** The listing's latest answer, also the one a failed reread left behind; null for none. */
-  readonly answer: Pick<GitHubIssueListResult, "repositories"> | null;
+  readonly answer: Pick<GitHubIssueListResult, "repositories" | "errors"> | null;
   readonly failed: boolean;
 }): IssueListing {
   return {
@@ -249,7 +249,9 @@ export function issueListingOf(input: {
     // the read alone would still look answered.
     state: !input.connected
       ? "disconnected"
-      : input.failed
+      : // An answer carrying GitHub's refusal still says what the server lists, but a server
+        // that cannot search cannot count.
+        input.failed || (input.answer?.errors.length ?? 0) > 0
         ? "failed"
         : input.answer === null
           ? "pending"
@@ -370,7 +372,7 @@ export function issueNumbersLine(input: {
   readonly shown: MarkedIssueCount;
   /** The open Issues among the loaded rows. */
   readonly loadedOpen: number;
-  /** `refreshing`: every page is read and is being read again. */
+  /** `refreshing`: every page is read, and some are waiting on a read of them again. */
   readonly rows: "complete" | "refreshing" | "incomplete";
   /** The open total of the counts read, unsettled while it is read again; null for unknown. */
   readonly counted: MarkedIssueCount | null;
@@ -387,12 +389,14 @@ export function issueNumbersLine(input: {
   // before Issues were opened, and is unknown until it is read again.
   const counted =
     input.counted !== null && input.counted.count >= input.loadedOpen ? input.counted : null;
-  // Rows not read to their end, or being read again, give way to an exact counted total.
+  // Rows read to their end are the total. Rows still arriving are its floor when nothing was
+  // counted. Rows being read again say nothing of it alone: with the counts read again too, as
+  // on Refresh, they carry its mark, and a counts read that left no answer leaves it unknown.
   const fromRows =
     everyOpenIssue &&
     (input.rows === "complete" ||
-      counted === null ||
-      (input.rows === "refreshing" && counted.certainty !== "final"));
+      (input.rows === "incomplete" && counted === null) ||
+      (input.rows === "refreshing" && counted?.certainty === "unsettled"));
   const total: MarkedIssueCount | null = fromRows
     ? {
         count: input.loadedOpen,

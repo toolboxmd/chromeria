@@ -689,6 +689,7 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "scripts/scenarios/issues-view-empty-list-states-its-total.e2e.ts",
     "scripts/scenarios/issues-view-failed-page-keeps-rows.e2e.ts",
     "scripts/scenarios/issues-view-failed-thread-read-marks-counts.e2e.ts",
+    "scripts/scenarios/issues-view-week-flow-failed-refresh-claims-no-total.e2e.ts",
     "scripts/scenarios/issues-view-week-flow-holds-through-slow-server.e2e.ts",
     "scripts/scenarios/issues-view-week-flow-keeps-open-total.e2e.ts"
   ],
