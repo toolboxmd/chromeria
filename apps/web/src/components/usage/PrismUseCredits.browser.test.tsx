@@ -295,7 +295,8 @@ it.each([
     line: null,
   },
   {
-    name: "an older balance while another machine's read has no answer",
+    // Rocky's usage was read at 16:00 and its reply carried no credits, so it tells nothing.
+    name: "an older balance while a newer usage reply on another machine carried no credits",
     credits: { bestia: { readAt: "2026-11-26T15:00:00.000Z", balance: 555 } },
     line: `Credits left: 555 (read ${timeOfDay("2026-11-26T15:00:00.000Z")})`,
   },

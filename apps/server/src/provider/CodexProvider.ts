@@ -1239,12 +1239,13 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       ...(managedAuth ? {} : { usageLimits }),
     },
   });
-  // Only a usage read that answered says anything about credits.
+  // A usage read that failed or never ran carries no answer; `codexCreditsShown` owns the rest.
   const read =
     managedAuth || !snapshot.rateLimits || "failure" in snapshot.rateLimits
       ? undefined
       : snapshot.rateLimits.credits;
-  return read ? { ...provider, credits: codexCreditsShown(read.reported, read.readAt) } : provider;
+  const credits = read && codexCreditsShown(read.reported, read.readAt);
+  return credits ? { ...provider, credits } : provider;
 });
 
 export { makePendingCodexProvider };

@@ -19,19 +19,21 @@ export const READ_BOUND = Duration.seconds(10);
 type CodexRateLimits = Extract<CodexAccountLimits, { readonly route: "native" }>["rateLimits"];
 
 /**
- * What a usage read that succeeded says about credits, for display. Like Codex's own status
- * view: whole credits, and `none` for a login without credits or a balance above zero.
+ * The whole rule for what one usage answer publishes about credits. Undefined means the answer
+ * does not tell (no `credits`, or credits without a readable balance), so it must not hide what
+ * another read told; `none` means it told there is nothing to spend.
  */
 export function codexCreditsShown(
   credits: CodexRateLimits["credits"],
   readAt: string,
-): ServerProviderCredits {
-  if (credits?.unlimited) return { readAt, balance: "unlimited" };
-  const balance = Math.round(Number(credits?.balance ?? ""));
-  return {
-    readAt,
-    balance: credits?.hasCredits && Number.isSafeInteger(balance) && balance > 0 ? balance : "none",
-  };
+): ServerProviderCredits | undefined {
+  if (credits == null) return undefined;
+  if (credits.unlimited) return { readAt, balance: "unlimited" };
+  if (!credits.hasCredits) return { readAt, balance: "none" };
+  const text = credits.balance?.trim();
+  const balance = text ? Math.round(Number(text)) : Number.NaN;
+  if (!Number.isSafeInteger(balance)) return undefined;
+  return { readAt, balance: balance >= 1 ? balance : "none" };
 }
 
 type AccountLimitsRead = Effect.Effect<CodexAccountLimits, ProviderDriverError>;

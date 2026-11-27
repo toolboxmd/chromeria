@@ -258,8 +258,8 @@ export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
 /**
  * Chromeria: what a Codex login's usage read said it can still spend on credits, and when the
- * answer arrived. Present only when that read succeeded: `none` is "read, nothing to spend",
- * absent is "not read". Live snapshots only; `withoutProviderCredits` keeps it off disk.
+ * answer arrived. Present only when that answer told: `none` is "nothing to spend", absent is
+ * "not read, or the answer did not say". Live snapshots only; `withoutProviderCredits` keeps it off disk.
  */
 export const ServerProviderCredits = Schema.Struct({
   readAt: IsoDateTime,

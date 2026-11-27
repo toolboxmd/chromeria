@@ -10,6 +10,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { ModelInfo } from "@anthropic-ai/claude-agent-sdk";
 import { describe, it, assert, expect } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import type * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -665,49 +666,169 @@ it.layer(
       }),
     );
 
-    it.effect("carries what the usage read says about credits, with the time it answered", () =>
+    /**
+     * `checkCodexProviderStatus` at the default probe against a fake Codex app-server whose
+     * usage read answers at second 4 with `usage`, two seconds before skills discovery does.
+     */
+    const statusForUsageReply = Effect.fn("statusForUsageReply")(function* (
+      usage: { readonly result: unknown } | { readonly error: unknown } | "silent",
+      config: Record<string, unknown> = {},
+    ) {
+      const startedAt = yield* DateTime.now;
+      // A config that routes elsewhere never asks for usage; its probe waits on skills alone.
+      const awaited = "openai_base_url" in config ? "skills/list" : "account/rateLimits/read";
+      const requested = yield* Deferred.make<void>();
+      const spawner = ChildProcessSpawner.make(() =>
+        Effect.gen(function* () {
+          const scope = yield* Effect.scope;
+          const output = yield* Queue.unbounded<Uint8Array>();
+          const send = (message: unknown) =>
+            Queue.offer(output, encoder.encode(`${JSON.stringify(message)}\n`));
+          const results: Record<string, unknown> = {
+            initialize: {
+              userAgent: "codex_cli_rs/0.167.0",
+              codexHome: "/nonexistent-codex-home",
+              platformFamily: "unix",
+              platformOs: "linux",
+            },
+            "account/read": {
+              account: { type: "chatgpt", email: "test@example.com", planType: "pro" },
+              requiresOpenaiAuth: true,
+            },
+            "config/read": { config, origins: {} },
+            "model/list": { data: [] },
+          };
+          const later = (id: number, method: string, delay: Duration.Input, reply: unknown) =>
+            (method === awaited ? Deferred.succeed(requested, undefined) : Effect.void).pipe(
+              Effect.andThen(Effect.sleep(delay)),
+              Effect.andThen(reply === "silent" ? Effect.void : send({ id, ...(reply as object) })),
+              Effect.forkIn(scope),
+            );
+          const answer = (line: string) => {
+            const { id, method } = JSON.parse(line) as { id?: number; method?: string };
+            if (id === undefined || method === undefined) return Effect.void;
+            if (method === "account/rateLimits/read") return later(id, method, "4 seconds", usage);
+            if (method === "skills/list")
+              return later(id, method, "6 seconds", { result: { data: [] } });
+            return send({ id, result: results[method] ?? {} });
+          };
+          const decoder = new TextDecoder();
+          let buffered = "";
+          return ChildProcessSpawner.makeHandle({
+            ...mockHandle({ stdout: "", stderr: "", code: 0 }),
+            exitCode: Effect.never,
+            isRunning: Effect.succeed(true),
+            stdin: Sink.forEach((chunk: Uint8Array) => {
+              buffered += decoder.decode(chunk, { stream: true });
+              const lines = buffered.split("\n");
+              buffered = lines.pop() ?? "";
+              return Effect.forEach(lines.filter(Boolean), answer, { discard: true });
+            }),
+            stdout: Stream.fromQueue(output),
+          });
+        }),
+      );
+      const fiber = yield* checkCodexProviderStatus(defaultCodexSettings).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(requested);
+      yield* TestClock.adjust("25 seconds");
+      return { startedAt, status: yield* Fiber.join(fiber) };
+    });
+
+    it.effect("publishes credits for each reply to the usage read as the contract says", () =>
       Effect.gen(function* () {
-        const readAt = "2026-11-26T15:30:04.000Z";
-        const statusFor = (rateLimits: CodexAppServerProviderSnapshot["rateLimits"]) =>
-          checkCodexProviderStatus(defaultCodexSettings, () =>
-            Effect.succeed(
-              makeCodexProbeSnapshot({ nativeUsage: true, ...(rateLimits ? { rateLimits } : {}) }),
-            ),
-          );
-        const balanceFor = (
-          reported: { hasCredits: boolean; unlimited: boolean; balance?: string | null } | null,
-        ) =>
-          statusFor({ snapshot: {}, resetCredits: null, credits: { reported, readAt } }).pipe(
-            Effect.map((status) => status.credits?.balance),
-          );
-        const paid = { hasCredits: true, unlimited: false };
-
-        const status = yield* statusFor({
-          snapshot: {},
-          resetCredits: null,
-          credits: { reported: { ...paid, balance: "4321.5000000000" }, readAt },
+        const answered = (credits?: unknown) => ({
+          result: {
+            rateLimits: {
+              limitId: "codex",
+              planType: "pro",
+              primary: { usedPercent: 42, windowDurationMins: 300, resetsAt: 2e9 },
+              ...(credits === undefined ? {} : { credits }),
+            },
+            rateLimitsByLimitId: null,
+            rateLimitResetCredits: null,
+            accountId: null,
+          },
         });
-        assert.deepStrictEqual(status.credits, { readAt, balance: 4322 });
+        const paid = { hasCredits: true, unlimited: false };
+        const spent = { hasCredits: false, unlimited: false };
+        const rows: ReadonlyArray<{
+          readonly reply: string;
+          readonly usage: Parameters<typeof statusForUsageReply>[0];
+          readonly config?: Record<string, unknown>;
+          readonly published: number | "unlimited" | "none" | undefined;
+        }> = [
+          {
+            reply: "failed",
+            usage: { error: { code: -32000, message: "usage unavailable" } },
+            published: undefined,
+          },
+          { reply: "timed out", usage: "silent", published: undefined },
+          {
+            reply: "never ran",
+            usage: answered({ ...paid, balance: "4321" }),
+            config: { openai_base_url: "http://127.0.0.1:8317/v1" },
+            published: undefined,
+          },
+          { reply: "credits omitted", usage: answered(), published: undefined },
+          { reply: "credits null", usage: answered(null), published: undefined },
+          {
+            reply: "unlimited, whatever else it carries",
+            usage: answered({ hasCredits: false, unlimited: true, balance: "5" }),
+            published: "unlimited",
+          },
+          {
+            reply: "a balance that rounds up",
+            usage: answered({ ...paid, balance: "4321.5000000000" }),
+            published: 4322,
+          },
+          { reply: "half a credit", usage: answered({ ...paid, balance: "0.5" }), published: 1 },
+          {
+            reply: "under half a credit",
+            usage: answered({ ...paid, balance: "0.49" }),
+            published: "none",
+          },
+          { reply: "zero", usage: answered({ ...paid, balance: "0" }), published: "none" },
+          {
+            reply: "no credits, with a balance",
+            usage: answered({ ...spent, balance: "77" }),
+            published: "none",
+          },
+          { reply: "no credits, without a balance", usage: answered(spent), published: "none" },
+          { reply: "balance missing", usage: answered(paid), published: undefined },
+          {
+            reply: "balance null",
+            usage: answered({ ...paid, balance: null }),
+            published: undefined,
+          },
+          {
+            reply: "balance not a number",
+            usage: answered({ ...paid, balance: "not a number" }),
+            published: undefined,
+          },
+          {
+            reply: "balance empty",
+            usage: answered({ ...paid, balance: " " }),
+            published: undefined,
+          },
+        ];
 
-        assert.strictEqual(yield* balanceFor({ ...paid, unlimited: true }), "unlimited");
-        // A read that answered with nothing to spend says so; it is not a missing answer.
-        for (const none of [
-          null,
-          paid,
-          { ...paid, balance: null },
-          { ...paid, balance: "0" },
-          { ...paid, balance: "not a number" },
-          { hasCredits: false, unlimited: false, balance: "77" },
-        ]) {
-          assert.strictEqual(yield* balanceFor(none), "none");
-        }
-        for (const unread of [
-          undefined,
-          { failure: "Codex did not answer the usage request." },
-          // A usage answer that carries no credits read, as an older probe would hand over.
-          { snapshot: {}, resetCredits: null },
-        ]) {
-          assert.isUndefined((yield* statusFor(unread)).credits);
+        for (const row of rows) {
+          const { startedAt, status } = yield* statusForUsageReply(row.usage, row.config);
+          assert.strictEqual(status.checkedAt, DateTime.formatIso(startedAt), row.reply);
+          assert.deepStrictEqual(
+            status.credits,
+            row.published === undefined
+              ? undefined
+              : {
+                  // The moment the usage answer arrived, not the start or the end of the probe.
+                  readAt: DateTime.formatIso(DateTime.add(startedAt, { seconds: 4 })),
+                  balance: row.published,
+                },
+            row.reply,
+          );
         }
       }),
     );
@@ -1011,7 +1132,6 @@ it.layer(
 
     it.effect("shows Codex usage that answers after three seconds inside the probe budget", () =>
       Effect.gen(function* () {
-        const startedAt = yield* DateTime.now;
         const usageRequested = yield* Deferred.make<void>();
         const spawner = ChildProcessSpawner.make(() =>
           Effect.gen(function* () {
@@ -1037,13 +1157,6 @@ it.layer(
             const answer = (line: string) => {
               const { id, method } = JSON.parse(line) as { id?: number; method?: string };
               if (id === undefined || method === undefined) return Effect.void;
-              if (method === "skills/list") {
-                // The probe ends two seconds after the usage answer arrived.
-                return Effect.sleep("6 seconds").pipe(
-                  Effect.andThen(send({ id, result: results[method] })),
-                  Effect.forkIn(scope),
-                );
-              }
               if (method !== "account/rateLimits/read") {
                 return send({ id, result: results[method] ?? {} });
               }
@@ -1057,7 +1170,6 @@ it.layer(
                         limitId: "codex",
                         planType: "pro",
                         primary: { usedPercent: 42, windowDurationMins: 300, resetsAt: 2e9 },
-                        credits: { hasCredits: true, unlimited: false, balance: "4321.5000000000" },
                       },
                       rateLimitsByLimitId: null,
                       rateLimitResetCredits: null,
@@ -1095,12 +1207,6 @@ it.layer(
         assert.strictEqual(status.auth.status, "authenticated");
         assert.isUndefined(status.usageLimits?.unavailable);
         assert.strictEqual(status.usageLimits?.windows[0]?.usedPercent, 42);
-        // Credits carry the moment the usage answer arrived, not the start or the end of the probe.
-        assert.strictEqual(status.checkedAt, DateTime.formatIso(startedAt));
-        assert.deepStrictEqual(status.credits, {
-          readAt: DateTime.formatIso(DateTime.add(startedAt, { seconds: 4 })),
-          balance: 4322,
-        });
       }),
     );
 
