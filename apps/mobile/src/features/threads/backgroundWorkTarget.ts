@@ -29,3 +29,17 @@ export function backgroundWorkThreadTarget(
     ? { ...target, linked: { viaEnvironmentId: environmentId, label } }
     : target;
 }
+
+/** The remote children's environments this app is not connected to, whose link names a read needs. */
+export function backgroundWorkLinkTargets(
+  items: ReadonlyArray<Pick<PendingBackgroundWorkItem, "childThreadId" | "childEnvironmentId">>,
+  ownConnection: (environmentId: EnvironmentId) => { readonly connected: boolean } | undefined,
+): EnvironmentId[] {
+  return items.flatMap((item) =>
+    item.childThreadId !== undefined &&
+    item.childEnvironmentId !== undefined &&
+    ownConnection(item.childEnvironmentId)?.connected !== true
+      ? [item.childEnvironmentId]
+      : [],
+  );
+}

@@ -1,7 +1,7 @@
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { backgroundWorkThreadTarget } from "./backgroundWorkTarget";
+import { backgroundWorkLinkTargets, backgroundWorkThreadTarget } from "./backgroundWorkTarget";
 
 describe("backgroundWorkThreadTarget", () => {
   const parent = EnvironmentId.make("parent");
@@ -37,5 +37,17 @@ describe("backgroundWorkThreadTarget", () => {
       threadId,
       linked: { viaEnvironmentId: parent, label: "Remote box" },
     });
+  });
+
+  it("wants the link names of remote children this app is not connected to", () => {
+    const other = EnvironmentId.make("other");
+    const items = [
+      { childThreadId: threadId, childEnvironmentId: remote },
+      { childThreadId: threadId, childEnvironmentId: other },
+      { childThreadId: threadId, childEnvironmentId: undefined },
+      { childThreadId: undefined, childEnvironmentId: remote },
+    ];
+    const connected = (id: EnvironmentId) => (id === other ? { connected: true } : undefined);
+    expect(backgroundWorkLinkTargets(items, connected)).toEqual([remote]);
   });
 });

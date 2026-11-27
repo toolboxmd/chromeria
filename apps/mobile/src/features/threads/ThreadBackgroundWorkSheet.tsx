@@ -18,7 +18,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useEnvironments } from "../../state/environments";
 import { useLinkedEnvironments } from "../../state/peerLinks";
 import { environmentThreadShells } from "../../state/threads";
-import { backgroundWorkThreadTarget } from "./backgroundWorkTarget";
+import { backgroundWorkLinkTargets, backgroundWorkThreadTarget } from "./backgroundWorkTarget";
 import type { SubagentThreadTarget } from "./threadAgentsPresentation";
 import { useOpenLinkedThreadRead } from "./useOpenLinkedThread";
 
@@ -47,15 +47,8 @@ export function ThreadBackgroundWorkSheet({ route }: StaticScreenProps<Backgroun
     const own = presentationById.get(environmentId);
     return own && { connected: own.connection.phase === "connected" };
   };
-  const links = useLinkedEnvironments(
-    presentation?.items.some(
-      (item) =>
-        item.childEnvironmentId !== undefined &&
-        ownConnection(item.childEnvironmentId)?.connected !== true,
-    )
-      ? target.environmentId
-      : null,
-  );
+  const remote = backgroundWorkLinkTargets(presentation?.items ?? [], ownConnection);
+  const links = useLinkedEnvironments(remote.length > 0 ? target.environmentId : null, remote);
   const openThread = (child: SubagentThreadTarget, title: string) => {
     void Haptics.selectionAsync();
     if (child.linked !== undefined) {
