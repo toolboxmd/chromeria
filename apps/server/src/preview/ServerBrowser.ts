@@ -3061,7 +3061,11 @@ const make = Effect.gen(function* () {
     await classifiedBy(tab, Math.min(startedAt + timeout, deadlineMs), url);
     const held = siteHoldOf(tab, url);
     if (held) throw siteHoldError(held);
-    const navigation = tab.page.goto(url, { timeout: remaining(), waitUntil: "commit" });
+    // The navigation's own timeout never outlasts the request's.
+    const navigation = tab.page.goto(url, {
+      timeout: Math.max(1, Math.min(remaining(), deadlineMs - performance.now())),
+      waitUntil: "commit",
+    });
     if (readiness === "none") {
       tab.control.track(navigation);
       return;
@@ -3475,8 +3479,12 @@ const make = Effect.gen(function* () {
     for (;;) {
       const held = siteHoldOf(tab, url);
       if (held) throw siteHoldError(held);
-      if (!siteHolds.classifyingOn(tab.tabId)) return;
       const left = deadlineMs - performance.now();
+      if (!siteHolds.classifyingOn(tab.tabId)) {
+        // Nothing to wait for still leaves nothing to send once the request has expired.
+        if (left <= 0) throw new DOMException("This browser request expired.", "TimeoutError");
+        return;
+      }
       if (left <= 0)
         throw new BrowserControlInterrupted({
           message:

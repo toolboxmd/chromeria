@@ -161,7 +161,8 @@ export class SiteHolds {
 
   /** Whether a response that could hold this site again is still being classified. */
   classifyingUnder(scope: string, hold: HeldSite) {
-    return this.fencing().some(
+    // No lapse here: a release waits for every covered verdict, and Clear hold stays available.
+    return [...this.classifying].some(
       (each) =>
         each.site === hold.site && (each.scope === scope || each.threadId === hold.threadId),
     );

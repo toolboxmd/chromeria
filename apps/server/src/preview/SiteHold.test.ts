@@ -228,5 +228,19 @@ describe("SiteHolds fence", () => {
     expect(holds.classifyingOn("tab-a")).toBe(true);
     now = 10_001;
     expect(holds.classifyingOn("tab-a"), "a stalled body lapses").toBe(false);
+    const held = {
+      site: "shop.test",
+      vendor: "datadome" as const,
+      kind: "challenge" as const,
+      url: "https://shop.test/",
+      since: "2026-11-27T00:00:00.000Z",
+      threadId: "thread-a",
+      tabId: "tab-b",
+      metAt: 0,
+    };
+    holds.create("profile:default", held);
+    expect(holds.classifyingUnder("profile:default", held), "a release still waits for it").toBe(
+      true,
+    );
   });
 });
