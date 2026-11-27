@@ -12195,7 +12195,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const names = adapterOptions.scopedLimitNames
               ? yield* Ref.get(adapterOptions.scopedLimitNames)
               : { overageIncluded: undefined };
-            const update = claudeRateLimitEventToUpdate(rateLimitInfo, names);
+            const context = yield* Ref.get(activeTurn);
+            const update = claudeRateLimitEventToUpdate(
+              rateLimitInfo,
+              names,
+              context?.executedModel ?? context?.input.modelSelection.model ?? null,
+            );
             const now = yield* DateTime.now;
             if (update && adapterOptions.onUsageLimits) {
               yield* adapterOptions.onUsageLimits({
@@ -12203,7 +12208,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 checkedAt: DateTime.formatIso(now),
               });
             }
-            const context = yield* Ref.get(activeTurn);
             if (context === null) {
               yield* bufferWakeMessage({
                 nativeThreadId: liveQuery.nativeThreadId,

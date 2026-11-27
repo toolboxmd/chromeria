@@ -282,11 +282,33 @@ describe("PrismService", () => {
                     usageLimits: {
                       checkedAt: "2026-10-08T00:00:00Z",
                       windows: [
-                        { id: "weekly", kind: "weekly", label: "Weekly", usedPercent: 100 },
+                        {
+                          id: "seven_day_configured",
+                          kind: "weekly",
+                          label: "Weekly · Configured",
+                          usedPercent: 100,
+                          modelIds: ["configured"],
+                        },
                       ],
                     },
                   },
-                  { ...p, instanceId: peerId },
+                  {
+                    ...p,
+                    instanceId: peerId,
+                    // A spent allowance of another model leaves this one free.
+                    usageLimits: {
+                      checkedAt: "2026-10-08T00:00:00Z",
+                      windows: [
+                        {
+                          id: "seven_day_other",
+                          kind: "weekly",
+                          label: "Weekly · Other",
+                          usedPercent: 100,
+                          modelIds: ["other-model"],
+                        },
+                      ],
+                    },
+                  },
                 ]),
                 Settings.layerTest({
                   prismRoles: {

@@ -21,12 +21,17 @@ export const initializeResetRedemptions = Effect.gen(function* () {
   )`;
 });
 
-/** A usage window Prism treats as closed: fully used and not yet reset. */
-export function exhaustedWindow(provider: Pick<ServerProvider, "usageLimits">, now: number) {
+/** A usage window Prism treats as closed: fully used, not yet reset, and limiting `model` if given. */
+export function exhaustedWindow(
+  provider: Pick<ServerProvider, "usageLimits">,
+  now: number,
+  model?: string,
+) {
   return (provider.usageLimits?.windows ?? []).find(
     (window) =>
       window.usedPercent >= 100 &&
-      (window.resetsAt === undefined || Date.parse(window.resetsAt) > now),
+      (window.resetsAt === undefined || Date.parse(window.resetsAt) > now) &&
+      (model === undefined || window.modelIds === undefined || window.modelIds.includes(model)),
   );
 }
 

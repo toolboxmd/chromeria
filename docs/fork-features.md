@@ -4219,3 +4219,28 @@ sources and reasons.
   "keywords": ["continuesOnCredits", "codexCreditBlocks", "prismUseCredits", "hasCredits"]
 }
 ```
+
+## claude-token-usage-limits
+
+```json
+{
+  "id": "claude-token-usage-limits",
+  "purpose": "Show Claude limits for a long-lived claude setup-token login (CLAUDE_CODE_OAUTH_TOKEN), whose get_usage probe reports no limits, by reading every rate_limit_event's unifiedWindows; a model-scoped weekly bucket the probe did not name takes the turn model's family name and blocks only that model through modelIds. Ports pingdotgg/t3code#24128. Drop this feature when upstream ships equivalent setup-token limits and the turn-model scoping.",
+  "issues": ["https://github.com/toolboxmd/chromeria/issues/1049"],
+  "prs": ["https://github.com/pingdotgg/t3code/pull/24128"],
+  "newFiles": [],
+  "upstreamFiles": [
+    "apps/server/src/provider/ClaudeProvider.ts",
+    "apps/server/src/provider/claudeUsageLimits.ts",
+    "apps/server/src/provider/claudeUsageLimits.test.ts",
+    "packages/contracts/src/providerUsageLimits.ts",
+    "packages/provider-core/src/server/usageLimits.ts",
+    "packages/provider-core/src/server/usageLimits.test.ts"
+  ],
+  "sharedFiles": [
+    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+    "docs/user/usage.md"
+  ],
+  "keywords": ["unifiedWindows", "clearsProbeFailure", "CLAUDE_CODE_OAUTH_TOKEN", "24128"]
+}
+```
