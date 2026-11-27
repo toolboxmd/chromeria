@@ -232,6 +232,7 @@ describe("SiteHolds fence", () => {
     expect(holds.classifyingOn("tab-a")).toBe(true);
     now = 10_001;
     expect(holds.classifyingOn("tab-a"), "a stalled body lapses").toBe(false);
+    expect(holds.verdictPendingOn("tab-a"), "cleanup still waits for its verdict").toBe(true);
     const held = {
       site: "shop.test",
       vendor: "datadome" as const,

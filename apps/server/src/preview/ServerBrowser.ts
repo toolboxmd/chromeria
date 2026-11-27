@@ -983,7 +983,7 @@ const make = Effect.gen(function* () {
     tab.watches.size === 0 &&
     siteHolds.heldBy(tab.tabId).length === 0 &&
     // A check still being read may be about to hold this tab for the person.
-    !siteHolds.classifyingOn(tab.tabId);
+    !siteHolds.verdictPendingOn(tab.tabId);
   const closedSessions = new Set<string>();
   let hostConnectionId: string | null = null;
   let viewerResizeOrder = 0;
@@ -2626,6 +2626,7 @@ const make = Effect.gen(function* () {
         !isVisible(tab) &&
         tab.watches.size === 0 &&
         siteHolds.heldBy(tab.tabId).length === 0 &&
+        !siteHolds.verdictPendingOn(tab.tabId) &&
         tab.usedAt < cutoff,
     );
   };
@@ -3063,11 +3064,13 @@ const make = Effect.gen(function* () {
     await classifiedBy(tab, Math.min(startedAt + timeout, deadlineMs), url);
     const held = siteHoldOf(tab, url);
     if (held) throw siteHoldError(held);
-    // The navigation's own timeout never outlasts the request's.
-    const navigation = tab.page.goto(url, {
-      timeout: Math.max(1, Math.min(remaining(), deadlineMs - performance.now())),
-      waitUntil: "commit",
-    });
+    // The navigation's own timeout never outlasts the request's, and a spent budget sends nothing.
+    const budget = Math.min(
+      timeout - (performance.now() - startedAt),
+      deadlineMs - performance.now(),
+    );
+    if (budget <= 0) throw new DOMException("This browser request expired.", "TimeoutError");
+    const navigation = tab.page.goto(url, { timeout: budget, waitUntil: "commit" });
     if (readiness === "none") {
       tab.control.track(navigation);
       return;
@@ -3476,7 +3479,16 @@ const make = Effect.gen(function* () {
    * Waits for the tab's pending classification within the request's time. A check still being
    * read when the time runs out is no success: the request stops and the caller can try again.
    */
-  const classifiedBy = async (tab: ServerTab, deadlineMs: number, url = tab.page.url()) => {
+  /**
+   * `beforeSend` refuses an expired request; after an action has run, the wait only reports a
+   * hold and never turns the finished action into a failure.
+   */
+  const classifiedBy = async (
+    tab: ServerTab,
+    deadlineMs: number,
+    url = tab.page.url(),
+    beforeSend = true,
+  ) => {
     // A hold that exists already is the answer, whatever is still being read.
     for (;;) {
       const held = siteHoldOf(tab, url);
@@ -3484,9 +3496,11 @@ const make = Effect.gen(function* () {
       const left = deadlineMs - performance.now();
       if (!siteHolds.classifyingOn(tab.tabId)) {
         // Nothing to wait for still leaves nothing to send once the request has expired.
-        if (left <= 0) throw new DOMException("This browser request expired.", "TimeoutError");
+        if (left <= 0 && beforeSend)
+          throw new DOMException("This browser request expired.", "TimeoutError");
         return;
       }
+      if (left <= 0 && !beforeSend) return;
       if (left <= 0)
         throw new BrowserControlInterrupted({
           message:
@@ -3496,7 +3510,8 @@ const make = Effect.gen(function* () {
       await Promise.race([
         siteHolds.changed(),
         new Promise((resolve) => {
-          timer = setTimeout(resolve, left);
+          // Timers take at most about 24.8 days; an unbounded wait ends on a change instead.
+          timer = setTimeout(resolve, Math.min(left, 2 ** 31 - 1));
         }),
       ]).finally(() => clearTimeout(timer));
     }
@@ -3572,8 +3587,15 @@ const make = Effect.gen(function* () {
     }
     // A check still being classified must not let the next action through. A page the
     // action leaves is not where it acts, so navigations check their target.
+    // The request's deadline bounds the action; a watch's later reads, which reuse these
+    // checks after the request answered, are bounded by the fence alone.
+    let answered = false;
     const refuseHeld = async () => {
-      await classifiedBy(tab, deadlineMs, leavesPage ? target : tab.page.url());
+      await classifiedBy(
+        tab,
+        answered ? Number.POSITIVE_INFINITY : deadlineMs,
+        leavesPage ? target : tab.page.url(),
+      );
       const hold = siteHoldOf(tab, leavesPage ? target : tab.page.url());
       if (hold) throw siteHoldError(hold);
     };
@@ -3583,7 +3605,7 @@ const make = Effect.gen(function* () {
       await refuseHeld();
     };
     const met = async () => {
-      await classifiedBy(tab, deadlineMs).catch((cause: unknown) => {
+      await classifiedBy(tab, deadlineMs, tab.page.url(), false).catch((cause: unknown) => {
         if (request.operation === "watchStart" && siteHoldOf(tab)) stopTabWatches(tab, "revoked");
         throw cause;
       });
@@ -3600,6 +3622,8 @@ const make = Effect.gen(function* () {
     } catch (cause) {
       await met();
       throw cause;
+    } finally {
+      answered = true;
     }
     await met();
     return result;

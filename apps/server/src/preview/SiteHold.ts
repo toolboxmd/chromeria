@@ -130,6 +130,17 @@ export class SiteHolds {
     return [...this.classifying].filter((each) => each.since > from);
   }
 
+  /**
+   * Whether a tab still owns a response being classified, however long it takes: automatic
+   * cleanup keeps such a tab, so a late challenge can still hand it to the person.
+   */
+  verdictPendingOn(tabId: string) {
+    return [...this.classifying].some(
+      (each) =>
+        each.tabId === tabId && !this.dismissed(each.scope, each.threadId, each.site, each.at),
+    );
+  }
+
   /** Whether a response a tab received is still being classified, not dismissed or lapsed. */
   classifyingOn(tabId: string) {
     return this.fencing().some(
