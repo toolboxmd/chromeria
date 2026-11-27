@@ -91,18 +91,38 @@ export class SiteHolds {
     readonly scope: string;
     readonly threadId: string;
     readonly site: string;
+    readonly tabId: string;
+    readonly at: number;
   }>();
+  private readonly settled = new Set<() => void>();
 
   /** A response that may be a check holds back every release on its site until it is classified. */
-  receive(scope: string, threadId: string, site: string) {
-    const entry = { scope, threadId, site };
+  receive(scope: string, threadId: string, site: string, tabId: string) {
+    const entry = { scope, threadId, site, tabId, at: ++this.sequence };
     this.classifying.add(entry);
     return {
-      at: ++this.sequence,
+      at: entry.at,
       done: () => {
         this.classifying.delete(entry);
+        this.notify();
       },
     };
+  }
+
+  /** Whether a response a tab received is still being classified and not yet dismissed. */
+  classifyingOn(tabId: string) {
+    return [...this.classifying].some((each) => each.tabId === tabId);
+  }
+
+  /** Resolves on the next change to what is being classified. */
+  changed(): Promise<void> {
+    return new Promise((resolve) => this.settled.add(resolve));
+  }
+
+  private notify() {
+    const waiting = [...this.settled];
+    this.settled.clear();
+    for (const resolve of waiting) resolve();
   }
 
   /**
@@ -178,6 +198,11 @@ export class SiteHolds {
       const at = ++this.sequence;
       this.cleared.set(`${scope}|${hold.site}`, at);
       this.cleared.set(`thread:${hold.threadId}|${hold.site}`, at);
+      // What the person dismissed no longer holds anything back.
+      for (const each of this.classifying)
+        if (this.dismissed(each.scope, each.threadId, each.site, each.at))
+          this.classifying.delete(each);
+      this.notify();
     }
     return true;
   }

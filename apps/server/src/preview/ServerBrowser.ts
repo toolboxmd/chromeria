@@ -3051,13 +3051,14 @@ const make = Effect.gen(function* () {
     url: string,
     readiness: "load" | "domContentLoaded" | "none",
     timeout: number,
+    deadlineMs = Infinity,
   ) => {
     tab.pendingInitialRequestUrl = null;
     const startedAt = performance.now();
     const remaining = () => Math.max(1, timeout - (performance.now() - startedAt));
     await leaveBusyPage(tab, tab.cdp, timeout / 2);
     // The last check before the request leaves, after any check still being classified.
-    await classifiedBy(tab, startedAt + timeout);
+    await classifiedBy(tab, Math.min(startedAt + timeout, deadlineMs), url);
     const held = siteHoldOf(tab, url);
     if (held) throw siteHoldError(held);
     const navigation = tab.page.goto(url, { timeout: remaining(), waitUntil: "commit" });
@@ -3469,26 +3470,33 @@ const make = Effect.gen(function* () {
    * Waits for the tab's pending classification within the request's time. A check still being
    * read when the time runs out is no success: the request stops and the caller can try again.
    */
-  const classifiedBy = async (tab: ServerTab, deadlineMs: number) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const settled = await Promise.race([
-      tab.siteHoldCheck.then(() => true),
-      new Promise<boolean>((resolve) => {
-        timer = setTimeout(() => resolve(false), Math.max(0, deadlineMs - performance.now()));
-      }),
-    ]).finally(() => clearTimeout(timer));
-    if (!settled)
-      throw new BrowserControlInterrupted({
-        message:
-          "The site's answer is still being checked for an anti-bot check. Try again shortly.",
-      });
+  const classifiedBy = async (tab: ServerTab, deadlineMs: number, url = tab.page.url()) => {
+    // A hold that exists already is the answer, whatever is still being read.
+    for (;;) {
+      const held = siteHoldOf(tab, url);
+      if (held) throw siteHoldError(held);
+      if (!siteHolds.classifyingOn(tab.tabId)) return;
+      const left = deadlineMs - performance.now();
+      if (left <= 0)
+        throw new BrowserControlInterrupted({
+          message:
+            "The site's answer is still being checked for an anti-bot check. Try again shortly.",
+        });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        siteHolds.changed(),
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, left);
+        }),
+      ]).finally(() => clearTimeout(timer));
+    }
   };
 
   const suspectCheck = (tab: ServerTab, url: string) => {
     const site = siteOf(url);
     return site === undefined
       ? { at: 0, done: () => {} }
-      : siteHolds.receive(siteHoldScope(tab), tab.threadId, site);
+      : siteHolds.receive(siteHoldScope(tab), tab.threadId, site, tab.tabId);
   };
 
   const raiseSiteHold = async (
@@ -3555,7 +3563,7 @@ const make = Effect.gen(function* () {
     // A check still being classified must not let the next action through. A page the
     // action leaves is not where it acts, so navigations check their target.
     const refuseHeld = async () => {
-      await classifiedBy(tab, deadlineMs);
+      await classifiedBy(tab, deadlineMs, leavesPage ? target : tab.page.url());
       const hold = siteHoldOf(tab, leavesPage ? target : tab.page.url());
       if (hold) throw siteHoldError(hold);
     };
@@ -3565,7 +3573,10 @@ const make = Effect.gen(function* () {
       await refuseHeld();
     };
     const met = async () => {
-      await classifiedBy(tab, deadlineMs);
+      await classifiedBy(tab, deadlineMs).catch((cause: unknown) => {
+        if (request.operation === "watchStart" && siteHoldOf(tab)) stopTabWatches(tab, "revoked");
+        throw cause;
+      });
       const hold = siteHoldOf(tab);
       if (hold) {
         // A watch that finished installing after the hold began stops too.
@@ -3790,7 +3801,7 @@ const make = Effect.gen(function* () {
                 // A hold may have been raised while this open waited for the tab.
                 const held = siteHoldOf(tab, url);
                 if (held) throw siteHoldError(held);
-                await navigate(tab, url, "load", navigationTimeout);
+                await navigate(tab, url, "load", navigationTimeout, deadlineMs);
               }
             } else {
               // A failed open returns no tabId; a leftover hidden tab would block later reuse.
@@ -4054,6 +4065,7 @@ const make = Effect.gen(function* () {
             resolveNavigationUrl(navigateInput),
             navigateInput.readiness ?? "load",
             navigateInput.timeoutMs ?? request.timeoutMs,
+            deadlineMs,
           ),
         );
         return statusWithTitle(tab, request.agentSessionId);

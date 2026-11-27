@@ -154,14 +154,14 @@ describe("SiteHolds ordering", () => {
   it("holds back a release while a response from before the hold is still classified", () => {
     const holds = new SiteHolds();
     // B's headers arrive first; A's check is classified first and raises the hold.
-    const earlier = holds.receive("profile:default", "thread-a", "shop.test");
+    const earlier = holds.receive("profile:default", "thread-a", "shop.test", "tab-x");
     const held = hold("thread-a", "tab-a");
     holds.create("profile:default", held);
     expect(holds.classifyingUnder("profile:default", held)).toBe(true);
     earlier.done();
     expect(holds.classifyingUnder("profile:default", held)).toBe(false);
     // The thread's isolated tab counts against the profile hold too.
-    const isolated = holds.receive("isolated:thread-a:tab-b", "thread-a", "shop.test");
+    const isolated = holds.receive("isolated:thread-a:tab-b", "thread-a", "shop.test", "tab-x");
     expect(holds.classifyingUnder("profile:default", held)).toBe(true);
     isolated.done();
     expect(holds.classifyingUnder("profile:default", held)).toBe(false);
@@ -171,10 +171,15 @@ describe("SiteHolds ordering", () => {
     const holds = new SiteHolds();
     const held = hold("thread-a", "tab-a");
     holds.create("profile:default", held);
-    const before = holds.receive("profile:default", "thread-a", "shop.test");
-    const isolatedBefore = holds.receive("isolated:thread-a:tab-b", "thread-a", "shop.test");
+    const before = holds.receive("profile:default", "thread-a", "shop.test", "tab-x");
+    const isolatedBefore = holds.receive(
+      "isolated:thread-a:tab-b",
+      "thread-a",
+      "shop.test",
+      "tab-x",
+    );
     holds.clear("profile:default", held, true);
-    const after = holds.receive("profile:default", "thread-a", "shop.test");
+    const after = holds.receive("profile:default", "thread-a", "shop.test", "tab-x");
     expect(holds.dismissed("profile:default", "thread-a", "shop.test", before.at)).toBe(true);
     expect(
       holds.dismissed("isolated:thread-a:tab-b", "thread-a", "shop.test", isolatedBefore.at),
@@ -184,7 +189,7 @@ describe("SiteHolds ordering", () => {
     // Clearing the thread's incognito hold leaves a check its profile is still classifying.
     const incognito = hold("thread-a", "tab-b");
     holds.create("isolated:thread-a:tab-b", incognito);
-    const profilePending = holds.receive("profile:default", "thread-a", "shop.test");
+    const profilePending = holds.receive("profile:default", "thread-a", "shop.test", "tab-x");
     holds.clear("isolated:thread-a:tab-b", incognito, true);
     expect(holds.dismissed("profile:default", "thread-a", "shop.test", profilePending.at)).toBe(
       false,
@@ -192,8 +197,25 @@ describe("SiteHolds ordering", () => {
     // A verified release is no person's dismissal.
     const again = hold("thread-a", "tab-a");
     holds.create("profile:default", again);
-    const pending = holds.receive("profile:default", "thread-a", "shop.test");
+    const pending = holds.receive("profile:default", "thread-a", "shop.test", "tab-x");
     holds.clear("profile:default", again);
     expect(holds.dismissed("profile:default", "thread-a", "shop.test", pending.at)).toBe(false);
+  });
+
+  it("lets a person's clear release the responses it dismissed, so they stop fencing the tab", async () => {
+    const holds = new SiteHolds();
+    const held = hold("thread-a", "tab-a");
+    holds.create("profile:default", held);
+    holds.receive("profile:default", "thread-a", "shop.test", "tab-a");
+    expect(holds.classifyingOn("tab-a")).toBe(true);
+    const changed = holds.changed();
+    holds.clear("profile:default", held, true);
+    await changed;
+    expect(holds.classifyingOn("tab-a")).toBe(false);
+    // A response after the clear is classified as usual.
+    const later = holds.receive("profile:default", "thread-a", "shop.test", "tab-a");
+    expect(holds.classifyingOn("tab-a")).toBe(true);
+    later.done();
+    expect(holds.classifyingOn("tab-a")).toBe(false);
   });
 });
