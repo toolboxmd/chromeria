@@ -48,7 +48,9 @@ it.effect("doctor --dry-run leaves the data directory and uploads alone", () =>
     yield* TestClock.setTime(2 * 60 * 60 * 1_000);
     yield* SqlClient.SqlClient.pipe(
       Effect.flatMap((sql) => sql`CREATE TABLE fixture (id INTEGER)`),
-      Effect.provide(NodeSqliteClient.layer({ filename: path.join(stateDir, "statev2.sqlite") })),
+      Effect.provide(
+        NodeSqliteClient.layer({ filename: path.join(stateDir, "chromeria-v2.sqlite") }),
+      ),
     );
 
     yield* Command.runWith(doctorCommand, { version: "0.0.0" })([
@@ -73,7 +75,7 @@ it.effect("doctor --dry-run leaves the data directory and uploads alone", () =>
     assert.deepEqual(yield* fs.readDirectory(baseDir), ["userdata"]);
     assert.deepEqual((yield* fs.readDirectory(stateDir)).toSorted(), [
       "attachments",
-      "statev2.sqlite",
+      "chromeria-v2.sqlite",
     ]);
   }).pipe(Effect.provide(Layer.mergeAll(layerHost, NetService.layer))),
 );
