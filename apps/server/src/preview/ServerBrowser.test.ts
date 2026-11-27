@@ -3696,10 +3696,8 @@ it.live("a release trusts only a committed document, whatever its fragment", () 
       yield* viewer.input({ type: "takeControl" });
       answer = "clean";
       yield* Effect.promise(() => page.goto("https://shop.test/clean#results"));
-      const events = yield* manager.subscribeEvents;
+      // A release answers once it verified or kept its hold.
       yield* viewer.input({ type: "releaseControl" });
-      // Clearing the hold publishes the snapshot without it.
-      while ((yield* held()) !== undefined) yield* PubSub.take(events);
       expect(yield* held()).toBeUndefined();
     }),
   ).pipe(Effect.provide(layer)),

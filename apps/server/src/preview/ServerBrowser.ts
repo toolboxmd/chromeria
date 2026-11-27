@@ -3549,8 +3549,9 @@ const make = Effect.gen(function* () {
   ) => {
     for (const [scope, hold] of siteHolds.heldBy(tab.tabId)) {
       await tab.siteHoldCheck;
-      // Only an observed main document on the held site, with no check on it, is verified
-      // clean; a navigation or control change during the read makes the result stale.
+      // Only a document on the held site that loaded after the check, with a status vendors
+      // never give a check (2xx, 3xx), is verified clean; a navigation or control change
+      // during the read makes the result stale.
       const generation = [tab.navigationGeneration, tab.control.generation] as const;
       // The page itself says which document is on screen: its navigation entry keeps the
       // status and start of the response that committed, through a 204 or a history change.
@@ -3558,11 +3559,11 @@ const make = Effect.gen(function* () {
         .evaluate(
           `(() => {
             const entry = performance.getEntriesByType("navigation")[0];
-            return entry && { status: entry.responseStatus, startedAt: performance.timeOrigin + entry.startTime, html: document.documentElement.outerHTML };
+            return entry && { status: entry.responseStatus, startedAt: performance.timeOrigin + entry.startTime };
           })()`,
         )
         .catch(() => undefined)) as
-        | { readonly status: number; readonly startedAt: number; readonly html: string }
+        | { readonly status: number; readonly startedAt: number }
         | undefined;
       // An unreadable page, a failed status or a document older than the check is not proof.
       const verified =
@@ -3571,8 +3572,6 @@ const make = Effect.gen(function* () {
         shown.status < 400 &&
         shown.startedAt >= Date.parse(hold.since) &&
         siteOf(tab.page.url()) === hold.site &&
-        classifyAntiBotPage({ status: shown.status, headers: {}, html: shown.html }) ===
-          undefined &&
         generation[0] === tab.navigationGeneration &&
         generation[1] === tab.control.generation;
       if (!verified && how === "release") continue;
@@ -5013,7 +5012,8 @@ const make = Effect.gen(function* () {
             );
             broadcastControl(tab);
             await releasing;
-            void settleSiteHold(tab, "release");
+            // The release answers once its hold is verified or kept.
+            await settleSiteHold(tab, "release").catch(constVoid);
           } else if (
             message.type === "dialog" &&
             tab.control.controller === viewer.id &&
