@@ -327,6 +327,10 @@
       "types": "./src/state/threadHistoryMerge.ts",
       "default": "./src/state/threadHistoryMerge.ts"
     },
+    "./state/server-config-projection": {
+      "types": "./src/state/serverConfigProjection.ts",
+      "default": "./src/state/serverConfigProjection.ts"
+    },
     "./state/orchestration-v2-projection": {
       "types": "./src/state/orchestrationV2Projection.ts",
       "default": "./src/state/orchestrationV2Projection.ts"
