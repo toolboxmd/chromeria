@@ -3058,14 +3058,16 @@ const make = Effect.gen(function* () {
     url: string,
     readiness: "load" | "domContentLoaded" | "none",
     timeout: number,
+    beforeRequest: () => Promise<void>,
     deadlineMs = Infinity,
   ) => {
     tab.pendingInitialRequestUrl = null;
     const startedAt = performance.now();
     const remaining = () => Math.max(1, timeout - (performance.now() - startedAt));
     await leaveBusyPage(tab, tab.cdp, timeout / 2);
-    // The last check before the request leaves, after any check still being classified.
+    // The last checks before the request leaves, after any check still being classified.
     await classifiedBy(tab, Math.min(startedAt + timeout, deadlineMs), url);
+    await beforeRequest();
     const held = siteHoldOf(tab, url);
     if (held) throw siteHoldError(held);
     // The navigation's own timeout never outlasts the request's, and a spent budget sends nothing.
@@ -3618,19 +3620,28 @@ const make = Effect.gen(function* () {
     };
     await refuseHeld();
     // Every send also stops once a person took the tab or the request ran out of time.
+    // Authority is checked after the classification wait, which can be long; a
+    // classification that began meanwhile is waited for and everything is checked again.
     const guarded = (authority: () => Promise<void>) => async () => {
-      await authority();
-      if (
-        generation !== tab.control.generation ||
-        !tab.control.agentCanActNow(request.agentSessionId!)
-      )
-        throw new BrowserControlInterrupted({
-          message: "A human took control of this tab.",
-          reason: "humanControl",
-        });
-      if (performance.now() >= deadlineMs)
-        throw new DOMException("This browser request expired.", "TimeoutError");
-      await refuseHeld();
+      for (;;) {
+        const pending = tab.siteHoldCheck;
+        await pending;
+        await authority();
+        if (
+          generation !== tab.control.generation ||
+          !tab.control.agentCanActNow(request.agentSessionId!)
+        )
+          throw new BrowserControlInterrupted({
+            message: "A human took control of this tab.",
+            reason: "humanControl",
+          });
+        if (performance.now() >= deadlineMs)
+          throw new DOMException("This browser request expired.", "TimeoutError");
+        if (tab.siteHoldCheck !== pending) continue;
+        const hold = siteHoldOf(tab, leavesPage ? target : tab.page.url());
+        if (hold) throw siteHoldError(hold);
+        return;
+      }
     };
     const act = () => run(guarded(authorities[0]), guarded(authorities[1]));
     const met = async () => {
@@ -3871,7 +3882,13 @@ const make = Effect.gen(function* () {
                   { reclaimIdleSlot: true },
                 ),
               );
+              // The site's turn lasts until the page loaded and any check on it is classified.
               await Promise.resolve(opened.initialNavigation).catch(constVoid);
+              if (url)
+                await opened.page
+                  .waitForLoadState("load", { timeout: navigationTimeout })
+                  .catch(constVoid);
+              await opened.siteHoldCheck;
               return opened;
             },
           ));
@@ -3900,7 +3917,16 @@ const make = Effect.gen(function* () {
                     });
                   // A hold may have been raised while this open waited for the tab; navigate
                   // checks it right before the request leaves.
-                  await navigate(tab, url, "load", navigationTimeout, deadlineMs);
+                  await navigate(tab, url, "load", navigationTimeout, async () => {
+                    await authorize();
+                    if (!tab.control.agentCanActNow(request.agentSessionId!))
+                      throw new BrowserControlInterrupted({
+                        message: "A human took control of this tab.",
+                        reason: "humanControl",
+                      });
+                    if (performance.now() >= deadlineMs)
+                      throw new DOMException("This browser request expired.", "TimeoutError");
+                  }, deadlineMs);
                 });
             } else {
               // A failed open returns no tabId; a leftover hidden tab would block later reuse.
@@ -4172,6 +4198,7 @@ const make = Effect.gen(function* () {
               navigateInput.timeoutMs ?? request.timeoutMs,
               Math.max(1, Math.floor(deadlineMs - performance.now())),
             ),
+            authorize,
             deadlineMs,
           ),
         );

@@ -1325,20 +1325,24 @@ export const scroll = async (
     // The wheel goes to the probed point, wherever the pointer was left.
     await authorize();
     await page.mouse.move(human.from.x, human.from.y);
-    let left = [...delta];
     for (const [x, y] of HumanInput.wheelSteps(delta[0], delta[1], human.pacing.random)) {
       if (Date.now() >= budget) break;
       await authorize();
       await page.mouse.wheel(x, y);
-      left = [left[0]! - x, left[1]! - y];
       await human.pacing.sleep(30 + human.pacing.random() * 60);
     }
-    // A box the probe cannot see, such as one in a closed shadow root, took the wheel
-    // when the page did not move; then the page scrolls the whole way.
-    const after = await position();
-    if (after[0] === before[0] && after[1] === before[1]) left = [...delta];
+    // What the page still owes is measured once its scrolling settles: a box the probe
+    // cannot see, such as one in a closed shadow root, may have taken some notches.
+    let after = await position();
+    for (let check = 0; check < 10; check++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const now = await position();
+      if (now[0] === after[0] && now[1] === after[1]) break;
+      after = now;
+    }
+    const left = [delta[0] - (after[0] - before[0]), delta[1] - (after[1] - before[1])];
     // The rest goes by scrollBy; an expired or taken-over call fails rather than stopping short.
-    if (left[0] !== 0 || left[1] !== 0) {
+    if (Math.abs(left[0]!) >= 1 || Math.abs(left[1]!) >= 1) {
       await authorize();
       await page.evaluate(`scrollBy(${left[0]}, ${left[1]})`);
     }

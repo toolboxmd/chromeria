@@ -561,10 +561,11 @@ describe("server browser element refs", () => {
     await expect.poll(() => page.evaluate("scrollY")).toBe(300);
 
     // A closed shadow root and slotted content hide their boxes from the probe; the page still moves.
-    for (const mode of ["closed", "slotted"] as const) {
+    for (const mode of ["closed", "partial", "slotted"] as const) {
       const shadow =
-        mode === "closed"
-          ? `host.attachShadow({ mode: "closed" }).innerHTML = '<div style="height:200px;overflow:auto"><div style="height:2000px"></div></div>';`
+        mode !== "slotted"
+          ? // "partial": the hidden box takes two notches, then has nothing left to scroll.
+            `host.attachShadow({ mode: "closed" }).innerHTML = '<div style="height:200px;overflow:auto"><div style="height:${mode === "closed" ? 2000 : 400}px"></div></div>';`
           : `host.attachShadow({ mode: "open" }).innerHTML = '<div style="height:200px;overflow:auto"><slot></slot></div>';
              host.innerHTML = '<div style="height:2000px"></div>';`;
       await page.evaluate(`(() => {
