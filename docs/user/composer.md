@@ -54,6 +54,18 @@ Shortcuts while a turn is running:
 
 Slash commands (such as `/compact` or `/context`) wait for the current turn to finish rather than steering into it. [Goal](#goals) commands are the exception.
 
+Steer stops what the agent is running, using the agent's own Stop cancellation,
+including its background work where the agent can stop it, then sends your message
+as its next prompt. If that work cannot be stopped, the message is not sent and
+the thread shows why; Stop ends what can still be ended. An interrupted tool may
+have partly run, and its process may not have exited yet. When only background work remains,
+use Stop to end it before sending another message.
+Tasks delegated to other T3 threads keep running; Stop ends those too. Pi and Muse
+take the message mid-turn without stopping their tools. Queue lets the current
+work finish first. A Steer queued on mobile while offline is sent when you
+reconnect; it interrupts the turn running then, if any. Stopping does not undo
+finished actions.
+
 ## Queue messages offline on mobile
 
 Mobile keeps local copies of draft attachments so you can preview them and queue messages offline. Uploads resume on reconnect, and drafts/queued messages survive app restarts and T3 Connect sign-out (restored when signing back into the same account).
