@@ -20,6 +20,13 @@ export interface NativeMarkdownTextStyle {
   readonly boldFontFamily: string;
   readonly monoFontFamily: string;
   readonly headingFontSizes?: ReadonlyArray<number>;
+  /** Fork: text on a bubble whose surface ignores the app appearance, such as a Promachos user's. */
+  readonly bubble?: {
+    readonly background: string;
+    readonly foreground: string;
+    /** The syntax palette for code on that surface. */
+    readonly codeScheme: "light" | "dark";
+  };
 }
 
 export interface SelectableMarkdownSkill {

@@ -397,7 +397,8 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
   }, [props.contextClipboardFragment, props.markdown]);
   const { fontScale } = useWindowDimensions();
   const baseMarkdownStyle = useMemo(() => {
-    const style = enrichedStyle(props.textStyle, themeAppearance === "dark", fontScale);
+    const codeScheme = props.textStyle.bubble?.codeScheme ?? themeAppearance;
+    const style = enrichedStyle(props.textStyle, codeScheme === "dark", fontScale);
     return {
       ...style,
       paragraph: props.textAlign
@@ -428,7 +429,7 @@ export function MobileEnrichedMarkdownText(props: SelectableMarkdownTextProps) {
         props.textStyle,
         baseMarkdownStyle,
         mathRenderingEnabled,
-        themeAppearance,
+        props.textStyle.bubble?.codeScheme ?? themeAppearance,
         accessibilityLabels,
         selectionMenuConfig,
       ),

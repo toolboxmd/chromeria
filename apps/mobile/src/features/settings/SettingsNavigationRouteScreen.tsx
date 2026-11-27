@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   moveNavigationTab,
   navigationCustomizationAvailable,
+  resolveHiddenNavigationTabs,
   toggleNavigationTabVisibility,
 } from "../layout/workspace/navigation-tab-order";
 import { AppText as Text } from "../../components/ui/AppText";
@@ -20,7 +21,6 @@ import {
   NAVIGATION_TAB_ICONS,
   WORKSPACE_TAB_LABELS,
   useNavigationTabOrder,
-  useHiddenNavigationTabs,
   useEnabledNavigationTabs,
 } from "../layout/workspace/navigation-tabs";
 import { SettingsScreen } from "./components/SettingsScreen";
@@ -34,10 +34,14 @@ export function SettingsNavigationRouteScreen() {
   const order = useNavigationTabOrder();
   const { layout } = useAdaptiveWorkspaceLayout();
   const capacity = Platform.OS === "android" && layout.usesSplitView ? 5 : 4;
-  const hidden = useHiddenNavigationTabs();
   const enabled = useEnabledNavigationTabs();
   const preferences = useAtomValue(mobilePreferencesAtom);
   const customizable = navigationCustomizationAvailable();
+  // The saved list, not the bar's: the shared slot's absentee is left out of the bar, not hidden.
+  const hidden =
+    customizable && AsyncResult.isSuccess(preferences)
+      ? resolveHiddenNavigationTabs(preferences.value.hiddenNavigationTabs)
+      : [];
   const ready = customizable && AsyncResult.isSuccess(preferences) && !preferences.waiting;
   const save = useAtomCommand(saveMobilePreferences);
   return (
@@ -69,7 +73,7 @@ export function SettingsNavigationRouteScreen() {
                 <Text className="text-xs text-foreground-muted">
                   {hidden.includes(tab)
                     ? gt("Hidden", { $context: "navigation tab visibility status" })
-                    : enabled.indexOf(tab) < capacity
+                    : enabled.includes(tab) && enabled.indexOf(tab) < capacity
                       ? gt("Tab {position}", { position: enabled.indexOf(tab) + 1 })
                       : gt("In Settings")}
                 </Text>

@@ -24,6 +24,7 @@ import {
 import { rehypeChipPunctuation } from "../components/chat/markdownChipPunctuation";
 import { rehypeHeadingIds } from "../components/chat/markdownFragments";
 import { rehypeTextDirection } from "../components/chat/markdownTextDirection";
+import { groupPromachosBubbles } from "../components/promachos/promachosBubbles";
 
 /** What a kind of message adds to chat Markdown. Pass a stable object: renderers cache by it. */
 export interface MarkdownExtensions {
@@ -52,6 +53,8 @@ export interface MarkdownExtensions {
    * - `"only"` keeps only the `<section data-footnotes>` element.
    */
   readonly footnotes?: "omit" | "omit-seeded" | "only";
+  /** Fork: Promachos replies group their top-level blocks into chat bubbles. */
+  readonly promachosBubbles?: boolean;
 }
 
 export interface WordsHastOptions {
@@ -1292,6 +1295,7 @@ export function wordsHast(text: string, options: WordsHastOptions): Root {
   addHeadingIds(hast);
   addTextDirection(hast as never);
   groupChipPunctuation(hast as never);
+  if (extensions.promachosBubbles) groupPromachosBubbles(hast);
   return hast;
 }
 

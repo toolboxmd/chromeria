@@ -120,8 +120,21 @@ export function useEnrichedLinkVariants(
   fileHrefs: ReadonlySet<string>,
 ) {
   const { linkCustomization, skills, models, textStyle, fileEmbedLabel } = props;
-  const theme = useUniwindTheme();
+  const globalTheme = useUniwindTheme();
   const { fontFamilies } = useAppearancePreferences();
+  // Fork: text on its own bubble surface checks chip contrast against that surface.
+  const bubble = textStyle.bubble;
+  const theme = useMemo(
+    () =>
+      bubble
+        ? {
+            ...globalTheme,
+            "--color-user-bubble": bubble.background,
+            "--color-user-bubble-foreground": bubble.foreground,
+          }
+        : globalTheme,
+    [bubble, globalTheme],
+  );
   const links = useMemo(() => {
     const byUrl = new Map<string, MarkdownLinkCustomization>();
     for (const url of urls) {

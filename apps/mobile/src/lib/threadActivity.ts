@@ -60,7 +60,13 @@ import type {
   ScheduledTaskId,
   TurnItemId,
 } from "@t3tools/contracts";
-import { idleCompactionOf, isCompactionCommandMessage, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  idleCompactionOf,
+  isCompactionCommandMessage,
+  requestAnsweredByLabel,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
 import {
   classifyToolActivity,
   collectToolFilePaths,
@@ -85,6 +91,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import { msg } from "gt-react-native";
 import { m, type MessageResolver } from "../i18n/messages";
+import { keepWarmPingRunIds, keepWarmPingsLabel } from "@t3tools/client-runtime/thread-idle-mode";
 import {
   IDLE_COMPACTION_TITLES,
   IDLE_COMPACTING_LABELS,
@@ -269,7 +276,55 @@ type ThreadFeedEntryContent =
       readonly providerStartingLabel?: string;
       /** The starting provider's driver, whose logo replaces the thinking icon. */
       readonly providerStartingDriver?: string;
+    }
+  | {
+      /** Consecutive keep-warm pings, folded with their replies into one gray line. */
+      readonly type: "keep-warm";
+      readonly id: string;
+      readonly createdAt: string;
+      readonly runId: null;
+      readonly label: string;
     };
+
+/** Keep-warm pings fold into one line per run of consecutive pings, placed where the first was. */
+export function foldKeepWarmPings(
+  rows: ReadonlyArray<ThreadFeedEntry>,
+  resolve: MessageResolver = m,
+): ReadonlyArray<ThreadFeedEntry> {
+  const pingRunIds = keepWarmPingRunIds(
+    rows.flatMap((row) => (row.type === "message" ? [row.message] : [])),
+  );
+  if (pingRunIds.size === 0) return rows;
+  const folded: ThreadFeedEntry[] = [];
+  let open: { index: number; id: string; createdAt: string; count: number } | null = null;
+  for (const row of rows) {
+    const runId = row.type === "message" ? row.message.runId : row.runId;
+    if (runId === null || !pingRunIds.has(runId)) {
+      open = null;
+      folded.push(row);
+      continue;
+    }
+    if (row.type !== "message" || row.message.role !== "user") continue;
+    if (open === null) {
+      open = {
+        index: folded.length,
+        id: `keep-warm:${row.id}`,
+        createdAt: row.createdAt,
+        count: 0,
+      };
+      folded.push(row);
+    }
+    open.count += 1;
+    folded[open.index] = {
+      type: "keep-warm",
+      id: open.id,
+      createdAt: open.createdAt,
+      runId: null,
+      label: keepWarmPingsLabel(open.count, resolve),
+    };
+  }
+  return folded;
+}
 
 export interface ThreadFeedLatestRun {
   readonly runId: RunId;
@@ -685,9 +740,13 @@ function itemSummary(
     case "web_search":
       return resolve(msg("Searched the web"));
     case "approval_request":
-      return resolve(msg("Approval requested"));
+      return item.answeredBy
+        ? requestAnsweredByLabel(item.answeredBy)
+        : resolve(msg("Approval requested"));
     case "user_input_request":
-      return resolve(msg("Input requested"));
+      return item.answeredBy
+        ? requestAnsweredByLabel(item.answeredBy)
+        : resolve(msg("Input requested"));
     case "checkpoint":
       return resolve(msg("Checkpoint captured"));
     case "run_interrupt_request":
