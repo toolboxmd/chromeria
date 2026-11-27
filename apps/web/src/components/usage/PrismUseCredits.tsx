@@ -1,7 +1,8 @@
 import { useAtomValue } from "@effect/atom-react";
 import { AuthSettingsWriteScope } from "@t3tools/contracts";
 import type { LimitAccount } from "@t3tools/shared/usageLimits";
-import { T, useGT, useMessages } from "gt-react";
+import { formatCount } from "@t3tools/shared/usageFormat";
+import { T, useGT, useLocale, useMessages } from "gt-react";
 import { useId, useState } from "react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
@@ -37,11 +38,13 @@ export function PrismUseCredits({
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const gt = useGT();
   const m = useMessages();
+  const locale = useLocale();
   const id = useId();
   const targets = creditUseTargets(environments, account);
   if (targets.length === 0) return null;
   const shown = shownCreditUse(targets);
-  const credits = shownCredits(environments, targets);
+  const read = shownCredits(environments, targets);
+  const credits = read && read.balance !== "none" ? { ...read, balance: read.balance } : null;
   const readAt = credits
     ? formatDayAwareTimestamp(credits.readAt, timestampFormat, now, undefined, m)
     : "";
@@ -103,7 +106,7 @@ export function PrismUseCredits({
           {credits.balance === "unlimited"
             ? gt("Credits: unlimited (read {readAt})", { readAt })
             : gt("Credits left: {balance} (read {readAt})", {
-                balance: credits.balance.toLocaleString(),
+                balance: formatCount(credits.balance, locale),
                 readAt,
               })}
         </p>

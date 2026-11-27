@@ -19,19 +19,19 @@ export const READ_BOUND = Duration.seconds(10);
 type CodexRateLimits = Extract<CodexAccountLimits, { readonly route: "native" }>["rateLimits"];
 
 /**
- * The credits a usage read reported, for display. Like Codex's own status view: whole credits,
- * and nothing for a login without credits or without a balance above zero.
+ * What a usage read that succeeded says about credits, for display. Like Codex's own status
+ * view: whole credits, and `none` for a login without credits or a balance above zero.
  */
 export function codexCreditsShown(
   credits: CodexRateLimits["credits"],
   readAt: string,
-): ServerProviderCredits | undefined {
-  if (credits == null) return undefined;
-  if (credits.unlimited) return { readAt, balance: "unlimited" };
-  const balance = Math.round(Number(credits.balance ?? ""));
-  return credits.hasCredits && Number.isSafeInteger(balance) && balance > 0
-    ? { readAt, balance }
-    : undefined;
+): ServerProviderCredits {
+  if (credits?.unlimited) return { readAt, balance: "unlimited" };
+  const balance = Math.round(Number(credits?.balance ?? ""));
+  return {
+    readAt,
+    balance: credits?.hasCredits && Number.isSafeInteger(balance) && balance > 0 ? balance : "none",
+  };
 }
 
 type AccountLimitsRead = Effect.Effect<CodexAccountLimits, ProviderDriverError>;

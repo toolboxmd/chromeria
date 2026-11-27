@@ -665,25 +665,42 @@ it.layer(
       }),
     );
 
-    it.effect("carries the credits the usage read reports, in whole credits", () =>
+    it.effect("carries what the usage read says about credits, stamped when it answered", () =>
       Effect.gen(function* () {
-        const creditsFor = (
+        const statusFor = (rateLimits: CodexAppServerProviderSnapshot["rateLimits"]) =>
+          checkCodexProviderStatus(defaultCodexSettings, () =>
+            // The read takes two seconds to answer.
+            TestClock.adjust("2 seconds").pipe(
+              Effect.as(
+                makeCodexProbeSnapshot({
+                  nativeUsage: true,
+                  ...(rateLimits ? { rateLimits } : {}),
+                }),
+              ),
+            ),
+          );
+        const balanceFor = (
           credits: { hasCredits: boolean; unlimited: boolean; balance?: string | null } | null,
         ) =>
-          checkCodexProviderStatus(defaultCodexSettings, () =>
-            Effect.succeed(
-              makeCodexProbeSnapshot({
-                nativeUsage: true,
-                rateLimits: { snapshot: {}, resetCredits: null, credits },
-              }),
-            ),
-          ).pipe(Effect.map((status) => [status.credits?.balance, status.credits?.readAt]));
+          statusFor({ snapshot: {}, resetCredits: null, credits }).pipe(
+            Effect.map((status) => status.credits?.balance),
+          );
         const paid = { hasCredits: true, unlimited: false };
 
-        const [balance, readAt] = yield* creditsFor({ ...paid, balance: "4321.5000000000" });
-        assert.strictEqual(balance, 4322);
-        assert.strictEqual(readAt, DateTime.formatIso(yield* DateTime.now));
-        assert.strictEqual((yield* creditsFor({ ...paid, unlimited: true }))[0], "unlimited");
+        const startedAt = yield* DateTime.now;
+        const status = yield* statusFor({
+          snapshot: {},
+          resetCredits: null,
+          credits: { ...paid, balance: "4321.5000000000" },
+        });
+        assert.strictEqual(status.checkedAt, DateTime.formatIso(startedAt));
+        assert.deepStrictEqual(status.credits, {
+          readAt: DateTime.formatIso(DateTime.add(startedAt, { seconds: 2 })),
+          balance: 4322,
+        });
+
+        assert.strictEqual(yield* balanceFor({ ...paid, unlimited: true }), "unlimited");
+        // A read that answered with nothing to spend says so; it is not a missing answer.
         for (const none of [
           null,
           paid,
@@ -692,9 +709,39 @@ it.layer(
           { ...paid, balance: "not a number" },
           { hasCredits: false, unlimited: false, balance: "77" },
         ]) {
-          assert.deepStrictEqual(yield* creditsFor(none), [undefined, undefined]);
+          assert.strictEqual(yield* balanceFor(none), "none");
+        }
+        for (const unread of [undefined, { failure: "Codex did not answer the usage request." }]) {
+          assert.isUndefined((yield* statusFor(unread)).credits);
         }
       }),
+    );
+
+    it.effect("keeps credits out of the provider status cache, written or read", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const filePath = `${yield* fs.makeTempDirectoryScoped()}/codex.json`;
+        const draft = yield* checkCodexProviderStatus(defaultCodexSettings, () =>
+          Effect.succeed(makeCodexProbeSnapshot()),
+        );
+        const provider: ServerProvider = {
+          ...draft,
+          instanceId: ProviderInstanceId.make("codex"),
+          driver: ProviderDriverKind.make("codex"),
+          credits: { readAt: draft.checkedAt, balance: 4322 },
+        };
+
+        yield* writeProviderStatusCache({ filePath, provider });
+        const written = yield* fs.readFileString(filePath);
+        assert.notInclude(written, "credits");
+        assert.notInclude(written, "4322");
+
+        // A file an earlier build wrote with the balance in it.
+        yield* fs.writeFileString(filePath, JSON.stringify(provider));
+        const read = yield* readProviderStatusCache(filePath);
+        assert.strictEqual(read?.instanceId, provider.instanceId);
+        assert.notProperty(read, "credits");
+      }).pipe(Effect.scoped),
     );
 
     it.effect("labels the plan the usage read reports over the cached login plan", () =>

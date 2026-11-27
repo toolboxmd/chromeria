@@ -4175,7 +4175,7 @@ sources and reasons.
 ```json
 {
   "id": "prism-codex-credits",
-  "purpose": "Let Prism admit a Codex instance whose plan windows are spent when its own account/rateLimits/read, made for that decision and bounded off the decision's path, shows credits that can pay. The credit rule is upstream's codexCreditBlocks, applied to the raw response without its snapshot merge. The per-instance prismUseCredits setting, on when absent, turns it off; the web usage popover carries one switch per Codex login that writes it for the same login on every enabled environment and names the ones it could not change, a disconnected one included. The usage read that already runs carries the login's credits (unlimited, or the balance in whole credits, with the read time) on the provider snapshot, and the popover shows them under the switch. Drop this feature when upstream ships credit continuation that Prism's window check uses.",
+  "purpose": "Let Prism admit a Codex instance whose plan windows are spent when its own account/rateLimits/read, made for that decision and bounded off the decision's path, shows credits that can pay. The credit rule is upstream's codexCreditBlocks, applied to the raw response without its snapshot merge. The per-instance prismUseCredits setting, on when absent, turns it off; the web usage popover carries one switch per Codex login that writes it for the same login on every enabled environment and names the ones it could not change, a disconnected one included. The usage read that already runs carries what it said about the login's credits on the provider snapshot whenever it answered: unlimited, the balance in whole credits, or none, with the time the answer arrived; a read that failed or never ran carries nothing. The popover shows the freshest answer among the login's instances under the switch, and no line for none. Credits travel in live snapshots only: the server's provider status cache and the clients' cached server configuration drop them when written and when read. Drop this feature when upstream ships credit continuation that Prism's window check uses.",
   "issues": [
     "https://github.com/toolboxmd/chromeria/issues/1001",
     "https://github.com/toolboxmd/chromeria/issues/1029",
@@ -4191,7 +4191,8 @@ sources and reasons.
   "upstreamFiles": [
     "apps/server/src/provider/CodexProvider.ts",
     "apps/server/src/provider/CodexProvider.test.ts",
-    "apps/server/src/provider/Drivers/CodexDriver.ts"
+    "apps/server/src/provider/Drivers/CodexDriver.ts",
+    "apps/server/src/provider/providerStatusCache.ts"
   ],
   "sharedFiles": [
     "apps/server/src/prism/PrismService.ts",
@@ -4199,6 +4200,8 @@ sources and reasons.
     "apps/server/src/prism/PrismCapacity.integration.test.ts",
     "packages/contracts/src/settings.ts",
     "packages/contracts/src/server.ts",
+    "packages/client-runtime/src/state/server.ts",
+    "packages/client-runtime/src/state/server.test.ts",
     "apps/server/src/provider/ProviderRegistry.test.ts",
     "apps/server/src/provider/codexUsageLimits.ts",
     "apps/web/src/components/usage/UsageLimitsPooled.tsx",

@@ -168,7 +168,11 @@ function setup(
         "Bestia",
         [
           credited(account("codex_work", "codex", "Codex Work"), options.credits?.bestia),
-          account("claude_work", "claudeAgent", "Claude Work"),
+          // Only the Codex driver reports credits; another driver's never show.
+          credited(account("claude_work", "claudeAgent", "Claude Work"), {
+            readAt: "2026-11-26T15:59:00.000Z",
+            balance: 777,
+          }),
         ],
         saved.bestia,
       ),
@@ -263,6 +267,10 @@ it.each([
     );
 });
 
+/** The time of day as the browser's own formatter writes it, in the test's zone. */
+const timeOfDay = (iso: string) =>
+  new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
+
 it.each([
   {
     name: "the balance of the freshest read among the login's machines",
@@ -270,21 +278,43 @@ it.each([
       bestia: { readAt: "2026-11-26T15:00:00.000Z", balance: 111 },
       rocky: { readAt: "2026-11-26T15:30:00.000Z", balance: 12_345 },
     },
-    line: /^Credits left: 12,345 \(read \d{1,2}:\d{2}.*\)$/,
+    line: `Credits left: 12,345 (read ${timeOfDay("2026-11-26T15:30:00.000Z")})`,
   },
   {
     name: "unlimited",
     credits: { bestia: { readAt: "2026-11-26T15:30:00.000Z", balance: "unlimited" as const } },
-    line: /^Credits: unlimited \(read \d{1,2}:\d{2}.*\)$/,
+    line: `Credits: unlimited (read ${timeOfDay("2026-11-26T15:30:00.000Z")})`,
   },
-  { name: "nothing when no read reports credits", credits: {}, line: null },
+  { name: "nothing when no read answered", credits: {}, line: null },
+  {
+    name: "nothing once a newer read found none, whatever an older read showed",
+    credits: {
+      bestia: { readAt: "2026-11-26T15:00:00.000Z", balance: 555 },
+      rocky: { readAt: "2026-11-26T15:30:00.000Z", balance: "none" as const },
+    },
+    line: null,
+  },
+  {
+    name: "an older balance while another machine's read has no answer",
+    credits: { bestia: { readAt: "2026-11-26T15:00:00.000Z", balance: 555 } },
+    line: `Credits left: 555 (read ${timeOfDay("2026-11-26T15:00:00.000Z")})`,
+  },
 ])("shows the login's credits under the switch: $name", async ({ credits, line }) => {
   await using screen = await render(setup({}, { credits }));
   await userEvent.click(screen.getByRole("button", { name: /^Codex Work: 80% left/ }));
 
   await expect.element(useCredits()).toBeVisible();
-  if (line) await expect.element(page.getByText(line)).toBeVisible();
+  if (line) await expect.element(page.getByText(line, { exact: true })).toBeVisible();
   else await expect.element(page.getByText(/^Credits/)).not.toBeInTheDocument();
+});
+
+it("shows no credits on another provider's account", async () => {
+  await using screen = await render(setup({}));
+  await userEvent.click(screen.getByRole("button", { name: /^Claude Work: 80% left/ }));
+
+  await expect.element(page.getByText("Signed in")).toBeVisible();
+  await expect.element(useCredits()).not.toBeInTheDocument();
+  await expect.element(page.getByText(/^Credits/)).not.toBeInTheDocument();
 });
 
 it("writes off for the named instance and the same login on every machine, from the keyboard too", async () => {

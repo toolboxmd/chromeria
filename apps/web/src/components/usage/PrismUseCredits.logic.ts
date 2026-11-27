@@ -77,7 +77,11 @@ export function shownCreditUse(targets: ReadonlyArray<CreditUseTarget>): "on" | 
   return values.size > 1 ? "mixed" : values.has(false) ? "off" : "on";
 }
 
-/** The login's credits from the freshest usage read among its instances; null when none reports any. */
+/**
+ * What the freshest usage read among the login's instances said about credits. A read that found
+ * nothing to spend takes part, so it hides an older balance; an instance whose read failed or
+ * never ran carries no answer and leaves the others standing. Null when no instance has one.
+ */
 export function shownCredits(
   environments: ReadonlyMap<EnvironmentId, CreditUseEnvironment>,
   targets: ReadonlyArray<CreditUseTarget>,

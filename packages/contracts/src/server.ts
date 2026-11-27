@@ -256,10 +256,15 @@ export const ServerProviderUpdateState = Schema.Struct({
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
-/** Chromeria: what a Codex login can still spend on credits, in whole credits, and when it was read. */
+/**
+ * Chromeria: what a Codex login's usage read said it can still spend on credits, and when the
+ * answer arrived. Present only when that read succeeded: `none` is "read, nothing to spend",
+ * absent is "not read". Live snapshots only; `withoutProviderCredits` keeps it off disk.
+ */
 export const ServerProviderCredits = Schema.Struct({
   readAt: IsoDateTime,
-  balance: Schema.Union([Schema.Literal("unlimited"), PositiveInt]),
+  /** Whole credits, `unlimited`, or `none`. */
+  balance: Schema.Union([Schema.Literals(["unlimited", "none"]), PositiveInt]),
 });
 export type ServerProviderCredits = typeof ServerProviderCredits.Type;
 
@@ -347,6 +352,15 @@ export const ServerProvider = Schema.Struct({
   loadedCatalogDigest: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type ServerProvider = typeof ServerProvider.Type;
+
+/** The provider as a cache may hold it, written or read: an account balance never rests on disk. */
+export function withoutProviderCredits<P extends { readonly credits?: ServerProviderCredits }>(
+  provider: P,
+): Omit<P, "credits"> {
+  if (provider.credits === undefined) return provider;
+  const { credits: _credits, ...rest } = provider;
+  return rest;
+}
 
 /** A provider without the lists that equal the ones its reader already holds. */
 export const ServerProviderDelta = ServerProvider.mapFields((fields) => ({

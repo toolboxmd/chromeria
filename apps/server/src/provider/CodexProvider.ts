@@ -1231,11 +1231,10 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       ...(managedAuth ? {} : { usageLimits }),
     },
   });
-  const credits =
-    managedAuth || !snapshot.rateLimits || "failure" in snapshot.rateLimits
-      ? undefined
-      : codexCreditsShown(snapshot.rateLimits.credits, checkedAt);
-  return credits ? { ...provider, credits } : provider;
+  // Only a usage read that answered says anything about credits; `checkedAt` is when the probe began.
+  if (managedAuth || !snapshot.rateLimits || "failure" in snapshot.rateLimits) return provider;
+  const readAt = DateTime.formatIso(yield* DateTime.now);
+  return { ...provider, credits: codexCreditsShown(snapshot.rateLimits.credits, readAt) };
 });
 
 export { makePendingCodexProvider };
