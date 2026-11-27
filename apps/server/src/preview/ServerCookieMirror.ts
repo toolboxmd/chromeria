@@ -7,6 +7,7 @@ import {
 import {
   cdpCookieMirrorStore,
   cdpMirrorCookies,
+  isAntiBotVerdictCookie,
   mirrorCookieSignature,
 } from "@t3tools/shared/browserCookieMirror";
 
@@ -34,6 +35,8 @@ export class ServerCookieMirror {
     string,
     Map<string, { readonly sent: string; readonly stored: string | undefined }>
   >();
+  /** Verdict keys whose mirrored copy was already withdrawn, per profile. Process memory. */
+  private readonly withdrawn = new Map<string, Set<string>>();
   private readonly contexts: ServerBrowserContexts;
   /** Mirror batches and login imports touch the same jars, so they run one at a time. */
   private queue: Promise<unknown> = Promise.resolve();
@@ -125,6 +128,11 @@ export class ServerCookieMirror {
   private async applyBatch(batch: CookieMirrorBatch) {
     const context = await this.contexts.contextFor(batch.profile.id);
     const attached = await this.attach(context);
+    let withdrawn = this.withdrawn.get(batch.profile.id);
+    if (!withdrawn) {
+      withdrawn = new Set();
+      this.withdrawn.set(batch.profile.id, withdrawn);
+    }
     let mirrored = this.mirrored.get(batch.profile.id);
     if (!mirrored) {
       mirrored = new Map();
@@ -142,6 +150,14 @@ export class ServerCookieMirror {
         );
       const current = await read();
       const mutations = batch.mutations.filter((mutation) => {
+        // A desktop built before verdicts stopped travelling still sends them.
+        if (mutation.type === "set" && isAntiBotVerdictCookie(mutation.cookie.name)) return false;
+        // The one-time withdrawal of a mirrored verdict is applied once; a replay after a lost
+        // acknowledgement must not delete a verdict the profile earned since.
+        if (mutation.type === "remove" && isAntiBotVerdictCookie(mutation.key.name)) {
+          const key = cookieMirrorKey(mutation.key);
+          return !withdrawn.has(key);
+        }
         const key = cookieMirrorKey(mutation.type === "set" ? mutation.cookie : mutation.key);
         const last = mirrored.get(key);
         const changedHere =
@@ -152,7 +168,20 @@ export class ServerCookieMirror {
           (mutation.type === "set" && mirrorCookieSignature(mutation.cookie) !== last.sent)
         );
       });
-      await attached.store.apply(mutations);
+      // Each withdrawal is marked once it is applied, so a failed delivery retries only
+      // the ones that did not happen.
+      const withdrawals = mutations.flatMap((mutation) =>
+        mutation.type === "remove" && isAntiBotVerdictCookie(mutation.key.name) ? [mutation] : [],
+      );
+      for (const withdrawal of withdrawals) {
+        await attached.store.apply([withdrawal]);
+        withdrawn.add(cookieMirrorKey(withdrawal.key));
+      }
+      await attached.store.apply(
+        mutations.filter(
+          (mutation) => !(withdrawals as ReadonlyArray<typeof mutation>).includes(mutation),
+        ),
+      );
       const stored = mutations.length > 0 ? await read() : current;
       for (const mutation of mutations)
         if (mutation.type === "set") {

@@ -295,6 +295,150 @@ describe("one-way mirror service seam", () => {
     expect(mirror.snapshot("env")[0]?.mutations[0]?.type).toBe("remove");
   });
 
+  it("never carries anti-bot verdicts onward and withdraws the ones it carried before", async () => {
+    const login = cookie("login-value");
+    const verdict = (name: string, value: string) =>
+      cookie(value, { name, domain: ".shop.example.test", path: "/" });
+    const key = (name: string) => ({ name, domain: ".shop.example.test", path: "/" });
+    const fresh = store();
+    const mirror = new CookieMirror();
+    await mirror.addPartition("partition", "env", profile, fresh);
+    await source(mirror, [
+      login,
+      verdict("datadome", "chrome-verdict"),
+      verdict("_px3", "chrome-verdict"),
+      verdict("incap_ses_42_7", "chrome-verdict"),
+      verdict("my_datadome", "ordinary"),
+    ]);
+    expect([...fresh.cookies.values()].map((item) => item.name)).toEqual(["login", "my_datadome"]);
+
+    // State an earlier build left: a Chrome session verdict in the partition, delivered onward,
+    // plus a verdict the partition earned itself and delivered.
+    const desktop = store([verdict("datadome", "chrome-verdict"), verdict("_abck", "own")]);
+    const carried = new CookieMirror({
+      metadata: {
+        version: 1,
+        mappings: [],
+        chrome: [
+          {
+            source: "chrome-default",
+            profileId: profile.id,
+            managed: [{ key: key("datadome"), persistent: false }],
+            removed: [],
+          },
+        ],
+        partitions: [
+          {
+            id: "partition",
+            environmentId: "env",
+            profile,
+            managed: [],
+            chromeManaged: [key("datadome")],
+            remoteManaged: [key("datadome"), key("_abck")],
+            removed: [],
+          },
+        ],
+      },
+    });
+    await carried.addPartition("partition", "env", profile, desktop);
+    await source(carried, [login, verdict("datadome", "chrome-verdict")]);
+    expect([...desktop.cookies.values()].map((item) => item.name)).toEqual(["_abck", "login"]);
+    const withdrawal = carried.snapshot("env")[0]!.mutations;
+    expect(withdrawal).toEqual([
+      { type: "set", cookie: login },
+      { type: "remove", key: key("datadome") },
+      { type: "remove", key: key("_abck") },
+    ]);
+    // A delivery lost to a disconnect or resync is sent again, also after a desktop restart.
+    await carried.prepareDelivery("env", profile.id, withdrawal);
+    expect(carried.snapshot("env")[0]!.mutations).toEqual(withdrawal);
+    const restarted = new CookieMirror({ metadata: carried.metadata() });
+    await restarted.addPartition("partition", "env", profile, desktop);
+    expect(restarted.snapshot("env")[0]!.mutations).toEqual(withdrawal);
+    await carried.acknowledge("env", profile.id, withdrawal);
+    await restarted.acknowledge("env", profile.id, withdrawal);
+    expect(restarted.snapshot("env")[0]!.mutations, "the acknowledgement ends it").toEqual([
+      { type: "set", cookie: login },
+    ]);
+    desktop.apply.mockClear();
+    await source(carried, [login, verdict("datadome", "chrome-verdict")]);
+    desktop.cookies.set(cookieMirrorKey(key("datadome")), verdict("datadome", "earned-here"));
+    await carried.observeDesktop("partition");
+    expect(desktop.apply).not.toHaveBeenCalled();
+    expect(carried.snapshot("env")[0]!.mutations).toEqual([{ type: "set", cookie: login }]);
+  });
+
+  it("removes a verdict it wrote even when Chrome no longer reports it", async () => {
+    // An earlier build forgot a session verdict after a Chrome restart but kept it here.
+    const verdict = cookie("chrome-verdict", {
+      name: "datadome",
+      domain: ".shop.example.test",
+      path: "/",
+    });
+    const key = { name: "datadome", domain: ".shop.example.test", path: "/" };
+    const desktop = store([verdict]);
+    const mirror = new CookieMirror({
+      metadata: {
+        version: 1,
+        mappings: [],
+        chrome: [{ source: "chrome-default", profileId: profile.id, managed: [], removed: [] }],
+        partitions: [
+          {
+            id: "partition",
+            environmentId: "env",
+            profile,
+            managed: [{ key, persistent: false }],
+            chromeManaged: [key],
+            remoteManaged: [],
+            removed: [],
+          },
+        ],
+      },
+    });
+    await mirror.addPartition("partition", "env", profile, desktop);
+    expect(desktop.cookies.size).toBe(0);
+    expect(mirror.metadata().partitions[0]?.chromeManaged).toEqual([]);
+  });
+
+  it("retries only the verdict withdrawals a failed batch did not apply", async () => {
+    const keyOf = (name: string) => ({ name, domain: ".shop.example.test", path: "/" });
+    const verdict = (name: string, value: string) => cookie(value, keyOf(name));
+    const desktop = store([
+      verdict("datadome", "chrome-verdict"),
+      verdict("cf_clearance", "chrome-verdict"),
+    ]);
+    const mirror = new CookieMirror({
+      metadata: {
+        version: 1,
+        mappings: [],
+        chrome: [{ source: "chrome-default", profileId: profile.id, managed: [], removed: [] }],
+        partitions: [
+          {
+            id: "partition",
+            environmentId: "env",
+            profile,
+            managed: [],
+            chromeManaged: [keyOf("datadome"), keyOf("cf_clearance")],
+            remoteManaged: [],
+            removed: [],
+          },
+        ],
+      },
+    });
+    const apply = desktop.apply.getMockImplementation()!;
+    desktop.apply
+      .mockImplementationOnce(apply)
+      .mockRejectedValueOnce(new Error("synthetic write failure"));
+    await expect(mirror.addPartition("partition", "env", profile, desktop)).rejects.toThrow();
+    // The person passes a check in the desktop tab before the retry.
+    expect(desktop.cookies.has(cookieMirrorKey(keyOf("datadome")))).toBe(false);
+    const earned = verdict("datadome", "earned-here");
+    desktop.cookies.set(cookieMirrorKey(earned), earned);
+    await mirror.observeDesktop("partition");
+    expect([...desktop.cookies.values()]).toEqual([earned]);
+    expect(mirror.metadata().partitions[0]?.chromeManaged).toEqual([]);
+  });
+
   it("keeps profile accounts and both partition-key fields distinct on exact removal", async () => {
     const first = store();
     const second = store();

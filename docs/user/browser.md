@@ -54,7 +54,8 @@ to the environment's agent browser. To reuse logins from another browser:
 - Sending mirrored logins to another environment requires **Mirror desktop
   browser logins** permission on that connection.
 - A login you make inside an agent tab keeps its cookies until the desktop sends
-  a new value for them; signing out on the desktop does not remove them.
+  a new value for them; signing out on the desktop does not remove them. Anti-bot
+  cookies the mirror copied earlier are the exception: they are removed once.
 - For a one-time copy, open **Settings → Browser → Browser profiles →
   Add profile** and choose **Import from**.
 - An agent on another linked environment can copy one site's session from an
@@ -62,7 +63,7 @@ to the environment's agent browser. To reuse logins from another browser:
   `preview_import_login`. The permission is separate from **Browser access**.
 
 See [Reuse browser logins](browser-import.md) for setup and limits, including
-logins that cannot move between devices. The agent's rbw login tool,
+logins that cannot move between devices and anti-bot cookies that never move. The agent's rbw login tool,
 `preview_fill_credential`, works only in agent-browser tabs. It refuses native
 desktop tabs. It fills only on https pages in the same registrable domain as one
 of the vault item's URIs, so `www.example.com` covers `portal.example.com`.

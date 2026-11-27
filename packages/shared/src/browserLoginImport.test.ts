@@ -55,7 +55,7 @@ describe("selectLoginCookies", () => {
     expect(selected._tag === "selected" && selected.cookies.map((c) => c.name)).toEqual(["own"]);
   });
 
-  it("refuses Google hosts as device-bound and skips Google credentials elsewhere", () => {
+  it("refuses Google hosts as device-bound and skips Google credentials and anti-bot verdicts elsewhere", () => {
     expect(select([cookie(".google.com")], ["mail.google.com"])).toEqual({
       _tag: "refused",
       reason: "device_bound",
@@ -70,16 +70,20 @@ describe("selectLoginCookies", () => {
         cookie("www.youtube.com", "SID"),
         // An ordinary site's SID is its own session cookie.
         cookie("shop.test", "SID"),
+        cookie("shop.test", "datadome"),
+        cookie(".shop.test", "_px3"),
+        cookie("shop.test", "my_datadome"),
       ],
       ["www.youtube.com", "shop.test"],
     );
     expect(selected).toMatchObject({
       _tag: "selected",
-      skipped: { deviceBound: 2, partitioned: 0 },
+      skipped: { deviceBound: 4, partitioned: 0 },
     });
     expect(selected._tag === "selected" && selected.cookies.map((c) => c.name)).toEqual([
       "PREF",
       "SID",
+      "my_datadome",
     ]);
   });
 
@@ -124,8 +128,13 @@ describe("planLoginImport", () => {
         cookie("www.shop.test", "unlisted-host"),
         cookie("admin.shop.test", "session", { value: "old" }),
         cookie("elsewhere.test", "unrelated"),
+        cookie("admin.shop.test", "cf_clearance", { value: "earned-here" }),
       ],
-      [cookie("admin.shop.test", "session", { value: "new" }), cookie(".shop.test", "parent")],
+      [
+        cookie("admin.shop.test", "session", { value: "new" }),
+        cookie(".shop.test", "parent"),
+        cookie("admin.shop.test", "cf_clearance", { value: "source-device" }),
+      ],
       ["admin.shop.test"],
     );
     expect(result).toEqual({

@@ -151,5 +151,55 @@ describe("ServerCookieMirror", () => {
       renewed: ["shared", 2_200_000_000],
       own: ["agent-own", -1],
     });
+
+    jar.set("datadome", { ...jar.get("own")!, name: "datadome", value: "mirrored-earlier" });
+    await send([desktop("datadome", "desktop-verdict"), desktop("_px3", "desktop-verdict")]);
+    expect(state()).toMatchObject({ datadome: ["mirrored-earlier", -1] });
+    expect(jar.has("_px3")).toBe(false);
+    // A delivery that fails before it applies is retried in full.
+    const failing = vi.spyOn(jar, "delete").mockImplementationOnce(() => {
+      throw new Error("synthetic disconnect");
+    });
+    await expect(
+      send([
+        { type: "remove", key: { name: "datadome", domain: ".dash.example.test", path: "/" } },
+      ]),
+    ).rejects.toThrow();
+    failing.mockRestore();
+    expect(jar.has("datadome")).toBe(true);
+    const withdraw = () =>
+      send([
+        { type: "remove", key: { name: "datadome", domain: ".dash.example.test", path: "/" } },
+      ]);
+    await withdraw();
+    expect(jar.has("datadome")).toBe(false);
+    // A replay after a lost acknowledgement leaves a verdict the profile earned since.
+    jar.set("datadome", { ...jar.get("own")!, name: "datadome", value: "earned-here" });
+    await withdraw();
+    expect(state()).toMatchObject({ datadome: ["earned-here", -1] });
+
+    // A batch that fails partway retries only the withdrawals that did not happen.
+    for (const name of ["cf_clearance", "_abck"])
+      jar.set(name, { ...jar.get("own")!, name, value: "mirrored-earlier" });
+    const both = () =>
+      send(
+        ["cf_clearance", "_abck"].map((name) => ({
+          type: "remove" as const,
+          key: { name, domain: ".dash.example.test", path: "/" },
+        })),
+      );
+    const deleteCookie = jar.delete.bind(jar);
+    let deletes = 0;
+    const partial = vi.spyOn(jar, "delete").mockImplementation((name) => {
+      if (++deletes === 2) throw new Error("synthetic disconnect");
+      return deleteCookie(name);
+    });
+    await expect(both()).rejects.toThrow();
+    partial.mockRestore();
+    expect(jar.has("cf_clearance")).toBe(false);
+    jar.set("cf_clearance", { ...jar.get("own")!, name: "cf_clearance", value: "earned-here" });
+    await both();
+    expect(state()).toMatchObject({ cf_clearance: ["earned-here", -1] });
+    expect(jar.has("_abck")).toBe(false);
   });
 });

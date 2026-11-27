@@ -111,7 +111,8 @@ remain in browser profiles and process memory. Failures have fixed
 diagnostic codes. Settings > Integrations > Browser reports each observed
 device-bound site as `device-bound, not mirrored`. Chrome's DBSC store supplies
 site identities only; the mirror never reads its credential protobufs or binding
-keys. Google credential cookies are also excluded on macOS. See
+keys. Google credential cookies are also excluded on macOS, and anti-bot verdict
+cookies on every hop. See
 [reuse browser logins](user/browser-import.md) for session-cookie behavior.
 
 The server uses `chromeria-v2.sqlite` in its userdata directory. When missing,

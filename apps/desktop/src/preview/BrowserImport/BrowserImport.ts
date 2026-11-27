@@ -19,6 +19,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import { ChildProcessSpawner } from "effect/process";
 
+import { isAntiBotVerdictCookie } from "@t3tools/shared/browserCookieMirror";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import type { ManagedPolicyFileError } from "@t3tools/shared/managedPolicyFile";
 
@@ -162,6 +163,10 @@ export const writeCookies = Effect.fn("BrowserImport.writeCookies")(function* (
   let skipped = read.undecryptable;
   const skippedDomains = new Set(read.undecryptableHosts);
   for (const cookie of read.cookies) {
+    if (isAntiBotVerdictCookie(cookie.name)) {
+      skipped += 1;
+      continue;
+    }
     const written = yield* Effect.tryPromise({
       try: () =>
         session.cookies.set({
