@@ -6,6 +6,7 @@ import { type PullRequestListSort } from "../components/pullRequest/pullRequestL
 import { SORT_OPTIONS } from "../components/pullRequest/pullRequestListOptions";
 import { type PullRequestsSearch } from "../components/pullRequest/usePullRequestListView";
 import { PullRequestsPage } from "../components/pullRequest/PullRequestsPage";
+import { IssuesView } from "../components/issues/IssuesView";
 
 const MAX_SEARCH_LABEL_CANDIDATES = 100;
 
@@ -77,6 +78,12 @@ export const Route = createFileRoute("/_chat/pull-requests")({
     author:
       typeof raw.author === "string" ? sliceSearchText(raw.author.trim()) || undefined : undefined,
     labels: pullRequestSearchLabels(raw.labels),
+    ...(raw.view === "issues" ? { view: "issues" as const } : {}),
+    ...(typeof raw.issue === "string" && raw.issue.length <= 500 ? { issue: raw.issue } : {}),
   }),
-  component: PullRequestsPage,
+  component: PullRequestsOrIssuesView,
 });
+
+function PullRequestsOrIssuesView() {
+  return Route.useSearch().view === "issues" ? <IssuesView /> : <PullRequestsPage />;
+}

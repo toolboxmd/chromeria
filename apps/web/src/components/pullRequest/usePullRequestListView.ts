@@ -53,6 +53,10 @@ export interface PullRequestsSearch extends PullRequestListPreferences {
   readonly selectedProjectId?: ProjectId | undefined;
   readonly selectedHost?: string | undefined;
   readonly selectedEnvironmentId?: EnvironmentId | undefined;
+  /** Fork: the Issues list shares this page (toolboxmd/t3code#27). */
+  readonly view?: "issues";
+  /** Fork: the Issue URL whose side panel is open (toolboxmd/t3code#29). */
+  readonly issue?: string;
 }
 
 const SEARCH_DEBOUNCE_MS = 250;
