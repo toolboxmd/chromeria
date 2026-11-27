@@ -429,6 +429,28 @@ const failed = (expect: Parameters<typeof gradeSample>[0], run: SampleRun) =>
     .filter((check) => !check.pass)
     .map((check) => check.check);
 
+it("callsInOrder needs each expected call after the one before it", () => {
+  const expect = {
+    calls: [
+      { tool: "preview_type", args: { text: "cat" } },
+      { tool: "preview_press", args: { key: "Enter" } },
+    ],
+    callsInOrder: true,
+  };
+  const run = (tools: ReadonlyArray<"type" | "press">): SampleRun => ({
+    calls: tools.map((tool, step) =>
+      tool === "type"
+        ? { step, tool: "preview_type", input: { text: "cat" } }
+        : { step, tool: "preview_press", input: { key: "Enter" } },
+    ),
+    text: "",
+    stopReason: "end_turn",
+  });
+  assert.deepEqual(failed(expect, run(["type", "press"])), []);
+  assert.deepEqual(failed(expect, run(["press", "type", "press"])), []);
+  assert.deepEqual(failed(expect, run(["press", "type"])), ["callsInOrder"]);
+});
+
 it("passes a good run and names every rule a bad run breaks", () => {
   const expect = {
     calls: [{ tool: "delegate_task", args: { task: "~FINDING", "target.options": "~max" } }],

@@ -3705,6 +3705,102 @@ it.live("a release trusts only a committed document, whatever its fragment", () 
   ).pipe(Effect.provide(layer)),
 );
 
+/** Two profile tabs on one public site; `/api` answers only when the test lets it. */
+const queuedSiteActions = (apiAnswer: "challenge" | "ok") =>
+  Effect.gen(function* () {
+    const chromiumBrowser = yield* Effect.acquireRelease(
+      Effect.promise(() => chromium.launch({ headless: true })),
+      (launched) => Effect.promise(() => launched.close()),
+    );
+    const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+    const apiHit = Promise.withResolvers<void>();
+    const answer = Promise.withResolvers<void>();
+    yield* Effect.promise(() =>
+      context.route("https://shop.example.com/**", async (route) => {
+        if (!route.request().url().endsWith("/api"))
+          return route.fulfill({
+            status: 200,
+            contentType: "text/html",
+            body: '<div style="height:4000px">shop</div>',
+          });
+        apiHit.resolve();
+        await answer.promise;
+        return route.fulfill(
+          apiAnswer === "challenge"
+            ? {
+                status: 403,
+                headers: { "x-datadome": "protected" },
+                contentType: "text/html",
+                body: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+              }
+            : { status: 200, contentType: "application/json", body: "{}" },
+        );
+      }),
+    );
+    realContextOverride = context;
+    const browser = yield* ServerBrowser.ServerBrowser;
+    const broker = yield* Broker.PreviewAutomationBroker;
+    const open = () =>
+      broker.invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "open",
+        input: {
+          url: "https://shop.example.com/",
+          reuseExistingTab: false,
+          show: false,
+          profileId: "default",
+        },
+      });
+    const first = PreviewTabId.make((yield* open()).tabId!);
+    const second = PreviewTabId.make((yield* open()).tabId!);
+    // The first tab's action holds the site until `/api` answers.
+    const running = yield* broker
+      .invoke<unknown>({
+        scope,
+        operation: "evaluate",
+        input: { expression: "fetch('/api').then((response) => response.status)" },
+        tabId: first,
+      })
+      .pipe(Effect.exit, Effect.forkScoped);
+    yield* Effect.promise(() => apiHit.promise);
+    const queued = yield* broker
+      .invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "scroll",
+        input: { direction: "down" },
+        tabId: second,
+      })
+      .pipe(Effect.flip, Effect.forkScoped);
+    const scrolled = () =>
+      Effect.promise(() => context.pages()[1]!.evaluate("scrollY") as Promise<number>);
+    return { browser, second, running, queued, answer, scrolled };
+  });
+
+it.live("a check another tab meets stops a same-site action queued behind it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { queued, answer, scrolled } = yield* queuedSiteActions("challenge");
+      answer.resolve();
+      expect(yield* Fiber.join(queued)).toMatchObject({ reason: "antiBotChallenge" });
+      expect(yield* scrolled(), "the queued scroll never reached the page").toBe(0);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a person taking the tab stops an action queued for its site", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, second, running, queued, answer, scrolled } = yield* queuedSiteActions("ok");
+      const viewer = yield* browser.attachViewer(viewerInput(second, true));
+      yield* viewer.input({ type: "takeControl" });
+      answer.resolve();
+      yield* Fiber.join(running);
+      expect(yield* Fiber.join(queued)).toMatchObject({ reason: "humanControl" });
+      expect(yield* scrolled(), "the queued scroll never reached the page").toBe(0);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live("a check that a same-site API call answers holds the site without a navigation", () =>
   Effect.scoped(
     Effect.gen(function* () {

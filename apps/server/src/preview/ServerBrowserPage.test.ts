@@ -475,6 +475,128 @@ describe("server browser element refs", () => {
     expect(await page.locator("#sent").inputValue()).toBe("");
   });
 
+  it("gives a public page a person's keys, pointer and wheel, and keeps the locator's target", async () => {
+    await page.setContent(
+      `<div style="height:3000px"><input id=q style="position:absolute;left:300px;top:200px">
+        <button id=go style="position:absolute;left:300px;top:260px;width:120px;height:40px">Search</button></div>
+        <script>window.log=[];for(const t of["keydown","mousemove","mousedown","mouseup","wheel","click"])
+          addEventListener(t,e=>log.push(t==="click"?"click:"+e.target.id:t),true)</script>`,
+    );
+    const sleeps: number[] = [];
+    let seed = 7;
+    const human = {
+      // A fixed sequence, so the plan is the same on every run.
+      pacing: {
+        random: () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646,
+        sleep: async (ms: number) => void sleeps.push(ms),
+      },
+      from: { x: 5, y: 5 },
+      deadline: Number.MAX_SAFE_INTEGER,
+    };
+    const log = () => page.evaluate(() => (globalThis as unknown as { log: string[] }).log);
+
+    await ServerBrowserPage.type(page, { locator: "#q", text: "cat food" }, undefined, human);
+    expect(await page.locator("#q").inputValue()).toBe("cat food");
+    expect((await log()).filter((event) => event === "keydown")).toHaveLength(8);
+    expect(sleeps, "every key waits a varied, person-like gap").toHaveLength(8);
+    expect(new Set(sleeps).size).toBeGreaterThan(4);
+    expect(Math.min(...sleeps)).toBeGreaterThan(20);
+
+    await page.evaluate(() => ((globalThis as unknown as { log: string[] }).log.length = 0));
+    await ServerBrowserPage.click(page, { locator: "#go" }, undefined, undefined, human);
+    const clicked = await log();
+    expect(clicked.indexOf("mousedown"), "the pointer travels before it presses").toBeGreaterThan(
+      10,
+    );
+    expect(clicked.slice(0, clicked.indexOf("mousedown")).every((e) => e === "mousemove")).toBe(
+      true,
+    );
+    expect(clicked).toContain("click:go");
+
+    await page.evaluate(() => ((globalThis as unknown as { log: string[] }).log.length = 0));
+    await ServerBrowserPage.scroll(page, { deltaY: 450 }, undefined, human);
+    // Chromium may merge queued wheel events, so count notches loosely.
+    expect((await log()).filter((event) => event === "wheel").length).toBeGreaterThan(2);
+    await expect.poll(() => page.evaluate("scrollY")).toBeGreaterThan(0);
+
+    // A narrow target with a thick border still gets a valid hit point.
+    await page.evaluate(`(() => {
+      const button = Object.assign(document.createElement("button"), { id: "edge" });
+      button.style.cssText = "position:absolute;left:600px;top:200px;width:8px;height:8px;border:20px solid red";
+      button.onclick = () => log.push("click:edge");
+      document.body.append(button);
+    })()`);
+    await ServerBrowserPage.click(page, { locator: "#edge" }, undefined, undefined, human);
+    expect(await log()).toContain("click:edge");
+
+    // A page scroll moves the page, not a scrollable box under a stale pointer.
+    await page.evaluate(`(() => {
+      scrollTo(0, 0);
+      const box = document.createElement("div");
+      box.style.cssText = "position:fixed;left:0;top:0;width:300px;height:300px;overflow:auto";
+      box.innerHTML = '<div style="height:2000px"></div>';
+      document.body.append(box);
+    })()`);
+    // A drag can leave the real pointer over the box while the remembered point is elsewhere.
+    await page.mouse.move(50, 50);
+    await ServerBrowserPage.scroll(page, { deltaY: 300 }, undefined, {
+      ...human,
+      from: { x: 700, y: 500 },
+    });
+    await expect.poll(() => page.evaluate("scrollY")).toBe(300);
+
+    // A scroll box inside a shadow root under the pointer also keeps the wheel off it.
+    await page.evaluate(`(() => {
+      scrollTo(0, 0);
+      const host = document.createElement("div");
+      host.style.cssText = "position:fixed;left:400px;top:0;width:300px;height:300px";
+      host.attachShadow({ mode: "open" }).innerHTML =
+        '<div style="width:300px;height:300px;overflow:auto"><div style="height:2000px"></div></div>';
+      document.body.append(host);
+    })()`);
+    await ServerBrowserPage.scroll(page, { deltaY: 300 }, undefined, {
+      ...human,
+      from: { x: 450, y: 50 },
+    });
+    await expect.poll(() => page.evaluate("scrollY")).toBe(300);
+
+    // A closed shadow root and slotted content hide their boxes from the probe; the page still moves.
+    for (const mode of ["closed", "slotted"] as const) {
+      const shadow =
+        mode === "closed"
+          ? `host.attachShadow({ mode: "closed" }).innerHTML = '<div style="height:200px;overflow:auto"><div style="height:2000px"></div></div>';`
+          : `host.attachShadow({ mode: "open" }).innerHTML = '<div style="height:200px;overflow:auto"><slot></slot></div>';
+             host.innerHTML = '<div style="height:2000px"></div>';`;
+      await page.evaluate(`(() => {
+        scrollTo(0, 0);
+        document.querySelectorAll(".hidden-box").forEach((node) => node.remove());
+        const host = document.createElement("div");
+        host.className = "hidden-box";
+        host.style.cssText = "position:fixed;left:400px;top:320px;width:300px;height:200px";
+        ${shadow}
+        document.body.append(host);
+      })()`);
+      await ServerBrowserPage.scroll(page, { deltaY: 300 }, undefined, {
+        ...human,
+        from: { x: 450, y: 350 },
+      });
+      await expect.poll(() => page.evaluate("scrollY"), { message: mode }).toBe(300);
+    }
+
+    sleeps.length = 0;
+    await ServerBrowserPage.type(
+      page,
+      // Natural pacing would take about 22 s; real key round trips need time of their own.
+      { locator: "#q", text: "x".repeat(200), timeoutMs: 12_000 },
+      undefined,
+      human,
+    );
+    expect(
+      sleeps.reduce((sum, ms) => sum + ms, 0),
+      "the cadence shrinks to fit the call's deadline",
+    ).toBeLessThanOrEqual(6_000);
+  });
+
   it("shows dotted fields as dots wherever their value appears, keeping text values and refs", async () => {
     await page.setContent(`
       <table><tr><td>password:</td><td><input id="pw" type="password" aria-label="Password"></td></tr></table>

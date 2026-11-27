@@ -27,6 +27,7 @@ import type { CDPSession, ConsoleMessage, Frame, Locator, Page } from "playwrigh
 import * as NodeCrypto from "node:crypto";
 import * as NodeUtil from "node:util";
 import { previewViewportSize } from "./ServerBrowserContexts.ts";
+import * as HumanInput from "./HumanInput.ts";
 import { BrowserControlInterrupted } from "./SessionControl.ts";
 
 const isBrowserControlInterrupted = Schema.is(BrowserControlInterrupted);
@@ -162,6 +163,43 @@ export const targetLocator = (
   }
   // Playwright's strict locators reject ambiguous controls rather than acting on row one.
   return page.locator(selector);
+};
+
+/** Present on public pages: the pacing source and where the tab's pointer last was. */
+export interface HumanInputPlan {
+  readonly pacing: HumanInput.HumanPacing;
+  readonly from: HumanInput.Point;
+  /** Date.now() time by which the whole call must answer. */
+  readonly deadline: number;
+}
+
+const TRAVEL_BUDGET_MS = 1_500;
+
+/** Travels the pointer to a spot inside the target's box, as a hand would. */
+const travel = async (
+  page: Page,
+  locator: Locator | null,
+  fallback: HumanInput.Point,
+  human: HumanInputPlan,
+  timeout: () => number,
+  authorize: Authorize,
+) => {
+  const box = locator === null ? null : await locator.boundingBox({ timeout: timeout() });
+  const point = box ? HumanInput.pointInBox(box, human.pacing.random) : fallback;
+  // A hidden tab acknowledges each move only on its next frame, about once a second,
+  // so the path stops at its budget and finishes with one move onto the target.
+  const budget =
+    Date.now() + Math.min(TRAVEL_BUDGET_MS, timeout() / 4, (human.deadline - Date.now()) / 4);
+  // Each move is a send, so each one is authorized: a takeover or expiry stops the path.
+  for (const step of HumanInput.pointerPath(human.from, point, human.pacing.random)) {
+    await authorize();
+    if (Date.now() >= budget) {
+      await page.mouse.move(point.x, point.y);
+      break;
+    }
+    await page.mouse.move(step.x, step.y);
+  }
+  return { point, box };
 };
 
 export type PointerReporter = (
@@ -861,13 +899,14 @@ export const click = async (
   input: PreviewAutomationClickInput,
   pointer: PointerReporter = noPointer,
   authorize: Authorize = noAuthorization,
+  human?: HumanInputPlan,
 ): Promise<{ readonly x: number; readonly y: number }> => {
   // One deadline across steps keeps the reply inside the broker's grace; Playwright reads 0 as none.
   const deadline = Date.now() + (input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const remaining = () => Math.max(1, deadline - Date.now());
   const locator = targetLocator(page, input);
   try {
-    return await clickTarget(page, locator, input, remaining, pointer, authorize);
+    return await clickTarget(page, locator, input, remaining, pointer, authorize, human);
   } catch (cause) {
     throw locator === null ? cause : await namedTargetTimeout(locator, input, cause);
   }
@@ -919,12 +958,23 @@ const clickTarget = async (
   timeout: () => number,
   pointer: PointerReporter,
   authorize: Authorize,
+  human?: HumanInputPlan,
 ) => {
-  const point = await targetPoint(page, locator, input, timeout, authorize);
+  let point = await targetPoint(page, locator, input, timeout, authorize);
+  if (human) {
+    await authorize();
+    const traveled = await travel(page, locator, point, human, timeout, authorize);
+    point = traveled.point;
+  }
   await authorize();
   await pointer(point, "click");
-  const options = { button: input.button ?? "left", clickCount: input.clickCount ?? 1 } as const;
+  const options = {
+    button: input.button ?? "left",
+    clickCount: input.clickCount ?? 1,
+    ...(human ? { delay: HumanInput.pressMs(human.pacing.random) } : {}),
+  } as const;
   await authorize();
+  // The locator click keeps Playwright's actionability, hit-target checks and hit point.
   const clicked =
     locator === null
       ? page.mouse.click(point.x, point.y, options)
@@ -1033,12 +1083,22 @@ const typeKeys = async (
   timeoutMs: number,
   deadline: number,
   authorize: Authorize,
+  human?: HumanInputPlan,
 ) => {
   let typed = 0;
+  let keyIndex = 0;
+  // A person's cadence, planned to use at most half of what the deadline leaves.
+  const delays = human
+    ? HumanInput.keyDelays(text, (deadline - Date.now()) / 2, human.pacing.random)
+    : [];
   for (const [index, part] of text.split(/([\r\n]+)/u).entries()) {
     // Keys cost about a millisecond each, so long text is sent in pieces that stop at the deadline.
-    const pieces = index % 2 === 1 ? [part] : (part.match(/[^]{1,64}/gu) ?? []);
+    const pieces = index % 2 === 1 ? [part] : human ? [...part] : (part.match(/[^]{1,64}/gu) ?? []);
     for (const piece of pieces) {
+      const delay = delays[keyIndex];
+      keyIndex += [...piece].length;
+      if (human && delay) await human.pacing.sleep(delay);
+      // Checked after the wait, so a late wake never sends a key past the deadline.
       if (Date.now() >= deadline) {
         const reason = `Typing stopped after ${typed} of ${text.length} characters, which the field now holds. Type the rest in another call or raise timeoutMs.`;
         throw new ServerBrowserOperationError({
@@ -1059,6 +1119,7 @@ export const type = async (
   page: Page,
   input: PreviewAutomationTypeInput,
   authorize: Authorize = noAuthorization,
+  human?: HumanInputPlan,
 ) => {
   // One deadline across steps keeps the reply inside the broker's grace; Playwright reads 0 as none.
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -1076,7 +1137,7 @@ export const type = async (
     // fill follows a label to its control and leaves that control focused for the keys.
     await authorize();
     await locator.fill("", { timeout: remaining() });
-    await typeKeys(page, input.text, timeoutMs, deadline, authorize);
+    await typeKeys(page, input.text, timeoutMs, deadline, authorize, human);
     return;
   }
   await authorize();
@@ -1097,7 +1158,7 @@ export const type = async (
     await authorize();
     await page.keyboard.press("Delete");
   }
-  await typeKeys(page, input.text, timeoutMs, deadline, authorize);
+  await typeKeys(page, input.text, timeoutMs, deadline, authorize, human);
 };
 
 export const hover = async (
@@ -1105,19 +1166,25 @@ export const hover = async (
   input: PreviewAutomationHoverInput,
   pointer: PointerReporter = noPointer,
   authorize: Authorize = noAuthorization,
-) => {
+  human?: HumanInputPlan,
+): Promise<HumanInput.Point> => {
   const deadline = Date.now() + (input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const remaining = () => Math.max(1, deadline - Date.now());
   const locator = targetLocator(page, input);
-  const point = await targetPoint(page, locator, input, remaining, authorize);
+  let point = await targetPoint(page, locator, input, remaining, authorize);
+  if (human) {
+    await authorize();
+    point = (await travel(page, locator, point, human, remaining, authorize)).point;
+  }
   await authorize();
   await pointer(point, "move");
   await authorize();
   if (locator === null) {
     await page.mouse.move(input.x ?? 0, input.y ?? 0);
-    return;
+    return point;
   }
   await locator.hover({ timeout: remaining() });
+  return point;
 };
 
 export const select = async (
@@ -1222,10 +1289,61 @@ export const scroll = async (
   page: Page,
   input: PreviewAutomationScrollInput,
   authorize: Authorize = noAuthorization,
+  human?: HumanInputPlan,
 ) => {
   const delta = [input.deltaX ?? 0, input.deltaY ?? 0] as const;
   const locator = targetLocator(page, input);
   await authorize();
+  // Wheel events scroll what is under the pointer, so only a page scroll over no
+  // scrollable box uses them; elsewhere the page scrolls as before.
+  const pointerOverBox =
+    locator === null && human
+      ? await page.evaluate(
+          `(() => {
+            let start = document.elementFromPoint(${human.from.x}, ${human.from.y});
+            // Shadow roots hide their scroll boxes from the document's hit test.
+            while (start && start.shadowRoot) {
+              const inner = start.shadowRoot.elementFromPoint(${human.from.x}, ${human.from.y});
+              if (!inner || inner === start) break;
+              start = inner;
+            }
+            // A frame's scrollable content cannot be seen from here.
+            if (start && ["IFRAME", "FRAME", "OBJECT", "EMBED"].includes(start.tagName)) return true;
+            for (let node = start; node && node !== document.scrollingElement && node !== document.body; node = node.parentElement ?? node.getRootNode().host) {
+              const style = getComputedStyle(node);
+              if (/(auto|scroll)/.test(style.overflowY + style.overflowX) && (node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth)) return true;
+            }
+            return false;
+          })()`,
+        )
+      : true;
+  if (locator === null && human && pointerOverBox === false) {
+    // As with pointer travel, a hidden tab's slow frames end the wheel early.
+    const budget = Date.now() + Math.min(TRAVEL_BUDGET_MS, (human.deadline - Date.now()) / 4);
+    const position = () => page.evaluate("[scrollX, scrollY]") as Promise<[number, number]>;
+    const before = await position();
+    // The wheel goes to the probed point, wherever the pointer was left.
+    await authorize();
+    await page.mouse.move(human.from.x, human.from.y);
+    let left = [...delta];
+    for (const [x, y] of HumanInput.wheelSteps(delta[0], delta[1], human.pacing.random)) {
+      if (Date.now() >= budget) break;
+      await authorize();
+      await page.mouse.wheel(x, y);
+      left = [left[0]! - x, left[1]! - y];
+      await human.pacing.sleep(30 + human.pacing.random() * 60);
+    }
+    // A box the probe cannot see, such as one in a closed shadow root, took the wheel
+    // when the page did not move; then the page scrolls the whole way.
+    const after = await position();
+    if (after[0] === before[0] && after[1] === before[1]) left = [...delta];
+    // The rest goes by scrollBy; an expired or taken-over call fails rather than stopping short.
+    if (left[0] !== 0 || left[1] !== 0) {
+      await authorize();
+      await page.evaluate(`scrollBy(${left[0]}, ${left[1]})`);
+    }
+    return;
+  }
   if (locator === null) {
     // Page-side code is passed as source: the server compiles without DOM types.
     await page.evaluate(`scrollBy(${delta[0]}, ${delta[1]})`);
