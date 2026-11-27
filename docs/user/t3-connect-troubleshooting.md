@@ -54,6 +54,7 @@ The issue is on the client device's network:
 - **Expired session**: Sign out of T3 Connect and sign back in.
 - **Waiting for device approval**: Approve the displayed code from an existing device or run `t3 auth connect-device approve <code>` on the host ([Approve new devices](./remote-access.md#approve-new-devices)).
 - **Machine limit reached**: Deregister an unused host or [link a paid T3 Chat account](./remote-access.md#more-machines-with-t3-chat), then restart the host.
+- **Environment removed from T3 Connect** (`t3 connect status` says so): On that machine, run `t3 connect link`, then restart T3 Code there. It keeps your sign-in and preferences and discards the rejected link. If the stored sign-in cannot refresh, complete the new authorization prompt first; without a browser, use `t3 connect link --headless` and approve its code on another device.
 
 ## The clock is off
 
