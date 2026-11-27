@@ -134,6 +134,7 @@ import { PageWatchStore } from "./PageWatchStore.ts";
 import { installPageWatch } from "./ServerBrowserWatch.ts";
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
 import { classifyAntiBotPage, siteOf, SiteHolds, type HeldSite } from "./SiteHold.ts";
+import { livePacing, pageClass, SiteActionGate, type Point } from "./HumanInput.ts";
 import { installPdfDocumentNavigation, isPdfAssetUrl } from "./PdfDocumentNavigation.ts";
 
 const SERVER_HOST_CLIENT_ID = SERVER_BROWSER_AUTOMATION_CLIENT_ID;
@@ -575,6 +576,8 @@ interface ServerTab {
   agentOperating: boolean;
   /** Classification of the latest error document, so an action can report the hold it caused. */
   siteHoldCheck: Promise<void>;
+  /** Where agent input last left the pointer, so the next move starts there. */
+  pointerAt: Point;
   fileChooserIntercepted: boolean;
   readonly onFileChooser: (chooser: FileChooser) => void;
   readonly watches: Set<string>;
@@ -1606,6 +1609,7 @@ const make = Effect.gen(function* () {
         control,
         agentOperating: false,
         siteHoldCheck: Promise.resolve(),
+        pointerAt: { x: 0, y: 0 },
         fileChooserIntercepted: false,
         onFileChooser: (chooser) => {
           pendingFileChooserOffer = pendingFileChooserOffer
@@ -3054,14 +3058,20 @@ const make = Effect.gen(function* () {
     url: string,
     readiness: "load" | "domContentLoaded" | "none",
     timeout: number,
+    beforeRequest: () => Promise<void>,
     deadlineMs = Infinity,
   ) => {
     tab.pendingInitialRequestUrl = null;
     const startedAt = performance.now();
     const remaining = () => Math.max(1, timeout - (performance.now() - startedAt));
     await leaveBusyPage(tab, tab.cdp, timeout / 2);
-    // The last check before the request leaves, after any check still being classified.
-    await classifiedBy(tab, Math.min(startedAt + timeout, deadlineMs), url);
+    // The last checks before the request leaves, after any check still being classified;
+    // one that began during them is waited for and everything is checked again.
+    for (;;) {
+      await classifiedBy(tab, Math.min(startedAt + timeout, deadlineMs), url);
+      await beforeRequest();
+      if (!siteHolds.classifyingOn(tab.tabId)) break;
+    }
     const held = siteHoldOf(tab, url);
     if (held) throw siteHoldError(held);
     // The navigation's own timeout never outlasts the request's, and a spent budget sends nothing.
@@ -3450,6 +3460,17 @@ const make = Effect.gen(function* () {
     }
   };
 
+  // Deadlines here are performance.now() based, like the broker's.
+  const siteActions = new SiteActionGate(livePacing, () => performance.now());
+  /** Public pages get a person's input; local and dev pages stay instant. */
+  const humanInput = (tab: ServerTab, deadlineMs: number) =>
+    pageClass(tab.page.url()) === "public"
+      ? {
+          pacing: livePacing,
+          from: tab.pointerAt,
+          deadline: Date.now() + Math.max(0, deadlineMs - performance.now()),
+        }
+      : undefined;
   const isolatedScopes = new WeakMap<object, string>();
   /** One scope per cookie jar: a persistent profile per runtime, or one isolated context. */
   const siteHoldScope = (tab: ServerTab) => {
@@ -3585,6 +3606,8 @@ const make = Effect.gen(function* () {
     } catch {
       // The operation reports its own input error.
     }
+    const site = pageClass(target) === "public" ? siteOf(target) : undefined;
+    const generation = tab.control.generation;
     // A check still being classified must not let the next action through. A page the
     // action leaves is not where it acts, so navigations check their target.
     // The request's deadline bounds the action; a watch's later reads, which reuse these
@@ -3600,10 +3623,32 @@ const make = Effect.gen(function* () {
       if (hold) throw siteHoldError(hold);
     };
     await refuseHeld();
+    // Every send also stops once a person took the tab or the request ran out of time.
+    // Authority is checked after the classification wait, which can be long; a
+    // classification that began meanwhile is waited for and everything is checked again.
     const guarded = (authority: () => Promise<void>) => async () => {
-      await authority();
-      await refuseHeld();
+      for (;;) {
+        // A watch's later reads reuse this after the request answered; its deadline no longer applies.
+        const until = answered ? Number.POSITIVE_INFINITY : deadlineMs;
+        await classifiedBy(tab, until, leavesPage ? target : tab.page.url());
+        await authority();
+        if (
+          generation !== tab.control.generation ||
+          !tab.control.agentCanActNow(request.agentSessionId!)
+        )
+          throw new BrowserControlInterrupted({
+            message: "A human took control of this tab.",
+            reason: "humanControl",
+          });
+        if (performance.now() >= until)
+          throw new DOMException("This browser request expired.", "TimeoutError");
+        if (siteHolds.classifyingOn(tab.tabId)) continue;
+        const hold = siteHoldOf(tab, leavesPage ? target : tab.page.url());
+        if (hold) throw siteHoldError(hold);
+        return;
+      }
     };
+    const act = () => run(guarded(authorities[0]), guarded(authorities[1]));
     const met = async () => {
       await classifiedBy(tab, deadlineMs, tab.page.url(), false).catch((cause: unknown) => {
         if (request.operation === "watchStart" && siteHoldOf(tab)) stopTabWatches(tab, "revoked");
@@ -3618,7 +3663,21 @@ const make = Effect.gen(function* () {
     };
     let result: A;
     try {
-      result = await run(guarded(authorities[0]), guarded(authorities[1]));
+      // One agent action at a time per site and cookie jar, with a person's gap between them.
+      result =
+        site === undefined
+          ? await act()
+          : await siteActions.run(`${siteHoldScope(tab)}|${site}`, deadlineMs, async () => {
+              // While this waited, a person may have taken the tab, another tab may have met
+              // a check, or this page may have moved to another site.
+              await guarded(async () => {})();
+              if (!leavesPage && siteOf(tab.page.url()) !== site)
+                throw new BrowserControlInterrupted({
+                  message:
+                    "The page moved to another site while this action waited. Read the page again.",
+                });
+              return act();
+            });
     } catch (cause) {
       await met();
       throw cause;
@@ -3798,22 +3857,51 @@ const make = Effect.gen(function* () {
                 siteHolds.forThread(request.threadId, siteOf(url)));
           if (held) throw siteHoldError(held);
         }
+        // Opening a public site is an action on it, so it waits its turn like the others.
+        const site = url !== undefined && pageClass(url) === "public" ? siteOf(url) : undefined;
+        const onSite = <A>(scope: string | undefined, run: () => Promise<A>) =>
+          site === undefined || scope === undefined
+            ? run()
+            : siteActions.run(`${scope}|${site}`, deadlineMs, run);
         if (!existing) await authorize();
         const tab =
           existing ??
-          (await runPromise(
-            openTab(
-              {
-                threadId: request.threadId,
-                ...(url ? { url } : {}),
-                ...(profileId === undefined ? {} : { profileId }),
-                runtime: "server",
-                reveal: false,
-                automationOwner: request.agentSessionId,
-                authorize: resourceAuthorization,
-              },
-              { reclaimIdleSlot: true },
-            ),
+          (await onSite(
+            // A fresh isolated tab has its own cookie jar.
+            profileId === undefined || profileId === INCOGNITO_BROWSER_PROFILE_ID
+              ? undefined
+              : `profile:${profileId}`,
+            async () => {
+              await authorize();
+              const opened = await runPromise(
+                openTab(
+                  {
+                    threadId: request.threadId,
+                    ...(url ? { url } : {}),
+                    ...(profileId === undefined ? {} : { profileId }),
+                    runtime: "server",
+                    reveal: false,
+                    automationOwner: request.agentSessionId!,
+                    authorize: resourceAuthorization,
+                  },
+                  { reclaimIdleSlot: true },
+                ),
+              );
+              // The site's turn lasts until the page loaded and any check on it is classified.
+              await Promise.resolve(opened.initialNavigation).catch(constVoid);
+              // It never spends the time the open needs to clean up a failed tab.
+              const turnEnds =
+                performance.now() +
+                Math.max(1, Math.min(navigationTimeout, deadlineMs - performance.now()) / 2);
+              const turn = () => Math.max(1, turnEnds - performance.now());
+              if (url)
+                await opened.page.waitForLoadState("load", { timeout: turn() }).catch(constVoid);
+              await Promise.race([
+                opened.siteHoldCheck,
+                new Promise((resolve) => setTimeout(resolve, turn())),
+              ]);
+              return opened;
+            },
           ));
         if (existing?.dialog)
           throw new BrowserControlInterrupted({
@@ -3821,9 +3909,11 @@ const make = Effect.gen(function* () {
               "A browser dialog is pending. Read preview_status and use preview_dialog first.",
             reason: "dialogPending",
           });
-        return tab.control.agent(
+        let started = false;
+        const opening = tab.control.agent(
           request.agentSessionId,
           async () => {
+            started = true;
             if (tab.dialog)
               throw new BrowserControlInterrupted({
                 message:
@@ -3831,19 +3921,57 @@ const make = Effect.gen(function* () {
                 reason: "dialogPending",
               });
             if (existing) {
-              if (url) {
-                // A hold may have been raised while this open waited for the tab.
-                const held = siteHoldOf(tab, url);
-                if (held) throw siteHoldError(held);
-                await navigate(tab, url, "load", navigationTimeout, deadlineMs);
-              }
+              // Taken before the site wait, so a person who took and gave back the tab meanwhile counts.
+              const generation = tab.control.generation;
+              if (url)
+                await onSite(siteHoldScope(tab), async () => {
+                  if (
+                    generation !== tab.control.generation ||
+                    !tab.control.agentCanActNow(request.agentSessionId!)
+                  )
+                    throw new BrowserControlInterrupted({
+                      message: "A human took control of this tab.",
+                      reason: "humanControl",
+                    });
+                  // A hold may have been raised while this open waited for the tab; navigate
+                  // checks it right before the request leaves.
+                  // The site wait used part of the request's time.
+                  const left = Math.max(1, Math.floor(deadlineMs - performance.now()));
+                  await navigate(
+                    tab,
+                    url,
+                    "load",
+                    Math.min(navigationTimeout, left),
+                    async () => {
+                      await authorize();
+                      // A person who took the tab and gave it back changed the page under it.
+                      if (
+                        generation !== tab.control.generation ||
+                        !tab.control.agentCanActNow(request.agentSessionId!)
+                      )
+                        throw new BrowserControlInterrupted({
+                          message: "A human took control of this tab.",
+                          reason: "humanControl",
+                        });
+                      if (performance.now() >= deadlineMs)
+                        throw new DOMException("This browser request expired.", "TimeoutError");
+                    },
+                    deadlineMs,
+                  );
+                });
             } else {
               // A failed open returns no tabId; a leftover hidden tab would block later reuse.
               await Promise.resolve(tab.initialNavigation)
                 .then(async () => {
                   if (url) {
                     await tab.page
-                      .waitForLoadState("load", { timeout: navigationTimeout })
+                      // Half of what is left, so a failed open still has time to close its tab.
+                      .waitForLoadState("load", {
+                        timeout: Math.max(
+                          1,
+                          Math.min(navigationTimeout, (deadlineMs - performance.now()) / 2),
+                        ),
+                      })
                       .catch(constVoid);
                   }
                   assertNavigationSucceeded(tab);
@@ -3893,6 +4021,24 @@ const make = Effect.gen(function* () {
           deadlineMs,
           authorize,
         );
+        if (existing) return opening;
+        // A fresh tab whose open expired before it could start returns no tabId; close it.
+        // A refused open returns no tabId, so its tab is unclaimed unless a person took it.
+        return opening.catch(async (cause: unknown) => {
+          if (
+            !started &&
+            tab.control.controller === null &&
+            // A tab holding a site's check stays for the person, as an agent's close leaves it.
+            siteHolds.heldBy(tab.tabId).length === 0 &&
+            // A check still being read may be about to hold this tab for the person.
+            !siteHolds.verdictPendingOn(tab.tabId) &&
+            tabs.get(tabKey(tab.threadId, tab.tabId)) === tab
+          ) {
+            await runPromise(manager.close({ threadId: tab.threadId, tabId: tab.tabId }));
+            dropTab(tab, false);
+          }
+          throw cause;
+        });
       }
       case "recordingStop": {
         if (
@@ -4063,7 +4209,10 @@ const make = Effect.gen(function* () {
         if (held) throw siteHoldError(held);
         const response = await tab.page.goto(normalizePreviewUrl(read.url), {
           waitUntil: "domcontentloaded",
-          timeout: request.timeoutMs,
+          timeout: Math.min(
+            request.timeoutMs,
+            Math.max(1, Math.floor(deadlineMs - performance.now())),
+          ),
         });
         // A human may reserve control while navigation is in flight.
         if (!tab.control.agentCanActNow(request.agentSessionId!))
@@ -4099,7 +4248,12 @@ const make = Effect.gen(function* () {
             tab,
             resolveNavigationUrl(navigateInput),
             navigateInput.readiness ?? "load",
-            navigateInput.timeoutMs ?? request.timeoutMs,
+            // A per-site gap may have used part of the request's time.
+            Math.min(
+              navigateInput.timeoutMs ?? request.timeoutMs,
+              Math.max(1, Math.floor(deadlineMs - performance.now())),
+            ),
+            authorize,
             deadlineMs,
           ),
         );
@@ -4215,20 +4369,31 @@ const make = Effect.gen(function* () {
           ...(input as PreviewAutomationClickInput),
           timeoutMs: Math.max(1, Math.floor(deadlineMs - performance.now())),
         };
-        await recordAction(tab, "click", () =>
-          ServerBrowserPage.click(tab.page, clickInput, pointerFor(tab, authorize), authorize),
+        tab.pointerAt = await recordAction(tab, "click", () =>
+          ServerBrowserPage.click(
+            tab.page,
+            clickInput,
+            pointerFor(tab, authorize),
+            authorize,
+            humanInput(tab, deadlineMs),
+          ),
         );
         return undefined;
       }
       case "hover":
-        return recordAction(tab, "hover", () =>
+        tab.pointerAt = await recordAction(tab, "hover", () =>
           ServerBrowserPage.hover(
             tab.page,
-            input as PreviewAutomationHoverInput,
+            {
+              ...(input as PreviewAutomationHoverInput),
+              timeoutMs: Math.max(1, Math.floor(deadlineMs - performance.now())),
+            },
             pointerFor(tab, authorize),
             authorize,
+            humanInput(tab, deadlineMs),
           ),
         );
+        return undefined;
       case "select":
         return recordAction(tab, "select", () =>
           ServerBrowserPage.select(tab.page, input as PreviewAutomationSelectInput, authorize),
@@ -4252,8 +4417,17 @@ const make = Effect.gen(function* () {
           ...(input as PreviewAutomationTypeInput),
           timeoutMs: Math.max(1, Math.floor(deadlineMs - performance.now())),
         };
+        // Paced typing runs for seconds; a person taking the tab stops it at the next key.
+        const owned = async () => {
+          await authorize();
+          if (!tab.control.agentCanActNow(request.agentSessionId!))
+            throw new BrowserControlInterrupted({
+              message: "A human took control of this tab while it was typing.",
+              reason: "humanControl",
+            });
+        };
         return recordAction(tab, "type", () =>
-          ServerBrowserPage.type(tab.page, typeInput, authorize),
+          ServerBrowserPage.type(tab.page, typeInput, owned, humanInput(tab, deadlineMs)),
         );
       }
       case "press":
@@ -4262,7 +4436,12 @@ const make = Effect.gen(function* () {
         );
       case "scroll":
         return recordAction(tab, "scroll", () =>
-          ServerBrowserPage.scroll(tab.page, input as PreviewAutomationScrollInput, authorize),
+          ServerBrowserPage.scroll(
+            tab.page,
+            input as PreviewAutomationScrollInput,
+            authorize,
+            humanInput(tab, deadlineMs),
+          ),
         );
       case "fillCredential":
         return fillInTab(tab, input as PreviewAutomationFillCredentialInput, authorize);

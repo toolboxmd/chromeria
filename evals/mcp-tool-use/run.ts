@@ -241,6 +241,8 @@ const McpToolUseExpect = Schema.Struct({
   notCalls: Schema.optional(Schema.Array(Schema.String)),
   /** First calls of these tools happen in this order. */
   order: Schema.optional(Schema.Array(Schema.String)),
+  /** `calls` match in their listed order: each one after the one before it. */
+  callsInOrder: Schema.optional(Schema.Boolean),
   /**
    * One `args`-style value per new top-level thread the agent asks for, by `t3_thread_launch` or a
    * `create_threads` entry. Each matches a different thread's request; no other thread is asked for.
@@ -2575,6 +2577,15 @@ export const gradeSample = (
     );
   const label = ({ tool, args }: McpToolUseCall) => (args ? `${tool} ${valueText(args)}` : tool);
   for (const call of expect.calls ?? []) add(`calls ${label(call)}`, found(call));
+  if (expect.callsInOrder) {
+    let at = -1;
+    for (const call of expect.calls ?? []) {
+      const later = calls.slice(at + 1);
+      const index = later.findIndex((each) => found(call, [each]));
+      at = index === -1 ? calls.length : at + 1 + index;
+    }
+    add("callsInOrder", at < calls.length);
+  }
   if (expect.distinctCalls !== undefined) {
     const expected = expect.distinctCalls.map(({ tool, args }) => ({ tool, input: args ?? {} }));
     add(

@@ -156,8 +156,9 @@ to read one page through an existing Chromeria profile tab selected with
 research uses another server. A remote owner requires a direct agent-access link
 and `session.contextThreadId` for a live thread owned by that link with browser
 access; unrelated threads and forwarding through a second environment are refused.
-Human control, expired logins and account warnings stop the read. The reader
-does not log in or perform account actions, and adds no session pacing or quotas.
+Human control, expired logins, account warnings and anti-bot checks stop the
+read. The reader does not log in or perform account actions. It waits a short gap
+after the profile's last action on that site, and adds no quotas.
 Private results stay outside the public cache. Continue with the same session
 selection and explicit opt-in within five minutes, or read the URL again.
 

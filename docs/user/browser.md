@@ -123,6 +123,13 @@ You can also open a tab yourself and tell the agent to “look at this”. Agent
 can read your tab, but cannot use the rbw login tool there when it is a native
 desktop tab.
 
+## How agents browse public sites
+
+On public websites, agents type with a person's pace, move the pointer to what
+they click, and scroll with the wheel. Their actions on one site in one profile
+usually run one at a time with a short random gap; an action that waits on another tab lets the next one start after a few seconds. Pages on your own machine or network,
+such as dev servers, keep instant input.
+
 ## Anti-bot checks
 
 When a site answers an agent with an anti-bot check or block (DataDome,

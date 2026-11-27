@@ -429,6 +429,28 @@ const failed = (expect: Parameters<typeof gradeSample>[0], run: SampleRun) =>
     .filter((check) => !check.pass)
     .map((check) => check.check);
 
+it("callsInOrder needs each expected call after the one before it", () => {
+  const expect = {
+    calls: [
+      { tool: "preview_type", args: { text: "cat" } },
+      { tool: "preview_press", args: { key: "Enter" } },
+    ],
+    callsInOrder: true,
+  };
+  const run = (tools: ReadonlyArray<"type" | "press">): SampleRun => ({
+    calls: tools.map((tool, step) =>
+      tool === "type"
+        ? { step, tool: "preview_type", input: { text: "cat" } }
+        : { step, tool: "preview_press", input: { key: "Enter" } },
+    ),
+    text: "",
+    stopReason: "end_turn",
+  });
+  assert.deepEqual(failed(expect, run(["type", "press"])), []);
+  assert.deepEqual(failed(expect, run(["press", "type", "press"])), []);
+  assert.deepEqual(failed(expect, run(["press", "type"])), ["callsInOrder"]);
+});
+
 it("passes a good run and names every rule a bad run breaks", () => {
   const expect = {
     calls: [{ tool: "delegate_task", args: { task: "~FINDING", "target.options": "~max" } }],
@@ -5410,5 +5432,56 @@ it.each([
       finalText: `Agent device access is off. ${instruction} Start a new agent session.`,
     }),
     [],
+  );
+});
+
+it("the site-search case needs the query typed, then submitted, then the results read", () => {
+  const line = NodeFS.readFileSync(new URL("./cases/computer-use.ndjson", import.meta.url), "utf8")
+    .split("\n")
+    .find((entry) => entry.includes('"id": "cu-child-searches-through-the-page"'));
+  const testCase = decodeDeviceCase(line ?? "");
+  const run = (
+    submit: { tool: string; input: Record<string, unknown> },
+    observed = true,
+  ): SampleRun => ({
+    calls: [
+      { step: 0, tool: "preview_open", input: {}, failed: false, output: "" },
+      {
+        step: 1,
+        tool: "preview_type",
+        input: { locator: "aria-ref=e4", text: "karma dla kota 2 kg" },
+        failed: false,
+        output: "",
+      },
+      { step: 2, ...submit, failed: false, output: "" },
+      ...(observed
+        ? [{ step: 3, tool: "preview_snapshot", input: {}, failed: false, output: "" }]
+        : []),
+    ],
+    text: "Kot Classic 2 kg, 29,49 zł",
+    finalText: "Kot Classic 2 kg, 29,49 zł",
+    stopReason: "end_turn",
+  });
+  const failing = (submit: { tool: string; input: Record<string, unknown> }, observed = true) =>
+    gradeSample(testCase.expect, run(submit, observed))
+      .filter((check) => !check.pass)
+      .map((check) => check.check);
+  assert.deepEqual(failing({ tool: "preview_press", input: { key: "Enter" } }), []);
+  assert.deepEqual(
+    failing({ tool: "preview_act", input: { action: "click", locator: "aria-ref=e5" } }),
+    [],
+  );
+  assert.include(
+    failing({ tool: "preview_act", input: { action: "hover", locator: "aria-ref=e5" } }).join(),
+    "preview_press|preview_act|preview_click",
+  );
+  // A right-click opens a menu, not the results; and the results must be read after it.
+  assert.include(
+    failing({ tool: "preview_click", input: { locator: "aria-ref=e5", button: "right" } }).join(),
+    "preview_press|preview_act|preview_click",
+  );
+  assert.include(
+    failing({ tool: "preview_press", input: { key: "Enter" } }, false).join(),
+    "callsInOrder",
   );
 });

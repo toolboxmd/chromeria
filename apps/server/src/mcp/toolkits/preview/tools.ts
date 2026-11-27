@@ -141,7 +141,7 @@ const PreviewDialogTool = browserTool(
 const PreviewNavigateTool = safeBrowserTool(
   Tool.make("preview_navigate", {
     description:
-      "Navigate the chosen tab. Pass `url` for a website, or `target:{kind:'environment-port',port}` for a dev server. Exactly one of `url` and `target`." +
+      "Navigate the chosen tab. Pass `url` for a website, or `target:{kind:'environment-port',port}` for a dev server. Exactly one of `url` and `target`. On a public website, reach search results and listings through the page itself, with its search box and links, instead of typing their URLs; keep one tab per site." +
       COMPUTER_USE_HINT,
     parameters: McpRouting.parameters(PreviewAutomationNavigateInput),
     success: PreviewAutomationStatus,

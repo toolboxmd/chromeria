@@ -4278,3 +4278,30 @@ sources and reasons.
   "keywords": ["siteHold", "antiBotChallenge", "captcha-delivery", "cf-mitigated"]
 }
 ```
+
+## human-browsing-input
+
+```json
+{
+  "id": "human-browsing-input",
+  "purpose": "Give agent input on public pages a person's key cadence, pointer travel and wheel scrolling, one action at a time per site, while local and dev pages stay instant.",
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/993",
+    "https://github.com/toolboxmd/chromeria/issues/996"
+  ],
+  "prs": ["https://github.com/toolboxmd/chromeria/pull/1006"],
+  "newFiles": [
+    "apps/server/src/preview/HumanInput.test.ts",
+    "apps/server/src/preview/HumanInput.ts"
+  ],
+  "upstreamFiles": [],
+  "sharedFiles": [
+    "apps/server/src/mcp/toolkits/preview/tools.ts",
+    "apps/server/src/preview/ServerBrowser.ts",
+    "apps/server/src/preview/ServerBrowserPage.test.ts",
+    "apps/server/src/preview/ServerBrowserPage.ts",
+    "packages/provider-core/src/server/orchestrationInstructions.ts"
+  ],
+  "keywords": ["pageClass", "keyDelays", "pointerPath", "SiteActionGate"]
+}
+```
