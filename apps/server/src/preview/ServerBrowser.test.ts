@@ -3783,8 +3783,6 @@ it.live.each([
     name: "a check another tab of the profile meets again",
     secondBody: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
   },
-  // Its body is not read yet when the response arrives, so the bar moves on any error page.
-  { name: "an error page another tab gets on the held site", secondBody: "<p>forbidden</p>" },
 ] as const)("$name keeps the hold", ({ secondBody }) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -3932,6 +3930,14 @@ it.live("clearing a hold on a page still showing its check clears it", () =>
           input: { url: "https://shop.test/" },
           tabId,
         }),
+      );
+      // A page stuck in a dialog cannot answer; the person's override needs nothing from it.
+      const page = context.pages()[0]!;
+      yield* Effect.promise(() =>
+        Promise.all([
+          page.waitForEvent("dialog"),
+          page.evaluate("setTimeout(() => alert('stuck'))"),
+        ]),
       );
       yield* manager.adjust({ threadId: scope.thread.threadId, tabId, clear: "siteHold" });
       const [session] = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;

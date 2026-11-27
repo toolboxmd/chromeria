@@ -73,6 +73,8 @@ export interface HeldSite extends PreviewSiteHold {
   readonly tabId: string;
   /** When any covered tab last met a check on the site; a release needs a newer document. */
   metAt: number;
+  /** Responses on the site still being classified; a release waits until there are none. */
+  pending: number;
 }
 
 /**

@@ -126,6 +126,7 @@ describe("SiteHolds.covering", () => {
       threadId,
       tabId,
       metAt: 0,
+      pending: 0,
     });
     const profile = hold("thread-a", "tab-1");
     const isolated = hold("thread-a", "tab-2");

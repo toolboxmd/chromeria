@@ -1816,7 +1816,7 @@ const make = Effect.gen(function* () {
           siteOf(response.url()) === siteOf(page.url())
         ) {
           const answer = { status: response.status(), headers: response.headers() };
-          suspectCheck(tab, response.url());
+          const classified = suspectCheck(tab, response.url());
           tab.siteHoldCheck = Promise.all([
             tab.siteHoldCheck,
             response
@@ -1824,9 +1824,10 @@ const make = Effect.gen(function* () {
               .catch(() => "")
               .then((body) => {
                 const verdict = classifyAntiBotPage({ ...answer, html: body.slice(0, 65_536) });
-                if (verdict) return raiseSiteHold(tab, verdict, response.url());
+                if (verdict) return raiseSiteHold(tab, verdict, response.url(), classified.at);
               })
-              .catch(constVoid),
+              .catch(constVoid)
+              .finally(classified.done),
           ]).then(constVoid);
         }
         if (isDocument) {
@@ -1835,7 +1836,7 @@ const make = Effect.gen(function* () {
             headers: response.headers(),
           };
           if (document.status >= 400 || document.headers["cf-mitigated"] !== undefined) {
-            suspectCheck(tab, response.url());
+            const classified = suspectCheck(tab, response.url());
             tab.siteHoldCheck = Promise.all([
               tab.siteHoldCheck,
               response
@@ -1843,9 +1844,10 @@ const make = Effect.gen(function* () {
                 .catch(() => "")
                 .then((html) => {
                   const verdict = classifyAntiBotPage({ ...document, html });
-                  if (verdict) return raiseSiteHold(tab, verdict, response.url());
+                  if (verdict) return raiseSiteHold(tab, verdict, response.url(), classified.at);
                 })
-                .catch(constVoid),
+                .catch(constVoid)
+                .finally(classified.done),
             ]).then(constVoid);
           }
         }
@@ -3461,25 +3463,36 @@ const make = Effect.gen(function* () {
     since,
   });
 
+  // When a person last ended each site's hold per browser scope: a response that arrived
+  // before that is part of what the person dismissed, so it cannot raise the hold again.
+  const clearedAt = new Map<string, number>();
   /**
-   * A response that may be a check moves the release bar of every hold it falls under the
-   * moment it arrives, before its body is read, so no release slips in while it is classified.
+   * A response that may be a check counts as pending on every hold it falls under until it
+   * is classified, so no release slips in meanwhile; only a real check moves the bar.
    */
   const suspectCheck = (tab: ServerTab, url: string) => {
-    const site = siteOf(url);
-    if (site === undefined) return;
     const at = Date.now();
-    for (const covering of siteHolds.covering(siteHoldScope(tab), tab.threadId, site))
-      covering.metAt = Math.max(covering.metAt, at);
+    const site = siteOf(url);
+    const holds =
+      site === undefined ? [] : siteHolds.covering(siteHoldScope(tab), tab.threadId, site);
+    for (const hold of holds) hold.pending++;
+    return {
+      at,
+      done: () => {
+        for (const hold of holds) hold.pending--;
+      },
+    };
   };
 
   const raiseSiteHold = async (
     tab: ServerTab,
     verdict: NonNullable<ReturnType<typeof classifyAntiBotPage>>,
     url: string,
+    receivedAt = Date.now(),
   ) => {
     const site = siteOf(url);
     if (site === undefined || tab.closing) return;
+    if (receivedAt <= (clearedAt.get(`${siteHoldScope(tab)}|${site}`) ?? 0)) return;
     // A check met again, by any tab or answer the hold covers, moves the bar for release.
     const metAt = Date.now();
     for (const covering of siteHolds.covering(siteHoldScope(tab), tab.threadId, site))
@@ -3492,6 +3505,7 @@ const make = Effect.gen(function* () {
       threadId: tab.threadId,
       tabId: tab.tabId,
       metAt,
+      pending: 0,
     };
     if (!siteHolds.create(siteHoldScope(tab), hold)) return;
     runFork(Effect.logInfo("Site hold raised", { site, vendor: hold.vendor, kind: hold.kind }));
@@ -3568,9 +3582,18 @@ const make = Effect.gen(function* () {
     authorize: () => Promise<void> = async () => {},
   ) => {
     for (const [scope, hold] of siteHolds.heldBy(tab.tabId)) {
-      // The person's own tab finishes classifying first; a check another tab may be
-      // classifying already moved the bar when its response arrived.
-      if (how === "release") await tab.siteHoldCheck;
+      if (how === "clear") {
+        // The person's override needs nothing from the page, which may be stuck in a dialog.
+        await authorize();
+        if (!siteHolds.clear(scope, hold)) continue;
+        clearedAt.set(`${scope}|${hold.site}`, Date.now());
+        runFork(Effect.logInfo("Site hold cleared", { site: hold.site, verified: false }));
+        await showRemainingHold(tab, hold);
+        continue;
+      }
+      // The person's own tab finishes classifying first; responses other tabs are still
+      // classifying keep the hold pending.
+      await tab.siteHoldCheck;
       // Only a document on the held site that loaded after the check, with a status vendors
       // never give a check (2xx, 3xx), is verified clean; a navigation or control change
       // during the read makes the result stale.
@@ -3593,28 +3616,36 @@ const make = Effect.gen(function* () {
         shown.status >= 200 &&
         shown.status < 400 &&
         shown.startedAt >= Date.parse(hold.since) &&
-        // A check met again on a later document or by a same-site answer keeps the hold.
+        // A check met again on a later document or by a same-site answer keeps the hold, and
+        // so does a response another covered tab is still classifying.
         shown.startedAt > hold.metAt &&
+        hold.pending === 0 &&
         siteOf(tab.page.url()) === hold.site &&
         generation[0] === tab.navigationGeneration &&
         generation[1] === tab.control.generation;
-      if (!verified && how === "release") continue;
-      // The person's access is checked again right before the hold goes.
+      // The person's access is checked again right before the hold goes; a response that
+      // began classifying during the read keeps the hold.
+      if (!verified) continue;
       await authorize();
+      if (hold.pending > 0 || shown.startedAt <= hold.metAt) continue;
       if (!siteHolds.clear(scope, hold)) continue;
       runFork(Effect.logInfo("Site hold cleared", { site: hold.site, verified }));
-      // Another site this tab still holds keeps its banner.
-      const [remaining] = siteHolds.heldBy(tab.tabId);
-      await runPromise(
-        manager
-          .setSiteHold({
-            threadId: ThreadId.make(hold.threadId),
-            tabId: hold.tabId,
-            siteHold: remaining ? publicSiteHold(remaining[1]) : undefined,
-          })
-          .pipe(Effect.ignore),
-      );
+      await showRemainingHold(tab, hold);
     }
+  };
+
+  /** Another site this tab still holds keeps its banner. */
+  const showRemainingHold = async (tab: ServerTab, hold: HeldSite) => {
+    const [remaining] = siteHolds.heldBy(tab.tabId);
+    await runPromise(
+      manager
+        .setSiteHold({
+          threadId: ThreadId.make(hold.threadId),
+          tabId: hold.tabId,
+          siteHold: remaining ? publicSiteHold(remaining[1]) : undefined,
+        })
+        .pipe(Effect.ignore),
+    );
   };
 
   const runOperation = async (
