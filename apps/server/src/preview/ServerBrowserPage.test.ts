@@ -1390,4 +1390,33 @@ describe("page dispatch authorization", () => {
     ).rejects.toThrow("Original invocation retired");
     expect(external.effects).toEqual(["key:ControlOrMeta+A"]);
   });
+
+  it("a page scroll over a scroll box checks authority again after its probe", async () => {
+    let current = true;
+    const sent: string[] = [];
+    // The probe finds a scroll box under the pointer; the grant retires while it runs.
+    const page = {
+      evaluate: async (expression: string) => {
+        sent.push(expression);
+        current = false;
+        return true;
+      },
+    } as unknown as Page;
+    await expect(
+      ServerBrowserPage.scroll(
+        page,
+        { deltaY: 300 },
+        async () => {
+          if (!current) throw retired();
+        },
+        {
+          pacing: { random: () => 0.5, sleep: async () => {} },
+          from: { x: 10, y: 10 },
+          deadline: Number.MAX_SAFE_INTEGER,
+        },
+      ),
+    ).rejects.toThrow("Original invocation retired");
+    expect(sent, "only the probe reached the page").toHaveLength(1);
+    expect(sent[0]).toContain("elementFromPoint");
+  });
 });

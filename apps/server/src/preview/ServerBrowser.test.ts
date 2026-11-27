@@ -4596,6 +4596,177 @@ it.effect("a check read before a person's clear still keeps the holds that cover
   ).pipe(Effect.provide(layer), Effect.ensuring(Effect.sync(() => now.mockRestore())));
 });
 
+it.live(
+  "a page watch's later reads are not bound by the deadline of the request that started it",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const chromiumBrowser = yield* Effect.acquireRelease(
+          Effect.promise(() => chromium.launch({ headless: true })),
+          (launched) => Effect.promise(() => launched.close()),
+        );
+        const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+        yield* Effect.promise(() =>
+          context.route("https://shop.test/**", (route) =>
+            route.fulfill({ status: 200, contentType: "text/html", body: "<p>shop</p>" }),
+          ),
+        );
+        realContextOverride = context;
+        const { browser, broker, tabId } = yield* ready;
+        yield* broker.invoke({
+          scope,
+          tabId,
+          operation: "navigate",
+          input: { url: "https://shop.test/" },
+        });
+        const started = yield* broker.invoke<{ watchId: string; epoch: string }>({
+          scope,
+          tabId,
+          operation: "watchStart",
+          timeoutMs: 1_000,
+          input: {
+            subscription: "(emit) => { window.ping = () => emit('later'); return () => {}; }",
+          },
+        });
+        // Waited page-side, so the setup request's deadline passes without a test clock.
+        yield* Effect.promise(() =>
+          context.pages()[0]!.evaluate("new Promise((done) => setTimeout(done, 1_500)).then(ping)"),
+        );
+        const read = yield* browser.readWatch!(
+          { ...started, threadId: scope.thread.threadId, after: 0, timeoutMs: 5_000 },
+          Effect.void,
+        );
+        expect(read.events.map((event) => event.value)).toEqual(["later"]);
+      }).pipe(
+        Effect.provide(
+          layer.pipe(
+            Layer.provide(
+              Layer.mock(PeerAuthority.PeerAuthority)({
+                recheckInvocation: (invocation) => Effect.succeed(invocation),
+                acquirePreviewWatchAuthority: () => Effect.succeed(Effect.void),
+              }),
+            ),
+          ),
+        ),
+      ),
+    ),
+);
+
+it.live.each([
+  { name: "closes its unclaimed tab", answer: "clean", waitMs: 8_000, kept: false },
+  { name: "keeps a tab holding the site's check", answer: "check", waitMs: 8_000, kept: true },
+  // Refused after the classification fence lapsed, while the body still never finished.
+  {
+    name: "keeps a tab whose check is still being read",
+    answer: "unread",
+    waitMs: 12_000,
+    kept: true,
+  },
+] as const)("a fresh open refused before it starts $name", ({ answer, waitMs, kept }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const requested = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => release.resolve()));
+      // The page commits at once; its image holds the load, and so the open's turn, until released.
+      const server = NodeHttp.createServer(async (request, response) => {
+        if (request.url === "/slow") {
+          requested.resolve();
+          await release.promise;
+          return response.writeHead(404).end();
+        }
+        if (request.url !== "/") return response.writeHead(404).end();
+        const body = `<p>shop</p><img src="/slow">`;
+        if (answer === "clean") {
+          response.writeHead(200, { "content-type": "text/html" });
+          return response.end(body);
+        }
+        if (answer === "check") {
+          response.writeHead(403, { "content-type": "text/html", "cf-mitigated": "challenge" });
+          return response.end(`<title>Just a moment...</title>${body}`);
+        }
+        // A possible check whose body never finishes is never classified, and never loads.
+        response.writeHead(403, { "content-type": "text/html" });
+        response.write(body);
+      });
+      yield* Effect.acquireRelease(
+        Effect.promise(() => new Promise<void>((done) => server.listen(0, "127.0.0.1", done))),
+        () =>
+          Effect.sync(() => {
+            server.closeAllConnections();
+            server.close();
+          }),
+      );
+      const port = (server.address() as { port: number }).port;
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          chromium.launch({
+            headless: true,
+            args: [`--host-resolver-rules=MAP shop.example.com 127.0.0.1:${port}`],
+          }),
+        ),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      realContextOverride = context;
+      const broker = yield* Broker.PreviewAutomationBroker;
+      const manager = yield* Manager.PreviewManager;
+      // The server answers the open last, after its tab was kept or closed.
+      const answered = Promise.withResolvers<void>();
+      const respond = broker.respond;
+      const spy = vi.spyOn(broker, "respond").mockImplementation((input) => {
+        if (!input.ok && /retired|before it could start/.test(input.error?.message ?? ""))
+          answered.resolve();
+        return respond(input);
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+      const opening = yield* broker
+        .invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          timeoutMs: 6_000,
+          input: {
+            url: "http://shop.example.com/",
+            reuseExistingTab: false,
+            show: false,
+            profileId: "default",
+          },
+        })
+        .pipe(Effect.exit, Effect.forkScoped);
+      yield* Effect.promise(() => requested.promise);
+      const [session] = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
+      const tabId = PreviewTabId.make(session!.tabId);
+      // A wait on the same tab holds its queue past the open's deadline; the page reports
+      // when the wait first reads its text.
+      const page = context.pages()[0]!;
+      yield* Effect.promise(() =>
+        page.waitForURL("http://shop.example.com/", { waitUntil: "commit" }),
+      );
+      yield* Effect.promise(() =>
+        page.evaluate(
+          `Object.defineProperty(document, "body", { get: () => ((window.read = true), null) })`,
+        ),
+      );
+      const waiting = yield* broker
+        .invoke({
+          scope,
+          tabId,
+          operation: "waitFor",
+          timeoutMs: waitMs + 5_000,
+          input: { text: "never shown", timeoutMs: waitMs },
+        })
+        .pipe(Effect.exit, Effect.forkScoped);
+      yield* Effect.promise(() => page.waitForFunction("window.read === true"));
+      release.resolve();
+      yield* Fiber.join(waiting);
+      yield* Effect.promise(() => answered.promise);
+      expect(Exit.isFailure(yield* Fiber.join(opening))).toBe(true);
+      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+      expect(sessions.map((each) => each.tabId).includes(tabId)).toBe(kept);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.effect("overlapping file pickers keep the newer offer answerable", () =>
   Effect.scoped(
     Effect.gen(function* () {
