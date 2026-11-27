@@ -324,6 +324,11 @@ function setup(
       registry.set(state.deniedAtom, new Set([...registry.get(state.deniedAtom), environmentId])),
     connection: (environmentId: EnvironmentId, phase: string) =>
       store(environmentId, { connection: { phase } }),
+    /** The machine's configuration as the client holds it, to put back with `load`. */
+    config: (environmentId: EnvironmentId) => stored.get(environmentId)!.serverConfig,
+    /** The client holds this configuration for the machine, or none. */
+    load: (environmentId: EnvironmentId, serverConfig: object | null) =>
+      store(environmentId, { serverConfig }),
     /** The server sends its settings again, unchanged, through the client's own config reducer. */
     sameSettingsAgain: (environmentId: EnvironmentId) => {
       const config = stored.get(environmentId)!.serverConfig as never as ServerConfig;
@@ -418,14 +423,27 @@ it.each([
     credits: { alder: { readAt: "2026-11-26T15:00:00.000Z", balance: 555 } },
     line: `Credits left: 555 (read ${timeOfDay("2026-11-26T15:00:00.000Z")})`,
   },
-])("shows the login's credits under the description: $name", async ({ credits, line }) => {
-  await using screen = await render(setup({}, { credits }).ui);
-  await openCodexWork(screen);
+])(
+  "shows the login's credits between the description and the rows: $name",
+  async ({ credits, line }) => {
+    await using screen = await render(setup({}, { credits }).ui);
+    await openCodexWork(screen);
 
-  await expect.element(useCreditsOn("Alder")).toBeVisible();
-  if (line) await expect.element(page.getByText(line, { exact: true })).toBeVisible();
-  else await expect.element(page.getByText(/^Credits/)).not.toBeInTheDocument();
-});
+    await expect.element(useCreditsOn("Alder")).toBeVisible();
+    if (line === null) {
+      await expect.element(page.getByText(/^Credits/)).not.toBeInTheDocument();
+      return;
+    }
+    await expect.element(page.getByText(line, { exact: true })).toBeVisible();
+    const follows = (earlier: Element, later: Element) =>
+      (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    const balance = page.getByText(line, { exact: true }).element();
+    expect(follows(page.getByText(description, { exact: true }).element(), balance)).toBe(true);
+    expect(follows(balance, useCreditsOn("Alder").element())).toBe(true);
+    // Alder's is the first row.
+    expect(follows(useCreditsOn("Alder").element(), useCreditsOn("Birch").element())).toBe(true);
+  },
+);
 
 it("writes only the clicked machine, and reaches both values in one click each", async () => {
   await using screen = await render(setup({ cedar: { codex_work: false } }).ui);
@@ -452,6 +470,7 @@ it("carries the Chromeria mark on the title, and the keyboard goes row by row", 
 
   const mark = page.getByRole("img", { name: "Chromeria feature" });
   await expect.element(mark).toBeVisible();
+  expect(mark.element().parentElement?.textContent).toBe("Use credits");
   await userEvent.click(mark);
   expect(state.updateSettings).not.toHaveBeenCalled();
 
@@ -614,6 +633,52 @@ it.each([
   await expect.element(useCreditsOn("Birch")).toHaveAttribute("aria-checked", "false");
 });
 
+it("line 4 is still under way after a server without the signal answered in between", async () => {
+  const world = setup({ birch: { codex_main: false } });
+  await using screen = await render(world.ui);
+  state.heldEnvironments.add("birch");
+  await openCodexWork(screen);
+  const withSignal = world.config(birch);
+  await userEvent.click(useCreditsOn("Birch"));
+  await expect.element(useCreditsOn("Birch")).toHaveAttribute("aria-busy", "true");
+
+  // The machine comes back on a build without the signal, which stores no value, then on its own.
+  const { prismUseCreditsSetting: _signal, ...withoutSignal } = {
+    ...withSignal,
+    settings: { ...withSignal.settings, prismUseCredits: {} },
+  };
+  world.load(birch, withoutSignal);
+  await expect
+    .element(page.getByText("Not available: update Chromeria on this machine"))
+    .toBeVisible();
+  world.load(birch, withSignal);
+
+  await expect.element(useCreditsOn("Birch")).toHaveAttribute("aria-busy", "true");
+  await expect.element(useCreditsOn("Birch")).toHaveAttribute("aria-checked", "true");
+  await userEvent.click(useCreditsOn("Birch"), { force: true });
+  expect(writes()).toEqual([["birch", { prismUseCredits: { codex_main: true } }]]);
+
+  world.release();
+  await expect.element(useCreditsOn("Birch")).toBeEnabled();
+  await expect.element(useCreditsOn("Birch")).toHaveAttribute("aria-checked", "true");
+});
+
+it("drops the row of a machine whose configuration unloads while the popover is open", async () => {
+  const world = setup();
+  await using screen = await render(world.ui);
+  await openCodexWork(screen);
+  await expect.element(useCreditsOn("Birch")).toBeVisible();
+
+  // Without its configuration nothing says the login is on that machine.
+  world.load(birch, null);
+
+  await expect.element(useCreditsOn("Birch")).not.toBeInTheDocument();
+  await expect.element(page.getByText("Birch", { exact: true })).not.toBeInTheDocument();
+  await expect.element(page.getByText("Not connected")).not.toBeInTheDocument();
+  await expect.element(useCreditsOn("Alder")).toBeEnabled();
+  await expect.element(useCreditsOn("Cedar")).toBeEnabled();
+});
+
 it("line 4 is still under way after a close and reopen", async () => {
   const world = setup();
   await using screen = await render(world.ui);
@@ -713,7 +778,7 @@ it("keeps the switches when a usage hub holds the login's banked reset", async (
   expect(writes()).toEqual([["alder", { prismUseCredits: { codex_work: false } }]]);
 });
 
-it("reports a write the real settings command could not deliver the way every setting does", async () => {
+it("a write the real settings command cannot deliver gives the command's standard failure report, and the row shows the actual value", async () => {
   using warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   await using screen = await render(setup({}, { realCommand: true }).ui);
   await openCodexWork(screen);

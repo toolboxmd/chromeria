@@ -87,7 +87,8 @@ export function PrismUseCredits({
     const unsubscribe = registry.subscribe(
       environmentPresentations.presentationsWithProvidersAtom,
       (latest) => {
-        if (storedCreditUse(latest.get(target.environmentId), target.instanceId) === value) end();
+        const config = latest.get(target.environmentId)?.serverConfig;
+        if (config && storedCreditUse(config, target.instanceId) === value) end();
       },
     );
     void updateSettings(
@@ -125,7 +126,7 @@ export function PrismUseCredits({
       {creditUseSwitches(environments, targets).map((target) => {
         const rowId = `${id}-${writeKey(target)}`;
         const shown = creditUseRow({
-          environment: environments.get(target.environmentId),
+          environment: target.environment,
           instanceId: target.instanceId,
           mayWrite: writable.has(target.environmentId),
           writing: writesUnderWay.get(writeKey(target)) ?? null,

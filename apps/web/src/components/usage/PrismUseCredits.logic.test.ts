@@ -8,10 +8,11 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  type CreditUseEnvironment,
+  type LoadedCreditUseEnvironment,
   creditUseRow,
   creditUseSwitches,
   creditUseTargets,
+  storedCreditUse,
 } from "./PrismUseCredits.logic";
 
 const instanceId = ProviderInstanceId.make("codex_work");
@@ -23,7 +24,7 @@ function environment(
     readonly holdsSetting?: boolean;
     readonly providers?: ReadonlyArray<ServerProvider>;
   } = {},
-): CreditUseEnvironment & { readonly serverConfig: object } {
+): LoadedCreditUseEnvironment {
   return {
     entry: { target: { label: "Alder" } },
     connection: { phase: input.phase ?? "connected" },
@@ -41,13 +42,13 @@ function environment(
 const settled = environment({ stored: false });
 const row = (
   input: {
-    readonly environment?: CreditUseEnvironment | undefined;
+    readonly environment?: LoadedCreditUseEnvironment;
     readonly mayWrite?: boolean;
     readonly writing?: boolean;
   } = {},
 ) =>
   creditUseRow({
-    environment: "environment" in input ? input.environment : settled,
+    environment: input.environment ?? settled,
     instanceId,
     mayWrite: input.mayWrite ?? true,
     writing: input.writing ?? null,
@@ -61,16 +62,6 @@ describe("creditUseRow", () => {
     {
       line: "1: not connected",
       input: { environment: environment({ phase: "reconnecting", stored: false }) },
-      shows: { switch: null, note: "notConnected" },
-    },
-    {
-      line: "1: configuration not loaded",
-      input: { environment: { ...settled, serverConfig: null } },
-      shows: { switch: null, note: "notConnected" },
-    },
-    {
-      line: "1: unknown environment",
-      input: { environment: undefined },
       shows: { switch: null, note: "notConnected" },
     },
     {
@@ -135,6 +126,25 @@ describe("creditUseRow", () => {
   });
 });
 
+describe("storedCreditUse", () => {
+  it.each([
+    { name: "stored off", config: environment({ stored: false }), value: false },
+    { name: "nothing stored", config: environment(), value: true },
+    {
+      name: "a server without the signal, nothing stored",
+      config: environment({ holdsSetting: false }),
+      value: null,
+    },
+    {
+      name: "a server without the signal, stored off",
+      config: environment({ holdsSetting: false, stored: false }),
+      value: null,
+    },
+  ])("only a server that sends the signal tells a value: $name", ({ config, value }) => {
+    expect(storedCreditUse(config.serverConfig, instanceId)).toBe(value);
+  });
+});
+
 describe("creditUseSwitches", () => {
   const provider = (id: string, displayName: string): ServerProvider => ({
     instanceId: ProviderInstanceId.make(id),
@@ -174,7 +184,7 @@ describe("creditUseSwitches", () => {
       environments: [{ environmentId: alder }],
     });
 
-    expect(creditUseSwitches(environments, targets)).toEqual([
+    expect(creditUseSwitches(environments, targets)).toMatchObject([
       { environmentId: alder, instanceId: "codex_work", label: "Alder · Codex Work" },
       { environmentId: alder, instanceId: "codex_copy", label: "Alder · Codex Copy" },
       { environmentId: birch, instanceId: "codex_main", label: "Birch" },

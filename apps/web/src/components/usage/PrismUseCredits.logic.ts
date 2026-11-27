@@ -61,10 +61,16 @@ export function creditUseTargets(
   return [...targets.values()];
 }
 
+/** An environment whose configuration is loaded: only such a one can show the login. */
+export type LoadedCreditUseEnvironment = CreditUseEnvironment & {
+  readonly serverConfig: NonNullable<CreditUseEnvironment["serverConfig"]>;
+};
+
 export interface CreditUseSwitch {
   readonly environmentId: EnvironmentId;
   readonly instanceId: ProviderInstanceId;
   readonly label: string;
+  readonly environment: LoadedCreditUseEnvironment;
 }
 
 /**
@@ -75,21 +81,23 @@ export function creditUseSwitches(
   environments: ReadonlyMap<EnvironmentId, CreditUseEnvironment>,
   targets: ReadonlyArray<CreditUseTarget>,
 ): ReadonlyArray<CreditUseSwitch> {
-  return targets.flatMap((target) =>
-    target.instances.map(({ instanceId }) => ({
+  return targets.flatMap((target) => {
+    const environment = environments.get(target.environmentId);
+    const serverConfig = environment?.serverConfig;
+    if (!environment || !serverConfig) return [];
+    return target.instances.map(({ instanceId }) => ({
       environmentId: target.environmentId,
       instanceId,
       label:
         target.instances.length > 1
           ? `${target.label} · ${
-              environments
-                .get(target.environmentId)
-                ?.serverConfig?.providers.find((provider) => provider.instanceId === instanceId)
+              serverConfig.providers.find((provider) => provider.instanceId === instanceId)
                 ?.displayName ?? instanceId
             }`
           : target.label,
-    })),
-  );
+      environment: { ...environment, serverConfig },
+    }));
+  });
 }
 
 export type CreditUseRow =
@@ -104,13 +112,17 @@ export type CreditUseRow =
       readonly note: "noPermission" | null;
     };
 
-/** The value an environment's settings hold for the instance, or null while they are not loaded. */
+/**
+ * The value a server holds for the instance, or null when it does not say that it holds the
+ * setting: a missing value on such a server tells nothing, so it cannot confirm a write either.
+ */
 export function storedCreditUse(
-  environment: CreditUseEnvironment | undefined,
+  config: LoadedCreditUseEnvironment["serverConfig"],
   instanceId: ProviderInstanceId,
 ): boolean | null {
-  const config = environment?.serverConfig ?? null;
-  return config === null ? null : config.settings.prismUseCredits[instanceId] !== false;
+  return config.prismUseCreditsSetting === true
+    ? config.settings.prismUseCredits[instanceId] !== false
+    : null;
 }
 
 /**
@@ -119,20 +131,18 @@ export function storedCreditUse(
  * the value of a write under way, which lines 1 to 3 hide without ending.
  */
 export function creditUseRow(input: {
-  readonly environment: CreditUseEnvironment | undefined;
+  readonly environment: LoadedCreditUseEnvironment;
   readonly instanceId: ProviderInstanceId;
   readonly mayWrite: boolean;
   readonly writing: boolean | null;
 }): CreditUseRow {
-  const stored = storedCreditUse(input.environment, input.instanceId);
-  // 1. Not connected, or its configuration is not loaded.
-  if (input.environment?.connection.phase !== "connected" || stored === null) {
+  // 1. Not connected.
+  if (input.environment.connection.phase !== "connected") {
     return { switch: null, note: "notConnected" };
   }
+  const stored = storedCreditUse(input.environment.serverConfig, input.instanceId);
   // 2. The server does not say that it holds the setting.
-  if (input.environment.serverConfig?.prismUseCreditsSetting !== true) {
-    return { switch: null, note: "notAvailable" };
-  }
+  if (stored === null) return { switch: null, note: "notAvailable" };
   // 3. The session may not write its settings.
   if (!input.mayWrite) {
     return { switch: { checked: stored, busy: false, writes: null }, note: "noPermission" };
