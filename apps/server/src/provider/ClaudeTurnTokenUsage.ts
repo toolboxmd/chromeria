@@ -1,5 +1,10 @@
 import type { SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { RuntimeTurnState, TurnTokenUsage } from "@t3tools/contracts";
+import type {
+  RuntimeTurnState,
+  TurnTokenUsage,
+  UsageClosure,
+  UsageClosureOpenReason,
+} from "@t3tools/contracts";
 
 function finiteNonNegativeInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
@@ -49,32 +54,84 @@ function withEarlierSegmentUsage(
   return total;
 }
 
-/** Per-model totals from the SDK's `modelUsage`, which grows for the life of one CLI process. */
-export type ClaudeModelLedger = ReadonlyMap<
-  string,
-  { readonly input: number; readonly output: number }
->;
+export interface ClaudeUsageCounters {
+  // Uncached input, as the API's input_tokens.
+  readonly input: number;
+  readonly cacheRead: number;
+  readonly cacheCreation: number;
+  readonly output: number;
+}
 
+const ZERO_COUNTERS: ClaudeUsageCounters = { input: 0, cacheRead: 0, cacheCreation: 0, output: 0 };
+const COUNTER_FIELDS = ["input", "cacheRead", "cacheCreation", "output"] as const;
+
+function addCounters(left: ClaudeUsageCounters, right: ClaudeUsageCounters): ClaudeUsageCounters {
+  return {
+    input: left.input + right.input,
+    cacheRead: left.cacheRead + right.cacheRead,
+    cacheCreation: left.cacheCreation + right.cacheCreation,
+    output: left.output + right.output,
+  };
+}
+
+/** Per-model totals from the SDK's `modelUsage`, which grows for the life of one CLI process. */
+export type ClaudeModelLedger = ReadonlyMap<string, ClaudeUsageCounters>;
+
+/** Ledger growth across one or more results, by model; models that did not grow are absent. */
 export interface ClaudeLedgerUsage {
-  readonly inputTokens: number;
-  readonly outputTokens: number;
+  readonly byModel: ReadonlyMap<string, ClaudeUsageCounters>;
+  // Measured from a baseline restored at process start, which only an exact match with the
+  // main agent's usage proves.
+  readonly restoredBaseline: boolean;
 }
 
 /** Unknown when absent or empty: a process that did model work never reports an empty ledger. */
 export function claudeModelLedger(modelUsage: unknown): ClaudeModelLedger | undefined {
   if (typeof modelUsage !== "object" || modelUsage === null) return undefined;
   if (Object.keys(modelUsage).length === 0) return undefined;
-  const ledger = new Map<string, { readonly input: number; readonly output: number }>();
+  const ledger = new Map<string, ClaudeUsageCounters>();
   for (const [model, entry] of Object.entries(modelUsage as Record<string, unknown>)) {
     const fields = (entry ?? {}) as Record<string, unknown>;
     const input = finiteNonNegativeInteger(fields.inputTokens);
     const output = finiteNonNegativeInteger(fields.outputTokens);
     if (input === undefined || output === undefined) return undefined;
-    const cacheRead = finiteNonNegativeInteger(fields.cacheReadInputTokens) ?? 0;
-    const cacheWrite = finiteNonNegativeInteger(fields.cacheCreationInputTokens) ?? 0;
-    ledger.set(model, { input: input + cacheRead + cacheWrite, output });
+    ledger.set(model, {
+      input,
+      cacheRead: finiteNonNegativeInteger(fields.cacheReadInputTokens) ?? 0,
+      cacheCreation: finiteNonNegativeInteger(fields.cacheCreationInputTokens) ?? 0,
+      output,
+    });
   }
   return ledger;
+}
+
+/** The ledger in a transcript's last cost-state record, which Claude restores on resume. */
+export function claudeTranscriptRestoredLedger(
+  lines: ReadonlyArray<string>,
+  sessionId: string,
+): ClaudeModelLedger | undefined {
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (line === undefined || !line.includes('"cost-state"')) continue;
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (typeof record !== "object" || record === null) continue;
+    const fields = record as Record<string, unknown>;
+    if (fields.type !== "cost-state" || fields.sessionId !== sessionId) continue;
+    const modelUsage = fields.modelUsage;
+    // A session that never called a model records an empty ledger or none at all.
+    if (modelUsage === undefined) return new Map();
+    return typeof modelUsage === "object" &&
+      modelUsage !== null &&
+      Object.keys(modelUsage).length === 0
+      ? new Map()
+      : claudeModelLedger(modelUsage);
+  }
+  return undefined;
 }
 
 /** The window each model in the SDK's `modelUsage` is measured against, as Claude Code resolved it. */
@@ -94,34 +151,49 @@ export function claudeReportedContextWindows(modelUsage: unknown): ReadonlyMap<s
 export function claudeLedgerDelta(
   previous: ClaudeModelLedger | undefined,
   current: ClaudeModelLedger | undefined,
+  restoredBaseline = false,
 ): ClaudeLedgerUsage | undefined {
   if (previous === undefined || current === undefined) return undefined;
-  let inputTokens = 0;
-  let outputTokens = 0;
   for (const [model, before] of previous) {
     const after = current.get(model);
-    if (after === undefined || after.input < before.input || after.output < before.output) {
+    if (after === undefined || COUNTER_FIELDS.some((field) => after[field] < before[field])) {
       return undefined;
     }
   }
+  const byModel = new Map<string, ClaudeUsageCounters>();
   for (const [model, after] of current) {
-    const before = previous.get(model);
-    inputTokens += after.input - (before?.input ?? 0);
-    outputTokens += after.output - (before?.output ?? 0);
+    const before = previous.get(model) ?? ZERO_COUNTERS;
+    const growth = {
+      input: after.input - before.input,
+      cacheRead: after.cacheRead - before.cacheRead,
+      cacheCreation: after.cacheCreation - before.cacheCreation,
+      output: after.output - before.output,
+    };
+    if (COUNTER_FIELDS.some((field) => growth[field] > 0)) byModel.set(model, growth);
   }
-  return { inputTokens, outputTokens };
+  return { byModel, restoredBaseline };
 }
 
 export function addClaudeLedgerUsage(
   left: ClaudeLedgerUsage | undefined,
   right: ClaudeLedgerUsage | undefined,
 ): ClaudeLedgerUsage | undefined {
-  return left === undefined || right === undefined
-    ? undefined
-    : {
-        inputTokens: left.inputTokens + right.inputTokens,
-        outputTokens: left.outputTokens + right.outputTokens,
-      };
+  if (left === undefined || right === undefined) return undefined;
+  const byModel = new Map(left.byModel);
+  for (const [model, growth] of right.byModel) {
+    byModel.set(model, addCounters(byModel.get(model) ?? ZERO_COUNTERS, growth));
+  }
+  return { byModel, restoredBaseline: left.restoredBaseline || right.restoredBaseline };
+}
+
+function claudeLedgerTotal(ledger: ClaudeLedgerUsage): ClaudeUsageCounters {
+  let total = ZERO_COUNTERS;
+  for (const growth of ledger.byModel.values()) total = addCounters(total, growth);
+  return total;
+}
+
+function sameCounters(left: ClaudeUsageCounters, right: ClaudeUsageCounters): boolean {
+  return COUNTER_FIELDS.every((field) => left[field] === right[field]);
 }
 
 export interface ClaudeTurnObservations {
@@ -191,15 +263,34 @@ export function normalizeClaudeTurnTokenUsage(
   }
 
   // The result omits subagent and compaction work that the process-wide ledger records.
+  // Growth from a restored baseline may hold an earlier session's usage, so it is
+  // never reported as other usage unless it equals the main agent's exactly.
+  const ledgerTotal =
+    observed.ledger === undefined ? undefined : claudeLedgerTotal(observed.ledger);
+  const mainCounters =
+    uncachedInputTokens !== undefined &&
+    cachedInputContribution !== undefined &&
+    cacheCreationContribution !== undefined &&
+    rawOutputTokens !== undefined
+      ? {
+          input: uncachedInputTokens,
+          cacheRead: cachedInputContribution,
+          cacheCreation: cacheCreationContribution,
+          output: rawOutputTokens,
+        }
+      : undefined;
   const otherUsage =
-    observed.ledger !== undefined &&
+    ledgerTotal !== undefined &&
+    mainCounters !== undefined &&
     inputTokens !== undefined &&
     rawOutputTokens !== undefined &&
-    observed.ledger.inputTokens >= inputTokens &&
-    observed.ledger.outputTokens >= rawOutputTokens
+    (observed.ledger?.restoredBaseline !== true || sameCounters(ledgerTotal, mainCounters)) &&
+    ledgerTotal.input + ledgerTotal.cacheRead + ledgerTotal.cacheCreation >= inputTokens &&
+    ledgerTotal.output >= rawOutputTokens
       ? {
-          inputTokens: observed.ledger.inputTokens - inputTokens,
-          outputTokens: observed.ledger.outputTokens - rawOutputTokens,
+          inputTokens:
+            ledgerTotal.input + ledgerTotal.cacheRead + ledgerTotal.cacheCreation - inputTokens,
+          outputTokens: ledgerTotal.output - rawOutputTokens,
         }
       : undefined;
   const commonUsage = {
@@ -237,5 +328,63 @@ export function normalizeClaudeTurnTokenUsage(
     usageStatus: "partial",
     ...(inputTokens !== undefined ? { inputTokens } : {}),
     ...(rawOutputTokens !== undefined ? { outputTokens: rawOutputTokens } : {}),
+  };
+}
+
+export interface ClaudeUsageClosureInput {
+  readonly terminalStatus: RuntimeTurnState;
+  readonly usage: TurnTokenUsage;
+  // Ledger growth across every result the turn consumed; undefined when any is unknown.
+  readonly ledger: ClaudeLedgerUsage | undefined;
+  readonly rootModels: ReadonlySet<string>;
+  // A subagent, workflow member or other model-capable native task ran in the turn.
+  readonly nativeChildObserved: boolean;
+  // One is still on the session roster at the terminal, or of a type not known to be a command.
+  readonly nativeChildRunning: boolean;
+  // The CLI may spend a model call on suggestions after the result.
+  readonly promptSuggestions: boolean;
+}
+
+/** Closed only when the CLI's all-participant ledger grew by exactly the main agent's usage. */
+export function claudeUsageClosure(input: ClaudeUsageClosureInput): UsageClosure {
+  const open = (reason: UsageClosureOpenReason): UsageClosure => ({
+    version: 1,
+    state: "open",
+    reason,
+  });
+  if (input.terminalStatus !== "completed") return open("turn_not_completed");
+  const usage = input.usage;
+  if (
+    usage.usageStatus !== "complete" ||
+    usage.inputTokens === undefined ||
+    usage.outputTokens === undefined
+  ) {
+    return open("usage_incomplete");
+  }
+  if (input.nativeChildObserved) return open("native_child_observed");
+  if (input.nativeChildRunning) return open("native_child_running");
+  if (input.ledger === undefined) return open("ledger_baseline_unproven");
+  const cacheRead = usage.cachedInputTokens ?? 0;
+  const cacheCreation = usage.cacheCreationTokens ?? 0;
+  const matches = sameCounters(claudeLedgerTotal(input.ledger), {
+    input: usage.inputTokens - cacheRead - cacheCreation,
+    cacheRead,
+    cacheCreation,
+    output: usage.outputTokens,
+  });
+  if (input.ledger.restoredBaseline && !matches) return open("ledger_baseline_unproven");
+  if (
+    input.rootModels.size > 1 ||
+    [...input.ledger.byModel.keys()].some((model) => !input.rootModels.has(model))
+  ) {
+    return open("ledger_growth_outside_root_model");
+  }
+  if (!matches) return open("ledger_mismatch");
+  if (input.promptSuggestions) return open("prompt_suggestion_sampled");
+  return {
+    version: 1,
+    state: "main_agent_only",
+    witness: "process_ledger",
+    uncountedCompactions: 0,
   };
 }

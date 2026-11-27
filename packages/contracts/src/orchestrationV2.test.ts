@@ -19,6 +19,7 @@ import {
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
+  OrchestrationV2ProviderTurn,
   OrchestrationV2RpcSchemas,
   OrchestrationV2Subagent,
   OrchestrationV2ThreadShellJson,
@@ -654,6 +655,60 @@ describe("background work kinds from older or newer servers", () => {
         pendingBackgroundTasks: [{ taskId: "", kind: "command" }],
       }),
     ).toThrow();
+  });
+});
+
+describe("provider turn usage closure", () => {
+  const storedTurn = {
+    id: "provider-turn-1",
+    providerThreadId: "provider-thread-1",
+    nodeId: "node-1",
+    runAttemptId: null,
+    nativeTurnRef: null,
+    ordinal: 1,
+    status: "completed",
+    startedAt: "2026-11-26T00:00:00.000Z",
+    completedAt: "2026-11-26T00:00:01.000Z",
+    turnTokenUsage: {
+      usageStatus: "complete",
+      usageScope: "main_agent",
+      hasSubagents: false,
+      inputTokens: 10,
+      outputTokens: 2,
+    },
+  };
+  const withClosure = {
+    ...storedTurn,
+    nativeResponseIds: ["msg_01"],
+    usageClosure: {
+      version: 1,
+      state: "main_agent_only",
+      witness: "process_ledger",
+      uncountedCompactions: 0,
+    },
+  };
+  const decodeTurn = Schema.decodeUnknownSync(Schema.toCodecJson(OrchestrationV2ProviderTurn));
+
+  it("decodes turns recorded before and after the closure fields", () => {
+    expect(decodeTurn(storedTurn).usageClosure).toBeUndefined();
+    expect(decodeTurn(withClosure).nativeResponseIds).toEqual(["msg_01"]);
+    expect(
+      decodeTurn({
+        ...storedTurn,
+        usageClosure: { version: 1, state: "open", reason: "native_child_running" },
+      }).usageClosure,
+    ).toEqual({ version: 1, state: "open", reason: "native_child_running" });
+  });
+
+  it("keeps a turn with the closure fields readable by clients that predate them", () => {
+    const decodeOlderClient = Schema.decodeUnknownSync(
+      Schema.toCodecJson(
+        OrchestrationV2ProviderTurn.mapFields(
+          ({ nativeResponseIds: _ids, usageClosure: _closure, ...fields }) => fields,
+        ),
+      ),
+    );
+    expect(decodeOlderClient(withClosure)).not.toHaveProperty("usageClosure");
   });
 });
 
