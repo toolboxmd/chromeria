@@ -181,6 +181,14 @@ describe("SiteHolds ordering", () => {
       "the thread's other tab dismissed it too",
     ).toBe(true);
     expect(holds.dismissed("profile:default", "thread-a", "shop.test", after.at)).toBe(false);
+    // Clearing the thread's incognito hold leaves a check its profile is still classifying.
+    const incognito = hold("thread-a", "tab-b");
+    holds.create("isolated:thread-a:tab-b", incognito);
+    const profilePending = holds.receive("profile:default", "thread-a", "shop.test");
+    holds.clear("isolated:thread-a:tab-b", incognito, true);
+    expect(holds.dismissed("profile:default", "thread-a", "shop.test", profilePending.at)).toBe(
+      false,
+    );
     // A verified release is no person's dismissal.
     const again = hold("thread-a", "tab-a");
     holds.create("profile:default", again);

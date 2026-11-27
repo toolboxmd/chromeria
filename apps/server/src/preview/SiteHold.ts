@@ -105,15 +105,17 @@ export class SiteHolds {
     };
   }
 
-  /** Whether a response received at `at` came before a person ended this site's hold. */
+  /**
+   * Whether a response received at `at` came before a person ended this site's hold. A
+   * thread's clear reaches only its isolated tabs, the ones a thread hold covers; a profile
+   * keeps checks of its own.
+   */
   dismissed(scope: string, threadId: string, site: string, at: number) {
-    return (
-      at <
-      Math.max(
-        this.cleared.get(`${scope}|${site}`) ?? 0,
-        this.cleared.get(`thread:${threadId}|${site}`) ?? 0,
-      )
-    );
+    const own = this.cleared.get(`${scope}|${site}`) ?? 0;
+    const thread = scope.startsWith("isolated:")
+      ? (this.cleared.get(`thread:${threadId}|${site}`) ?? 0)
+      : 0;
+    return at < Math.max(own, thread);
   }
 
   /** Whether a response that could hold this site again is still being classified. */
