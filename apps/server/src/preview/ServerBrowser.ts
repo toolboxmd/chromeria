@@ -3918,10 +3918,14 @@ const make = Effect.gen(function* () {
                 reason: "dialogPending",
               });
             if (existing) {
+              // Taken before the site wait, so a person who took and gave back the tab meanwhile counts.
+              const generation = tab.control.generation;
               if (url)
                 await onSite(siteHoldScope(tab), async () => {
-                  const generation = tab.control.generation;
-                  if (!tab.control.agentCanActNow(request.agentSessionId!))
+                  if (
+                    generation !== tab.control.generation ||
+                    !tab.control.agentCanActNow(request.agentSessionId!)
+                  )
                     throw new BrowserControlInterrupted({
                       message: "A human took control of this tab.",
                       reason: "humanControl",
@@ -3949,7 +3953,13 @@ const make = Effect.gen(function* () {
                 .then(async () => {
                   if (url) {
                     await tab.page
-                      .waitForLoadState("load", { timeout: navigationTimeout })
+                      // Half of what is left, so a failed open still has time to close its tab.
+                      .waitForLoadState("load", {
+                        timeout: Math.max(
+                          1,
+                          Math.min(navigationTimeout, (deadlineMs - performance.now()) / 2),
+                        ),
+                      })
                       .catch(constVoid);
                   }
                   assertNavigationSucceeded(tab);
