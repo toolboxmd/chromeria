@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { claudeRateLimitEventToUpdate, claudeUsageResponseToLimits } from "./claudeUsageLimits.ts";
+import {
+  claudeRateLimitEventToUpdate,
+  claudeUsageResponseToLimits,
+  windowLimitsModel,
+} from "./claudeUsageLimits.ts";
 
 const checkedAt = "2026-07-18T10:00:00.000Z";
 const noNames = { overageIncluded: undefined } as const;
@@ -82,6 +86,17 @@ describe("claudeUsageResponseToLimits", () => {
         },
       }).names,
     ).toEqual({ overageIncluded: "Fable" });
+  });
+
+  it("waits for a streamed reading from a setup token the probe cannot read, not from an API key", () => {
+    const response = { rate_limits_available: false, rate_limits: null };
+    expect(
+      claudeUsageResponseToLimits({ checkedAt, response, tokenSource: "CLAUDE_CODE_OAUTH_TOKEN" })
+        .limits.unavailable?.reason,
+    ).toBe("probeFailed");
+    expect(claudeUsageResponseToLimits({ checkedAt, response }).limits.unavailable?.reason).toBe(
+      "unsupported",
+    );
   });
 
   it("skips a window the endpoint reports without a utilization", () => {
@@ -265,6 +280,77 @@ describe("claudeRateLimitEventToUpdate", () => {
     });
   });
 
+  it("reads every window from a setup-token event that has no top-level utilization", () => {
+    // Captured from `claude -p --output-format stream-json` under CLAUDE_CODE_OAUTH_TOKEN.
+    const event = {
+      status: "allowed",
+      rateLimitType: "five_hour",
+      unifiedWindows: {
+        five_hour: { utilization: 0.2, resetsAt: 1_792_759_800 },
+        seven_day: { utilization: 0.59, resetsAt: 1_792_760_400 },
+      },
+    } as const;
+    expect(claudeRateLimitEventToUpdate(event, noNames)).toEqual({
+      clearsProbeFailure: true,
+      windows: [
+        {
+          id: "five_hour",
+          kind: "session",
+          label: "Session",
+          usedPercent: 20,
+          windowDurationMins: 300,
+          resetsAt: "2026-10-23T12:50:00.000Z",
+        },
+        {
+          id: "seven_day",
+          kind: "weekly",
+          label: "Weekly",
+          usedPercent: 59,
+          windowDurationMins: 10080,
+          resetsAt: "2026-10-23T13:00:00.000Z",
+        },
+      ],
+    });
+  });
+
+  it("prefers the event's own window over the per-window snapshot, which can lag it", () => {
+    const event = {
+      status: "allowed",
+      rateLimitType: "five_hour",
+      utilization: 0.75,
+      resetsAt: 1_792_759_810,
+      unifiedWindows: {
+        five_hour: { utilization: 0.25, resetsAt: 1_792_759_800 },
+        seven_day: { utilization: 0.5, resetsAt: 1_792_760_400 },
+      },
+    } as const;
+    expect(
+      claudeRateLimitEventToUpdate(event, noNames)?.windows.map(({ id, usedPercent, resetsAt }) => [
+        id,
+        usedPercent,
+        resetsAt,
+      ]),
+    ).toEqual([
+      ["five_hour", 75, "2026-10-23T12:50:10.000Z"],
+      ["seven_day", 50, "2026-10-23T13:00:00.000Z"],
+    ]);
+  });
+
+  it("skips a malformed snapshot window and keeps the rest", () => {
+    const event = {
+      status: "allowed",
+      unifiedWindows: {
+        five_hour: { utilization: 0.3, resetsAt: 1_792_759_800 },
+        seven_day: { utilization: Number.NaN },
+        seven_day_overage_included: null,
+      },
+    } as never;
+    expect(claudeRateLimitEventToUpdate(event, noNames)).toMatchObject({
+      clearsProbeFailure: true,
+      windows: [{ id: "five_hour", usedPercent: 30 }],
+    });
+  });
+
   it("lands the streamed overage-included bucket on the row the probe named", () => {
     const event = {
       status: "allowed",
@@ -282,6 +368,91 @@ describe("claudeRateLimitEventToUpdate", () => {
           windowDurationMins: 10080,
         },
       ],
+    });
+  });
+
+  // Captured from Claude Code 2.1.325 under CLAUDE_CODE_OAUTH_TOKEN.
+  const tokenHaikuEvent = {
+    status: "allowed",
+    resetsAt: 1795892400,
+    rateLimitType: "seven_day",
+    overageStatus: "rejected",
+    overageDisabledReason: "out_of_credits",
+    isUsingOverage: false,
+    unifiedWindows: { seven_day: { utilization: 0.7, resetsAt: 1795892400, status: "allowed" } },
+  } as never;
+  const tokenFableEvent = {
+    status: "allowed_warning",
+    resetsAt: 1795892400,
+    rateLimitType: "seven_day_overage_included",
+    utilization: 0.96,
+    overageStatus: "rejected",
+    overageDisabledReason: "out_of_credits",
+    isUsingOverage: false,
+    surpassedThreshold: 0.75,
+    unifiedWindows: {
+      seven_day: { utilization: 0.7, resetsAt: 1795892400, status: "allowed" },
+      seven_day_overage_included: {
+        utilization: 0.96,
+        resetsAt: 1795892400,
+        status: "allowed_warning",
+        surpassedThreshold: 0.75,
+      },
+    },
+  } as never;
+  const tokenWeekly = {
+    id: "seven_day",
+    kind: "weekly",
+    label: "Weekly",
+    usedPercent: 70,
+    windowDurationMins: 10080,
+    resetsAt: "2026-11-28T19:00:00.000Z",
+  };
+
+  it("reads the weekly window from a token turn without top-level utilization", () => {
+    expect(claudeRateLimitEventToUpdate(tokenHaikuEvent, noNames, "claude-haiku-5-5")).toEqual({
+      clearsProbeFailure: true,
+      windows: [tokenWeekly],
+    });
+  });
+
+  it("scopes an unnamed overage-included bucket to the model the turn ran on", () => {
+    const update = claudeRateLimitEventToUpdate(tokenFableEvent, noNames, "claude-fable-5-2");
+    expect(update).toEqual({
+      clearsProbeFailure: true,
+      windows: [
+        tokenWeekly,
+        {
+          id: "seven_day_fable",
+          kind: "weekly",
+          label: "Weekly · Fable",
+          usedPercent: 96,
+          windowDurationMins: 10080,
+          resetsAt: "2026-11-28T19:00:00.000Z",
+          modelIds: ["claude-fable-5-2"],
+        },
+      ],
+    });
+    const scoped = update!.windows[1]!;
+    expect(windowLimitsModel(scoped, "claude-fable-5-2")).toBe(true);
+    expect(windowLimitsModel(scoped, "claude-opus-5-5")).toBe(false);
+    expect(claudeRateLimitEventToUpdate(tokenFableEvent, noNames)?.windows).toEqual([tokenWeekly]);
+  });
+
+  it("keeps the probe's name for the overage-included bucket under a stored login", () => {
+    expect(
+      claudeRateLimitEventToUpdate(
+        tokenFableEvent,
+        { overageIncluded: "Fable" },
+        "claude-fable-5-2",
+      )?.windows[1],
+    ).toEqual({
+      id: "seven_day_fable",
+      kind: "weekly",
+      label: "Weekly · Fable",
+      usedPercent: 96,
+      windowDurationMins: 10080,
+      resetsAt: "2026-11-28T19:00:00.000Z",
     });
   });
 });

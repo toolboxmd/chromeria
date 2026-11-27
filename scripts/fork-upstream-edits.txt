@@ -929,3 +929,9 @@ scripts/scenarios/removed-environment-closes-its-toasts.e2e.ts
 scripts/scenarios/removing-environment-clears-permission-notice.e2e.ts
 scripts/scenarios/second-server.test.ts
 scripts/scenarios/second-server.ts
+apps/server/src/provider/ClaudeProvider.ts
+apps/server/src/provider/claudeUsageLimits.ts
+apps/server/src/provider/claudeUsageLimits.test.ts
+packages/contracts/src/providerUsageLimits.ts
+packages/provider-core/src/server/usageLimits.ts
+packages/provider-core/src/server/usageLimits.test.ts
