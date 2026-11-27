@@ -3249,10 +3249,19 @@ it.live(
         realContextOverride = context;
         const realSession = chromiumBrowser.newBrowserCDPSession.bind(chromiumBrowser);
         let sessions = 0;
+        let grants = 0;
         chromiumBrowser.newBrowserCDPSession = async () => {
           sessions++;
           if (sessions === 1) throw new Error("no browser session");
-          return realSession();
+          const session = await realSession();
+          const send = session.send.bind(session) as (...args: unknown[]) => Promise<unknown>;
+          Object.assign(session, {
+            send: (method: string, ...rest: unknown[]) => {
+              if (method === "Browser.setPermission") grants++;
+              return send(method, ...rest);
+            },
+          });
+          return session;
         };
         const broker = yield* Broker.PreviewAutomationBroker;
         const open = () =>
@@ -3274,6 +3283,7 @@ it.live(
         expect(yield* Effect.exit(open())).toMatchObject({ _tag: "Failure" });
         const [first, second] = yield* Effect.all([open(), open()], { concurrency: 2 });
         expect(sessions).toBe(2);
+        expect(grants, "tabs opening together share one grant").toBe(1);
         expect(yield* state(PreviewTabId.make(first.tabId!))).toBe("granted");
         expect(yield* state(PreviewTabId.make(second.tabId!))).toBe("granted");
       }),
