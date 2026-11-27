@@ -284,6 +284,43 @@ describe("evaluate authority", () => {
       vi.useRealTimers();
     }
   });
+
+  it("expiring while its last check is pending stops no page script and sends nothing", async () => {
+    vi.useFakeTimers();
+    try {
+      for (const world of ["main", "isolated"] as const) {
+        const sent: string[] = [];
+        const cdp = {
+          send: async (method: string) => {
+            sent.push(method);
+            if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+            if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
+            return {};
+          },
+        };
+        let calls = 0;
+        const held = Promise.withResolvers<void>();
+        const authorize = () => (++calls === 2 ? held.promise : Promise.resolve());
+        const evaluating = ServerBrowserPage.evaluate(
+          cdp as unknown as Parameters<typeof ServerBrowserPage.evaluate>[0],
+          { expression: "1" },
+          1_000,
+          authorize,
+          world,
+        );
+        const outcome = expect(evaluating).rejects.toThrow("did not finish");
+        await vi.advanceTimersByTimeAsync(1_500);
+        held.resolve();
+        await outcome;
+        expect(
+          sent.filter((method) => method.startsWith("Runtime.")),
+          world,
+        ).toEqual([]);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("server browser element refs", () => {

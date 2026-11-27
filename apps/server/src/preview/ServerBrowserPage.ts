@@ -1398,11 +1398,13 @@ export const evaluate = async (
   await authorize();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
+  let dispatched = false;
   const expired = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       timedOut = true;
-      // Stops a busy script; an awaited promise is abandoned and settles unread.
-      void cdp.send("Runtime.terminateExecution").catch(constVoid);
+      // Stops this call's busy script; before dispatch there is none, and the page's own
+      // scripts are left alone. An awaited promise is abandoned and settles unread.
+      if (dispatched) void cdp.send("Runtime.terminateExecution").catch(constVoid);
       reject(
         new ServerBrowserOperationError({
           tag: "PreviewAutomationTimeoutError",
@@ -1444,6 +1446,7 @@ export const evaluate = async (
     // The devtools console's replMode allows top-level await but returns a trailing promise unawaited,
     // so it only retries what the page's parser rejected. A parse error has a scriptId but no stack and
     // ran nothing; a browser-internal rejection has neither.
+    dispatched = true;
     const evaluation = cdp.send("Runtime.evaluate", params).then((classic) => {
       const failure = classic.exceptionDetails;
       const unparsed =

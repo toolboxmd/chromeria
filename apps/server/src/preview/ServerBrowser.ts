@@ -4538,7 +4538,8 @@ const make = Effect.gen(function* () {
         const value = await ServerBrowserPage.evaluate(
           tab.cdp,
           evaluateInput,
-          request.timeoutMs,
+          // Time spent queued counts: the caller stops waiting at the request's deadline.
+          Math.max(1, deadlineMs - performance.now()),
           authorize,
           world,
         );
