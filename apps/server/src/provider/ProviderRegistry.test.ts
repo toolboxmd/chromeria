@@ -665,39 +665,29 @@ it.layer(
       }),
     );
 
-    it.effect("carries what the usage read says about credits, stamped when it answered", () =>
+    it.effect("carries what the usage read says about credits, with the time it answered", () =>
       Effect.gen(function* () {
+        const readAt = "2026-11-26T15:30:04.000Z";
         const statusFor = (rateLimits: CodexAppServerProviderSnapshot["rateLimits"]) =>
           checkCodexProviderStatus(defaultCodexSettings, () =>
-            // The read takes two seconds to answer.
-            TestClock.adjust("2 seconds").pipe(
-              Effect.as(
-                makeCodexProbeSnapshot({
-                  nativeUsage: true,
-                  ...(rateLimits ? { rateLimits } : {}),
-                }),
-              ),
+            Effect.succeed(
+              makeCodexProbeSnapshot({ nativeUsage: true, ...(rateLimits ? { rateLimits } : {}) }),
             ),
           );
         const balanceFor = (
-          credits: { hasCredits: boolean; unlimited: boolean; balance?: string | null } | null,
+          reported: { hasCredits: boolean; unlimited: boolean; balance?: string | null } | null,
         ) =>
-          statusFor({ snapshot: {}, resetCredits: null, credits }).pipe(
+          statusFor({ snapshot: {}, resetCredits: null, credits: { reported, readAt } }).pipe(
             Effect.map((status) => status.credits?.balance),
           );
         const paid = { hasCredits: true, unlimited: false };
 
-        const startedAt = yield* DateTime.now;
         const status = yield* statusFor({
           snapshot: {},
           resetCredits: null,
-          credits: { ...paid, balance: "4321.5000000000" },
+          credits: { reported: { ...paid, balance: "4321.5000000000" }, readAt },
         });
-        assert.strictEqual(status.checkedAt, DateTime.formatIso(startedAt));
-        assert.deepStrictEqual(status.credits, {
-          readAt: DateTime.formatIso(DateTime.add(startedAt, { seconds: 2 })),
-          balance: 4322,
-        });
+        assert.deepStrictEqual(status.credits, { readAt, balance: 4322 });
 
         assert.strictEqual(yield* balanceFor({ ...paid, unlimited: true }), "unlimited");
         // A read that answered with nothing to spend says so; it is not a missing answer.
@@ -711,7 +701,12 @@ it.layer(
         ]) {
           assert.strictEqual(yield* balanceFor(none), "none");
         }
-        for (const unread of [undefined, { failure: "Codex did not answer the usage request." }]) {
+        for (const unread of [
+          undefined,
+          { failure: "Codex did not answer the usage request." },
+          // A usage answer that carries no credits read, as an older probe would hand over.
+          { snapshot: {}, resetCredits: null },
+        ]) {
           assert.isUndefined((yield* statusFor(unread)).credits);
         }
       }),
@@ -1016,6 +1011,7 @@ it.layer(
 
     it.effect("shows Codex usage that answers after three seconds inside the probe budget", () =>
       Effect.gen(function* () {
+        const startedAt = yield* DateTime.now;
         const usageRequested = yield* Deferred.make<void>();
         const spawner = ChildProcessSpawner.make(() =>
           Effect.gen(function* () {
@@ -1041,6 +1037,13 @@ it.layer(
             const answer = (line: string) => {
               const { id, method } = JSON.parse(line) as { id?: number; method?: string };
               if (id === undefined || method === undefined) return Effect.void;
+              if (method === "skills/list") {
+                // The probe ends two seconds after the usage answer arrived.
+                return Effect.sleep("6 seconds").pipe(
+                  Effect.andThen(send({ id, result: results[method] })),
+                  Effect.forkIn(scope),
+                );
+              }
               if (method !== "account/rateLimits/read") {
                 return send({ id, result: results[method] ?? {} });
               }
@@ -1054,6 +1057,7 @@ it.layer(
                         limitId: "codex",
                         planType: "pro",
                         primary: { usedPercent: 42, windowDurationMins: 300, resetsAt: 2e9 },
+                        credits: { hasCredits: true, unlimited: false, balance: "4321.5000000000" },
                       },
                       rateLimitsByLimitId: null,
                       rateLimitResetCredits: null,
@@ -1091,6 +1095,12 @@ it.layer(
         assert.strictEqual(status.auth.status, "authenticated");
         assert.isUndefined(status.usageLimits?.unavailable);
         assert.strictEqual(status.usageLimits?.windows[0]?.usedPercent, 42);
+        // Credits carry the moment the usage answer arrived, not the start or the end of the probe.
+        assert.strictEqual(status.checkedAt, DateTime.formatIso(startedAt));
+        assert.deepStrictEqual(status.credits, {
+          readAt: DateTime.formatIso(DateTime.add(startedAt, { seconds: 4 })),
+          balance: 4322,
+        });
       }),
     );
 

@@ -71,7 +71,11 @@ type CodexRateLimitsProbe =
         | undefined;
       readonly resetCredits: CodexResetCreditsSummary | null | undefined;
       readonly accountId?: string | null | undefined;
-      readonly credits?: CodexSchema.V2GetAccountRateLimitsResponse["rateLimits"]["credits"];
+      /** What the usage answer said about credits, and the moment that answer arrived. */
+      readonly credits?: {
+        readonly reported: CodexSchema.V2GetAccountRateLimitsResponse["rateLimits"]["credits"];
+        readonly readAt: string;
+      };
     }
   | { readonly failure: string };
 
@@ -766,14 +770,18 @@ const readCodexRateLimits = (
   deadlineMs: number,
 ) =>
   withCodexDiscoveryDeadline(client.request("account/rateLimits/read", null), deadlineMs).pipe(
-    Effect.map((response): CodexRateLimitsProbe =>
+    // The probe goes on with other requests, so the arrival is taken here, not at its end.
+    Effect.zipWith(DateTime.now, (response, arrivedAt): CodexRateLimitsProbe =>
       response
         ? {
             snapshot: response.rateLimits,
             rateLimitsByLimitId: response.rateLimitsByLimitId,
             resetCredits: response.rateLimitResetCredits,
             accountId: response.accountId,
-            credits: (response.rateLimitsByLimitId?.codex ?? response.rateLimits).credits,
+            credits: {
+              reported: (response.rateLimitsByLimitId?.codex ?? response.rateLimits).credits,
+              readAt: DateTime.formatIso(arrivedAt),
+            },
           }
         : { failure: "Codex did not answer the usage request." },
     ),
@@ -1231,10 +1239,12 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
       ...(managedAuth ? {} : { usageLimits }),
     },
   });
-  // Only a usage read that answered says anything about credits; `checkedAt` is when the probe began.
-  if (managedAuth || !snapshot.rateLimits || "failure" in snapshot.rateLimits) return provider;
-  const readAt = DateTime.formatIso(yield* DateTime.now);
-  return { ...provider, credits: codexCreditsShown(snapshot.rateLimits.credits, readAt) };
+  // Only a usage read that answered says anything about credits.
+  const read =
+    managedAuth || !snapshot.rateLimits || "failure" in snapshot.rateLimits
+      ? undefined
+      : snapshot.rateLimits.credits;
+  return read ? { ...provider, credits: codexCreditsShown(read.reported, read.readAt) } : provider;
 });
 
 export { makePendingCodexProvider };
