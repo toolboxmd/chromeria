@@ -1,12 +1,15 @@
 import type {
   EnvironmentId,
   IssueLink,
+  GitHubIssueCountsInput,
+  GitHubIssueCountsResult,
   GitHubIssueListCursors,
   GitHubIssueListEntry,
   GitHubIssueListInput,
   IssueListRepository,
   GitHubIssueListResult,
   GitHubIssueListSort,
+  GitHubIssueListState,
   IssuePullRequest,
 } from "@t3tools/contracts";
 
@@ -219,23 +222,100 @@ export function mergeIssueLists(
   };
 }
 
+export interface IssueCountsTarget {
+  readonly environmentId: EnvironmentId;
+  readonly input: GitHubIssueCountsInput;
+}
+
 /**
- * What the count above the list may be called. Text, labels and a milestone are searched on
- * GitHub, so under them the rows are `matching` Issues, whatever State is set to. Otherwise the
- * rows are every `open` Issue of the listed repositories when State is Open, and just what is
- * `listed` for any other State.
+ * The counts read each server is asked for: every listed repository goes to the one server whose
+ * listing the merged list kept for it, so none is counted twice and no answer has to be split.
+ * Null until every listing server has answered: one still to answer can hold repositories no
+ * other lists, and takes over those it shares with a server that follows it.
  */
-export function issueNumbersScope(
-  input: Pick<GitHubIssueListInput, "state" | "query" | "labels" | "milestone">,
-): "open" | "matching" | "listed" {
-  if (
-    input.query !== undefined ||
-    (input.labels?.length ?? 0) > 0 ||
-    input.milestone !== undefined
-  ) {
-    return "matching";
+export function issueCountTargets(input: {
+  /** The servers asked for the list, and those whose listing has an answer. */
+  readonly listings: ReadonlyArray<EnvironmentId>;
+  readonly answered: ReadonlyArray<EnvironmentId>;
+  readonly repositories: ReadonlyArray<EnvironmentIssueRepository>;
+}): ReadonlyArray<IssueCountsTarget> | null {
+  const answered = new Set(input.answered);
+  if (!input.listings.every((environmentId) => answered.has(environmentId))) return null;
+  const byServer = new Map<EnvironmentId, Array<string>>();
+  for (const repository of input.repositories) {
+    const keys = byServer.get(repository.environmentId) ?? [];
+    keys.push(repositoryKey(repository.host, repository.repository));
+    byServer.set(repository.environmentId, keys);
   }
-  return input.state === "open" ? "open" : "listed";
+  // Sorted, so the same repositories always make the same read however the listings arrived.
+  return [...byServer]
+    .toSorted(([left], [right]) => left.localeCompare(right))
+    .map(([environmentId, keys]) => ({
+      environmentId,
+      input: { repositories: keys.toSorted() },
+    }));
+}
+
+/**
+ * The totals over every server's counts read, or null for unknown: a listing has not answered
+ * (`targets` is null), a counts read failed, or one has no answer. Never a sum over some servers.
+ */
+export function issueCountsTotal(input: {
+  readonly targets: ReadonlyArray<IssueCountsTarget> | null;
+  readonly answers: ReadonlyArray<readonly [EnvironmentId, GitHubIssueCountsResult]>;
+  readonly failed: boolean;
+}): GitHubIssueCountsResult | null {
+  if (input.targets === null || input.failed) return null;
+  const byServer = new Map(input.answers);
+  const totals = { open: 0, filed: 0, closed: 0 };
+  for (const { environmentId } of input.targets) {
+    const answer = byServer.get(environmentId);
+    if (answer === undefined) return null;
+    totals.open += answer.open;
+    totals.filed += answer.filed;
+    totals.closed += answer.closed;
+  }
+  return totals;
+}
+
+/** A count with how far it can be trusted; see `issueCountCertainty`. */
+export interface MarkedIssueCount {
+  readonly count: number;
+  readonly certainty: "final" | "floor" | "unsettled";
+}
+
+/**
+ * How the line above the list states the rows shown against the open total. Rows that are every
+ * open Issue (State Open, nothing searched on GitHub, every page read) count themselves; else the
+ * counts read does. `listed` rows claim no total and carry it apart in `open`, null for unknown.
+ */
+export function issueNumbersLine(input: {
+  readonly state: GitHubIssueListState;
+  /** Text, labels, a milestone or a repository narrowed the search on GitHub. */
+  readonly searched: boolean;
+  readonly shown: MarkedIssueCount;
+  /** The open Issues among the loaded rows, and whether every page of them is read. */
+  readonly loadedOpen: number;
+  readonly rowsComplete: boolean;
+  /** The open total of the counts read; null for unknown. */
+  readonly countedOpen: number | null;
+}):
+  | { readonly kind: "open"; readonly count: MarkedIssueCount }
+  | { readonly kind: "subset"; readonly shown: MarkedIssueCount; readonly total: MarkedIssueCount }
+  | { readonly kind: "listed"; readonly count: MarkedIssueCount; readonly open: number | null } {
+  const everyOpenIssue = input.state === "open" && !input.searched;
+  const fromRows = everyOpenIssue && (input.rowsComplete || input.countedOpen === null);
+  const total: MarkedIssueCount | null = fromRows
+    ? { count: input.loadedOpen, certainty: input.rowsComplete ? "final" : "floor" }
+    : input.countedOpen === null
+      ? null
+      : { count: input.countedOpen, certainty: "final" };
+  if (input.state !== "open" || total === null) {
+    return { kind: "listed", count: input.shown, open: total?.count ?? null };
+  }
+  return fromRows && input.shown.count === input.loadedOpen
+    ? { kind: "open", count: input.shown }
+    : { kind: "subset", shown: input.shown, total };
 }
 
 const STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;

@@ -1,5 +1,6 @@
 import type {
   EnvironmentId,
+  GitHubIssueCountsResult,
   IssueLink,
   GitHubIssueListEntry,
   GitHubIssueListResult,
@@ -11,9 +12,11 @@ import {
   buildIssueTree,
   collectIssueFacets,
   issueCountCertainty,
+  issueCountsTotal,
+  issueCountTargets,
   issueKey,
   issueListPages,
-  issueNumbersScope,
+  issueNumbersLine,
   matchesIssueFilters,
   mergeIssueLists,
   repositoryKey,
@@ -213,21 +216,177 @@ describe("mergeIssueLists", () => {
 });
 
 describe("the line of numbers", () => {
+  const repo = (repository: string) => ({
+    host: "github.com",
+    repository,
+    projectId: "project-1" as ProjectId,
+    projectTitle: repository,
+  });
+  const repositoryOn = (environmentId: EnvironmentId, repository: string) => ({
+    ...repo(repository),
+    environmentId,
+  });
+  const counted = (open: number, filed: number, closed: number): GitHubIssueCountsResult => ({
+    open,
+    filed,
+    closed,
+  });
+
+  it("asks each server to count only the repositories the merged list kept for it", () => {
+    // Both servers list Shared; the merged list kept it for the first, as `mergeIssueLists` does.
+    const merged = mergeIssueLists([
+      [ENV_A, result([], { repositories: [repo("acme/Shared"), repo("acme/only-a")] })],
+      [ENV_B, result([], { repositories: [repo("acme/shared"), repo("acme/only-b")] })],
+    ])!;
+    expect(
+      issueCountTargets({
+        listings: [ENV_A, ENV_B],
+        answered: [ENV_B, ENV_A],
+        repositories: merged.repositories,
+      }),
+    ).toEqual([
+      {
+        environmentId: ENV_A,
+        input: { repositories: ["github.com acme/only-a", "github.com acme/shared"] },
+      },
+      { environmentId: ENV_B, input: { repositories: ["github.com acme/only-b"] } },
+    ]);
+    // A server whose every repository another kept is asked for nothing.
+    expect(
+      issueCountTargets({
+        listings: [ENV_A, ENV_B],
+        answered: [ENV_A, ENV_B],
+        repositories: [repositoryOn(ENV_A, "acme/shared")],
+      }),
+    ).toEqual([{ environmentId: ENV_A, input: { repositories: ["github.com acme/shared"] } }]);
+    // Until every listing server has answered, the repositories to count are not known.
+    expect(
+      issueCountTargets({
+        listings: [ENV_A, ENV_B],
+        answered: [ENV_B],
+        repositories: [repositoryOn(ENV_B, "acme/shared")],
+      }),
+    ).toBeNull();
+  });
+
+  const targets = [
+    { environmentId: ENV_A, input: { repositories: ["github.com acme/only-a"] } },
+    { environmentId: ENV_B, input: { repositories: ["github.com acme/only-b"] } },
+  ];
   it.each([
-    [{ state: "open" }, "open"],
-    [{ state: "open", labels: [] }, "open"],
-    // GitHub searches these, so the rows are matches and not the repositories' open Issues.
-    [{ state: "open", labels: ["bug"] }, "matching"],
-    [{ state: "open", query: "tree" }, "matching"],
-    [{ state: "open", milestone: "M1" }, "matching"],
-    // Whatever State is set to: a search is a search.
-    [{ state: "closed", labels: ["bug"] }, "matching"],
-    [{ state: "closed", milestone: "M1" }, "matching"],
-    [{ state: "all", query: "tree" }, "matching"],
-    [{ state: "closed" }, "listed"],
-    [{ state: "all", labels: [] }, "listed"],
-  ] as const)("calls the rows of %j %s", (input, expected) => {
-    expect(issueNumbersScope(input)).toBe(expected);
+    [
+      "sums every server's answer",
+      {
+        targets,
+        answers: [
+          [ENV_A, counted(100, 9, 4)],
+          [ENV_B, counted(13, 3, 5)],
+        ],
+        failed: false,
+      },
+      counted(113, 12, 9),
+    ],
+    [
+      "is unknown while a listing server has not answered",
+      { targets: null, answers: [[ENV_A, counted(100, 9, 4)]], failed: false },
+      null,
+    ],
+    [
+      "is unknown while a server's counts have no answer, not the sum of the others",
+      { targets, answers: [[ENV_A, counted(100, 9, 4)]], failed: false },
+      null,
+    ],
+    [
+      // An older server without the query, a deadline passed, or a refresh that failed after an
+      // answer: the answers a failed read leaves behind are not shown as current.
+      "is unknown after a failed counts read, whatever answers remain",
+      {
+        targets,
+        answers: [
+          [ENV_A, counted(100, 9, 4)],
+          [ENV_B, counted(13, 3, 5)],
+        ],
+        failed: true,
+      },
+      null,
+    ],
+    [
+      "is zero, not unknown, when every counted repository has none",
+      {
+        targets,
+        answers: [
+          [ENV_A, counted(0, 0, 0)],
+          [ENV_B, counted(0, 0, 0)],
+        ],
+        failed: false,
+      },
+      counted(0, 0, 0),
+    ],
+  ] as const)("the counts total %s", (_name, input, expected) => {
+    expect(issueCountsTotal(input)).toEqual(expected);
+  });
+
+  const final = (count: number) => ({ count, certainty: "final" }) as const;
+  const floor = (count: number) => ({ count, certainty: "floor" }) as const;
+  const line = (overrides: Partial<Parameters<typeof issueNumbersLine>[0]>) =>
+    issueNumbersLine({
+      state: "open",
+      searched: false,
+      shown: final(113),
+      loadedOpen: 113,
+      rowsComplete: true,
+      countedOpen: 113,
+      ...overrides,
+    });
+  it.each([
+    [
+      "the whole open list counts its own rows, even past a counts read a moment older",
+      line({ countedOpen: 112 }),
+      { kind: "open", count: final(113) },
+    ],
+    [
+      "a filter over the loaded rows reads as a part of them",
+      line({ shown: final(5) }),
+      { kind: "subset", shown: final(5), total: final(113) },
+    ],
+    [
+      // The rows are the matches of a search, so only the counts read holds the total.
+      "text, labels, a milestone or a repository read as a part of the counted total",
+      line({ searched: true, shown: final(5), loadedOpen: 5 }),
+      { kind: "subset", shown: final(5), total: final(113) },
+    ],
+    [
+      "a search that matches every open Issue still reads against the total",
+      line({ searched: true }),
+      { kind: "subset", shown: final(113), total: final(113) },
+    ],
+    [
+      "a search with the total unknown claims no total",
+      line({ searched: true, shown: final(5), loadedOpen: 5, countedOpen: null }),
+      { kind: "listed", count: final(5), open: null },
+    ],
+    [
+      "rows still arriving read against the counted total",
+      line({ shown: floor(100), loadedOpen: 100, rowsComplete: false, countedOpen: 350 }),
+      { kind: "subset", shown: floor(100), total: final(350) },
+    ],
+    [
+      "rows still arriving are a floor when the total is unknown",
+      line({ shown: floor(100), loadedOpen: 100, rowsComplete: false, countedOpen: null }),
+      { kind: "open", count: floor(100) },
+    ],
+    [
+      "another State lists its own rows and keeps the open total apart",
+      line({ state: "closed", shown: final(42), loadedOpen: 0 }),
+      { kind: "listed", count: final(42), open: 113 },
+    ],
+    [
+      "another State with the total unknown shows none",
+      line({ state: "all", shown: final(42), loadedOpen: 30, countedOpen: null }),
+      { kind: "listed", count: final(42), open: null },
+    ],
+  ] as const)("%s", (_name, actual, expected) => {
+    expect(actual).toEqual(expected);
   });
 
   it("counts open Issues nobody updated for 30 days", () => {

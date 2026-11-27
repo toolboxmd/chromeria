@@ -1,4 +1,5 @@
 import type {
+  GitHubIssueCountsResult,
   GitHubIssueDetail,
   IssueCheckState,
   IssueLink,
@@ -85,6 +86,60 @@ export function issueSearchQuery(input: {
     input.sort === "created" || input.sort === "number" ? "sort:created-desc" : "sort:updated-desc",
     ...repositories.map((repository) => `repo:${repository}`),
   ].join(" ");
+}
+
+/** The counts read per chunk of repositories, in the order their aliases are numbered. */
+const ISSUE_COUNT_KINDS = ["open", "filed", "closed"] as const;
+
+/**
+ * One request counting each chunk of repositories three ways, under aliases `count0` onward: its
+ * open Issues, the Issues created since `since`, and the closed Issues last closed since then.
+ * `since` is an instant as GitHub's search reads it (`2026-11-20T08:00:00Z`). Every search text
+ * travels as a variable. Null for no chunk, or a repository that is not a plain `owner/name`.
+ */
+export function issueCountsGraphQlDocument(input: {
+  readonly chunks: ReadonlyArray<ReadonlyArray<string>>;
+  readonly since: string;
+}): GraphQlDocument | null {
+  const chunks = input.chunks.map((chunk) => chunk.map((repository) => repository.trim()));
+  if (!chunks.flat().every((repository) => SEARCH_REPOSITORY.test(repository))) return null;
+  return aliasedGraphQlDocument({
+    operation: "query",
+    name: "IssueCounts",
+    alias: "count",
+    items: chunks.flatMap((chunk) => {
+      const scope = chunk.map((repository) => `repo:${repository}`).join(" ");
+      return [
+        `is:issue is:open ${scope}`,
+        `is:issue created:>=${input.since} ${scope}`,
+        `is:issue is:closed closed:>=${input.since} ${scope}`,
+      ];
+    }),
+    variables: (q) => ({ q: ["String!", q] }),
+    field: ({ q }) => `search(query: ${q}, type: ISSUE, first: 1) { issueCount }`,
+  });
+}
+
+export const decodeIssueCountsJson = Schema.decodeUnknownResult(
+  Schema.fromJsonString(
+    Schema.Struct({
+      data: Schema.Record(Schema.String, Schema.Struct({ issueCount: Schema.Number })),
+    }),
+  ),
+);
+
+/** The totals of a counts answer over `chunks` chunks; null when one of their searches is missing. */
+export function issueCountsOf(
+  chunks: number,
+  data: Readonly<Record<string, { readonly issueCount: number }>>,
+): GitHubIssueCountsResult | null {
+  const totals = { open: 0, filed: 0, closed: 0 };
+  for (let index = 0; index < chunks * ISSUE_COUNT_KINDS.length; index++) {
+    const count = data[`count${index}`]?.issueCount;
+    if (count === undefined) return null;
+    totals[ISSUE_COUNT_KINDS[index % ISSUE_COUNT_KINDS.length]!] += count;
+  }
+  return totals;
 }
 
 const LINK_FIELDS = "number title url state stateReason repository { nameWithOwner }";

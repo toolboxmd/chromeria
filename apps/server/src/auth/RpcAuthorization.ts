@@ -268,6 +268,7 @@ export const RPC_REQUIRED_SCOPES = {
   [ISSUE_WS_METHODS.issuesList]: AuthOrchestrationReadScope,
   [ISSUE_WS_METHODS.issuesDetail]: AuthOrchestrationReadScope,
   [ISSUE_WS_METHODS.issuesStates]: AuthOrchestrationReadScope,
+  [ISSUE_WS_METHODS.issuesCounts]: AuthOrchestrationReadScope,
   // Fork: feature map (toolboxmd/chromeria#235).
   [FEATURE_MAP_WS_METHODS.read]: AuthOrchestrationReadScope,
   // Fork: Issue links (toolboxmd/t3code#28).

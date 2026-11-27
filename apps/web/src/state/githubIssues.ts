@@ -12,12 +12,14 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import {
+  issueCountsTotal,
   issueListPages,
   mergeIssueLists,
+  type IssueCountsTarget,
   type IssueListTarget,
 } from "../components/issues/issueList.logic";
 import {
@@ -117,7 +119,37 @@ export function useIssueList(
   return {
     data,
     rows: pages.rows,
+    /** The servers whose listing has an answer. */
+    answered: query.values.map(([environmentId]) => environmentId),
     error: query.error?.message ?? null,
+    isPending: query.isPending,
+    refresh: query.refresh,
+  };
+}
+
+const issueCounts = createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
+  label: "environment-data:issues:counts",
+  tag: ISSUE_WS_METHODS.issuesCounts,
+  staleTimeMs: 30_000,
+});
+
+const useIssueCountsQuery = createMergedEnvironmentQuery("web-issues:counts", issueCounts);
+
+const NO_COUNTS_TARGETS: ReadonlyArray<IssueCountsTarget> = [];
+
+/**
+ * The open total and the week's filed and closed of the listed repositories, read apart from the
+ * list: when the page opens and on `refresh`. `totals` is null while they are unknown. `targets`
+ * is null while the list cannot say which repositories it holds.
+ */
+export function useIssueCounts(targets: ReadonlyArray<IssueCountsTarget> | null) {
+  // A list being read again, for a new sort, search, filter or State, names no repositories until
+  // it answers. The read stays on the ones it had, so none of those changes starts a new one.
+  const [held, setHeld] = useState(NO_COUNTS_TARGETS);
+  if (targets !== null && JSON.stringify(targets) !== JSON.stringify(held)) setHeld(targets);
+  const query = useIssueCountsQuery(targets ?? held);
+  return {
+    totals: issueCountsTotal({ targets, answers: query.values, failed: query.error !== null }),
     isPending: query.isPending,
     refresh: query.refresh,
   };

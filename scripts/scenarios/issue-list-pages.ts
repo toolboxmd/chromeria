@@ -26,9 +26,16 @@ type IssueFacts = {
 type IssuePageAnswer = {
   issues: Array<number>;
   next?: string;
+  /** GitHub's match count for this read, when not every Issue of the plan: a narrower search. */
+  matches?: number;
+  /** How long the read takes to answer, for a list that is empty while it waits. */
+  delayMs?: number;
   /** `rpc` fails the read itself; `github` answers it with GitHub's refusal inside the result. */
   failure?: "rpc" | "github";
 };
+
+/** One answer to a counts read: the totals of the listed repositories, or a failed read. */
+type IssueCountsAnswer = { open: number; filed: number; closed: number } | "failure";
 
 /**
  * Answers every `githubIssues.list` read in the page: `plan.first` for a listing and
@@ -39,10 +46,15 @@ type IssuePageAnswer = {
 export function answerIssueListPages(
   browser: Browser,
   plan: Record<string, Array<IssuePageAnswer>>,
-  options: { failedThreadReads?: number; facts?: Record<number, IssueFacts> } = {},
+  options: {
+    failedThreadReads?: number;
+    facts?: Record<number, IssueFacts>;
+    /** One answer per `githubIssues.counts` read, the last repeating; absent, they reach the server. */
+    counts?: Array<IssueCountsAnswer>;
+  } = {},
 ) {
   return browser.addInitScript(
-    ({ answersByPage, failedThreadReads, facts }) => {
+    ({ answersByPage, failedThreadReads, facts, counts }) => {
       const SEARCH = "github.com#0";
       const repository = {
         host: "github.com",
@@ -56,6 +68,7 @@ export function answerIssueListPages(
       ).size;
       const taken = new Map<string, number>();
       let threadReads = 0;
+      let countReads = 0;
       const send = WebSocket.prototype.send;
       WebSocket.prototype.send = function (data) {
         const request: {
@@ -64,14 +77,17 @@ export function answerIssueListPages(
           tag: string;
           payload: { cursors?: Record<string, string>; issues?: Array<{ number: number }> };
         } | null = typeof data === "string" ? JSON.parse(data) : null;
-        const reply = (exit: unknown) =>
-          queueMicrotask(() =>
+        const reply = (exit: unknown, delayMs = 0) => {
+          const answer = () =>
             this.dispatchEvent(
               new MessageEvent("message", {
                 data: JSON.stringify({ _tag: "Exit", requestId: request?.id, exit }),
               }),
-            ),
-          );
+            );
+          // @effect-diagnostics-next-line globalTimers:off - This callback is injected into the browser.
+          if (delayMs > 0) setTimeout(answer, delayMs);
+          else queueMicrotask(answer);
+        };
         const failure = (error: object) => ({ _tag: "Failure", cause: [{ _tag: "Fail", error }] });
         if (request?._tag === "Request" && request.tag === "issueLinks.threadsForIssues") {
           threadReads += 1;
@@ -101,6 +117,19 @@ export function answerIssueListPages(
               })),
             },
           });
+        }
+        if (request?._tag === "Request" && request.tag === "githubIssues.counts" && counts) {
+          const answer = counts[Math.min(countReads, counts.length - 1)];
+          countReads += 1;
+          return reply(
+            answer === undefined || answer === "failure"
+              ? failure({
+                  _tag: "IssueOperationError",
+                  operation: "countIssues",
+                  detail: "GitHub did not answer the Issue counts in time.",
+                })
+              : { _tag: "Success", value: answer },
+          );
         }
         if (request?._tag !== "Request" || request.tag !== "githubIssues.list") {
           return send.call(this, data);
@@ -186,9 +215,11 @@ export function answerIssueListPages(
                     };
                   }),
                   nextCursors: answer.next === undefined ? {} : { [SEARCH]: answer.next },
-                  matchCounts: answer.failure === "github" ? {} : { [SEARCH]: matches },
+                  matchCounts:
+                    answer.failure === "github" ? {} : { [SEARCH]: answer.matches ?? matches },
                 },
               },
+          answer.delayMs,
         );
       };
     },
@@ -196,6 +227,7 @@ export function answerIssueListPages(
       answersByPage: plan,
       failedThreadReads: options.failedThreadReads ?? 0,
       facts: options.facts ?? {},
+      counts: options.counts ?? null,
     },
   );
 }
