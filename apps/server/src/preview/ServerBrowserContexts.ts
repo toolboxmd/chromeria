@@ -3,9 +3,8 @@ import { INCOGNITO_BROWSER_PROFILE_ID } from "@t3tools/contracts";
 import { constVoid } from "effect/Function";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeModule from "node:module";
-import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import type { Browser, BrowserContext, CDPSession } from "playwright-core";
+import type { Browser, BrowserContext, CDPSession, Page } from "playwright-core";
 
 import { sandboxDisabled } from "./PreviewBrowserHost.ts";
 
@@ -13,6 +12,47 @@ import { sandboxDisabled } from "./PreviewBrowserHost.ts";
 const requirePlaywright = NodeModule.createRequire(import.meta.url);
 const loadPlaywright = () =>
   requirePlaywright("playwright-core") as typeof import("playwright-core");
+
+export const RENDER_SCALE = 2;
+type ViewportSize = { readonly width: number; readonly height: number };
+const agentViewports = new WeakMap<
+  Page,
+  { readonly size: ViewportSize; readonly zoom: number; readonly emulated: boolean }
+>();
+
+export const previewViewportSize = (page: Page) =>
+  agentViewports.get(page)?.size ?? page.viewportSize();
+
+export const previewViewportZoom = (page: Page) => agentViewports.get(page)?.zoom ?? 1;
+
+export const viewportAtZoom = ({ width, height }: ViewportSize, zoom: number) => ({
+  width: Math.max(1, Math.round(width / zoom)),
+  height: Math.max(1, Math.round(height / zoom)),
+});
+
+export const resizeAgentViewport = async (
+  page: Page,
+  cdp: CDPSession,
+  size: ViewportSize,
+  zoom: number,
+) => {
+  // Keep the override once zoom needs it. Clearing it would restore the window
+  // viewport before a second command could reapply the requested size.
+  const emulated = zoom !== 1 || agentViewports.get(page)?.emulated === true;
+  if (emulated) {
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      ...viewportAtZoom(size, zoom),
+      deviceScaleFactor: RENDER_SCALE * zoom,
+      mobile: false,
+    });
+  } else {
+    await cdp.send("Emulation.setVisibleSize", size);
+  }
+  agentViewports.set(page, { size, zoom, emulated });
+};
+
+export const agentColorScheme = (localHour: number) =>
+  localHour < 6 || localHour >= 20 ? "dark" : "light";
 
 const BADGE_STUB = `if (typeof WorkerNavigator === "function") for (const name of ["setAppBadge", "clearAppBadge"]) WorkerNavigator.prototype[name] = () => Promise.resolve();`;
 
@@ -22,9 +62,9 @@ interface CdpSession {
 }
 
 // The headless shell binds no BadgeService for service workers and kills the renderer of a
-// worker that calls navigator.setAppBadge. Playwright resumes each worker itself, so the stub
-// can only go in ahead of that resume through its in-process session; without it nothing is stubbed.
-const stubWorkerBadges = (client: Browser | BrowserContext) => {
+// worker that calls navigator.setAppBadge. Playwright resumes each child target itself, so
+// the stub and the identity can only go in ahead of that resume through its in-process session.
+const prepareChildTargets = (client: Browser | BrowserContext, identity: ChromeIdentity) => {
   const { _connection: connection } = client as unknown as {
     readonly _connection?: {
       readonly toImpl?: (
@@ -37,18 +77,33 @@ const stubWorkerBadges = (client: Browser | BrowserContext) => {
   const impl = connection?.toImpl?.(client);
   const root = impl?._browser?._session ?? impl?._session;
   if (!root) return;
-  const createChildSession = root.createChildSession.bind(root);
-  root.createChildSession = (...args) => {
-    const session = createChildSession(...args);
-    const send = session.send.bind(session);
-    session.send = (method, params) => {
-      if (method === "Runtime.runIfWaitingForDebugger") {
-        void send("Runtime.evaluate", { expression: BADGE_STUB }).catch(constVoid);
-      }
-      return send(method, params);
+  // Frames in other processes are children of their page's session, so every level is patched.
+  const patch = (parent: CdpSession) => {
+    const createChildSession = parent.createChildSession.bind(parent);
+    parent.createChildSession = (...args) => {
+      const session = createChildSession(...args);
+      const send = session.send.bind(session);
+      let identified = false;
+      const identify = () => void send("Network.setUserAgentOverride", identity).catch(constVoid);
+      session.send = (method, params) => {
+        // The launch flag gives these targets the user agent but clears its client hints.
+        // Shared workers take the override only ahead of their first command, service
+        // workers only once their Network domain is up, just before they resume.
+        if (!identified) {
+          identified = true;
+          identify();
+        }
+        if (method === "Runtime.runIfWaitingForDebugger") {
+          void send("Runtime.evaluate", { expression: BADGE_STUB }).catch(constVoid);
+          identify();
+        }
+        return send(method, params);
+      };
+      patch(session);
+      return session;
     };
-    return session;
   };
+  patch(root);
 };
 
 interface Options {
@@ -61,10 +116,11 @@ interface Options {
   readonly launcher?: (
     executable: string,
   ) => Promise<{ readonly path: string; readonly release: () => Promise<void> } | undefined>;
+  /** The pinned full version the executable must report, such as `154.0.8037.92`. */
+  readonly version: string;
+  readonly host: { readonly platform: NodeJS.Platform; readonly arch: string };
   readonly diagnose?: (executable: string, cause: unknown) => Promise<unknown>;
   readonly env?: NodeJS.ProcessEnv;
-  /** Names Chrome in the browser's own user agent, which is all a service worker ever sends. */
-  readonly chrome: { readonly version: string; readonly platform: NodeJS.Platform };
   /** Closes the shared browser once it has held no context for this long. */
   readonly idleBrowserMs?: number;
   readonly onContextClose?: (context: BrowserContext) => void;
@@ -76,45 +132,76 @@ const UA_PLATFORMS: Partial<Record<NodeJS.Platform, string>> = {
   win32: "Windows",
 };
 
-// Chrome froze its user agent apart from the major version.
-const UA_SYSTEMS: Partial<Record<NodeJS.Platform, string>> = {
+/** Chrome's reduced user agent freezes everything but the major version. */
+const REDUCED_UA_PLATFORMS: Partial<Record<NodeJS.Platform, string>> = {
   darwin: "Macintosh; Intel Mac OS X 10_15_7",
   linux: "X11; Linux x86_64",
   win32: "Windows NT 10.0; Win64; x64",
 };
 
-const chromeToken = (major: string) => `Chrome/${major}.0.0.0`;
+/** The full version in a `Browser.getVersion` product or user agent, with or without Headless. */
+const chromeVersion = (text: string) => /(?:Headless)?Chrome\/(\d+\.[\d.]+)/.exec(text)?.[1];
 
-const chromeUserAgent = (chrome: Options["chrome"]) => {
-  const major = /^\d+/.exec(chrome.version)?.[0];
-  const system = UA_SYSTEMS[chrome.platform];
-  return major && system
-    ? `Mozilla/5.0 (${system}) AppleWebKit/537.36 (KHTML, like Gecko) ${chromeToken(major)} Safari/537.36`
-    : null;
-};
+// @effect-diagnostics-next-line extendsNativeError:off -- Internal browser launch cause is wrapped by the public launch error.
+class ChromeVersionMismatchError extends Error {
+  readonly expected: string;
+  readonly actual: string | undefined;
+  constructor(expected: string, actual: string | undefined) {
+    super(`The preview browser reports Chrome ${actual ?? "unknown"}, not the pinned ${expected}.`);
+    this.expected = expected;
+    this.actual = actual;
+  }
+}
 
-/** Change user agent and Sec-CH-UA together; sites block mismatches. */
+const GREASE_CHARACTERS = [" ", "(", ":", "-", ".", "/", ")", ";", "=", "?", "_"];
+const GREASE_VERSIONS = ["8", "99", "24"];
+/** Positions of the GREASE brand, Chromium and Google Chrome, chosen by the major version. */
+const BRAND_ORDERS = [
+  [0, 1, 2],
+  [0, 2, 1],
+  [1, 0, 2],
+  [1, 2, 0],
+  [2, 0, 1],
+  [2, 1, 0],
+].map((positions) => positions.map((_, index) => positions.indexOf(index)));
+
+/** Chrome's own GREASE brand for a major version (GetGreasedUserAgentBrandVersion). */
+export const greaseBrand = (major: number) => ({
+  brand: `Not${GREASE_CHARACTERS[major % 11]}A${GREASE_CHARACTERS[(major + 1) % 11]}Brand`,
+  version: GREASE_VERSIONS[major % 3]!,
+});
+
+/**
+ * One identity for the `--user-agent` launch flag, which also reaches workers,
+ * and the per-page override that adds matching `Sec-CH-UA`: sites block a user
+ * agent that disagrees with its client hints.
+ */
 const chromeIdentity = (
-  browser: { readonly product: string; readonly userAgent: string },
-  host: { readonly platform: NodeJS.Platform; readonly arch: string; readonly release: string },
+  fullVersion: string,
+  host: { readonly platform: NodeJS.Platform; readonly arch: string },
 ) => {
-  // A launch that already named Chrome in the user agent still reports the headless product.
-  const version = /^(?:Headless)?Chrome\/((\d+)[\d.]*)/.exec(browser.product);
-  const fullVersion = version?.[1];
-  const major = version?.[2];
-  if (!version || !fullVersion || !major) return null;
-  const brands = (names: (version: string) => string) => [
-    { brand: "Chromium", version: names(major) },
-    { brand: "Google Chrome", version: names(major) },
-    { brand: "Not A(Brand", version: names("99") },
-  ];
+  const major = fullVersion.split(".", 1)[0]!;
+  const grease = greaseBrand(Number(major));
+  const brands = (names: (version: string) => string) => {
+    const list = [
+      { brand: grease.brand, version: names(grease.version) },
+      { brand: "Chromium", version: names(major) },
+      { brand: "Google Chrome", version: names(major) },
+    ];
+    // Chrome orders its brands by the major version, as in GenerateBrandVersionList.
+    const order = BRAND_ORDERS[Number(major) % BRAND_ORDERS.length]!;
+    return order.map((index) => list[index]!);
+  };
   return {
-    userAgent: browser.userAgent.replace(/HeadlessChrome\/[\d.]+/, chromeToken(major)),
+    userAgent: `Mozilla/5.0 (${REDUCED_UA_PLATFORMS[host.platform] ?? REDUCED_UA_PLATFORMS.linux}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`,
     userAgentMetadata: {
       brands: brands((value) => value),
       fullVersionList: brands((value) => (value === major ? fullVersion : `${value}.0.0.0`)),
+      fullVersion,
       platform: UA_PLATFORMS[host.platform] ?? "Unknown",
-      platformVersion: host.platform === "linux" ? host.release : "",
+      // A kernel release is not Chrome's platform version and would name the distribution.
+      platformVersion: "",
+      formFactors: ["Desktop"],
       architecture: host.arch.startsWith("arm") ? "arm" : "x86",
       bitness: host.arch.endsWith("64") ? "64" : "32",
       model: "",
@@ -124,19 +211,64 @@ const chromeIdentity = (
   };
 };
 
-export const presentAsChrome = async (
-  cdp: CDPSession,
-  host: { readonly platform: NodeJS.Platform; readonly arch: string },
-) => {
-  const browser = await cdp.send("Browser.getVersion");
-  const identity = chromeIdentity(browser, { ...host, release: NodeOS.release() });
-  if (identity) await cdp.send("Emulation.setUserAgentOverride", identity);
+export type ChromeIdentity = ReturnType<typeof chromeIdentity>;
+
+export const presentAsChrome = async (cdp: CDPSession, identity: ChromeIdentity) => {
+  await cdp.send("Emulation.setUserAgentOverride", identity);
 };
 
 export class ServerBrowserContexts {
+  /** A research render owns its browser and fresh storage, with no route to human profiles. */
+  static async publicContext(input: {
+    readonly executable: string;
+    readonly proxyPort: number;
+    readonly env: NodeJS.ProcessEnv;
+  }) {
+    const { chromium } = loadPlaywright();
+    const browser = await chromium.launch({
+      executablePath: input.executable,
+      env: input.env,
+      headless: true,
+      chromiumSandbox: !sandboxDisabled(input.env),
+      timeout: 10_000,
+      proxy: { server: `socks5://127.0.0.1:${input.proxyPort}`, bypass: "<-loopback>" },
+      // Challenge pages refuse a browser that announces automation; the preview browser drops it too.
+      ignoreDefaultArgs: ["--enable-automation"],
+      args: [
+        "--disable-blink-features=AutomationControlled",
+        "--disable-gpu",
+        "--disable-quic",
+        "--block-new-web-contents",
+        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+        // All destination DNS belongs to the proxy, including speculation and worker traffic.
+        "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
+      ],
+    });
+    try {
+      const context = await browser.newContext({
+        viewport: { width: 1280, height: 800 },
+        serviceWorkers: "block",
+        acceptDownloads: false,
+        userAgent: "ChromeriaResearch/1.0 (+https://github.com/toolboxmd/chromeria)",
+      });
+      return { context, close: () => browser.close() };
+    } catch (cause) {
+      await browser.close().catch(constVoid);
+      throw cause;
+    }
+  }
+
   private readonly options: Options;
+  readonly identity: ChromeIdentity;
   private readonly contexts = new Map<string, Promise<BrowserContext>>();
   private readonly clearing = new Map<string, Promise<void>>();
+  /**
+   * One page per persistent context that no tab or tool ever uses: a headed
+   * persistent context ends with its last page (pingdotgg/t3code#20867), and
+   * session cookies with it.
+   */
+  private readonly reserved = new WeakMap<BrowserContext, Promise<Page>>();
+  private readonly endingContexts = new WeakSet<BrowserContext>();
   private browser: Promise<Browser> | undefined;
   private closing: Promise<void> | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -144,21 +276,24 @@ export class ServerBrowserContexts {
 
   constructor(options: Options) {
     this.options = options;
+    this.identity = chromeIdentity(options.version, options.host);
   }
 
   private async launchOptions() {
     const executable = await this.options.executable();
     const env = this.options.env ?? process.env;
-    // A page's override never reaches its workers, so the browser itself must name Chrome.
-    const userAgent = chromeUserAgent(this.options.chrome);
     return {
       executable,
       env,
       args: [
-        "--disable-gpu",
-        "--force-device-scale-factor=2",
+        `--user-agent=${this.identity.userAgent}`,
+        `--force-device-scale-factor=${RENDER_SCALE}`,
+        "--window-size=1280,900",
+        // Chrome divides screen geometry by the device scale, so use physical pixels.
+        `--screen-info={${1920 * RENDER_SCALE}x${1080 * RENDER_SCALE} workAreaBottom=${48 * RENDER_SCALE}}`,
         "--disable-blink-features=AutomationControlled",
-        ...(userAgent ? [`--user-agent=${userAgent}`] : []),
+        // New headless picks a hardware GL backend on its own on macOS; Linux needs Vulkan named.
+        ...(this.options.host.platform === "linux" ? ["--use-angle=vulkan"] : []),
       ],
       ignoreDefaultArgs: ["--enable-automation"],
       headless: true,
@@ -180,6 +315,13 @@ export class ServerBrowserContexts {
     }
   }
 
+  private checkVersion(product: string) {
+    const actual = chromeVersion(product);
+    if (actual !== this.options.version) {
+      throw new ChromeVersionMismatchError(this.options.version, actual);
+    }
+  }
+
   private sharedBrowser() {
     if (!this.browser) {
       const launched = this.launchOptions().then(async ({ executable, ...options }) => {
@@ -187,10 +329,16 @@ export class ServerBrowserContexts {
         const browser = await this.launch(executable, (executablePath) =>
           chromium.launch({ ...options, executablePath }),
         );
-        stubWorkerBadges(browser);
+        prepareChildTargets(browser, this.identity);
         browser.on("disconnected", () => {
           if (this.browser === launched) this.browser = undefined;
         });
+        try {
+          this.checkVersion(`Chrome/${browser.version()}`);
+        } catch (error) {
+          await browser.close().catch(constVoid);
+          throw error;
+        }
         return browser;
       });
       this.browser = launched;
@@ -241,11 +389,37 @@ export class ServerBrowserContexts {
     const pending = cleared
       .then(() => this.createContext(profileId, isolationKey))
       .then(async (context) => {
+        try {
+          // No viewing client can answer a server tab's native authenticator prompt.
+          // A context init script reaches every navigation and child frame before site code.
+          await context.addInitScript(`(() => {
+            if (typeof CredentialsContainer !== "undefined") {
+              for (const method of ["get", "create"]) {
+                const original = CredentialsContainer.prototype[method];
+                CredentialsContainer.prototype[method] = function (...args) {
+                  if (args[0]?.publicKey !== undefined) {
+                    return Promise.reject(new DOMException(
+                      "Authenticators are unavailable in server browser tabs.", "NotAllowedError"
+                    ));
+                  }
+                  return Reflect.apply(original, this, args);
+                };
+              }
+            }
+            if (typeof PublicKeyCredential !== "undefined") {
+              PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(false);
+            }
+          })()`);
+        } catch (error) {
+          this.endingContexts.add(context);
+          await context.close().catch(constVoid);
+          throw error;
+        }
         context.on("close", () => {
+          this.endingContexts.add(context);
           if (this.contexts.get(key) === pending) this.contexts.delete(key);
           this.options.onContextClose?.(context);
         });
-        for (const page of context.pages()) await page.close().catch(constVoid);
         if (this.closing) {
           await context.close().catch(constVoid);
           throw new Error("The preview browser is closed.");
@@ -260,7 +434,7 @@ export class ServerBrowserContexts {
   }
 
   private async createContext(profileId: string, isolationKey?: string) {
-    const contextOptions = { viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2 };
+    const contextOptions = { viewport: null };
     if (isolationKey !== undefined || profileId === INCOGNITO_BROWSER_PROFILE_ID) {
       return this.sharedContext(contextOptions);
     }
@@ -275,8 +449,51 @@ export class ServerBrowserContexts {
         executablePath,
       }),
     );
-    stubWorkerBadges(context);
-    return context;
+    // The caller listens for close only once this returns, so a close meanwhile fails the start.
+    let closed = false;
+    context.once("close", () => {
+      closed = true;
+    });
+    try {
+      const [first, ...rest] = context.pages();
+      for (const page of rest) await page.close().catch(constVoid);
+      const page = await this.keepReserved(context, first ?? (await context.newPage()));
+      const cdp = await context.newCDPSession(page);
+      try {
+        this.checkVersion((await cdp.send("Browser.getVersion")).product);
+      } finally {
+        await cdp.detach().catch(constVoid);
+      }
+      if (closed) throw new Error("The preview browser closed while it started.");
+      prepareChildTargets(context, this.identity);
+      return context;
+    } catch (error) {
+      this.endingContexts.add(context);
+      await context.close().catch(constVoid);
+      throw error;
+    }
+  }
+
+  private keepReserved(context: BrowserContext, page: Page): Promise<Page> {
+    const reserved = Promise.resolve(page);
+    this.reserved.set(context, reserved);
+    page.once("close", () => {
+      if (this.reserved.get(context) !== reserved || this.endingContexts.has(context)) return;
+      const replacement = context.newPage().then((next) => this.keepReserved(context, next));
+      this.reserved.set(context, replacement);
+      void replacement.catch(constVoid);
+    });
+    return reserved;
+  }
+
+  /**
+   * The persistent context's reserved page, recreated if something closed it.
+   * Borrowers may attach to it but never close it; isolated contexts have none.
+   */
+  async reservedPage(context: BrowserContext): Promise<Page> {
+    const reserved = this.reserved.get(context);
+    if (!reserved) throw new Error("This browser context has no reserved page.");
+    return reserved;
   }
 
   private profileDirectory(profileId: string) {
@@ -322,6 +539,7 @@ export class ServerBrowserContexts {
       if (pending) {
         this.contexts.delete(key);
         const context = await pending.catch(() => undefined);
+        if (context) this.endingContexts.add(context);
         await context?.close();
       }
       await NodeFSP.rm(this.profileDirectory(profileId), { recursive: true, force: true });
@@ -342,7 +560,11 @@ export class ServerBrowserContexts {
   private async dispose() {
     clearTimeout(this.idleTimer);
     await Promise.allSettled(
-      [...this.contexts.values()].map(async (pending) => (await pending).close()),
+      [...this.contexts.values()].map(async (pending) => {
+        const context = await pending;
+        this.endingContexts.add(context);
+        await context.close();
+      }),
     );
     const browser = await this.browser?.catch(() => undefined);
     await browser?.close().catch(constVoid);
