@@ -176,7 +176,7 @@ describe("redeemResetCreditCommand", () => {
         expect(result.machines.map((line) => redeemedResetLineText(line))).toEqual([
           "bestia · Claude work: cleared.",
           "rocky: not reached, so its old block remains.",
-          "cavallo: no answer within 10 seconds; it clears itself if it received the call.",
+          "cavallo: no answer within 10 seconds; if it received the call, it clears its recorded limit failures.",
         ]);
       }),
   );
