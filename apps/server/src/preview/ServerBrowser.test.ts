@@ -3690,7 +3690,7 @@ it.live("a release trusts only a committed document, whatever its fragment", () 
       // A 204 commits nothing, and a history change is no new document: the check stays on screen.
       answer = "noContent";
       yield* Effect.promise(() => page.goto("https://shop.test/a").catch(() => undefined));
-      yield* Effect.promise(() => page.evaluate(() => history.pushState(null, "", "/a")));
+      yield* Effect.promise(() => page.evaluate(`history.pushState(null, "", "/a")`));
       yield* viewer.input({ type: "releaseControl" });
       expect(yield* held(), "the check is still on screen").toBeDefined();
       yield* viewer.input({ type: "takeControl" });
