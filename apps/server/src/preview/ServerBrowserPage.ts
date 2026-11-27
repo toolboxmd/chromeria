@@ -1454,9 +1454,12 @@ export const evaluate = async (
         failure.scriptId !== undefined &&
         failure.stackTrace === undefined;
       if (!unparsed || timedOut || !input.expression.includes("await")) return classic;
-      // The parse failure ran nothing, so the retry is the first run: it is authorized again.
+      // The parse failure ran nothing, so the retry is the first run: it is authorized again,
+      // and until it is sent an expiry has no script of this call to stop.
+      dispatched = false;
       await authorize();
       if (timedOut) throw new Error("Evaluation expired before its retry.");
+      dispatched = true;
       return cdp.send("Runtime.evaluate", { ...params, replMode: true });
     });
     void evaluation.catch(constVoid);
