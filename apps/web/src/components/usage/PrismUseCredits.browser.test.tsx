@@ -732,26 +732,29 @@ it.each([
   await openCodexWork(screen);
   await expect.element(useCreditsOn("Birch")).toBeVisible();
   using _timers = fakeTimers();
-  // The fake clock moves under a retried assertion and during the click itself, so the bound is
-  // read from the order of events on that clock: two marks set as the write starts, and the
-  // write's own signal, which the timeout aborts. Marks due at one instant fire in set order.
+  // The fake clock also moves under retried assertions and the click, so the bound is read from
+  // event order on it: two marks set as the write starts and the abort of the write's signal.
+  // Marks due at one instant fire in set order. The mark at the bound cancels what is still
+  // scheduled, so the row shows only what had ended by then; React paints it a task later.
   const events: Array<string> = [];
   state.onWrite = (signal) => {
     setTimeout(() => {
       const busy = useCreditsOn("Birch").element().getAttribute("aria-busy") === "true";
       events.push(busy ? "9,999 ms: busy" : "9,999 ms: not busy");
     }, 9_999);
-    setTimeout(() => events.push("10,000 ms"), 10_000);
+    setTimeout(() => {
+      events.push("10,000 ms");
+      vi.clearAllTimers();
+    }, 10_000);
     signal.addEventListener("abort", () => events.push("write ended"));
   };
   await userEvent.click(useCreditsOn("Birch"));
   await vi.advanceTimersByTimeAsync(20_000);
 
   expect(events).toEqual(["9,999 ms: busy", "write ended", "10,000 ms"]);
-  // From here the clock is real again, so nothing still scheduled can end the write.
   vi.useRealTimers();
 
-  // The row is back on the server's actual value, with nothing beside it.
+  // By the bound the row was back on the server's actual value, with nothing beside it.
   await expect.element(useCreditsOn("Birch")).toBeEnabled();
   await expect.element(useCreditsOn("Birch")).not.toHaveAttribute("aria-busy");
   await expect.element(useCreditsOn("Birch")).toHaveAttribute("aria-checked", "true");
