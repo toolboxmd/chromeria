@@ -73,8 +73,6 @@ export interface HeldSite extends PreviewSiteHold {
   readonly tabId: string;
   /** When any covered tab last met a check on the site; a release needs a newer document. */
   metAt: number;
-  /** Responses on the site still being classified; a release waits until there are none. */
-  pending: number;
 }
 
 /**
@@ -83,6 +81,48 @@ export interface HeldSite extends PreviewSiteHold {
  */
 export class SiteHolds {
   private readonly holds = new Map<string, Map<string, HeldSite>>();
+  // Events are ordered by one counter, not the clock, so two in one millisecond keep their order.
+  private sequence = 0;
+  // When a person last ended a site's hold, by browser scope and by thread: a response that
+  // arrived before that is part of what the person dismissed.
+  private readonly cleared = new Map<string, number>();
+  // Responses that may be checks and are still being classified, whatever holds exist yet.
+  private readonly classifying = new Set<{
+    readonly scope: string;
+    readonly threadId: string;
+    readonly site: string;
+  }>();
+
+  /** A response that may be a check holds back every release on its site until it is classified. */
+  receive(scope: string, threadId: string, site: string) {
+    const entry = { scope, threadId, site };
+    this.classifying.add(entry);
+    return {
+      at: ++this.sequence,
+      done: () => {
+        this.classifying.delete(entry);
+      },
+    };
+  }
+
+  /** Whether a response received at `at` came before a person ended this site's hold. */
+  dismissed(scope: string, threadId: string, site: string, at: number) {
+    return (
+      at <
+      Math.max(
+        this.cleared.get(`${scope}|${site}`) ?? 0,
+        this.cleared.get(`thread:${threadId}|${site}`) ?? 0,
+      )
+    );
+  }
+
+  /** Whether a response that could hold this site again is still being classified. */
+  classifyingUnder(scope: string, hold: HeldSite) {
+    return [...this.classifying].some(
+      (each) =>
+        each.site === hold.site && (each.scope === scope || each.threadId === hold.threadId),
+    );
+  }
 
   get(scope: string, site: string | undefined): HeldSite | undefined {
     return site === undefined ? undefined : this.holds.get(scope)?.get(site);
@@ -126,11 +166,17 @@ export class SiteHolds {
     return true;
   }
 
-  clear(scope: string, hold: HeldSite): boolean {
+  /** Ends a hold; a person's clear also dismisses the responses received before it. */
+  clear(scope: string, hold: HeldSite, byPerson = false): boolean {
     const sites = this.holds.get(scope);
     if (sites?.get(hold.site) !== hold) return false;
     sites.delete(hold.site);
     if (sites.size === 0) this.holds.delete(scope);
+    if (byPerson) {
+      const at = ++this.sequence;
+      this.cleared.set(`${scope}|${hold.site}`, at);
+      this.cleared.set(`thread:${hold.threadId}|${hold.site}`, at);
+    }
     return true;
   }
 }

@@ -1401,7 +1401,7 @@ const make = Effect.gen(function* () {
         // A detached tab can still be cleared by the person.
         await authorize?.();
         for (const [scope, hold] of siteHolds.heldBy(tabId))
-          if (hold.threadId === threadId) siteHolds.clear(scope, hold);
+          if (hold.threadId === threadId) siteHolds.clear(scope, hold, true);
         await runPromise(
           manager
             .setSiteHold({ threadId: ThreadId.make(threadId), tabId, siteHold: undefined })
@@ -3463,36 +3463,26 @@ const make = Effect.gen(function* () {
     since,
   });
 
-  // When a person last ended each site's hold per browser scope: a response that arrived
-  // before that is part of what the person dismissed, so it cannot raise the hold again.
-  const clearedAt = new Map<string, number>();
-  /**
-   * A response that may be a check counts as pending on every hold it falls under until it
-   * is classified, so no release slips in meanwhile; only a real check moves the bar.
-   */
   const suspectCheck = (tab: ServerTab, url: string) => {
-    const at = Date.now();
     const site = siteOf(url);
-    const holds =
-      site === undefined ? [] : siteHolds.covering(siteHoldScope(tab), tab.threadId, site);
-    for (const hold of holds) hold.pending++;
-    return {
-      at,
-      done: () => {
-        for (const hold of holds) hold.pending--;
-      },
-    };
+    return site === undefined
+      ? { at: 0, done: () => {} }
+      : siteHolds.receive(siteHoldScope(tab), tab.threadId, site);
   };
 
   const raiseSiteHold = async (
     tab: ServerTab,
     verdict: NonNullable<ReturnType<typeof classifyAntiBotPage>>,
     url: string,
-    receivedAt = Date.now(),
+    receivedAt?: number,
   ) => {
     const site = siteOf(url);
     if (site === undefined || tab.closing) return;
-    if (receivedAt <= (clearedAt.get(`${siteHoldScope(tab)}|${site}`) ?? 0)) return;
+    if (
+      receivedAt !== undefined &&
+      siteHolds.dismissed(siteHoldScope(tab), tab.threadId, site, receivedAt)
+    )
+      return;
     // A check met again, by any tab or answer the hold covers, moves the bar for release.
     const metAt = Date.now();
     for (const covering of siteHolds.covering(siteHoldScope(tab), tab.threadId, site))
@@ -3505,7 +3495,6 @@ const make = Effect.gen(function* () {
       threadId: tab.threadId,
       tabId: tab.tabId,
       metAt,
-      pending: 0,
     };
     if (!siteHolds.create(siteHoldScope(tab), hold)) return;
     runFork(Effect.logInfo("Site hold raised", { site, vendor: hold.vendor, kind: hold.kind }));
@@ -3585,8 +3574,7 @@ const make = Effect.gen(function* () {
       if (how === "clear") {
         // The person's override needs nothing from the page, which may be stuck in a dialog.
         await authorize();
-        if (!siteHolds.clear(scope, hold)) continue;
-        clearedAt.set(`${scope}|${hold.site}`, Date.now());
+        if (!siteHolds.clear(scope, hold, true)) continue;
         runFork(Effect.logInfo("Site hold cleared", { site: hold.site, verified: false }));
         await showRemainingHold(tab, hold);
         continue;
@@ -3619,7 +3607,7 @@ const make = Effect.gen(function* () {
         // A check met again on a later document or by a same-site answer keeps the hold, and
         // so does a response another covered tab is still classifying.
         shown.startedAt > hold.metAt &&
-        hold.pending === 0 &&
+        !siteHolds.classifyingUnder(scope, hold) &&
         siteOf(tab.page.url()) === hold.site &&
         generation[0] === tab.navigationGeneration &&
         generation[1] === tab.control.generation;
@@ -3627,7 +3615,7 @@ const make = Effect.gen(function* () {
       // began classifying during the read keeps the hold.
       if (!verified) continue;
       await authorize();
-      if (hold.pending > 0 || shown.startedAt <= hold.metAt) continue;
+      if (siteHolds.classifyingUnder(scope, hold) || shown.startedAt <= hold.metAt) continue;
       if (!siteHolds.clear(scope, hold)) continue;
       runFork(Effect.logInfo("Site hold cleared", { site: hold.site, verified }));
       await showRemainingHold(tab, hold);

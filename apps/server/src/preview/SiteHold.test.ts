@@ -126,7 +126,6 @@ describe("SiteHolds.covering", () => {
       threadId,
       tabId,
       metAt: 0,
-      pending: 0,
     });
     const profile = hold("thread-a", "tab-1");
     const isolated = hold("thread-a", "tab-2");
@@ -137,5 +136,56 @@ describe("SiteHolds.covering", () => {
     expect(holds.covering("profile:default", "thread-a", "shop.test")).toEqual([profile, isolated]);
     expect(holds.covering("profile:work", "thread-c", "shop.test")).toEqual([other]);
     expect(holds.covering("profile:default", "thread-a", "other.test")).toEqual([]);
+  });
+});
+
+describe("SiteHolds ordering", () => {
+  const hold = (threadId: string, tabId: string) => ({
+    site: "shop.test",
+    vendor: "datadome" as const,
+    kind: "challenge" as const,
+    url: "https://shop.test/",
+    since: "2026-11-27T00:00:00.000Z",
+    threadId,
+    tabId,
+    metAt: 0,
+  });
+
+  it("holds back a release while a response from before the hold is still classified", () => {
+    const holds = new SiteHolds();
+    // B's headers arrive first; A's check is classified first and raises the hold.
+    const earlier = holds.receive("profile:default", "thread-a", "shop.test");
+    const held = hold("thread-a", "tab-a");
+    holds.create("profile:default", held);
+    expect(holds.classifyingUnder("profile:default", held)).toBe(true);
+    earlier.done();
+    expect(holds.classifyingUnder("profile:default", held)).toBe(false);
+    // The thread's isolated tab counts against the profile hold too.
+    const isolated = holds.receive("isolated:thread-a:tab-b", "thread-a", "shop.test");
+    expect(holds.classifyingUnder("profile:default", held)).toBe(true);
+    isolated.done();
+    expect(holds.classifyingUnder("profile:default", held)).toBe(false);
+  });
+
+  it("dismisses only responses received before a person's clear, in order not by clock", () => {
+    const holds = new SiteHolds();
+    const held = hold("thread-a", "tab-a");
+    holds.create("profile:default", held);
+    const before = holds.receive("profile:default", "thread-a", "shop.test");
+    const isolatedBefore = holds.receive("isolated:thread-a:tab-b", "thread-a", "shop.test");
+    holds.clear("profile:default", held, true);
+    const after = holds.receive("profile:default", "thread-a", "shop.test");
+    expect(holds.dismissed("profile:default", "thread-a", "shop.test", before.at)).toBe(true);
+    expect(
+      holds.dismissed("isolated:thread-a:tab-b", "thread-a", "shop.test", isolatedBefore.at),
+      "the thread's other tab dismissed it too",
+    ).toBe(true);
+    expect(holds.dismissed("profile:default", "thread-a", "shop.test", after.at)).toBe(false);
+    // A verified release is no person's dismissal.
+    const again = hold("thread-a", "tab-a");
+    holds.create("profile:default", again);
+    const pending = holds.receive("profile:default", "thread-a", "shop.test");
+    holds.clear("profile:default", again);
+    expect(holds.dismissed("profile:default", "thread-a", "shop.test", pending.at)).toBe(false);
   });
 });
