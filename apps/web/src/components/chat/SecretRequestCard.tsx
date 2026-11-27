@@ -1,15 +1,15 @@
 import { pipe } from "effect/Function";
 import {
+  SECRET_REQUEST_DEFAULT_PLACEHOLDER,
   secretRequestAnswerInput,
+  secretRequestComplete,
   secretRequestDisplay,
   secretRequestFailureMessage,
-  secretRequestInputs,
   secretRequestLink,
   secretRequestPrivacyNote,
   secretRequestReference,
   secretRequestSources,
-  secretRequestValue,
-  type SecretRequestInput,
+  secretRequestFields,
   type SecretRequestItem,
   type SecretRequestReply,
   type SecretRequestSource,
@@ -23,6 +23,7 @@ import {
   type EnvironmentId,
   type OrchestrationV2ProjectedTurnItem,
   type SecretProviderId,
+  type SecretRequestField as SecretRequestFieldInput,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { hasFeatureFlag } from "@t3tools/client-runtime/state/server";
@@ -108,22 +109,20 @@ function PendingSecretRequestForm(props: {
   const multiple = item.fields !== undefined;
   // A reference answers one value, so a card with fields is always typed.
   const configuredSources = useSecretRequestSources(props.environmentId);
-  const sources = multiple ? NO_SOURCES : configuredSources;
+  const sources = !multiple && item.destination === undefined ? configuredSources : NO_SOURCES;
   const [sourceId, setSourceId] = useState<SecretProviderId | null>(null);
   const source = sources.find((candidate) => candidate.id === sourceId) ?? null;
-  const [values, setValues] = useState<Readonly<Record<string, string>>>({});
   const [reference, setReference] = useState("");
+  const fields = secretRequestFields(item);
+  const inputId = (index: number) => `${formId}-${index}`;
+  const [values, setValues] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Enter and click can both submit before a render.
   const inFlight = useRef(false);
-  const inputs = secretRequestInputs(item, messages);
-  const inputId = (index: number) => `${formId}-${index}`;
   const describedBy = error !== null ? `${privacyId} ${errorId}` : privacyId;
   const canSave =
-    source === null
-      ? secretRequestAnswerInput(item, { type: "save", values }) !== null
-      : reference.trim().length > 0;
+    source === null ? secretRequestComplete(item, values) : reference.trim().length > 0;
 
   const send = async (reply: SecretRequestReply) => {
     const input = secretRequestAnswerInput(item, reply);
@@ -134,7 +133,7 @@ function PendingSecretRequestForm(props: {
     // A password field that leaves the page with text in it can prompt to save a login,
     // so the card is emptied before it closes; a failed answer puts the values back.
     const typed = values;
-    setValues({});
+    setValues(new Map());
     const result = await answer({ environmentId: props.environmentId, input }).finally(() => {
       inFlight.current = false;
       setSubmitting(false);
@@ -165,18 +164,19 @@ function PendingSecretRequestForm(props: {
   };
 
   const link = secretRequestLink(item);
-  const field = (input: SecretRequestInput, index: number) => (
+  const field = (input: SecretRequestFieldInput, index: number) => (
     <SecretRequestField
-      key={input.key}
+      key={input.name}
       id={inputId(index)}
-      input={input}
+      field={input}
       // A single input is labelled by the card title.
       label={multiple ? input.label : undefined}
-      value={secretRequestValue(values, input.key)}
+      placeholder={input.placeholder ?? messages(SECRET_REQUEST_DEFAULT_PLACEHOLDER)}
+      value={values.get(input.name) ?? ""}
       disabled={submitting}
       invalid={error !== null}
       describedBy={describedBy}
-      onChange={(value) => setValues((current) => ({ ...current, [input.key]: value }))}
+      onChange={(value) => setValues((current) => new Map(current).set(input.name, value))}
     />
   );
   const saveButton = (
@@ -198,11 +198,12 @@ function PendingSecretRequestForm(props: {
         if (!(event.target instanceof Element)) return;
         if (event.target.closest("input, button, a")) return;
         if (window.getSelection()?.isCollapsed === false) return;
-        const empty = inputs.findIndex((input) => !secretRequestValue(values, input.key).trim());
+        const empty = fields.findIndex((input) => !(values.get(input.name) ?? "").trim());
         document.getElementById(inputId(Math.max(empty, 0)))?.focus();
       }}
     >
       <div className="flex min-w-0 flex-col gap-1">
+        {/* With several fields, each input carries its own label. */}
         {multiple ? (
           <p className="text-sm font-medium text-foreground">{item.label}</p>
         ) : (
@@ -233,7 +234,7 @@ function PendingSecretRequestForm(props: {
         </div>
       ) : null}
       {multiple ? (
-        <div className="flex min-w-0 flex-col gap-2.5">{inputs.map(field)}</div>
+        <div className="flex min-w-0 flex-col gap-2.5">{fields.map(field)}</div>
       ) : (
         <div className="flex min-w-0 items-center gap-2">
           {sources.length > 0 ? (
@@ -250,7 +251,7 @@ function PendingSecretRequestForm(props: {
           ) : null}
           <div className="min-w-0 flex-1">
             {source === null ? (
-              inputs.map(field)
+              fields.map(field)
             ) : (
               <Input
                 id={inputId(0)}
@@ -306,28 +307,30 @@ function PendingSecretRequestForm(props: {
 
 function SecretRequestField(props: {
   readonly id: string;
-  readonly input: SecretRequestInput;
+  readonly field: SecretRequestFieldInput;
   readonly label: string | undefined;
+  readonly placeholder: string;
   readonly value: string;
   readonly disabled: boolean;
   readonly invalid: boolean;
   readonly describedBy: string;
   readonly onChange: (value: string) => void;
 }) {
-  const { input } = props;
+  const { field } = props;
   const gt = useGT();
   const [revealed, setRevealed] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const masked = input.secret && !revealed;
+  const secret = field.secret !== false;
+  const masked = secret && !revealed;
   const toggleRevealed = () => {
-    const field = inputRef.current;
-    const start = field?.selectionStart ?? null;
-    const end = field?.selectionEnd ?? null;
+    const element = inputRef.current;
+    const start = element?.selectionStart ?? null;
+    const end = element?.selectionEnd ?? null;
     flushSync(() => setRevealed((current) => !current));
     // After a click changes a focused input's type, Chromium moves the caret to the
     // start unless the new type is laid out before the selection is restored.
-    field?.getBoundingClientRect();
-    field?.setSelectionRange(start, end);
+    element?.getBoundingClientRect();
+    element?.setSelectionRange(start, end);
   };
   const control = (
     <InputGroup>
@@ -340,23 +343,24 @@ function SecretRequestField(props: {
         autoCorrect="off"
         autoCapitalize="off"
         spellCheck={false}
+        // Password managers otherwise offer to save or fill this field.
         data-1p-ignore
         data-lpignore="true"
         data-bwignore
-        placeholder={input.placeholder}
+        placeholder={props.placeholder}
         value={props.value}
         disabled={props.disabled}
         aria-invalid={props.invalid || undefined}
         aria-describedby={props.describedBy}
         onChange={(event) => props.onChange(event.currentTarget.value)}
       />
-      {input.secret ? (
+      {secret ? (
         <InputGroupAddon align="inline-end">
           <Button
             type="button"
             size="icon-xs"
             variant="ghost"
-            aria-label={gt("Show {label}", { label: input.label })}
+            aria-label={gt("Show {label}", { label: field.label })}
             aria-pressed={revealed}
             disabled={props.disabled}
             // Keep focus, and the caret, in the input.
