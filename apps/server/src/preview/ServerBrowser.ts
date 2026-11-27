@@ -3889,15 +3889,15 @@ const make = Effect.gen(function* () {
               // The site's turn lasts until the page loaded and any check on it is classified.
               await Promise.resolve(opened.initialNavigation).catch(constVoid);
               // It never spends the time the open needs to clean up a failed tab.
-              const turn = Math.max(
-                1,
-                Math.min(navigationTimeout, deadlineMs - performance.now()) / 2,
-              );
+              const turnEnds =
+                performance.now() +
+                Math.max(1, Math.min(navigationTimeout, deadlineMs - performance.now()) / 2);
+              const turn = () => Math.max(1, turnEnds - performance.now());
               if (url)
-                await opened.page.waitForLoadState("load", { timeout: turn }).catch(constVoid);
+                await opened.page.waitForLoadState("load", { timeout: turn() }).catch(constVoid);
               await Promise.race([
                 opened.siteHoldCheck,
-                new Promise((resolve) => setTimeout(resolve, turn)),
+                new Promise((resolve) => setTimeout(resolve, turn())),
               ]);
               return opened;
             },
@@ -3908,9 +3908,11 @@ const make = Effect.gen(function* () {
               "A browser dialog is pending. Read preview_status and use preview_dialog first.",
             reason: "dialogPending",
           });
-        return tab.control.agent(
+        let started = false;
+        const opening = tab.control.agent(
           request.agentSessionId,
           async () => {
+            started = true;
             if (tab.dialog)
               throw new BrowserControlInterrupted({
                 message:
@@ -3932,7 +3934,9 @@ const make = Effect.gen(function* () {
                     });
                   // A hold may have been raised while this open waited for the tab; navigate
                   // checks it right before the request leaves.
-                  await navigate(tab, url, "load", navigationTimeout, async () => {
+                  // The site wait used part of the request's time.
+                  const left = Math.max(1, Math.floor(deadlineMs - performance.now()));
+                  await navigate(tab, url, "load", Math.min(navigationTimeout, left), async () => {
                     await authorize();
                     // A person who took the tab and gave it back changed the page under it.
                     if (
@@ -4009,6 +4013,15 @@ const make = Effect.gen(function* () {
           deadlineMs,
           authorize,
         );
+        if (existing) return opening;
+        // A fresh tab whose open expired before it could start returns no tabId; close it.
+        return opening.catch(async (cause: unknown) => {
+          if (!started && tabs.get(tabKey(tab.threadId, tab.tabId)) === tab) {
+            await runPromise(manager.close({ threadId: tab.threadId, tabId: tab.tabId }));
+            dropTab(tab, false);
+          }
+          throw cause;
+        });
       }
       case "recordingStop": {
         if (
