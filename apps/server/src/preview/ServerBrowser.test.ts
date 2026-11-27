@@ -4236,6 +4236,8 @@ it.live("clearing a hold on a page still showing its check clears it", () =>
         ]),
       );
       yield* manager.adjust({ threadId: scope.thread.threadId, tabId, clear: "siteHold" });
+      // The dialog is answered; the agent acts again.
+      yield* broker.invoke({ scope, operation: "dialog", input: { accept: true }, tabId });
       expect(
         yield* broker.invoke({ scope, operation: "evaluate", input: { expression: "1" }, tabId }),
         "an omitted world stays the main world, even on a public page",
