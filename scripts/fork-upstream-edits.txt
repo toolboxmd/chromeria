@@ -822,8 +822,9 @@ packages/client-runtime/src/state/threads.ts
 # gh default-repo guard (#724), owned by fork-maintenance.
 scripts/setup-worktree.ts
 
-# Eval sample cap (#731), owned by eval-spend-cap.
+# Eval sample cap (#731) and eval cost docs (#1047), owned by eval-spend-cap.
 evals/README.md
+evals/pr-content/README.md
 evals/mcp-tool-use/README.md
 evals/mcp-tool-use/run.ts
 evals/mcp-tool-use/run.test.ts
