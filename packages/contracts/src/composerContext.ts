@@ -10,6 +10,7 @@ import {
   GuestShareId,
   NonNegativeInt,
   PositiveInt,
+  RuntimeRequestId,
   ThreadId,
   TrimmedNonEmptyString,
   TurnItemId,
@@ -311,10 +312,19 @@ export const GuestMessageAttribution = Schema.Struct({
 });
 export type GuestMessageAttribution = typeof GuestMessageAttribution.Type;
 
+/** Fork: marks T3 Code's wake about a descendant's pending request so clients can name that thread. */
+export const ChildRequestNoticeAttribution = Schema.Struct({
+  childThreadId: ThreadId,
+  requestId: RuntimeRequestId,
+  kind: Schema.Literals(["approval", "question"]),
+});
+export type ChildRequestNoticeAttribution = typeof ChildRequestNoticeAttribution.Type;
+
 /** Structured context riding on a user message. Undecodable records are dropped, not fatal. */
 export const OrchestrationMessageContext = Schema.Struct({
   version: Schema.Literal(1),
   guest: Schema.optional(GuestMessageAttribution),
+  childRequest: Schema.optional(ChildRequestNoticeAttribution),
   records: Schema.Array(Schema.Unknown)
     .check(
       Schema.isMaxLength(COMPOSER_CONTEXT_MAX_RECORDS),

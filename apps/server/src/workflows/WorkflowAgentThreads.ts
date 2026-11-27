@@ -298,7 +298,7 @@ const make = Effect.gen(function* () {
           return { ending, detail: run.status, reply: "" };
         }
         const records = yield* threads
-          .getThreadRecords(threadId, ["messages", "turnItems", "providerTurns"])
+          .getThreadRecords(threadId, ["messages", "turnItems", "providerTurns", "runs"])
           .pipe(Effect.mapError(failed("Could not read the turn's reply")));
         return {
           ending: "completed" as const,

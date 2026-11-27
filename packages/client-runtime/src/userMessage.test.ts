@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { ComposerContextId, GuestMessageId, ScheduledTaskId } from "@t3tools/contracts";
+import {
+  ComposerContextId,
+  GuestMessageId,
+  RuntimeRequestId,
+  ScheduledTaskId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerContextReferences";
 
 import {
+  resolveChildRequestNoticeState,
   resolveUserMessageFileCards,
   resolveUserMessageGrouping,
   resolveUserMessagePresentation,
@@ -215,6 +222,43 @@ describe("resolveUserMessagePresentation", () => {
         resolveUserMessagePresentation({ role: "user", createdBy: "agent", creationSource, text }),
       ).toMatchObject({ attribution: "agent" });
     }
+    // Fork: the descendant-request relay (childThreads/requestWake.ts) wakes ancestors as the system.
+    const wake = {
+      id: "child-request:thread:child:runtime-request:1:thread:parent",
+      role: "user",
+      creationSource: "server" as const,
+      text: "Descendant thread:child is waiting for an approval (runtime-request:1).",
+    };
+    expect(resolveUserMessagePresentation({ ...wake, createdBy: "system" })).toMatchObject({
+      attribution: "t3code",
+    });
+    // A client send is stamped as the user whatever source and id it claims.
+    expect(resolveUserMessagePresentation({ ...wake, createdBy: "user" })).toMatchObject({
+      attribution: null,
+    });
+    // A wake naming its child is that child's notice; the same claim from a client stays the user's.
+    const childRequest = {
+      childThreadId: ThreadId.make("thread:child"),
+      requestId: RuntimeRequestId.make("runtime-request:1"),
+      kind: "approval" as const,
+    };
+    const notice = { ...wake, context: { childRequest } };
+    expect(resolveUserMessagePresentation({ ...notice, createdBy: "system" })).toEqual({
+      text: wake.text,
+      attribution: "child",
+      scheduledTaskId: undefined,
+      childRequest,
+    });
+    expect(resolveUserMessagePresentation({ ...notice, createdBy: "user" })).toMatchObject({
+      attribution: null,
+    });
+    expect(
+      resolveUserMessageGrouping(
+        { ...notice, createdBy: "system" },
+        { role: "user", text: "hi" },
+        undefined,
+      ).groupedWithPrevious,
+    ).toBe(false);
   });
 
   it("recovers the triggering automation from older scheduler message ids", () => {
@@ -232,5 +276,37 @@ describe("resolveUserMessagePresentation", () => {
         scheduledTaskId: "task:daily-audit",
       });
     }
+  });
+});
+
+describe("resolveChildRequestNoticeState", () => {
+  const requestId = RuntimeRequestId.make("runtime-request:1");
+  const resolved = { kind: "command", status: "resolved" } as const;
+
+  it.each([
+    ["the child's shell still names it", { id: requestId }, undefined, "waiting"],
+    ["the child's detail is not loaded", null, undefined, "unknown"],
+    ["aged out of the child's loaded history", null, null, "settled"],
+    ["the shell names another request", { id: RuntimeRequestId.make("other") }, null, "settled"],
+    ["detail still pending", null, { kind: "command", status: "pending" }, "waiting"],
+    ["accepted", null, { ...resolved, decision: "accept" }, "approved"],
+    ["accepted for the session", null, { ...resolved, decision: "acceptForSession" }, "approved"],
+    ["accepted always", null, { ...resolved, decision: "acceptAlways" }, "approved"],
+    ["declined", null, { ...resolved, decision: "decline" }, "declined"],
+    ["cancelled by its answer", null, { ...resolved, decision: "cancel" }, "declined"],
+    ["resolved without a decision", null, resolved, "answered"],
+    ["a question resolved", null, { kind: "user_input", status: "resolved" }, "answered"],
+    [
+      "a question dismissed",
+      null,
+      { kind: "user_input", status: "resolved", decision: "cancel" },
+      "declined",
+    ],
+    ["expired", null, { kind: "command", status: "expired" }, "closed"],
+    ["cancelled", null, { kind: "user_input", status: "cancelled" }, "closed"],
+  ] as const)("%s", (_name, pendingRuntimeRequest, request, expected) => {
+    expect(resolveChildRequestNoticeState({ requestId, pendingRuntimeRequest, request })).toBe(
+      expected,
+    );
   });
 });
