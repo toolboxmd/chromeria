@@ -3234,7 +3234,7 @@ it.live("clipboard-write stays granted in a tab after another tab of its profile
           },
           tabId: second,
         }),
-      ).toBe("granted");
+      ).toMatchObject({ value: "granted" });
     }),
   ).pipe(Effect.provide(layer)),
 );
@@ -3287,8 +3287,8 @@ it.live(
         const [first, second] = yield* Effect.all([open(), open()], { concurrency: 2 });
         expect(sessions).toBe(2);
         expect(grants, "tabs opening together share one grant").toBe(1);
-        expect(yield* state(PreviewTabId.make(first.tabId!))).toBe("granted");
-        expect(yield* state(PreviewTabId.make(second.tabId!))).toBe("granted");
+        expect(yield* state(PreviewTabId.make(first.tabId!))).toMatchObject({ value: "granted" });
+        expect(yield* state(PreviewTabId.make(second.tabId!))).toMatchObject({ value: "granted" });
       }),
     ).pipe(Effect.provide(layer)),
 );
@@ -4342,7 +4342,7 @@ it.effect("an action that finished stays a success while a check it started is s
           operation: "evaluate",
           input: { expression: "submit()" },
         }),
-      ).toBe("submitted");
+      ).toMatchObject({ value: "submitted" });
     }),
   ).pipe(Effect.provide(layer)),
 );
