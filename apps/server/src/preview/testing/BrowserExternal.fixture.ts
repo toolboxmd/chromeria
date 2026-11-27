@@ -89,6 +89,7 @@ export function makeExternalBrowserContext(onClose?: (context: BrowserContext) =
         inputs.push({ method, params });
         await controls.afterInput(method);
       }
+      if (method === "Target.getTargetInfo") return { targetInfo: { browserContextId: "context" } };
       if (method === "Page.getLayoutMetrics") {
         await controls.beforeLayout();
         return { cssVisualViewport: { pageX: 0, pageY: 0 } };
@@ -203,7 +204,8 @@ export function makeExternalBrowserContext(onClose?: (context: BrowserContext) =
       await controls.beforeSession();
       return cdp;
     },
-    grantPermissions: async () => {},
+    // Permission overrides go through the browser's own session.
+    browser: () => ({ newBrowserCDPSession: async () => ({ send: async () => ({}) }) }),
     close: async () => {
       await page.close();
       onClose?.(context as unknown as BrowserContext);

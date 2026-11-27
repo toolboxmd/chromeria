@@ -9456,6 +9456,8 @@ it.live.each([
               buttons: 1,
               clickCount: index + 1,
               modifiers: 0,
+              // A pressed button carries a person's pressure.
+              force: 0.5,
             },
           })),
         );
@@ -9504,6 +9506,8 @@ it.live.each([
                 buttons: 31,
                 clickCount: 0,
                 modifiers: 0,
+                // A move with buttons held carries a person's pressure.
+                force: 0.5,
               },
             },
             {

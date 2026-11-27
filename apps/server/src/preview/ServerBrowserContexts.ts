@@ -3,7 +3,6 @@ import { INCOGNITO_BROWSER_PROFILE_ID } from "@t3tools/contracts";
 import { constVoid } from "effect/Function";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeModule from "node:module";
-import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import type { Browser, BrowserContext, CDPSession, Page } from "playwright-core";
 
@@ -63,9 +62,9 @@ interface CdpSession {
 }
 
 // The headless shell binds no BadgeService for service workers and kills the renderer of a
-// worker that calls navigator.setAppBadge. Playwright resumes each worker itself, so the stub
-// can only go in ahead of that resume through its in-process session; without it nothing is stubbed.
-const stubWorkerBadges = (client: Browser | BrowserContext) => {
+// worker that calls navigator.setAppBadge. Playwright resumes each child target itself, so
+// the stub and the identity can only go in ahead of that resume through its in-process session.
+const prepareChildTargets = (client: Browser | BrowserContext, identity: ChromeIdentity) => {
   const { _connection: connection } = client as unknown as {
     readonly _connection?: {
       readonly toImpl?: (
@@ -78,18 +77,33 @@ const stubWorkerBadges = (client: Browser | BrowserContext) => {
   const impl = connection?.toImpl?.(client);
   const root = impl?._browser?._session ?? impl?._session;
   if (!root) return;
-  const createChildSession = root.createChildSession.bind(root);
-  root.createChildSession = (...args) => {
-    const session = createChildSession(...args);
-    const send = session.send.bind(session);
-    session.send = (method, params) => {
-      if (method === "Runtime.runIfWaitingForDebugger") {
-        void send("Runtime.evaluate", { expression: BADGE_STUB }).catch(constVoid);
-      }
-      return send(method, params);
+  // Frames in other processes are children of their page's session, so every level is patched.
+  const patch = (parent: CdpSession) => {
+    const createChildSession = parent.createChildSession.bind(parent);
+    parent.createChildSession = (...args) => {
+      const session = createChildSession(...args);
+      const send = session.send.bind(session);
+      let identified = false;
+      const identify = () => void send("Network.setUserAgentOverride", identity).catch(constVoid);
+      session.send = (method, params) => {
+        // The launch flag gives these targets the user agent but clears its client hints.
+        // Shared workers take the override only ahead of their first command, service
+        // workers only once their Network domain is up, just before they resume.
+        if (!identified) {
+          identified = true;
+          identify();
+        }
+        if (method === "Runtime.runIfWaitingForDebugger") {
+          void send("Runtime.evaluate", { expression: BADGE_STUB }).catch(constVoid);
+          identify();
+        }
+        return send(method, params);
+      };
+      patch(session);
+      return session;
     };
-    return session;
   };
+  patch(root);
 };
 
 interface Options {
@@ -139,6 +153,24 @@ class ChromeVersionMismatchError extends Error {
   }
 }
 
+const GREASE_CHARACTERS = [" ", "(", ":", "-", ".", "/", ")", ";", "=", "?", "_"];
+const GREASE_VERSIONS = ["8", "99", "24"];
+/** Positions of the GREASE brand, Chromium and Google Chrome, chosen by the major version. */
+const BRAND_ORDERS = [
+  [0, 1, 2],
+  [0, 2, 1],
+  [1, 0, 2],
+  [1, 2, 0],
+  [2, 0, 1],
+  [2, 1, 0],
+].map((positions) => positions.map((_, index) => positions.indexOf(index)));
+
+/** Chrome's own GREASE brand for a major version (GetGreasedUserAgentBrandVersion). */
+export const greaseBrand = (major: number) => ({
+  brand: `Not${GREASE_CHARACTERS[major % 11]}A${GREASE_CHARACTERS[(major + 1) % 11]}Brand`,
+  version: GREASE_VERSIONS[major % 3]!,
+});
+
 /**
  * One identity for the `--user-agent` launch flag, which also reaches workers,
  * and the per-page override that adds matching `Sec-CH-UA`: sites block a user
@@ -146,21 +178,30 @@ class ChromeVersionMismatchError extends Error {
  */
 const chromeIdentity = (
   fullVersion: string,
-  host: { readonly platform: NodeJS.Platform; readonly arch: string; readonly release: string },
+  host: { readonly platform: NodeJS.Platform; readonly arch: string },
 ) => {
   const major = fullVersion.split(".", 1)[0]!;
-  const brands = (names: (version: string) => string) => [
-    { brand: "Chromium", version: names(major) },
-    { brand: "Google Chrome", version: names(major) },
-    { brand: "Not A(Brand", version: names("99") },
-  ];
+  const grease = greaseBrand(Number(major));
+  const brands = (names: (version: string) => string) => {
+    const list = [
+      { brand: grease.brand, version: names(grease.version) },
+      { brand: "Chromium", version: names(major) },
+      { brand: "Google Chrome", version: names(major) },
+    ];
+    // Chrome orders its brands by the major version, as in GenerateBrandVersionList.
+    const order = BRAND_ORDERS[Number(major) % BRAND_ORDERS.length]!;
+    return order.map((index) => list[index]!);
+  };
   return {
     userAgent: `Mozilla/5.0 (${REDUCED_UA_PLATFORMS[host.platform] ?? REDUCED_UA_PLATFORMS.linux}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`,
     userAgentMetadata: {
       brands: brands((value) => value),
       fullVersionList: brands((value) => (value === major ? fullVersion : `${value}.0.0.0`)),
+      fullVersion,
       platform: UA_PLATFORMS[host.platform] ?? "Unknown",
-      platformVersion: host.platform === "linux" ? host.release : "",
+      // A kernel release is not Chrome's platform version and would name the distribution.
+      platformVersion: "",
+      formFactors: ["Desktop"],
       architecture: host.arch.startsWith("arm") ? "arm" : "x86",
       bitness: host.arch.endsWith("64") ? "64" : "32",
       model: "",
@@ -235,10 +276,7 @@ export class ServerBrowserContexts {
 
   constructor(options: Options) {
     this.options = options;
-    this.identity = chromeIdentity(options.version, {
-      ...options.host,
-      release: NodeOS.release(),
-    });
+    this.identity = chromeIdentity(options.version, options.host);
   }
 
   private async launchOptions() {
@@ -291,7 +329,7 @@ export class ServerBrowserContexts {
         const browser = await this.launch(executable, (executablePath) =>
           chromium.launch({ ...options, executablePath }),
         );
-        stubWorkerBadges(browser);
+        prepareChildTargets(browser, this.identity);
         browser.on("disconnected", () => {
           if (this.browser === launched) this.browser = undefined;
         });
@@ -427,7 +465,7 @@ export class ServerBrowserContexts {
         await cdp.detach().catch(constVoid);
       }
       if (closed) throw new Error("The preview browser closed while it started.");
-      stubWorkerBadges(context);
+      prepareChildTargets(context, this.identity);
       return context;
     } catch (error) {
       this.endingContexts.add(context);

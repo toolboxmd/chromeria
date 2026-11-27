@@ -514,7 +514,7 @@ interface ViewerState {
   readonly id: string;
   readonly resourceViewerId: string | undefined;
   readonly canOperate: boolean;
-  readonly pressedKeys: Map<string, { key: string; code: string }>;
+  readonly pressedKeys: Map<string, { key: string; code: string; keyCode: number }>;
   readonly pressedButtons: Map<"left" | "middle" | "right", { x: number; y: number }>;
   /** Handle for the guarded select under a held left press; its release offers the menu. */
   selectPress: string | null;
@@ -1502,12 +1502,12 @@ const make = Effect.gen(function* () {
         ));
       await authorize();
       if (adopted?.page.isClosed()) throw new Error("The popup closed before it opened.");
-      // The desktop page already has its own clipboard.
-      if (!desktop) await prepareContext(context);
       await authorize();
       const page = (pendingPage = adopted?.page ?? desktop?.page ?? (await context.newPage()));
       await authorize();
       const cdp = (pendingCdp = await context.newCDPSession(page));
+      // The desktop page already has its own clipboard.
+      if (!desktop) await grantClipboardWrite(context, cdp);
       await installPdfDocumentNavigation(cdp);
       await authorize();
       // The desktop's page is already a normal browser. A popup's first request went out
@@ -2233,11 +2233,47 @@ const make = Effect.gen(function* () {
     );
   });
 
-  const preparedContexts = new WeakSet<BrowserContext>();
-  const prepareContext = async (context: BrowserContext) => {
-    if (preparedContexts.has(context)) return;
-    preparedContexts.add(context);
-    await context.grantPermissions(["clipboard-write"]);
+  // Only clipboard-write is granted: grantPermissions would show every other one as "denied".
+  // Chrome drops an override when its session detaches, so it is set on a session as long-lived
+  // as the context. Tabs opening together share one grant; a failed grant is retried.
+  const contextGrants = new WeakMap<BrowserContext, Promise<void>>();
+  const browserSessions = new WeakMap<object, Promise<CDPSession>>();
+  const grantClipboardWrite = (context: BrowserContext, cdp: CDPSession): Promise<void> => {
+    let grant = contextGrants.get(context);
+    if (!grant) {
+      grant = setClipboardWrite(context, cdp);
+      contextGrants.set(context, grant);
+      grant.catch(() => {
+        if (contextGrants.get(context) === grant) contextGrants.delete(context);
+      });
+    }
+    return grant;
+  };
+  const setClipboardWrite = async (context: BrowserContext, cdp: CDPSession) => {
+    const browser = context.browser();
+    const permission = { permission: { name: "clipboard-write" }, setting: "granted" } as const;
+    if (browser) {
+      const { targetInfo } = await cdp.send("Target.getTargetInfo");
+      let session = browserSessions.get(browser);
+      if (!session) {
+        session = browser.newBrowserCDPSession();
+        browserSessions.set(browser, session);
+        const created = session;
+        created.catch(() => {
+          if (browserSessions.get(browser) === created) browserSessions.delete(browser);
+        });
+      }
+      await (
+        await session
+      ).send("Browser.setPermission", {
+        ...permission,
+        ...(targetInfo.browserContextId ? { browserContextId: targetInfo.browserContextId } : {}),
+      });
+      return;
+    }
+    const reserved = await contexts.reservedPage(context);
+    const session = await context.newCDPSession(reserved);
+    await session.send("Browser.setPermission", permission);
   };
 
   /** Records the copies made in each frame a session reaches. */
@@ -4043,8 +4079,15 @@ const make = Effect.gen(function* () {
     });
 
   const releaseViewerInput = async (viewer: ViewerState, session: CDPSession) => {
-    for (const { key, code } of viewer.pressedKeys.values()) {
-      await session.send("Input.dispatchKeyEvent", { type: "keyUp", key, code }).catch(constVoid);
+    for (const { key, code, keyCode } of viewer.pressedKeys.values()) {
+      await session
+        .send("Input.dispatchKeyEvent", {
+          type: "keyUp",
+          key,
+          code,
+          windowsVirtualKeyCode: keyCode,
+        })
+        .catch(constVoid);
     }
     viewer.pressedKeys.clear();
     for (const [button, point] of viewer.pressedButtons) {
@@ -4151,6 +4194,8 @@ const make = Effect.gen(function* () {
             buttons: num(message.buttons),
             clickCount: num(message.clickCount, type === "mouseMoved" ? 0 : 1),
             modifiers,
+            // A pressed button has the W3C default pressure, as a mouse in Chrome reports.
+            ...(num(message.buttons) !== 0 || type === "mousePressed" ? { force: 0.5 } : {}),
           });
         } finally {
           if (guarded) {
@@ -4191,7 +4236,17 @@ const make = Effect.gen(function* () {
         const code = typeof message.code === "string" ? message.code : "";
         const text = typeof message.text === "string" ? message.text : undefined;
         if (message.action === "up") {
-          await session.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, modifiers });
+          await session.send("Input.dispatchKeyEvent", {
+            type: "keyUp",
+            key,
+            code,
+            modifiers,
+            // Pages read keyup.keyCode too; Chrome sends the same code as on keydown.
+            windowsVirtualKeyCode: num(
+              message.keyCode,
+              key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0,
+            ),
+          });
           viewer.pressedKeys.delete(code || key);
           return;
         }
@@ -4203,6 +4258,10 @@ const make = Effect.gen(function* () {
         if (copying)
           while (Date.now() <= tab.copyKeyedUntil) await sleepUntil(tab.copyKeyedUntil + 1);
         const since = Date.now();
+        const keyCode = num(
+          message.keyCode,
+          key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0,
+        );
         await authorize();
         await session.send("Input.dispatchKeyEvent", {
           type: text ? "keyDown" : "rawKeyDown",
@@ -4211,12 +4270,9 @@ const make = Effect.gen(function* () {
           modifiers,
           ...(text ? { text, unmodifiedText: text } : {}),
           ...command,
-          windowsVirtualKeyCode: num(
-            message.keyCode,
-            key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0,
-          ),
+          windowsVirtualKeyCode: keyCode,
         });
-        viewer.pressedKeys.set(code || key, { key, code });
+        viewer.pressedKeys.set(code || key, { key, code, keyCode });
         if (!copying) return;
         const until = Date.now();
         tab.copyKeyedUntil = until;
