@@ -712,9 +712,10 @@ it.each([
   await userEvent.click(useCreditsOn("Birch"));
 
   await expect.element(useCreditsOn("Birch")).toHaveAttribute("aria-busy", "true");
-  await vi.advanceTimersByTimeAsync(9_999);
+  // A retried assertion moves the fake clock, so the last second before the bound is left alone.
+  await vi.advanceTimersByTimeAsync(9_000);
   await expect.element(useCreditsOn("Birch")).toBeDisabled();
-  await vi.advanceTimersByTimeAsync(1);
+  await vi.advanceTimersByTimeAsync(1_000);
 
   // The row is back on the server's actual value, with nothing beside it.
   await expect.element(useCreditsOn("Birch")).toBeEnabled();
