@@ -3826,6 +3826,57 @@ it.live("a person who takes a fresh tab during its open keeps it", () =>
   ).pipe(Effect.provide(layer)),
 );
 
+it.live("a fresh public open that meets a challenge keeps its tab and hold for the person", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      // A Cloudflare challenge whose body never finishes, under a public name.
+      const server = NodeHttp.createServer((_, response) => {
+        response.writeHead(403, { "content-type": "text/html", "cf-mitigated": "challenge" });
+        response.write("<title>Just a moment...</title>");
+      });
+      yield* Effect.acquireRelease(
+        Effect.promise(() => new Promise<void>((done) => server.listen(0, "127.0.0.1", done))),
+        () =>
+          Effect.sync(() => {
+            server.closeAllConnections();
+            server.close();
+          }),
+      );
+      const port = (server.address() as { port: number }).port;
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          chromium.launch({
+            headless: true,
+            args: [`--host-resolver-rules=MAP shop.example.com 127.0.0.1:${port}`],
+          }),
+        ),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      realContextOverride = yield* Effect.promise(() => chromiumBrowser.newContext());
+      const broker = yield* Broker.PreviewAutomationBroker;
+      const manager = yield* Manager.PreviewManager;
+      yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: {
+            url: "http://shop.example.com/",
+            reuseExistingTab: false,
+            show: false,
+            profileId: "default",
+            timeoutMs: 3_000,
+          },
+        }),
+      );
+      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+      expect(
+        sessions.map((each) => each.siteHold?.site),
+        "the tab stays, holding the site",
+      ).toEqual(["example.com"]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live("a check another tab meets stops a same-site action queued behind it", () =>
   Effect.scoped(
     Effect.gen(function* () {
