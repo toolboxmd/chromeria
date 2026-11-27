@@ -915,3 +915,16 @@ apps/web/src/components/usage/UsageLimits.tsx
 apps/web/src/components/usage/UsageLimitsPooled.tsx
 apps/mobile/src/features/usage/UsageLimitsSection.tsx
 docs/user/usage.md
+
+# Two-server scenario pairing and readiness (#1041).
+scripts/scenarios/auto-machine-uses-destination-workspace.e2e.ts
+scripts/scenarios/dismissed-machine-clone-keeps-new-dialog.e2e.ts
+scripts/scenarios/github-closing-pr-after-first-page.e2e.ts
+scripts/scenarios/issues-retry-keeps-pending-environment.e2e.ts
+scripts/scenarios/machine-switch-keeps-selected-models.e2e.ts
+scripts/scenarios/machine-switch-reads-workspace-default.e2e.ts
+scripts/scenarios/mention-finds-older-linked-thread.e2e.ts
+scripts/scenarios/removed-environment-closes-its-toasts.e2e.ts
+scripts/scenarios/removing-environment-clears-permission-notice.e2e.ts
+scripts/scenarios/second-server.test.ts
+scripts/scenarios/second-server.ts

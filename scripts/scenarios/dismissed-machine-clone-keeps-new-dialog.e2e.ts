@@ -3,7 +3,7 @@
 import * as NodeHttp from "node:http";
 import { expect } from "e2e";
 
-import { startSecondServer } from "./second-server.ts";
+import { pairSecondServer, startSecondServer } from "./second-server.ts";
 import { test, WEB } from "./t3.ts";
 
 test(
@@ -81,13 +81,7 @@ test(
       const { host, token } = await second.ready;
       await browser.setViewport({ width: 1920, height: 1000 });
       await t3.open("/settings/connections");
-      await screen.getByRole("button", "Add environment").tap();
-      const pairing = screen.getByRole("dialog");
-      await pairing.getByPlaceholder("backend.example.com").fill(host);
-      await pairing.getByPlaceholder("PAIRCODE").fill(token);
-      await pairing.getByRole("button", "Add environment").tap();
-      await screen.getByRole("button", "List", { exact: true }).tap();
-      await screen.getByRole("button", "More actions for Scenario").waitFor();
+      await pairSecondServer(screen, { host, token });
 
       await app.open("/");
       const projectPicker = browser.locator("[data-draft-project-trigger]");

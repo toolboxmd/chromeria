@@ -304,7 +304,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "https://github.com/toolboxmd/chromeria/issues/963",
     "https://github.com/toolboxmd/chromeria/issues/965",
     "https://github.com/toolboxmd/chromeria/issues/969",
-    "https://github.com/toolboxmd/chromeria/issues/987"
+    "https://github.com/toolboxmd/chromeria/issues/987",
+    "https://github.com/toolboxmd/chromeria/issues/1041"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/9",
@@ -403,7 +404,18 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "apps/web/src/components/chat/HtmlRenderDialog.browser.test.tsx",
     "apps/desktop/src/app/DesktopCliShim.ts",
     "apps/desktop/src/app/DesktopCliShim.test.ts",
-    "packages/ssh/src/launcherTestHarness.ts"
+    "packages/ssh/src/launcherTestHarness.ts",
+    "scripts/scenarios/auto-machine-uses-destination-workspace.e2e.ts",
+    "scripts/scenarios/dismissed-machine-clone-keeps-new-dialog.e2e.ts",
+    "scripts/scenarios/github-closing-pr-after-first-page.e2e.ts",
+    "scripts/scenarios/issues-retry-keeps-pending-environment.e2e.ts",
+    "scripts/scenarios/machine-switch-keeps-selected-models.e2e.ts",
+    "scripts/scenarios/machine-switch-reads-workspace-default.e2e.ts",
+    "scripts/scenarios/mention-finds-older-linked-thread.e2e.ts",
+    "scripts/scenarios/removed-environment-closes-its-toasts.e2e.ts",
+    "scripts/scenarios/removing-environment-clears-permission-notice.e2e.ts",
+    "scripts/scenarios/second-server.test.ts",
+    "scripts/scenarios/second-server.ts"
   ],
   "sharedFiles": [],
   "keywords": [
