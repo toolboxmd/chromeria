@@ -981,7 +981,9 @@ const make = Effect.gen(function* () {
     tab.control.controller === null &&
     tab.viewers.size === 0 &&
     tab.watches.size === 0 &&
-    siteHolds.heldBy(tab.tabId).length === 0;
+    siteHolds.heldBy(tab.tabId).length === 0 &&
+    // A check still being read may be about to hold this tab for the person.
+    !siteHolds.classifyingOn(tab.tabId);
   const closedSessions = new Set<string>();
   let hostConnectionId: string | null = null;
   let viewerResizeOrder = 0;

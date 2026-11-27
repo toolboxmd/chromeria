@@ -212,6 +212,10 @@ describe("SiteHolds ordering", () => {
     holds.clear("profile:default", held, true);
     await changed;
     expect(holds.classifyingOn("tab-a")).toBe(false);
+    // A hold the clear left still waits for that response before a release.
+    const surviving = hold("thread-a", "tab-c");
+    holds.create("isolated:thread-a:tab-c", surviving);
+    expect(holds.classifyingUnder("isolated:thread-a:tab-c", surviving)).toBe(true);
     // A response after the clear is classified as usual.
     const later = holds.receive("profile:default", "thread-a", "shop.test", "tab-a");
     expect(holds.classifyingOn("tab-a")).toBe(true);

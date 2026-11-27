@@ -132,7 +132,10 @@ export class SiteHolds {
 
   /** Whether a response a tab received is still being classified, not dismissed or lapsed. */
   classifyingOn(tabId: string) {
-    return this.fencing().some((each) => each.tabId === tabId);
+    return this.fencing().some(
+      (each) =>
+        each.tabId === tabId && !this.dismissed(each.scope, each.threadId, each.site, each.at),
+    );
   }
 
   /** Resolves on the next change to what is being classified. */
@@ -220,10 +223,7 @@ export class SiteHolds {
       const at = ++this.sequence;
       this.cleared.set(`${scope}|${hold.site}`, at);
       this.cleared.set(`thread:${hold.threadId}|${hold.site}`, at);
-      // What the person dismissed no longer holds anything back.
-      for (const each of this.classifying)
-        if (this.dismissed(each.scope, each.threadId, each.site, each.at))
-          this.classifying.delete(each);
+      // What the person dismissed stops fencing actions; it still counts for other holds' releases.
       this.notify();
     }
     return true;
