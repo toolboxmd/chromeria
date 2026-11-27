@@ -3467,11 +3467,8 @@ const make = Effect.gen(function* () {
     if (site === undefined || tab.closing) return;
     // A check met again, by any tab or answer the hold covers, moves the bar for release.
     const metAt = Date.now();
-    for (const covering of [
-      siteHolds.get(siteHoldScope(tab), site),
-      siteHolds.forThread(tab.threadId, site),
-    ])
-      if (covering) covering.metAt = Math.max(covering.metAt, metAt);
+    for (const covering of siteHolds.covering(siteHoldScope(tab), tab.threadId, site))
+      covering.metAt = Math.max(covering.metAt, metAt);
     const hold: HeldSite = {
       site,
       ...verdict,
@@ -3556,7 +3553,19 @@ const make = Effect.gen(function* () {
     authorize: () => Promise<void> = async () => {},
   ) => {
     for (const [scope, hold] of siteHolds.heldBy(tab.tabId)) {
-      await tab.siteHoldCheck;
+      // Every tab the hold covers may be classifying a check met again; all of them finish first.
+      for (;;) {
+        const pending = [...tabs.values()]
+          .filter((each) => siteHoldScope(each) === scope || each.threadId === hold.threadId)
+          .map((each) => each.siteHoldCheck);
+        await Promise.all(pending);
+        if (
+          [...tabs.values()]
+            .filter((each) => siteHoldScope(each) === scope || each.threadId === hold.threadId)
+            .every((each) => pending.includes(each.siteHoldCheck))
+        )
+          break;
+      }
       // Only a document on the held site that loaded after the check, with a status vendors
       // never give a check (2xx, 3xx), is verified clean; a navigation or control change
       // during the read makes the result stale.

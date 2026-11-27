@@ -96,6 +96,14 @@ export class SiteHolds {
     return undefined;
   }
 
+  /** Every hold on the site that a tab in this scope and thread falls under. */
+  covering(scope: string, threadId: string, site: string): ReadonlyArray<HeldSite> {
+    return [...this.holds].flatMap(([each, sites]) => {
+      const hold = sites.get(site);
+      return hold && (each === scope || hold.threadId === threadId) ? [hold] : [];
+    });
+  }
+
   heldBy(tabId: string): ReadonlyArray<readonly [scope: string, hold: HeldSite]> {
     return [...this.holds].flatMap(([scope, sites]) =>
       [...sites.values()]

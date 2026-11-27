@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { classifyAntiBotPage, siteOf } from "./SiteHold.ts";
+import { classifyAntiBotPage, SiteHolds, siteOf } from "./SiteHold.ts";
 
 const page = (status: number, html: string, headers: Record<string, string> = {}) =>
   classifyAntiBotPage({ status, headers, html });
@@ -111,5 +111,30 @@ describe("siteOf", () => {
     expect(siteOf("https://shop.example.co.uk/")).toBe("example.co.uk");
     expect(siteOf("http://127.0.0.1:3000/")).toBe("127.0.0.1");
     expect(siteOf("about:blank")).toBeUndefined();
+  });
+});
+
+describe("SiteHolds.covering", () => {
+  it("finds every hold a tab falls under, by scope or by thread", () => {
+    const holds = new SiteHolds();
+    const hold = (threadId: string, tabId: string) => ({
+      site: "shop.test",
+      vendor: "datadome" as const,
+      kind: "challenge" as const,
+      url: "https://shop.test/",
+      since: "2026-11-27T00:00:00.000Z",
+      threadId,
+      tabId,
+      metAt: 0,
+    });
+    const profile = hold("thread-a", "tab-1");
+    const isolated = hold("thread-a", "tab-2");
+    const other = hold("thread-b", "tab-3");
+    holds.create("profile:default", profile);
+    holds.create("isolated:thread-a:tab-2", isolated);
+    holds.create("profile:work", other);
+    expect(holds.covering("profile:default", "thread-a", "shop.test")).toEqual([profile, isolated]);
+    expect(holds.covering("profile:work", "thread-c", "shop.test")).toEqual([other]);
+    expect(holds.covering("profile:default", "thread-a", "other.test")).toEqual([]);
   });
 });
