@@ -46,6 +46,21 @@ if (!projectRoot) {
   throw new Error("T3CODE_PROJECT_ROOT is not set. Run this through the t3.json setup action.");
 }
 
+// Without a default repo, gh resolves to upstream and files Issues/PRs
+// publicly there. Pin the fork default when gh is present and authenticated;
+// a missing gh must never fail setup.
+try {
+  const auth = NodeChildProcess.spawnSync("gh", ["auth", "status"], { stdio: "ignore" });
+  if (!auth.error && auth.status === 0) {
+    NodeChildProcess.spawnSync("gh", ["repo", "set-default", "toolboxmd/chromeria"], {
+      cwd: worktree,
+      stdio: "ignore",
+    });
+  }
+} catch {
+  // gh is missing or unusable; leave the default unset.
+}
+
 // Use the shell for Windows vp shims. Unattended installs need pnpm's confirmation
 // flag and closed stdin so other prompts fail. A stale lockfile must fail, not be rewritten.
 // Pipe output so the failure marker can keep its tail.

@@ -1,0 +1,61 @@
+name: Merge reviewed PR
+
+on:
+  status:
+  # GitHub can suppress check_run events on heads associated with Actions.
+  schedule:
+    - cron: "8,23,38,53 * * * *"
+  check_run:
+    types: [completed]
+  workflow_run:
+    workflows:
+      - Agent Context Budget
+      - CI
+      - Clean up relay preview
+      - Deploy relay preview
+      - Desktop macOS Preview
+      - Desktop macOS Preview Publish
+      - Fork
+      - Mobile Dev Client
+      - Mobile EAS Preview
+      - Mobile EAS Preview (Fork)
+      - Mobile Fingerprint Check
+      - PR Limits
+      - PR Size
+      - PR Vouch
+      - Web Preview
+    types: [completed]
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+  statuses: read
+
+jobs:
+  merge:
+    if: >-
+      github.repository == 'toolboxmd/chromeria' &&
+      (github.event_name != 'workflow_run' ||
+       startsWith(github.event.workflow_run.event, 'pull_request'))
+    environment:
+      name: reviewed-merge
+      deployment: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Read the trusted merge gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -H 'Accept: application/vnd.github.raw+json' \
+            'repos/toolboxmd/chromeria/contents/.github/scripts/merge-reviewed.cjs?ref=refs/heads/main' \
+            > "$RUNNER_TEMP/merge-reviewed.cjs"
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          MERGE_TOKEN: ${{ secrets.CHROMERIA_MERGE_TOKEN }}
+        with:
+          script: |
+            const { reconcile } = require(process.env.RUNNER_TEMP + "/merge-reviewed.cjs");
+            await reconcile({ github, context, core });

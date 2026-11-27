@@ -1,7 +1,7 @@
 import { expect } from "e2e";
 import * as Effect from "effect/Effect";
 
-import { SECOND_HOME, startSecondServer } from "./second-server.ts";
+import { SECOND_HOME, pairSecondServer, startSecondServer } from "./second-server.ts";
 import { run } from "./shell.ts";
 import { makeState, rpcClient, runPromise, test, WEB } from "./t3.ts";
 
@@ -34,11 +34,7 @@ test(
       await screen.getByRole("textbox").fill("Plan the next change");
       const draftPath = new URL(await browser.url()).pathname;
       await app.open("/settings/connections");
-      await screen.getByRole("button", "Add environment").tap();
-      const dialog = screen.getByRole("dialog");
-      await dialog.getByPlaceholder("backend.example.com").fill(host);
-      await dialog.getByPlaceholder("PAIRCODE").fill(token);
-      await dialog.getByRole("button", "Add environment").tap();
+      await pairSecondServer(screen, { host, token });
 
       await screen.getByRole("switch", "Automatically balance load").tap();
       await screen.getByRole("button", /^Load balancing/).tap();

@@ -10,8 +10,9 @@ import * as Schema from "effect/Schema";
 import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 
 import { APP_DIR, T3_HOME } from "../e2e.config.ts";
+import { pairSecondServer } from "./second-server.ts";
 import { run, ScenarioError } from "./shell.ts";
-import { prepareHome, start } from "./start-app.ts";
+import { prepareHome, SCENARIO_MACHINE_ENV, start } from "./start-app.ts";
 import { makeState, runPromise, test, WEB } from "./t3.ts";
 
 const HOST = "github.scenario.invalid";
@@ -133,6 +134,7 @@ function startFixtureServer(webOrigin: string) {
           GH_HOST: HOST,
           GH_ENTERPRISE_TOKEN: "scenario-only-token",
           T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "0",
+          ...SCENARIO_MACHINE_ENV,
         },
         onLine: (line) => {
           const value = /^Token:\s*(\S+)/.exec(line)?.[1];
@@ -193,12 +195,7 @@ test(
       });
 
       await t3.open("/settings/connections");
-      await screen.getByRole("button", "Add environment").tap();
-      const dialog = screen.getByRole("dialog");
-      await dialog.getByPlaceholder("backend.example.com").fill(origin);
-      await dialog.getByPlaceholder("PAIRCODE").fill(token);
-      await dialog.getByRole("button", "Add environment").tap();
-      await screen.getByRole("button", "More actions for Scenario").waitFor();
+      await pairSecondServer(screen, { host: origin, token });
       await app.open(`/issues?${link}`);
 
       await screen.getByRole("button", /Fix release check 20/).waitFor();

@@ -4,7 +4,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import { T3_HOME } from "../e2e.config.ts";
-import { SECOND_HOME, startSecondServer } from "./second-server.ts";
+import { SECOND_HOME, pairSecondServer, startSecondServer } from "./second-server.ts";
 import { run } from "./shell.ts";
 import { makeState, runPromise, test, WEB } from "./t3.ts";
 
@@ -49,16 +49,7 @@ test(
       await runPromise(second.cli(["project", "add", workspace, "--title", "demo"]));
 
       await t3.open("/settings/connections");
-      await screen.getByRole("button", "Add environment").tap();
-      const dialog = screen.getByRole("dialog");
-      await dialog.getByPlaceholder("backend.example.com").fill(host);
-      await dialog.getByPlaceholder("PAIRCODE").fill(token);
-      await dialog.getByRole("button", "Add environment").tap();
-      // The map is the default view; its rows carry no actions menu.
-      await screen.getByRole("button", "List", { exact: true }).tap();
-      await expect(screen.getByRole("button", "More actions for Scenario")).toBeVisible({
-        timeout: 60_000,
-      });
+      await pairSecondServer(screen, { host, token });
       await app.open("/");
       // Shift adds a model to the draft instead of replacing it.
       await screen.getByRole("button", "Showcase", { exact: false }).first().tap();

@@ -2,7 +2,7 @@
 import type { IssueListResult } from "@t3tools/contracts";
 import { expect } from "e2e";
 
-import { SECOND_HOME, startSecondServer } from "./second-server.ts";
+import { SECOND_HOME, pairSecondServer, startSecondServer } from "./second-server.ts";
 import { makeState, test, WEB } from "./t3.ts";
 
 test(
@@ -115,12 +115,7 @@ test(
       }, new URL(host).host);
 
       await t3.open("/settings/connections");
-      await screen.getByRole("button", "Add environment").tap();
-      const dialog = screen.getByRole("dialog");
-      await dialog.getByPlaceholder("backend.example.com").fill(host);
-      await dialog.getByPlaceholder("PAIRCODE").fill(token);
-      await dialog.getByRole("button", "Add environment").tap();
-      await screen.getByRole("button", "More actions for Scenario").waitFor({ timeout: 60_000 });
+      await pairSecondServer(screen, { host, token });
       await app.open("/issues");
 
       await screen.getByText("Before refresh", { exact: true }).waitFor({ timeout: 60_000 });

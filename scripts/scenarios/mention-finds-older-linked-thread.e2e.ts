@@ -6,7 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { T3_HOME } from "../e2e.config.ts";
-import { SECOND_HOME, startSecondServer } from "./second-server.ts";
+import { SECOND_HOME, pairSecondServer, startSecondServer } from "./second-server.ts";
 import { makeState, rpcClient, runPromise, test, WEB } from "./t3.ts";
 
 // A shell keeps an environment's 25 newest settled threads; older ones come from search.
@@ -77,14 +77,7 @@ test(
       await runPromise(settle(SECOND_HOME, host, threadIds));
 
       await t3.open("/settings/connections");
-      await screen.getByRole("button", "Add environment").tap();
-      const dialog = screen.getByRole("dialog");
-      await dialog.getByPlaceholder("backend.example.com").fill(host);
-      await dialog.getByPlaceholder("PAIRCODE").fill(token);
-      await dialog.getByRole("button", "Add environment").tap();
-      await expect(screen.getByRole("button", "More actions for Scenario")).toBeVisible({
-        timeout: 60_000,
-      });
+      await pairSecondServer(screen, { host, token });
 
       await t3.open(current);
       await screen.getByRole("textbox").fill("@Ancient");

@@ -2,19 +2,40 @@
 // agent, and a pairing token for Settings > Connections > Add environment.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { waitForHttpReady } from "@t3tools/shared/httpReadiness";
 import * as NetService from "@t3tools/shared/Net";
+import type { TestFixtures } from "e2e";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Path from "effect/Path";
+import { FetchHttpClient } from "effect/http";
 
 import { APP_DIR, T3_HOME } from "../e2e.config.ts";
 import { ScenarioError } from "./shell.ts";
 import { prepareHome, SCENARIO_MACHINE_ENV, start } from "./start-app.ts";
 
 export const SECOND_HOME = `${T3_HOME}-second-environment`;
+
+export async function pairSecondServer(
+  screen: TestFixtures["screen"],
+  { host, token }: { readonly host: string; readonly token: string },
+) {
+  const add = screen.getByRole("button", "Add environment", { exact: true });
+  await add.waitFor({ timeout: 60_000 });
+  await add.tap();
+  const dialog = screen.getByRole("dialog", "Add Environment", { exact: true });
+  await dialog.getByPlaceholder("backend.example.com").fill(host);
+  await dialog.getByPlaceholder("PAIRCODE").fill(token);
+  await dialog.getByRole("button", "Add environment", { exact: true }).tap();
+  await dialog.waitFor({ state: "hidden" });
+  await screen.getByRole("button", "List", { exact: true }).tap();
+  const actions = screen.getByRole("button", "More actions for Scenario", { exact: true });
+  await actions.waitFor({ timeout: 60_000 });
+  return actions;
+}
 
 /** A second server on its own T3 home, running until interrupted. `--dev-url` admits the web
  * origin through CORS and registers the replay agent; `paired` gets the Add environment input. */
@@ -54,17 +75,25 @@ const runSecondServer = Effect.fn("scenario.secondServer")(function* (
       return value === undefined ? Effect.void : Deferred.succeed(token, value).pipe(Effect.asVoid);
     },
   });
-  // A server that exits before printing its token never will: fail instead of waiting forever.
+  // The CLI can print the token before the environment endpoint is ready.
   const exited = server.exitCode.pipe(
     Effect.flatMap(
       (code) =>
         new ScenarioError({ message: `The second server exited with code ${code} at startup.` }),
     ),
   );
-  paired({
-    host: `http://127.0.0.1:${port}`,
-    token: yield* Effect.raceFirst(Deferred.await(token), exited),
+  const host = `http://127.0.0.1:${port}`;
+  const ready = Effect.gen(function* () {
+    const credential = yield* Deferred.await(token);
+    yield* waitForHttpReady({
+      baseUrl: host,
+      path: "/.well-known/t3/environment",
+      makeError: ({ requestUrl }) =>
+        new ScenarioError({ message: `The second server did not become ready at ${requestUrl}.` }),
+    });
+    return { host, token: credential };
   });
+  paired(yield* Effect.raceFirst(ready, exited));
   return yield* Effect.never;
 });
 
@@ -74,7 +103,7 @@ export function startSecondServer(devUrl: string) {
   const server = Effect.runFork(
     runSecondServer(devUrl, pairing.resolve).pipe(
       Effect.scoped,
-      Effect.provide([NodeServices.layer, NetService.layer]),
+      Effect.provide([NodeServices.layer, NetService.layer, FetchHttpClient.layer]),
     ),
   );
   server.addObserver((exit) =>

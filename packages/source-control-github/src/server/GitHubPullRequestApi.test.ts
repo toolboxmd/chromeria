@@ -257,6 +257,42 @@ const rowDefaults = {
   commits: { nodes: [] },
 };
 
+/** A linked pull request's summary fields, as every host answers them. */
+const summaryNode = (number: number) => ({
+  number,
+  title: `Pull request ${number}`,
+  url: `https://github.com/acme/web/pull/${number}`,
+  author: {
+    __typename: "User",
+    login: "octocat",
+    name: "Octo Cat",
+    avatarUrl: "https://avatars.githubusercontent.com/u/1",
+  },
+  baseRefName: "main",
+  headRefName: `feat/${number}`,
+  state: "OPEN",
+  isDraft: false,
+  mergeable: "MERGEABLE",
+  reviewDecision: null,
+  latestReviews: {
+    nodes: [
+      {
+        state: "APPROVED",
+        isMinimized: false,
+        author: { __typename: "User", login: "reviewer" },
+      },
+    ],
+  },
+  additions: 12,
+  deletions: 3,
+  changedFiles: 2,
+  updatedAt: "2026-08-24T12:34:56.000Z",
+  mergedAt: null,
+  closedAt: null,
+  commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }] },
+});
+
+/** A connection's page info with no next page, as GitHub sends it: the cursor is always there. */
 const lastPage = { hasNextPage: false, endCursor: null };
 
 function rows(
@@ -499,6 +535,26 @@ function searchPage(nodes: ReadonlyArray<unknown>, hasNextPage = false) {
 
 const searchQueryOfCall = searchOfCall;
 
+/**
+ * Answers the way GitHub Enterprise Server does. Its schema has no pull request stacks, and it
+ * validates the whole document before `@include` applies, so a document that names `stack` fails
+ * with errors and no data even where `@include(if: false)` would skip the field.
+ */
+function answerAsEnterpriseServer(body: (call: ApiCall) => string): void {
+  mockedExecute.mockImplementation((call) =>
+    Effect.succeed(
+      output(
+        call.kind === "graphql" && /\bstack(Entry)?\b/.test(call.query)
+          ? encodeJson({
+              errors: [{ message: "Field 'stack' doesn't exist on type 'PullRequest'" }],
+            })
+          : body(call),
+      ),
+    ),
+  );
+}
+
+/** Whether a request is the GraphQL operation `needle` names, or its document or path holds it. */
 function matches(call: ApiCall, needle: string): boolean {
   return call.kind === "graphql"
     ? call.operationName === needle || call.query.includes(needle)
@@ -512,13 +568,29 @@ function route(...routes: ReadonlyArray<readonly [needle: string, body: unknown]
       output(
         match !== undefined
           ? encodeJson(match[1])
-          : call.kind === "graphql" && call.query.startsWith("mutation ")
-            ? encodeJson(mutationAnswer(call.query))
-            : "{}",
+          : call.kind === "graphql" &&
+              (call.operationName === "PullRequestCheckContexts" ||
+                call.query.includes("PullRequestCheckContexts"))
+            ? encodeJson(emptyCheckContexts)
+            : call.kind === "graphql" && call.query.startsWith("mutation ")
+              ? encodeJson(mutationAnswer(call.query))
+              : "{}",
       ),
     );
   });
 }
+
+/** No contexts: repos without CI, and fixtures that never stub checks, stay mergeable. */
+const emptyCheckContexts = {
+  data: {
+    repository: {
+      pullRequest: {
+        headRefOid: "abc123",
+        commits: { nodes: [{ commit: { statusCheckRollup: null } }] },
+      },
+    },
+  },
+};
 
 function mutationAnswer(query: string) {
   const root = /\)\{(\w+)(?:\(|\{|@)/.exec(query)?.[1];
@@ -1231,37 +1303,9 @@ layer("GitHubPullRequestApi.layer", (it) => {
   it.effect("reads linked pull requests on one host together, filed back by position", () =>
     Effect.gen(function* () {
       const node = (number: number) => ({
-        number,
-        title: `Pull request ${number}`,
-        url: `https://github.com/acme/web/pull/${number}`,
-        author: {
-          __typename: "User",
-          login: "octocat",
-          name: "Octo Cat",
-          avatarUrl: "https://avatars.githubusercontent.com/u/1",
-        },
-        baseRefName: "main",
-        headRefName: `feat/${number}`,
-        state: "OPEN",
-        isDraft: false,
-        mergeable: "MERGEABLE",
-        reviewDecision: null,
-        latestReviews: {
-          nodes: [
-            {
-              state: "APPROVED",
-              isMinimized: false,
-              author: { __typename: "User", login: "reviewer" },
-            },
-          ],
-        },
-        additions: 12,
-        deletions: 3,
-        changedFiles: 2,
-        updatedAt: "2026-08-24T12:34:56.000Z",
-        mergedAt: null,
-        closedAt: null,
-        commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }] },
+        ...summaryNode(number),
+        stack: null,
+        stackEntry: null,
       });
       mockedExecute.mockReturnValueOnce(
         Effect.succeed(
@@ -1269,7 +1313,13 @@ layer("GitHubPullRequestApi.layer", (it) => {
             encodeJson({
               data: {
                 _0_repository: { pullRequest: node(7) },
-                _1_repository: { pullRequest: node(8) },
+                _1_repository: {
+                  pullRequest: {
+                    ...node(8),
+                    stack: { number: 3, size: 2, baseRefName: "main" },
+                    stackEntry: { position: 2 },
+                  },
+                },
               },
             }),
           ),
@@ -1314,6 +1364,10 @@ layer("GitHubPullRequestApi.layer", (it) => {
         },
       );
       assert.strictEqual(eight?.headBranch, "feat/8");
+      // github.com was asked for stacks in the same read, and answered that #7 is in none.
+      assert.strictEqual(seven?.stack, null);
+      expect(eight?.stack).toEqual({ number: 3, size: 2, base: "main", position: 2 });
+      expect(mockedStackMemberships).not.toHaveBeenCalled();
       expect(mockedExecute).toHaveBeenCalledOnce();
       expect(queryAt(0)).toContain(
         "_0_repository:repository(owner:$_0_owner name:$_0_name){pullRequest(number:$_0_number)",
@@ -1322,9 +1376,45 @@ layer("GitHubPullRequestApi.layer", (it) => {
         _0_owner: "acme",
         _0_name: "web",
         _0_number: 7,
-        _0_stacks: true,
         _1_number: 8,
       });
+    }),
+  );
+
+  it.effect("reads a linked pull request on an Enterprise host, whose schema has no stacks", () =>
+    Effect.gen(function* () {
+      answerAsEnterpriseServer(() =>
+        encodeJson({
+          data: {
+            _0_repository: { pullRequest: summaryNode(7) },
+            _1_repository: { pullRequest: summaryNode(8) },
+          },
+        }),
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+
+      const read = yield* Effect.forEach(
+        [7, 8],
+        (number) =>
+          cli.getPullRequestSummary({
+            cwd: "/w",
+            repository: "acme/web",
+            host: "github.acme.test",
+            number,
+          }),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.forkChild);
+      yield* TestClock.adjust("10 millis");
+      const summaries = yield* Fiber.join(read);
+
+      expect(summaries.map((summary) => [summary.number, summary.headBranch])).toEqual([
+        [7, "feat/7"],
+        [8, "feat/8"],
+      ]);
+      for (const summary of summaries) expect(summary).not.toHaveProperty("stack");
+      expect(mockedExecute).toHaveBeenCalledOnce();
+      expect(callAt(0).host).toBe("github.acme.test");
+      expect(mockedStackMemberships).not.toHaveBeenCalled();
     }),
   );
 
@@ -1964,6 +2054,90 @@ layer("GitHubPullRequestApi.layer", (it) => {
     }),
   );
 
+  it.effect.each(["listing", "search"] as const)(
+    "reads the Enterprise %s when its schema has no stacks",
+    (read) =>
+      Effect.gen(function* () {
+        answerAsEnterpriseServer(() => pullRequests(1, 7));
+        const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+        const input = {
+          cwd: "/w",
+          host: "github.acme.test",
+          state: "open" as const,
+          involvement: "all" as const,
+          viewer: "bilal",
+          limit: 2,
+        };
+
+        const batch = yield* read === "listing"
+          ? cli.listPullRequests({ ...input, repository: "acme/web" })
+          : cli.searchPullRequests({ ...input, repositories: ["acme/web"] });
+
+        expect(batch.items.map((item) => [item.number, item.headBranch])).toEqual([
+          [7, "feat/page"],
+        ]);
+        expect(batch.items[0]).not.toHaveProperty("stack");
+        expect(mockedExecute).toHaveBeenCalledOnce();
+        expect(callAt(0).host).toBe("github.acme.test");
+        expect(mockedStackMemberships).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect("lists an Enterprise repository outside the search index without cloud fields", () =>
+    Effect.gen(function* () {
+      answerAsEnterpriseServer((call) =>
+        matches(call, "PullRequestList") ? listedPullRequests(1, 7) : emptySearch().body,
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      const listed = yield* cli.listPullRequests({
+        cwd: "/w",
+        repository: "acme/web",
+        host: "github.acme.test",
+        state: "open",
+        involvement: "all",
+        viewer: "bilal",
+        limit: 2,
+      });
+
+      expect(listed.items.map((item) => item.number)).toEqual([7]);
+      expect(listed.items[0]).not.toHaveProperty("stack");
+      expect(listed.continues).toBe(false);
+      expect(mockedExecute).toHaveBeenCalledTimes(2);
+      expect(mockedStackMemberships).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect("reads each row's stack in the github.com search itself", () =>
+    Effect.gen(function* () {
+      mockedExecute.mockReturnValue(
+        Effect.succeed(
+          searchPage([
+            {
+              ...searchItem(7, "acme/web", "2026-07-03T00:00:00Z"),
+              stack: { number: 3, size: 2, baseRefName: "main" },
+              stackEntry: { position: 1 },
+            },
+          ]),
+        ),
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+
+      const batch = yield* cli.searchPullRequests({
+        cwd: "/w",
+        host: "github.com",
+        repositories: ["acme/web"],
+        state: "open",
+        involvement: "all",
+        viewer: "bilal",
+        limit: 10,
+      });
+
+      expect(batch.items[0]?.stack).toEqual({ number: 3, size: 2, base: "main", position: 1 });
+      expect(mockedExecute).toHaveBeenCalledOnce();
+      expect(mockedStackMemberships).not.toHaveBeenCalled();
+    }),
+  );
+
   it.effect("reads the line counts in chunks, and files them back by position", () =>
     Effect.gen(function* () {
       const changeRequests = Array.from({ length: 26 }, (_, index) => ({
@@ -2532,8 +2706,8 @@ layer("GitHubPullRequestApi.layer", (it) => {
           autoMergeEnabled: queued,
           ...(queued ? { autoMergeMethod: "merge" } : {}),
         });
-        // The action-state read and the mutation; no re-read of the pull request.
-        expect(mockedExecute).toHaveBeenCalledTimes(2);
+        // Action state, required-check read, and the mutation. No second pull-request read.
+        expect(mockedExecute).toHaveBeenCalledTimes(3);
       }),
   );
 
@@ -3042,6 +3216,292 @@ layer("GitHubPullRequestApi.layer", (it) => {
         { input: { pullRequestId: "PR_7", mergeMethod: "SQUASH" } },
       ]);
       expect(variablesOf("enablePullRequestAutoMerge(")).toEqual([]);
+    }),
+  );
+
+  const checkContexts = (nodes: ReadonlyArray<Record<string, unknown>>) => ({
+    data: {
+      repository: {
+        pullRequest: {
+          headRefOid: "abc123",
+          commits: {
+            nodes: [
+              {
+                commit: {
+                  statusCheckRollup: {
+                    contexts: {
+                      nodes,
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  });
+  const requiredCheck = (
+    name: string,
+    status: "IN_PROGRESS" | "COMPLETED",
+    conclusion: "SUCCESS" | "FAILURE" | "CANCELLED" | null,
+    isRequired: boolean,
+  ) => ({
+    __typename: "CheckRun" as const,
+    name,
+    status,
+    conclusion,
+    startedAt: null,
+    completedAt: null,
+    detailsUrl: null,
+    isRequired,
+    checkSuite: { workflowRun: null },
+  });
+  const openAutoMerge = {
+    data: {
+      enablePullRequestAutoMerge: {
+        pullRequest: {
+          number: 7,
+          title: "Pull request 7",
+          url: "https://github.com/acme/web/pull/7",
+          headRefName: "feat/page",
+          baseRefName: "main",
+          state: "OPEN",
+          isDraft: false,
+          updatedAt: "2026-10-27T12:00:00Z",
+          mergedAt: null,
+          closedAt: null,
+          headRefOid: "abc123",
+          author: { __typename: "User", login: "alice", avatarUrl: "", name: null },
+          autoMergeRequest: { mergeMethod: "MERGE" },
+        },
+      },
+    },
+  };
+
+  it.effect("waits for a pending required check instead of merging as an admin", () =>
+    Effect.gen(function* () {
+      route(
+        ["query PullRequestActionState", actionState({ mergeStateStatus: "CLEAN" })],
+        [
+          "query PullRequestCheckContexts",
+          checkContexts([requiredCheck("Check", "IN_PROGRESS", null, true)]),
+        ],
+        ["enablePullRequestAutoMerge(", openAutoMerge],
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      const summary = yield* cli.runPullRequestAction({ ...pullRequestInput, action: "merge" });
+      expect(variablesOf("mergePullRequest(")).toEqual([]);
+      expect(variablesOf("enablePullRequestAutoMerge(")).toHaveLength(1);
+      expect(summary).toMatchObject({ state: "open", autoMergeEnabled: true });
+    }),
+  );
+
+  it.effect("refuses a merge that a required check has failed, and names it", () =>
+    Effect.gen(function* () {
+      route(
+        ["query PullRequestActionState", actionState({ mergeStateStatus: "CLEAN" })],
+        [
+          "query PullRequestCheckContexts",
+          checkContexts([requiredCheck("Test Server 3", "COMPLETED", "FAILURE", true)]),
+        ],
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      const error = yield* Effect.flip(
+        cli.runPullRequestAction({ ...pullRequestInput, action: "merge" }),
+      );
+      expect(error._tag).toBe("GitHubMergeChecksRefusedError");
+      expect(error.message).toContain("Test Server 3");
+      expect(variablesOf("mergePullRequest(")).toEqual([]);
+      expect(variablesOf("enablePullRequestAutoMerge(")).toEqual([]);
+    }),
+  );
+
+  it.effect("refuses a merge when a required check was cancelled", () =>
+    Effect.gen(function* () {
+      route(
+        ["query PullRequestActionState", actionState({ mergeStateStatus: "CLEAN" })],
+        [
+          "query PullRequestCheckContexts",
+          checkContexts([requiredCheck("Check", "COMPLETED", "CANCELLED", true)]),
+        ],
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      const error = yield* Effect.flip(
+        cli.runPullRequestAction({ ...pullRequestInput, action: "merge" }),
+      );
+      expect(error._tag).toBe("GitHubMergeChecksRefusedError");
+      expect(error.message).toContain("Check");
+      expect(variablesOf("mergePullRequest(")).toEqual([]);
+    }),
+  );
+
+  it.effect("does not merge immediately when auto-merge is asked and a required check failed", () =>
+    Effect.gen(function* () {
+      route(
+        ["query PullRequestActionState", actionState({ mergeStateStatus: "CLEAN" })],
+        [
+          "query PullRequestCheckContexts",
+          checkContexts([requiredCheck("Test Server 3", "COMPLETED", "FAILURE", true)]),
+        ],
+        ["enablePullRequestAutoMerge(", openAutoMerge],
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      yield* cli.runPullRequestAction({ ...pullRequestInput, action: "enable-auto-merge" });
+      expect(variablesOf("mergePullRequest(")).toEqual([]);
+      expect(variablesOf("enablePullRequestAutoMerge(")).toHaveLength(1);
+    }),
+  );
+
+  it.effect("merges when the required check has passed", () =>
+    Effect.gen(function* () {
+      route(
+        ["query PullRequestActionState", actionState({ mergeStateStatus: "CLEAN" })],
+        [
+          "query PullRequestCheckContexts",
+          checkContexts([requiredCheck("Check", "COMPLETED", "SUCCESS", true)]),
+        ],
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      yield* cli.runPullRequestAction({ ...pullRequestInput, action: "merge" });
+      expect(variablesOf("mergePullRequest(")).toHaveLength(1);
+      expect(variablesOf("enablePullRequestAutoMerge(")).toEqual([]);
+    }),
+  );
+
+  it.effect("merges while an optional check is still pending or failing", () =>
+    Effect.gen(function* () {
+      route(
+        ["query PullRequestActionState", actionState({ mergeStateStatus: "UNSTABLE" })],
+        [
+          "query PullRequestCheckContexts",
+          checkContexts([
+            requiredCheck("Check", "COMPLETED", "SUCCESS", true),
+            requiredCheck("Lint", "IN_PROGRESS", null, false),
+            requiredCheck("Optional", "COMPLETED", "FAILURE", false),
+          ]),
+        ],
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      yield* cli.runPullRequestAction({ ...pullRequestInput, action: "merge" });
+      expect(variablesOf("mergePullRequest(")).toHaveLength(1);
+      expect(variablesOf("enablePullRequestAutoMerge(")).toEqual([]);
+    }),
+  );
+
+  it.effect("still waits after the pull request is marked ready in the same flow", () =>
+    Effect.gen(function* () {
+      route(
+        ["PullRequestNodeId", { data: { repository: { pullRequest: { id: "PR_7" } } } }],
+        ["query PullRequestActionState", actionState({ mergeStateStatus: "CLEAN" })],
+        [
+          "query PullRequestCheckContexts",
+          checkContexts([requiredCheck("Check", "IN_PROGRESS", null, true)]),
+        ],
+        ["enablePullRequestAutoMerge(", openAutoMerge],
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      yield* cli.runPullRequestAction({ ...pullRequestInput, action: "ready" });
+      const summary = yield* cli.runPullRequestAction({ ...pullRequestInput, action: "merge" });
+      expect(variablesOf("markPullRequestReadyForReview")).toHaveLength(1);
+      expect(variablesOf("mergePullRequest(")).toEqual([]);
+      expect(variablesOf("enablePullRequestAutoMerge(")).toHaveLength(1);
+      expect(summary).toMatchObject({ state: "open", autoMergeEnabled: true });
+    }),
+  );
+
+  it.effect("does not merge a stack while a required check is pending", () =>
+    Effect.gen(function* () {
+      route(
+        [
+          "query PullRequestCheckContexts",
+          checkContexts([requiredCheck("Check", "IN_PROGRESS", null, true)]),
+        ],
+        ["PullRequestNodeId", { data: { repository: { pullRequest: { id: "PR_7" } } } }],
+        ["enablePullRequestAutoMerge(", openAutoMerge],
+        [
+          "stacks?pull_request=7",
+          [
+            {
+              number: 3,
+              url: "https://api.github.com/repos/acme/web/stacks/3",
+              base: { ref: "main" },
+              pull_requests: [
+                { number: 7, head: { ref: "two", sha: "bbb" }, state: "open", draft: false },
+              ],
+            },
+          ],
+        ],
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      yield* cli.runPullRequestAction({
+        ...pullRequestInput,
+        action: "merge",
+        stackNumber: 3,
+        expectedStackHeads: [{ number: 7, headSha: "bbb" }],
+      });
+      expect(restCallsTo("merge-async")).toEqual([]);
+      expect(variablesOf("enablePullRequestAutoMerge(")).toHaveLength(1);
+    }),
+  );
+
+  it.effect("does not merge a stack while a lower layer's required check is pending", () =>
+    Effect.gen(function* () {
+      route(
+        ["PullRequestNodeId", { data: { repository: { pullRequest: { id: "PR_7" } } } }],
+        ["enablePullRequestAutoMerge(", openAutoMerge],
+        [
+          "stacks?pull_request=7",
+          [
+            {
+              number: 3,
+              url: "https://api.github.com/repos/acme/web/stacks/3",
+              base: { ref: "main" },
+              pull_requests: [
+                { number: 6, head: { ref: "one", sha: "aaa" }, state: "open", draft: false },
+                { number: 7, head: { ref: "two", sha: "bbb" }, state: "open", draft: false },
+              ],
+            },
+          ],
+        ],
+      );
+      const answer = mockedExecute.getMockImplementation()!;
+      mockedExecute.mockImplementation((call) => {
+        if (call.kind === "graphql" && call.operationName === "PullRequestCheckContexts") {
+          const pending = call.variables?.["number"] === 6;
+          return Effect.succeed(
+            output(
+              encodeJson(
+                checkContexts([
+                  requiredCheck(
+                    pending ? "Lower check" : "Check",
+                    pending ? "IN_PROGRESS" : "COMPLETED",
+                    pending ? null : "SUCCESS",
+                    true,
+                  ),
+                ]),
+              ),
+            ),
+          );
+        }
+        return answer(call);
+      });
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      yield* cli.runPullRequestAction({
+        ...pullRequestInput,
+        action: "merge",
+        stackNumber: 3,
+        expectedStackHeads: [
+          { number: 6, headSha: "aaa" },
+          { number: 7, headSha: "bbb" },
+        ],
+      });
+      expect(restCallsTo("merge-async")).toEqual([]);
+      expect(variablesOf("enablePullRequestAutoMerge(")).toHaveLength(1);
+      expect(
+        variablesOf("query PullRequestCheckContexts").map((variables) => variables["number"]),
+      ).toEqual([7, 6]);
     }),
   );
 

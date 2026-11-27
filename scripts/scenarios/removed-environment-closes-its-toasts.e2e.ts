@@ -1,7 +1,7 @@
 import { expect } from "e2e";
 
 import { T3_HOME } from "../e2e.config.ts";
-import { SECOND_HOME, startSecondServer } from "./second-server.ts";
+import { SECOND_HOME, pairSecondServer, startSecondServer } from "./second-server.ts";
 import { makeState, runPromise, test, WEB } from "./t3.ts";
 
 test(
@@ -27,15 +27,11 @@ test(
       });
 
       await t3.open("/settings/general");
-      await screen.getByRole("switch", "In-app notifications").check();
+      const notifications = screen.getByRole("switch", "In-app notifications");
+      await notifications.waitFor({ timeout: 60_000 });
+      await notifications.check();
       await app.open("/settings/connections");
-      await screen.getByRole("button", "Add environment").tap();
-      const dialog = screen.getByRole("dialog");
-      await dialog.getByPlaceholder("backend.example.com").fill(host);
-      await dialog.getByPlaceholder("PAIRCODE").fill(token);
-      await dialog.getByRole("button", "Add environment").tap();
-      const moreActions = screen.getByRole("button", "More actions for Scenario");
-      await expect(moreActions).toBeVisible({ timeout: 60_000 });
+      const moreActions = await pairSecondServer(screen, { host, token });
 
       // The client announces only a change it saw happen, so it must hold the thread first.
       await expect(screen.getByText("Finished elsewhere").first()).toBeVisible({ timeout: 60_000 });
