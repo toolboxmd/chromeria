@@ -3628,7 +3628,9 @@ const make = Effect.gen(function* () {
     // classification that began meanwhile is waited for and everything is checked again.
     const guarded = (authority: () => Promise<void>) => async () => {
       for (;;) {
-        await classifiedBy(tab, deadlineMs, leavesPage ? target : tab.page.url());
+        // A watch's later reads reuse this after the request answered; its deadline no longer applies.
+        const until = answered ? Number.POSITIVE_INFINITY : deadlineMs;
+        await classifiedBy(tab, until, leavesPage ? target : tab.page.url());
         await authority();
         if (
           generation !== tab.control.generation ||
@@ -3638,7 +3640,7 @@ const make = Effect.gen(function* () {
             message: "A human took control of this tab.",
             reason: "humanControl",
           });
-        if (performance.now() >= deadlineMs)
+        if (performance.now() >= until)
           throw new DOMException("This browser request expired.", "TimeoutError");
         if (siteHolds.classifyingOn(tab.tabId)) continue;
         const hold = siteHoldOf(tab, leavesPage ? target : tab.page.url());
