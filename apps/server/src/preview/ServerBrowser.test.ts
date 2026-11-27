@@ -1,4 +1,5 @@
 import * as NodeEvents from "node:events";
+import * as NodeHttp from "node:http";
 import * as NodeVM from "node:vm";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Playwright download mocks perform real file operations outside the Effect runtime.
 import * as NodeFSP from "node:fs/promises";
@@ -3849,6 +3850,46 @@ it.live.each([
         tabId: first,
       });
       expect(status.siteHold, "the site still shows its check in the profile").toBeDefined();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a challenge its header decides holds the site while its body never finishes", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = NodeHttp.createServer((_, response) => {
+        response.writeHead(403, { "content-type": "text/html", "cf-mitigated": "challenge" });
+        response.write("<title>Just a moment...</title>");
+      });
+      yield* Effect.acquireRelease(
+        Effect.promise(() => new Promise<void>((done) => server.listen(0, "127.0.0.1", done))),
+        () =>
+          Effect.sync(() => {
+            server.closeAllConnections();
+            server.close();
+          }),
+      );
+      const port = (server.address() as { port: number }).port;
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          chromium.launch({
+            headless: true,
+            args: [`--host-resolver-rules=MAP shop.test 127.0.0.1:${port}`],
+          }),
+        ),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      realContextOverride = yield* Effect.promise(() => chromiumBrowser.newContext());
+      const { broker, tabId } = yield* ready;
+      const met = yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "http://shop.test/", readiness: "domContentLoaded", timeoutMs: 8_000 },
+          tabId,
+        }),
+      );
+      expect(met).toMatchObject({ reason: "antiBotChallenge" });
     }),
   ).pipe(Effect.provide(layer)),
 );

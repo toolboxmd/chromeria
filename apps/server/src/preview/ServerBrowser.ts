@@ -660,6 +660,9 @@ const READ_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> = new 
 ]);
 
 /** Operations that can send a request to the tab's site, so a Site hold refuses them. */
+// A vendor's check page is small; a body still arriving after this is read as empty.
+const CHECK_BODY_READ_MS = 5_000;
+
 const SITE_HOLD_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> = new Set([
   "navigate",
   "readPage",
@@ -1819,9 +1822,7 @@ const make = Effect.gen(function* () {
           const classified = suspectCheck(tab, response.url());
           tab.siteHoldCheck = Promise.all([
             tab.siteHoldCheck,
-            response
-              .text()
-              .catch(() => "")
+            readCheckBody(response)
               .then((body) => {
                 const verdict = classifyAntiBotPage({ ...answer, html: body.slice(0, 65_536) });
                 if (verdict) return raiseSiteHold(tab, verdict, response.url(), classified.at);
@@ -1837,11 +1838,11 @@ const make = Effect.gen(function* () {
           };
           if (document.status >= 400 || document.headers["cf-mitigated"] !== undefined) {
             const classified = suspectCheck(tab, response.url());
+            // Cloudflare's header alone decides a challenge, so its body is not waited for.
+            const decided = document.headers["cf-mitigated"] === "challenge";
             tab.siteHoldCheck = Promise.all([
               tab.siteHoldCheck,
-              response
-                .text()
-                .catch(() => "")
+              (decided ? Promise.resolve("") : readCheckBody(response))
                 .then((html) => {
                   const verdict = classifyAntiBotPage({ ...document, html });
                   if (verdict) return raiseSiteHold(tab, verdict, response.url(), classified.at);
@@ -3055,7 +3056,7 @@ const make = Effect.gen(function* () {
     const remaining = () => Math.max(1, timeout - (performance.now() - startedAt));
     await leaveBusyPage(tab, tab.cdp, timeout / 2);
     // The last check before the request leaves, after any check still being classified.
-    await tab.siteHoldCheck;
+    await classifiedBy(tab, startedAt + timeout);
     const held = siteHoldOf(tab, url);
     if (held) throw siteHoldError(held);
     const navigation = tab.page.goto(url, { timeout: remaining(), waitUntil: "commit" });
@@ -3463,6 +3464,36 @@ const make = Effect.gen(function* () {
     since,
   });
 
+  /** A check's body is read for at most a few seconds, so classification always ends. */
+  const readCheckBody = (response: { text: () => Promise<string> }) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([
+      response.text().catch(() => ""),
+      new Promise<string>((resolve) => {
+        timer = setTimeout(() => resolve(""), CHECK_BODY_READ_MS);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  };
+
+  /**
+   * Waits for the tab's pending classification within the request's time. A check still being
+   * read when the time runs out is no success: the request stops and the caller can try again.
+   */
+  const classifiedBy = async (tab: ServerTab, deadlineMs: number) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([
+      tab.siteHoldCheck.then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), Math.max(0, deadlineMs - performance.now()));
+      }),
+    ]).finally(() => clearTimeout(timer));
+    if (!settled)
+      throw new BrowserControlInterrupted({
+        message:
+          "The site's answer is still being checked for an anti-bot check. Try again shortly.",
+      });
+  };
+
   const suspectCheck = (tab: ServerTab, url: string) => {
     const site = siteOf(url);
     return site === undefined
@@ -3532,8 +3563,9 @@ const make = Effect.gen(function* () {
     }
     // A check still being classified must not let the next action through. A page the
     // action leaves is not where it acts, so navigations check their target.
+    const deadlineMs = performance.now() + request.timeoutMs;
     const refuseHeld = async () => {
-      await tab.siteHoldCheck;
+      await classifiedBy(tab, deadlineMs);
       const hold = siteHoldOf(tab, leavesPage ? target : tab.page.url());
       if (hold) throw siteHoldError(hold);
     };
@@ -3543,7 +3575,7 @@ const make = Effect.gen(function* () {
       await refuseHeld();
     };
     const met = async () => {
-      await tab.siteHoldCheck;
+      await classifiedBy(tab, deadlineMs);
       const hold = siteHoldOf(tab);
       if (hold) {
         // A watch that finished installing after the hold began stops too.
@@ -3811,12 +3843,7 @@ const make = Effect.gen(function* () {
             }
             await shown;
             // A check still being classified is waited for only while the request has time.
-            await Promise.race([
-              tab.siteHoldCheck,
-              new Promise((resolve) =>
-                setTimeout(resolve, Math.max(0, deadlineMs - performance.now() - 100)),
-              ),
-            ]);
+            await classifiedBy(tab, deadlineMs - 100);
             const held = siteHoldOf(tab);
             if (held) throw siteHoldError(held);
             return statusWithTitle(tab, request.agentSessionId);
