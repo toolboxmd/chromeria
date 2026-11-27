@@ -3478,15 +3478,16 @@ const make = Effect.gen(function* () {
   ) => {
     const site = siteOf(url);
     if (site === undefined || tab.closing) return;
+    // A check met again, by any tab or answer the hold covers, moves the bar for release,
+    // even when it came before a person's clear and raises nothing new.
+    const metAt = Date.now();
+    for (const covering of siteHolds.covering(siteHoldScope(tab), tab.threadId, site))
+      covering.metAt = Math.max(covering.metAt, metAt);
     if (
       receivedAt !== undefined &&
       siteHolds.dismissed(siteHoldScope(tab), tab.threadId, site, receivedAt)
     )
       return;
-    // A check met again, by any tab or answer the hold covers, moves the bar for release.
-    const metAt = Date.now();
-    for (const covering of siteHolds.covering(siteHoldScope(tab), tab.threadId, site))
-      covering.metAt = Math.max(covering.metAt, metAt);
     const hold: HeldSite = {
       site,
       ...verdict,
@@ -3809,7 +3810,13 @@ const make = Effect.gen(function* () {
                 ).then(constVoid);
             }
             await shown;
-            await tab.siteHoldCheck;
+            // A check still being classified is waited for only while the request has time.
+            await Promise.race([
+              tab.siteHoldCheck,
+              new Promise((resolve) =>
+                setTimeout(resolve, Math.max(0, deadlineMs - performance.now() - 100)),
+              ),
+            ]);
             const held = siteHoldOf(tab);
             if (held) throw siteHoldError(held);
             return statusWithTitle(tab, request.agentSessionId);
