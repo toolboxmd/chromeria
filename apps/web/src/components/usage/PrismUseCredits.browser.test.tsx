@@ -29,6 +29,8 @@ const state = vi.hoisted(() => ({
   heldEnvironments: new Set<string>(),
   realCommand: false,
   updateSettings: vi.fn(),
+  /** Runs as a write starts, at the instant the component sets its own timer. */
+  onWrite: undefined as ((signal: AbortSignal) => void) | undefined,
 }));
 
 // A kept-alive value atom: each test's registry holds its own environments until the first render.
@@ -181,6 +183,7 @@ function setup(
   state.silentEnvironments = new Set();
   state.heldEnvironments = new Set();
   state.realCommand = options.realCommand ?? false;
+  state.onWrite = undefined;
   state.updateSettings.mockReset();
   const all = new Map([
     [
@@ -291,6 +294,7 @@ function setup(
       },
       call: { signal: AbortSignal },
     ) => {
+      state.onWrite?.(call.signal);
       if (state.silentEnvironments.has(environmentId)) {
         // Like the real command, a write nobody answers settles only when its signal aborts.
         return new Promise((resolve) =>
@@ -424,7 +428,7 @@ it.each([
     line: `Credits left: 555 (read ${timeOfDay("2026-11-26T15:00:00.000Z")})`,
   },
 ])(
-  "shows the login's credits between the description and the rows: $name",
+  "shows the login's credits after the description and before every row: $name",
   async ({ credits, line }) => {
     await using screen = await render(setup({}, { credits }).ui);
     await openCodexWork(screen);
@@ -439,9 +443,10 @@ it.each([
       (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
     const balance = page.getByText(line, { exact: true }).element();
     expect(follows(page.getByText(description, { exact: true }).element(), balance)).toBe(true);
-    expect(follows(balance, useCreditsOn("Alder").element())).toBe(true);
-    // Alder's is the first row.
-    expect(follows(useCreditsOn("Alder").element(), useCreditsOn("Birch").element())).toBe(true);
+    for (const machine of ["Alder", "Birch", "Cedar"]) {
+      expect(follows(balance, useCreditsOn(machine).element())).toBe(true);
+    }
+    expect(page.getByRole("switch").elements()).toHaveLength(3);
   },
 );
 
@@ -464,25 +469,38 @@ it("writes only the clicked machine, and reaches both values in one click each",
   await expect.element(useCreditsOn("Alder")).toHaveAttribute("aria-checked", "true");
 });
 
-it("carries the Chromeria mark on the title, and the keyboard goes row by row", async () => {
-  await using screen = await render(setup().ui);
-  await openCodexWork(screen);
+it.each([
+  { name: "every row has a switch", options: {}, stops: ["Alder", "Birch", "Cedar"] },
+  {
+    // A row without a switch holds nothing to focus, so Tab goes on to the next switch.
+    name: "Birch's row has no switch and is passed",
+    options: { disconnected: ["birch"] },
+    stops: ["Alder", "Cedar"],
+  },
+])(
+  "carries the Chromeria mark on the title, and Tab stops at each switch in row order: $name",
+  async ({ options, stops }) => {
+    await using screen = await render(setup({}, options).ui);
+    await openCodexWork(screen);
 
-  const mark = page.getByRole("img", { name: "Chromeria feature" });
-  await expect.element(mark).toBeVisible();
-  expect(mark.element().parentElement?.textContent).toBe("Use credits");
-  await userEvent.click(mark);
-  expect(state.updateSettings).not.toHaveBeenCalled();
+    const mark = page.getByRole("img", { name: "Chromeria feature" });
+    await expect.element(mark).toBeVisible();
+    expect(mark.element().parentElement?.textContent).toBe("Use credits");
+    await userEvent.click(mark);
+    expect(state.updateSettings).not.toHaveBeenCalled();
 
-  mark.element().focus();
-  await userEvent.keyboard("{Tab}");
-  await expect.element(useCreditsOn("Alder")).toHaveFocus();
-  await userEvent.keyboard("{Tab}");
-  await expect.element(useCreditsOn("Birch")).toHaveFocus();
-  await userEvent.keyboard(" ");
-  await expect.element(useCreditsOn("Birch")).toHaveAttribute("aria-checked", "false");
-  expect(writes()).toEqual([["birch", { prismUseCredits: { codex_main: false } }]]);
-});
+    expect(page.getByRole("switch").elements()).toHaveLength(stops.length);
+    mark.element().focus();
+    for (const machine of stops) {
+      await userEvent.keyboard("{Tab}");
+      await expect.element(useCreditsOn(machine)).toHaveFocus();
+    }
+    // Space switches the focused row, the last one, and no other.
+    await userEvent.keyboard(" ");
+    await expect.element(useCreditsOn("Cedar")).toHaveAttribute("aria-checked", "false");
+    expect(writes()).toEqual([["cedar", { prismUseCredits: { codex_work: false } }]]);
+  },
+);
 
 it("names the machine also when the login is on one machine", async () => {
   await using screen = await render(setup({}, { machines: [alder] }).ui);
@@ -524,25 +542,30 @@ it("line 1: a machine that is not connected says so and has no switch", async ()
   expect(writes()).toEqual([["cedar", { prismUseCredits: { codex_work: false } }]]);
 });
 
-it("line 2: a machine whose server does not send the signal has no switch, whatever it stores", async () => {
-  await using screen = await render(
-    setup({ cedar: { codex_work: false } }, { withoutSignal: ["cedar"] }).ui,
-  );
-  await openCodexWork(screen);
+it.each([
+  { stores: "off", saved: { cedar: { codex_work: false } } },
+  { stores: "on", saved: { cedar: { codex_work: true } } },
+  { stores: "nothing", saved: {} },
+])(
+  "line 2: a machine whose server does not send the signal has no switch when it stores $stores",
+  async ({ saved }) => {
+    await using screen = await render(setup(saved, { withoutSignal: ["cedar"] }).ui);
+    await openCodexWork(screen);
 
-  const note = "Not available: update Chromeria on this machine";
-  await expect.element(page.getByText(note)).toBeVisible();
-  expect(rowOf(note)).toBe(`Cedar${note}`);
-  await expect.element(useCreditsOn("Cedar")).not.toBeInTheDocument();
-  expect(page.getByRole("switch").elements()).toHaveLength(2);
+    const note = "Not available: update Chromeria on this machine";
+    await expect.element(page.getByText(note)).toBeVisible();
+    expect(rowOf(note)).toBe(`Cedar${note}`);
+    await expect.element(useCreditsOn("Cedar")).not.toBeInTheDocument();
+    expect(page.getByRole("switch").elements()).toHaveLength(2);
 
-  // The others still reach off and on.
-  await userEvent.click(useCreditsOn("Alder"));
-  await expect.element(useCreditsOn("Alder")).toHaveAttribute("aria-checked", "false");
-  await userEvent.click(useCreditsOn("Alder"));
-  await expect.element(useCreditsOn("Alder")).toHaveAttribute("aria-checked", "true");
-  expect(writes().map(([environmentId]) => environmentId)).toEqual(["alder", "alder"]);
-});
+    // The others still reach off and on.
+    await userEvent.click(useCreditsOn("Alder"));
+    await expect.element(useCreditsOn("Alder")).toHaveAttribute("aria-checked", "false");
+    await userEvent.click(useCreditsOn("Alder"));
+    await expect.element(useCreditsOn("Alder")).toHaveAttribute("aria-checked", "true");
+    expect(writes().map(([environmentId]) => environmentId)).toEqual(["alder", "alder"]);
+  },
+);
 
 it("line 3: without permission the switch shows the value and is disabled, until a grant arrives", async () => {
   const world = setup({ cedar: { codex_work: false } }, { denied: ["cedar"] });
@@ -709,13 +732,24 @@ it.each([
   await openCodexWork(screen);
   await expect.element(useCreditsOn("Birch")).toBeVisible();
   using _timers = fakeTimers();
+  // The fake clock moves under a retried assertion and during the click itself, so the bound is
+  // read from the order of events on that clock: two marks set as the write starts, and the
+  // write's own signal, which the timeout aborts. Marks due at one instant fire in set order.
+  const events: Array<string> = [];
+  state.onWrite = (signal) => {
+    setTimeout(() => {
+      const busy = useCreditsOn("Birch").element().getAttribute("aria-busy") === "true";
+      events.push(busy ? "9,999 ms: busy" : "9,999 ms: not busy");
+    }, 9_999);
+    setTimeout(() => events.push("10,000 ms"), 10_000);
+    signal.addEventListener("abort", () => events.push("write ended"));
+  };
   await userEvent.click(useCreditsOn("Birch"));
+  await vi.advanceTimersByTimeAsync(20_000);
 
-  await expect.element(useCreditsOn("Birch")).toHaveAttribute("aria-busy", "true");
-  // A retried assertion moves the fake clock, so the last second before the bound is left alone.
-  await vi.advanceTimersByTimeAsync(9_000);
-  await expect.element(useCreditsOn("Birch")).toBeDisabled();
-  await vi.advanceTimersByTimeAsync(1_000);
+  expect(events).toEqual(["9,999 ms: busy", "write ended", "10,000 ms"]);
+  // From here the clock is real again, so nothing still scheduled can end the write.
+  vi.useRealTimers();
 
   // The row is back on the server's actual value, with nothing beside it.
   await expect.element(useCreditsOn("Birch")).toBeEnabled();
@@ -749,7 +783,7 @@ it("a failed write leaves the row on its actual value with no note, also after t
 });
 
 it("shows each machine's actual value again after a close and reopen", async () => {
-  await using screen = await render(setup().ui);
+  await using screen = await render(setup({ cedar: { codex_work: false } }).ui);
   state.failingEnvironments.add("birch");
   await openCodexWork(screen);
   await userEvent.click(useCreditsOn("Alder"));
@@ -762,19 +796,24 @@ it("shows each machine's actual value again after a close and reopen", async () 
 
   await expect.element(useCreditsOn("Alder")).toHaveAttribute("aria-checked", "false");
   await expect.element(useCreditsOn("Birch")).toHaveAttribute("aria-checked", "true");
+  await expect.element(useCreditsOn("Cedar")).toHaveAttribute("aria-checked", "false");
+  expect(page.getByRole("switch").elements()).toHaveLength(3);
   state.failingEnvironments.clear();
   await userEvent.click(useCreditsOn("Birch"));
   await expect.element(useCreditsOn("Birch")).toHaveAttribute("aria-checked", "false");
 });
 
-it("keeps the switches when a usage hub holds the login's banked reset", async () => {
+it("keeps every machine's switch when a usage hub holds the login's banked reset", async () => {
   await using screen = await render(setup({ birch: { codex_main: false } }, { hub: true }).ui);
   // The hub's credits show on the account, so its redeem target is the hub, not the instance.
   await userEvent.click(
     screen.getByRole("button", { name: /^Codex Work: 80% left.*2 reset credits banked/ }),
   );
 
+  await expect.element(useCreditsOn("Alder")).toHaveAttribute("aria-checked", "true");
   await expect.element(useCreditsOn("Birch")).toHaveAttribute("aria-checked", "false");
+  await expect.element(useCreditsOn("Cedar")).toHaveAttribute("aria-checked", "true");
+  expect(page.getByRole("switch").elements()).toHaveLength(3);
   await userEvent.click(useCreditsOn("Alder"));
   expect(writes()).toEqual([["alder", { prismUseCredits: { codex_work: false } }]]);
 });

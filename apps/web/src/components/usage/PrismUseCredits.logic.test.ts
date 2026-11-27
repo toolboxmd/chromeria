@@ -65,8 +65,13 @@ describe("creditUseRow", () => {
       shows: { switch: null, note: "notConnected" },
     },
     {
-      line: "2: the server does not send the signal, whatever it stores",
+      line: "2: the server does not send the signal and stores off",
       input: { environment: environment({ holdsSetting: false, stored: false }) },
+      shows: { switch: null, note: "notAvailable" },
+    },
+    {
+      line: "2: the server does not send the signal and stores on",
+      input: { environment: environment({ holdsSetting: false, stored: true }) },
       shows: { switch: null, note: "notAvailable" },
     },
     {
@@ -138,6 +143,11 @@ describe("storedCreditUse", () => {
     {
       name: "a server without the signal, stored off",
       config: environment({ holdsSetting: false, stored: false }),
+      value: null,
+    },
+    {
+      name: "a server without the signal, stored on",
+      config: environment({ holdsSetting: false, stored: true }),
       value: null,
     },
   ])("only a server that sends the signal tells a value: $name", ({ config, value }) => {
