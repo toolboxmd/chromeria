@@ -3956,11 +3956,15 @@ sources and reasons.
 {
   "id": "eval-spend-cap",
   "purpose": "Paid eval runs above a small sample cap refuse without an explicit flag, and fork eval docs point at affected-cases-only proof.",
-  "issues": ["https://github.com/toolboxmd/chromeria/issues/731"],
+  "issues": [
+    "https://github.com/toolboxmd/chromeria/issues/731",
+    "https://github.com/toolboxmd/chromeria/issues/1047"
+  ],
   "prs": ["https://github.com/toolboxmd/chromeria/compare/main...zero-cost-eval-cap"],
   "newFiles": [],
   "upstreamFiles": [
     "evals/README.md",
+    "evals/pr-content/README.md",
     "evals/mcp-tool-use/README.md",
     "evals/mcp-tool-use/run.ts",
     "evals/mcp-tool-use/run.test.ts"
