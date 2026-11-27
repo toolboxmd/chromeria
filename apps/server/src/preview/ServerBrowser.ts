@@ -4015,10 +4015,13 @@ const make = Effect.gen(function* () {
         );
         if (existing) return opening;
         // A fresh tab whose open expired before it could start returns no tabId; close it.
-        // A person who took the tab keeps it; only a deadline refusal leaves it unclaimed.
+        // A refused open returns no tabId, so its tab is unclaimed unless a person took it.
         return opening.catch(async (cause: unknown) => {
-          const expired = cause instanceof DOMException && cause.name === "TimeoutError";
-          if (!started && expired && tabs.get(tabKey(tab.threadId, tab.tabId)) === tab) {
+          if (
+            !started &&
+            tab.control.controller === null &&
+            tabs.get(tabKey(tab.threadId, tab.tabId)) === tab
+          ) {
             await runPromise(manager.close({ threadId: tab.threadId, tabId: tab.tabId }));
             dropTab(tab, false);
           }
