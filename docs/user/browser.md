@@ -130,7 +130,9 @@ Cloudflare, Akamai, HUMAN or Imperva), agents stop acting on that site in that
 browser profile, and the tab opens for you with a banner. Agents never solve
 checks. To pass one, choose **Take control**, complete the check, choose
 **Release control**, and tell the agent to continue. Releasing on a page that
-still shows the check keeps the hold.
+still shows the check keeps the hold, and so does releasing after another tab
+of that profile got an error page from the site: reload the page you passed
+the check on, then release again.
 
 Choose **Done** on the banner when you passed the check without taking
 control, or **Clear hold** after a block when the site works again; either one

@@ -1816,6 +1816,7 @@ const make = Effect.gen(function* () {
           siteOf(response.url()) === siteOf(page.url())
         ) {
           const answer = { status: response.status(), headers: response.headers() };
+          suspectCheck(tab, response.url());
           tab.siteHoldCheck = Promise.all([
             tab.siteHoldCheck,
             response
@@ -1833,7 +1834,8 @@ const make = Effect.gen(function* () {
             status: response.status(),
             headers: response.headers(),
           };
-          if (document.status >= 400 || document.headers["cf-mitigated"] !== undefined)
+          if (document.status >= 400 || document.headers["cf-mitigated"] !== undefined) {
+            suspectCheck(tab, response.url());
             tab.siteHoldCheck = Promise.all([
               tab.siteHoldCheck,
               response
@@ -1845,6 +1847,7 @@ const make = Effect.gen(function* () {
                 })
                 .catch(constVoid),
             ]).then(constVoid);
+          }
         }
       });
       page.on("console", (message) => {
@@ -3458,6 +3461,18 @@ const make = Effect.gen(function* () {
     since,
   });
 
+  /**
+   * A response that may be a check moves the release bar of every hold it falls under the
+   * moment it arrives, before its body is read, so no release slips in while it is classified.
+   */
+  const suspectCheck = (tab: ServerTab, url: string) => {
+    const site = siteOf(url);
+    if (site === undefined) return;
+    const at = Date.now();
+    for (const covering of siteHolds.covering(siteHoldScope(tab), tab.threadId, site))
+      covering.metAt = Math.max(covering.metAt, at);
+  };
+
   const raiseSiteHold = async (
     tab: ServerTab,
     verdict: NonNullable<ReturnType<typeof classifyAntiBotPage>>,
@@ -3553,19 +3568,9 @@ const make = Effect.gen(function* () {
     authorize: () => Promise<void> = async () => {},
   ) => {
     for (const [scope, hold] of siteHolds.heldBy(tab.tabId)) {
-      // Every tab the hold covers may be classifying a check met again; all of them finish first.
-      for (;;) {
-        const pending = [...tabs.values()]
-          .filter((each) => siteHoldScope(each) === scope || each.threadId === hold.threadId)
-          .map((each) => each.siteHoldCheck);
-        await Promise.all(pending);
-        if (
-          [...tabs.values()]
-            .filter((each) => siteHoldScope(each) === scope || each.threadId === hold.threadId)
-            .every((each) => pending.includes(each.siteHoldCheck))
-        )
-          break;
-      }
+      // The person's own tab finishes classifying first; a check another tab may be
+      // classifying already moved the bar when its response arrived.
+      if (how === "release") await tab.siteHoldCheck;
       // Only a document on the held site that loaded after the check, with a status vendors
       // never give a check (2xx, 3xx), is verified clean; a navigation or control change
       // during the read makes the result stale.

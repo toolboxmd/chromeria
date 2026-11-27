@@ -3778,7 +3778,14 @@ it.live("a check that a same-site API call answers holds the site without a navi
   ).pipe(Effect.provide(layer)),
 );
 
-it.live("a check another tab of the profile meets again keeps the hold", () =>
+it.live.each([
+  {
+    name: "a check another tab of the profile meets again",
+    secondBody: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+  },
+  // Its body is not read yet when the response arrives, so the bar moves on any error page.
+  { name: "an error page another tab gets on the held site", secondBody: "<p>forbidden</p>" },
+] as const)("$name keeps the hold", ({ secondBody }) =>
   Effect.scoped(
     Effect.gen(function* () {
       const chromiumBrowser = yield* Effect.acquireRelease(
@@ -3787,16 +3794,19 @@ it.live("a check another tab of the profile meets again keeps the hold", () =>
       );
       const context = yield* Effect.promise(() => chromiumBrowser.newContext());
       let challenged = false;
+      let secondAnswer: string | undefined;
       yield* Effect.promise(() =>
         context.route("https://shop.test/**", (route) =>
           route.fulfill(
-            challenged
-              ? {
-                  status: 403,
-                  contentType: "text/html",
-                  body: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
-                }
-              : { status: 200, contentType: "text/html", body: "<p>ok</p>" },
+            secondAnswer !== undefined
+              ? { status: 403, contentType: "text/html", body: secondAnswer }
+              : challenged
+                ? {
+                    status: 403,
+                    contentType: "text/html",
+                    body: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+                  }
+                : { status: 200, contentType: "text/html", body: "<p>ok</p>" },
           ),
         ),
       );
@@ -3831,7 +3841,7 @@ it.live("a check another tab of the profile meets again keeps the hold", () =>
       challenged = false;
       yield* Effect.promise(() => firstPage!.goto("https://shop.test/clean"));
       // The person's other tab meets the check again after that clean load.
-      challenged = true;
+      secondAnswer = secondBody;
       yield* Effect.promise(() => secondPage!.reload());
       yield* viewer.input({ type: "releaseControl" });
       const status = yield* broker.invoke<PreviewAutomationStatus>({
