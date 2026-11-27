@@ -410,6 +410,16 @@ describe("issueGroupOf: what never makes it the user's move", () => {
       ["stalled", "status:waiting-for-merge", "pr:7"],
     ],
     [
+      "a reviewed draft beside a reviewed pull request whose checks are unknown: the ready one is named and opened",
+      {
+        pullRequests: [
+          groupPr(6, { isDraft: true, reviewMark: "success", checks: "success" }),
+          reviewed(7),
+        ],
+      },
+      ["stalled", "status:waiting-for-merge", "pr:7"],
+    ],
+    [
       "unknown checks beside a pull request whose checks finished: the finished one decides",
       { pullRequests: [reviewed(7), reviewed(8, "failure")] },
       ["your-move", "reviewed-not-merged", "pr:8"],

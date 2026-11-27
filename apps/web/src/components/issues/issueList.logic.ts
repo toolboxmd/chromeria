@@ -220,20 +220,22 @@ export function mergeIssueLists(
 }
 
 /**
- * What the count above the list may be called. The rows are every open Issue of the listed
- * repositories only when State is Open and GitHub was asked for nothing narrower: text, labels and
- * a milestone are searched on GitHub, so under them the rows are `matching` Issues and say nothing
- * of the open total. Any other State is just what is `listed`.
+ * What the count above the list may be called. Text, labels and a milestone are searched on
+ * GitHub, so under them the rows are `matching` Issues, whatever State is set to. Otherwise the
+ * rows are every `open` Issue of the listed repositories when State is Open, and just what is
+ * `listed` for any other State.
  */
 export function issueNumbersScope(
   input: Pick<GitHubIssueListInput, "state" | "query" | "labels" | "milestone">,
 ): "open" | "matching" | "listed" {
-  if (input.state !== "open") return "listed";
-  return input.query === undefined &&
-    (input.labels?.length ?? 0) === 0 &&
-    input.milestone === undefined
-    ? "open"
-    : "matching";
+  if (
+    input.query !== undefined ||
+    (input.labels?.length ?? 0) > 0 ||
+    input.milestone !== undefined
+  ) {
+    return "matching";
+  }
+  return input.state === "open" ? "open" : "listed";
 }
 
 const STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;

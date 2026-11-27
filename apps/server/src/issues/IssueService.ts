@@ -45,7 +45,6 @@ import { type GraphQlDocument, readGraphQlPages } from "./gitHubDocuments.ts";
 import {
   decodeIssueDetailJson,
   decodeIssueStatesJson,
-  decodePullRequestChecksJson,
   issueDetailOf,
   decodeIssueSearchJson,
   decodeViewerJson,
@@ -60,10 +59,7 @@ import {
   LINKED_PULL_REQUEST_MAX,
   linkedPullRequestsGraphQlDocument,
   linkedPullRequestsOf,
-  pullRequestChecksGraphQlDocument,
-  pullRequestCheckVerdictsOf,
   pullRequestOf,
-  unsettledCheckUrlsOf,
   repositoryParts,
 } from "./gitHubIssues.ts";
 
@@ -124,8 +120,6 @@ interface SearchAnswer {
   readonly search: Search;
   readonly rows: GitHubIssueSearchJson | null;
   readonly linked: ReadonlyArray<IssuePullRequest>;
-  /** Pull requests whose failed rollup may hide a check that still runs. */
-  readonly unsettled: ReadonlyArray<string>;
   readonly error: GitHubIssueOperationError | null;
 }
 
@@ -354,9 +348,7 @@ const make = Effect.gen(function* () {
           labels: input.labels,
           milestone: input.milestone,
         });
-        if (q === null) {
-          return Effect.succeed({ search, rows: null, linked: [], unsettled: [], error: null });
-        }
+        if (q === null) return Effect.succeed({ search, rows: null, linked: [], error: null });
         const after = input.cursors?.[search.key];
         // A host's thread-linked pull requests ride along with its first search's first page.
         const withLinked = after === undefined && search.key === `${search.host}#0`;
@@ -382,7 +374,6 @@ const make = Effect.gen(function* () {
                         rows,
                         linked:
                           candidates.length === 0 ? [] : linkedPullRequestsOf(search.host, raw),
-                        unsettled: unsettledCheckUrlsOf(rows, raw),
                       })),
                   }),
                 {
@@ -396,10 +387,8 @@ const make = Effect.gen(function* () {
               ).pipe(Effect.map(({ pages }) => pages[0]!)),
             ),
           ),
-          Effect.map((page) => ({ search, ...page, error: null })),
-          Effect.catch((error) =>
-            Effect.succeed({ search, rows: null, linked: [], unsettled: [], error }),
-          ),
+          Effect.map(({ rows, linked }) => ({ search, rows, linked, error: null })),
+          Effect.catch((error) => Effect.succeed({ search, rows: null, linked: [], error })),
         );
       },
       { concurrency: SEARCH_CONCURRENCY },
@@ -422,7 +411,6 @@ const make = Effect.gen(function* () {
                         host,
                         viewer: answer.data.viewer.login,
                         linked: linkedPullRequestsOf(host, raw),
-                        unsettled: unsettledCheckUrlsOf(null, raw),
                       })),
                   }),
                 ),
@@ -437,48 +425,6 @@ const make = Effect.gen(function* () {
       { concurrency: SEARCH_CONCURRENCY },
     );
 
-    // A failed rollup may hide a check that still runs. One request per host reads the contexts
-    // of the few pull requests where that decides whose move it is; a read that fails leaves
-    // their checks unknown.
-    const unsettled = new Map<string, Set<string>>();
-    for (const { host, urls } of [
-      ...answers.map((answer) => ({ host: answer.search.host, urls: answer.unsettled })),
-      ...linkedOnly.flatMap((answer) =>
-        answer === null ? [] : [{ host: answer.host, urls: answer.unsettled }],
-      ),
-    ]) {
-      for (const url of urls) unsettled.set(host, (unsettled.get(host) ?? new Set()).add(url));
-    }
-    const verdicts = new Map(
-      (yield* Effect.forEach(
-        [...unsettled],
-        ([host, found]) => {
-          const urls = [...found];
-          const document = pullRequestChecksGraphQlDocument(urls);
-          if (document === null) return Effect.succeed([]);
-          return pinned(
-            host,
-            graphqlRead({
-              host,
-              operation: "readPullRequestChecks",
-              document,
-              decode: decodePullRequestChecksJson,
-            }),
-          ).pipe(
-            Effect.map((answer) => [...pullRequestCheckVerdictsOf(urls, answer.data)]),
-            Effect.catch((error) =>
-              Effect.logWarning("Could not read pull request checks", error).pipe(Effect.as([])),
-            ),
-          );
-        },
-        { concurrency: SEARCH_CONCURRENCY },
-      )).flat(),
-    );
-    const settled = (pullRequest: IssuePullRequest): IssuePullRequest => {
-      const checks = verdicts.get(pullRequest.url);
-      return checks === undefined ? pullRequest : { ...pullRequest, checks };
-    };
-
     const entries: Array<GitHubIssueListEntry> = [];
     const errors: Array<{ host: string; message: string }> = [];
     const nextCursors: Record<string, string> = {};
@@ -491,7 +437,7 @@ const make = Effect.gen(function* () {
       const page = rows.data.search;
       viewers.set(search.host, rows.data.viewer.login);
       matchCounts[search.key] = page.issueCount;
-      linkedPullRequests.push(...linked.map(settled));
+      linkedPullRequests.push(...linked);
       if (page.pageInfo.hasNextPage && page.pageInfo.endCursor !== null) {
         nextCursors[search.key] = page.pageInfo.endCursor;
       }
@@ -516,7 +462,7 @@ const make = Effect.gen(function* () {
           subIssueCount: node.subIssues.totalCount,
           openBlockerCount: node.issueDependenciesSummary.blockedBy,
           closingPullRequests: node.closedByPullRequestsReferences.nodes.flatMap((pullRequest) =>
-            pullRequest === null ? [] : [settled(pullRequestOf(search.host, pullRequest))],
+            pullRequest === null ? [] : [pullRequestOf(search.host, pullRequest)],
           ),
         });
       }
@@ -524,7 +470,7 @@ const make = Effect.gen(function* () {
     for (const answer of linkedOnly) {
       if (answer === null) continue;
       viewers.set(answer.host, answer.viewer);
-      linkedPullRequests.push(...answer.linked.map(settled));
+      linkedPullRequests.push(...answer.linked);
     }
     return {
       repositories,

@@ -227,7 +227,9 @@ export function issueGroupOf<Thread, PullRequest>(
       : status === "waiting-for-review"
         ? open.find((pullRequest) => !pullRequest.isDraft)
         : status === "waiting-for-merge"
-          ? open.find((pullRequest) => pullRequest.reviewMark === "success")
+          ? // A reviewed, ready one whose checks are unknown before a reviewed draft: the reason
+            // below is about the same pull request the row opens.
+            (reviewed[0] ?? open.find((pullRequest) => pullRequest.reviewMark === "success"))
           : undefined;
   const resumable = input.threads.find((thread) => !thread.archived);
   const pullRequest = named ?? (resumable === undefined ? open[0] : undefined);

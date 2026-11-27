@@ -220,8 +220,12 @@ describe("the line of numbers", () => {
     [{ state: "open", labels: ["bug"] }, "matching"],
     [{ state: "open", query: "tree" }, "matching"],
     [{ state: "open", milestone: "M1" }, "matching"],
+    // Whatever State is set to: a search is a search.
+    [{ state: "closed", labels: ["bug"] }, "matching"],
+    [{ state: "closed", milestone: "M1" }, "matching"],
+    [{ state: "all", query: "tree" }, "matching"],
     [{ state: "closed" }, "listed"],
-    [{ state: "all", labels: ["bug"] }, "listed"],
+    [{ state: "all", labels: [] }, "listed"],
   ] as const)("calls the rows of %j %s", (input, expected) => {
     expect(issueNumbersScope(input)).toBe(expected);
   });

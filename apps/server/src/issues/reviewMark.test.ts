@@ -2,17 +2,13 @@ import { describe, expect, it } from "@effect/vitest";
 
 import {
   decodeIssueDetailJson,
-  decodeIssueSearchJson,
   issueDetailOf,
   issueSearchGraphQlDocument,
   issueStatesGraphQlDocument,
   linkedPullRequestsGraphQlDocument,
   linkedPullRequestsOf,
-  pullRequestCheckVerdictsOf,
-  pullRequestChecksGraphQlDocument,
   pullRequestOf,
   reviewStatusOf,
-  unsettledCheckUrlsOf,
 } from "./gitHubIssues.ts";
 
 const commit = (state: string, creator: string | null) => ({
@@ -48,9 +44,6 @@ describe("reviewStatusOf", () => {
   });
 });
 
-const run = (status: string) => ({ __typename: "CheckRun", status });
-const status = (state: string) => ({ __typename: "StatusContext", state });
-
 const node = {
   number: 7,
   url: "https://github.com/toolboxmd/t3code/pull/7",
@@ -82,28 +75,88 @@ describe("pullRequestOf", () => {
     expect(pullRequestOf("github.com", moved).review).toBeNull();
   });
 
+  /** A rollup as GitHub answers it: the combined state and its contexts counted by state. */
+  const rollup = (
+    state: string,
+    runs: Record<string, number> = {},
+    statuses: Record<string, number> = {},
+    totalCount = [...Object.values(runs), ...Object.values(statuses)].reduce((a, b) => a + b, 0),
+  ) => ({
+    state,
+    contexts: {
+      totalCount,
+      checkRunCountsByState: Object.entries(runs).map(([state, count]) => ({ state, count })),
+      statusContextCountsByState: Object.entries(statuses).map(([state, count]) => ({
+        state,
+        count,
+      })),
+    },
+  });
+  type Rollup = NonNullable<
+    NonNullable<Parameters<typeof pullRequestOf>[1]["headRef"]>["target"]
+  >["statusCheckRollup"];
+  const checksOf = (statusCheckRollup: Rollup, oid = "abc123") =>
+    pullRequestOf("github.com", {
+      ...node,
+      headRef: { target: { ...commit("SUCCESS", "lukemaj"), statusCheckRollup, oid } },
+    });
+
   it.each([
-    ["all passed", { state: "SUCCESS" }, "success"],
-    ["one still to arrive", { state: "PENDING" }, "pending"],
-    ["one expected", { state: "EXPECTED" }, "pending"],
+    ["every check ended and passed", rollup("SUCCESS", { SUCCESS: 20, SKIPPED: 10 }), "success"],
+    [
+      "every check ended and one failed",
+      rollup("FAILURE", { SUCCESS: 20, FAILURE: 1, CANCELLED: 1 }, { SUCCESS: 1 }),
+      "failure",
+    ],
+    // GitHub reads FAILURE as soon as one check fails, while others still run.
+    [
+      "a failed rollup with a run in progress",
+      rollup("FAILURE", { FAILURE: 1, IN_PROGRESS: 3 }),
+      "pending",
+    ],
+    [
+      "a failed rollup with a status to arrive",
+      rollup("FAILURE", { SUCCESS: 2 }, { FAILURE: 1, PENDING: 1 }),
+      "pending",
+    ],
+    ["a queued run", rollup("PENDING", { QUEUED: 1, SUCCESS: 1 }), "pending"],
+    ["a required status still expected", rollup("EXPECTED", { SUCCESS: 1 }), "pending"],
+    ["a rollup with nothing in it", rollup("SUCCESS"), "none"],
     ["a head nothing reported on", null, "none"],
   ] as const)("reads the head's checks, %s, as %s", (_label, statusCheckRollup, expected) => {
-    const target = { ...commit("SUCCESS", "lukemaj"), statusCheckRollup };
-    expect(pullRequestOf("github.com", { ...node, headRef: { target } }).checks).toBe(expected);
+    expect(checksOf(statusCheckRollup).checks).toBe(expected);
   });
 
   it.each([
-    // GitHub reports failure once one check fails, while others may still run.
-    ["a failed rollup", { statusCheckRollup: { state: "FAILURE" } }, "abc123"],
-    ["an errored rollup", { statusCheckRollup: { state: "ERROR" } }, "abc123"],
-    ["a state it does not know", { statusCheckRollup: { state: "SOMETHING_NEW" } }, "abc123"],
-    ["a branch that moved past the head", { statusCheckRollup: { state: "SUCCESS" } }, "def"],
-    ["a target that is no commit", {}, "abc123"],
-  ])("leaves the checks unknown for %s", (_label, rollup, oid) => {
-    const target = { ...commit("SUCCESS", "lukemaj"), ...rollup, oid };
-    expect(pullRequestOf("github.com", { ...node, headRef: { target } })).not.toHaveProperty(
-      "checks",
+    ["a state it does not know", rollup("SUCCESS", { SOMETHING_NEW: 1, SUCCESS: 1 })],
+    ["counts that do not account for every check", rollup("FAILURE", { FAILURE: 1 }, {}, 3)],
+    ["a combined state it does not know", rollup("SOMETHING_NEW", { SUCCESS: 1 })],
+    ["a failed rollup without counts", { state: "FAILURE" }],
+    [
+      "counts GitHub left out",
+      {
+        ...rollup("FAILURE"),
+        contexts: { totalCount: 1, checkRunCountsByState: null, statusContextCountsByState: [] },
+      },
+    ],
+  ])("leaves the checks unknown for %s", (_label, statusCheckRollup) => {
+    expect(checksOf(statusCheckRollup)).not.toHaveProperty("checks");
+  });
+
+  // One commit node carries both, so a push between two reads cannot pair one commit's review
+  // with another commit's checks.
+  it("reads the review mark and the checks from one commit, or neither", () => {
+    const ended = rollup("FAILURE", { FAILURE: 1 });
+    expect(checksOf(ended)).toMatchObject({ review: { state: "success" }, checks: "failure" });
+    // The branch moved past the head GitHub reports: that commit's mark and checks both drop.
+    const moved = checksOf(ended, "def");
+    expect(moved.review).toBeNull();
+    expect(moved).not.toHaveProperty("checks");
+    const document = issueSearchGraphQlDocument({ rows: 1, q: "is:issue" }).query;
+    expect(document).toContain(
+      "... on Commit { oid statusCheckRollup { state contexts(first: 1) { totalCount checkRunCountsByState { state count } statusContextCountsByState { state count } } } status { context(",
     );
+    expect(document.match(/statusCheckRollup/gu)).toHaveLength(1);
   });
 
   it.each([
@@ -115,105 +168,6 @@ describe("pullRequestOf", () => {
       headSha: "abc123",
       review: null,
     });
-  });
-});
-
-describe("a failed rollup", () => {
-  const reviewed = (number: number, overrides: object = {}, mark = "SUCCESS") => ({
-    ...node,
-    number,
-    url: `https://github.com/toolboxmd/t3code/pull/${number}`,
-    isDraft: false,
-    headRef: { target: { ...commit(mark, "lukemaj"), statusCheckRollup: { state: "FAILURE" } } },
-    ...overrides,
-  });
-  const page = (closing: ReadonlyArray<object | null>, linked: Record<string, object> = {}) => {
-    const issue = {
-      number: 1,
-      title: "Issue",
-      url: "https://github.com/toolboxmd/t3code/issues/1",
-      state: "OPEN",
-      stateReason: null,
-      repository: { nameWithOwner: "toolboxmd/t3code" },
-      createdAt: "2026-09-20T10:00:00Z",
-      updatedAt: "2026-09-21T10:00:00Z",
-      author: null,
-      labels: { nodes: [] },
-      milestone: null,
-      comments: { totalCount: 0 },
-      parent: null,
-      subIssues: { totalCount: 0, nodes: [] },
-      issueDependenciesSummary: { blockedBy: 0 },
-      closedByPullRequestsReferences: { nodes: closing },
-    };
-    const raw = JSON.stringify({
-      data: {
-        viewer: { login: "lukemaj" },
-        search: {
-          issueCount: 1,
-          pageInfo: { hasNextPage: false, endCursor: null },
-          nodes: [issue],
-        },
-        ...linked,
-      },
-    });
-    const rows = decodeIssueSearchJson(raw);
-    if (rows._tag !== "Success") throw new Error("the search fixture did not decode");
-    return unsettledCheckUrlsOf(rows.success, raw);
-  };
-
-  it("is looked into only where it can decide whose move it is", () => {
-    expect(
-      page(
-        [
-          reviewed(1),
-          reviewed(2, { isDraft: true }),
-          reviewed(3, { state: "MERGED" }),
-          reviewed(4, {}, "PENDING"),
-          reviewed(5, { headRefOid: "moved" }),
-          null,
-        ],
-        // A thread-linked pull request counts like a closing one, once.
-        { linked0: reviewed(6), linked1: reviewed(1) },
-      ),
-    ).toEqual([
-      "https://github.com/toolboxmd/t3code/pull/1",
-      "https://github.com/toolboxmd/t3code/pull/6",
-    ]);
-  });
-
-  it("reads the contexts of at most 20 pull requests a page", () => {
-    expect(page(Array.from({ length: 25 }, (_, index) => reviewed(index + 1)))).toHaveLength(20);
-  });
-
-  it("asks for one page of contexts per pull request, by variable only", () => {
-    const document = pullRequestChecksGraphQlDocument(["https://github.com/a/b/pull/1"]);
-    expect(document?.query).toContain("checks0: resource(url: $checks0_url)");
-    expect(document?.query).toContain("contexts(first: 100)");
-    expect(document?.variables).toEqual({ checks0_url: "https://github.com/a/b/pull/1" });
-    expect(pullRequestChecksGraphQlDocument([])).toBeNull();
-  });
-
-  it.each([
-    ["a check run still in progress", [run("COMPLETED"), run("IN_PROGRESS")], 2, "pending"],
-    ["a commit status still to arrive", [run("COMPLETED"), status("PENDING")], 2, "pending"],
-    ["every context ended", [run("COMPLETED"), status("FAILURE"), status("SUCCESS")], 3, "failure"],
-    // One still runs among those read: that much is known whatever the rest are.
-    ["one running among more than a page", [run("QUEUED")], 140, "pending"],
-    ["more contexts than the page holds", [run("COMPLETED")], 140, undefined],
-    ["a context GitHub did not return", [run("COMPLETED"), null], 2, undefined],
-  ] as const)("settles %s", (_label, nodes, totalCount, expected) => {
-    const urls = ["https://github.com/a/b/pull/1"];
-    const answer = (oid: string) => ({
-      checks0: {
-        headRefOid: "abc123",
-        headRef: { target: { oid, statusCheckRollup: { contexts: { totalCount, nodes } } } },
-      },
-    });
-    expect(pullRequestCheckVerdictsOf(urls, answer("abc123")).get(urls[0]!)).toBe(expected);
-    // A head that moved since the page was read settles nothing.
-    expect(pullRequestCheckVerdictsOf(urls, answer("def")).size).toBe(0);
-    expect(pullRequestCheckVerdictsOf(urls, { checks0: null }).size).toBe(0);
   });
 });
 
