@@ -352,20 +352,35 @@ jobs:
           exit "$(cat "$RUNNER_TEMP/apt-status")"
 
       # `changes` lists the affected packages, or nothing when all of them are.
+      # Fork: run client-runtime alone so its large approval-text test does not
+      # compete with other packages' Vitest workers on the 4-vCPU runner (#1033).
+      - name: Test client-runtime
+        if: ${{ needs.changes.outputs.test_packages == '' || contains(format(' {0} ', needs.changes.outputs.test_packages), ' @t3tools/client-runtime ') }}
+        run: |
+          set -o pipefail
+          # The runner's trace writer can crash on surrogate pairs in test output.
+          vp run --filter @t3tools/client-runtime test 2>&1 | python3 -u -c '
+          import sys
+          for line in sys.stdin:
+              sys.stdout.write(line.encode("ascii", "backslashreplace").decode("ascii"))
+          '
+
       - name: Test
+        if: ${{ needs.changes.outputs.test_packages != '@t3tools/client-runtime' }}
         env:
           TEST_PACKAGES: ${{ needs.changes.outputs.test_packages }}
         run: |
           set -o pipefail
-          filters=(--filter '!t3' --filter '!@t3tools/monorepo' --filter '!@t3tools/web')
+          filters=(--filter '!t3' --filter '!@t3tools/monorepo' --filter '!@t3tools/web' --filter '!@t3tools/client-runtime')
           if [[ -n "$TEST_PACKAGES" ]]; then
             filters=()
-            for package in $TEST_PACKAGES; do filters+=(--filter "$package"); done
+            for package in $TEST_PACKAGES; do
+              [[ "$package" == '@t3tools/client-runtime' ]] && continue
+              filters+=(--filter "$package")
+            done
           fi
-          # Fork: each package runs its own Vitest workers. Two concurrent suites leave
-          # headroom on the 4-vCPU runner for CPU-heavy tests such as approval text (#1033).
           # The runner's trace writer can crash on surrogate pairs in test output.
-          vp run --parallel --concurrency-limit 2 "${filters[@]}" test 2>&1 | python3 -u -c '
+          vp run --parallel --concurrency-limit 4 "${filters[@]}" test 2>&1 | python3 -u -c '
           import sys
           for line in sys.stdin:
               sys.stdout.write(line.encode("ascii", "backslashreplace").decode("ascii"))
