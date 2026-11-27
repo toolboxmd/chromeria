@@ -3895,6 +3895,63 @@ it.live("a challenge its header decides holds the site while its body never fini
   ).pipe(Effect.provide(layer)),
 );
 
+it.live("a challenge whose body arrives late still holds the site", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = NodeHttp.createServer((_, response) => {
+        response.writeHead(403, { "content-type": "text/html" });
+        response.write("<html>");
+        // @effect-diagnostics-next-line globalTimers:off -- The fixture server sends its body late.
+        const late = setTimeout(
+          () =>
+            response.end(
+              `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+            ),
+          6_000,
+        );
+        response.on("close", () => clearTimeout(late));
+      });
+      yield* Effect.acquireRelease(
+        Effect.promise(() => new Promise<void>((done) => server.listen(0, "127.0.0.1", done))),
+        () =>
+          Effect.sync(() => {
+            server.closeAllConnections();
+            server.close();
+          }),
+      );
+      const port = (server.address() as { port: number }).port;
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          chromium.launch({
+            headless: true,
+            args: [`--host-resolver-rules=MAP shop.test 127.0.0.1:${port}`],
+          }),
+        ),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      realContextOverride = yield* Effect.promise(() => chromiumBrowser.newContext());
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const events = yield* manager.subscribeEvents;
+      // The request ends before the body does; it does not report the page as clean.
+      yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "http://shop.test/", readiness: "domContentLoaded", timeoutMs: 3_000 },
+          tabId,
+        }),
+      );
+      const held = () =>
+        manager
+          .list({ threadId: scope.thread.threadId })
+          .pipe(Effect.map(({ sessions }) => sessions[0]?.siteHold));
+      while ((yield* held()) === undefined) yield* PubSub.take(events);
+      expect(yield* held()).toMatchObject({ site: "shop.test", vendor: "datadome" });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live("releasing one site keeps the banner of another site the tab still holds", () =>
   Effect.scoped(
     Effect.gen(function* () {

@@ -660,8 +660,8 @@ const READ_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> = new 
 ]);
 
 /** Operations that can send a request to the tab's site, so a Site hold refuses them. */
-// A vendor's check page is small; a body still arriving after this is read as empty.
-const CHECK_BODY_READ_MS = 5_000;
+// How long a release waits for its tab's classification before deciding on what it has.
+const RELEASE_CLASSIFY_WAIT_MS = 3_000;
 
 const SITE_HOLD_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> = new Set([
   "navigate",
@@ -1820,9 +1820,10 @@ const make = Effect.gen(function* () {
         ) {
           const answer = { status: response.status(), headers: response.headers() };
           const classified = suspectCheck(tab, response.url());
+          const decided = answer.headers["cf-mitigated"] === "challenge";
           tab.siteHoldCheck = Promise.all([
             tab.siteHoldCheck,
-            readCheckBody(response)
+            (decided ? Promise.resolve("") : response.text().catch(() => ""))
               .then((body) => {
                 const verdict = classifyAntiBotPage({ ...answer, html: body.slice(0, 65_536) });
                 if (verdict) return raiseSiteHold(tab, verdict, response.url(), classified.at);
@@ -1842,7 +1843,7 @@ const make = Effect.gen(function* () {
             const decided = document.headers["cf-mitigated"] === "challenge";
             tab.siteHoldCheck = Promise.all([
               tab.siteHoldCheck,
-              (decided ? Promise.resolve("") : readCheckBody(response))
+              (decided ? Promise.resolve("") : response.text().catch(() => ""))
                 .then((html) => {
                   const verdict = classifyAntiBotPage({ ...document, html });
                   if (verdict) return raiseSiteHold(tab, verdict, response.url(), classified.at);
@@ -3464,17 +3465,6 @@ const make = Effect.gen(function* () {
     since,
   });
 
-  /** A check's body is read for at most a few seconds, so classification always ends. */
-  const readCheckBody = (response: { text: () => Promise<string> }) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    return Promise.race([
-      response.text().catch(() => ""),
-      new Promise<string>((resolve) => {
-        timer = setTimeout(() => resolve(""), CHECK_BODY_READ_MS);
-      }),
-    ]).finally(() => clearTimeout(timer));
-  };
-
   /**
    * Waits for the tab's pending classification within the request's time. A check still being
    * read when the time runs out is no success: the request stops and the caller can try again.
@@ -3547,6 +3537,7 @@ const make = Effect.gen(function* () {
   const guardSiteHold = async <A>(
     tab: ServerTab,
     request: PreviewAutomationRequest,
+    deadlineMs: number,
     authorities: readonly [() => Promise<void>, () => Promise<void>],
     run: (authorize: () => Promise<void>, resourceAuthorization: () => Promise<void>) => Promise<A>,
   ): Promise<A> => {
@@ -3563,7 +3554,6 @@ const make = Effect.gen(function* () {
     }
     // A check still being classified must not let the next action through. A page the
     // action leaves is not where it acts, so navigations check their target.
-    const deadlineMs = performance.now() + request.timeoutMs;
     const refuseHeld = async () => {
       await classifiedBy(tab, deadlineMs);
       const hold = siteHoldOf(tab, leavesPage ? target : tab.page.url());
@@ -3612,9 +3602,15 @@ const make = Effect.gen(function* () {
         await showRemainingHold(tab, hold);
         continue;
       }
-      // The person's own tab finishes classifying first; responses other tabs are still
-      // classifying keep the hold pending.
-      await tab.siteHoldCheck;
+      // The person's own tab gets a moment to finish classifying; any response still being
+      // classified then keeps the hold, so a stalled body cannot hold the release up.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        tab.siteHoldCheck,
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, RELEASE_CLASSIFY_WAIT_MS);
+        }),
+      ]).finally(() => clearTimeout(timer));
       // Only a document on the held site that loaded after the check, with a status vendors
       // never give a check (2xx, 3xx), is verified clean; a navigation or control change
       // during the read makes the result stale.
@@ -3961,6 +3957,7 @@ const make = Effect.gen(function* () {
           return await guardSiteHold(
             tab,
             request,
+            deadlineMs,
             [authorize, resourceAuthorization],
             (guardedAuthorize, guardedResource) =>
               runTabOperation(tab, request, guardedAuthorize, guardedResource, deadlineMs),
