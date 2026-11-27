@@ -3628,8 +3628,7 @@ const make = Effect.gen(function* () {
     // classification that began meanwhile is waited for and everything is checked again.
     const guarded = (authority: () => Promise<void>) => async () => {
       for (;;) {
-        const pending = tab.siteHoldCheck;
-        await classifiedBy(tab, deadlineMs);
+        await classifiedBy(tab, deadlineMs, leavesPage ? target : tab.page.url());
         await authority();
         if (
           generation !== tab.control.generation ||
@@ -3641,7 +3640,7 @@ const make = Effect.gen(function* () {
           });
         if (performance.now() >= deadlineMs)
           throw new DOMException("This browser request expired.", "TimeoutError");
-        if (tab.siteHoldCheck !== pending) continue;
+        if (siteHolds.classifyingOn(tab.tabId)) continue;
         const hold = siteHoldOf(tab, leavesPage ? target : tab.page.url());
         if (hold) throw siteHoldError(hold);
         return;
@@ -3936,20 +3935,27 @@ const make = Effect.gen(function* () {
                   // checks it right before the request leaves.
                   // The site wait used part of the request's time.
                   const left = Math.max(1, Math.floor(deadlineMs - performance.now()));
-                  await navigate(tab, url, "load", Math.min(navigationTimeout, left), async () => {
-                    await authorize();
-                    // A person who took the tab and gave it back changed the page under it.
-                    if (
-                      generation !== tab.control.generation ||
-                      !tab.control.agentCanActNow(request.agentSessionId!)
-                    )
-                      throw new BrowserControlInterrupted({
-                        message: "A human took control of this tab.",
-                        reason: "humanControl",
-                      });
-                    if (performance.now() >= deadlineMs)
-                      throw new DOMException("This browser request expired.", "TimeoutError");
-                  }, deadlineMs);
+                  await navigate(
+                    tab,
+                    url,
+                    "load",
+                    Math.min(navigationTimeout, left),
+                    async () => {
+                      await authorize();
+                      // A person who took the tab and gave it back changed the page under it.
+                      if (
+                        generation !== tab.control.generation ||
+                        !tab.control.agentCanActNow(request.agentSessionId!)
+                      )
+                        throw new BrowserControlInterrupted({
+                          message: "A human took control of this tab.",
+                          reason: "humanControl",
+                        });
+                      if (performance.now() >= deadlineMs)
+                        throw new DOMException("This browser request expired.", "TimeoutError");
+                    },
+                    deadlineMs,
+                  );
                 });
             } else {
               // A failed open returns no tabId; a leftover hidden tab would block later reuse.
@@ -4022,6 +4028,8 @@ const make = Effect.gen(function* () {
             tab.control.controller === null &&
             // A tab holding a site's check stays for the person, as an agent's close leaves it.
             siteHolds.heldBy(tab.tabId).length === 0 &&
+            // A check still being read may be about to hold this tab for the person.
+            !siteHolds.classifyingOn(tab.tabId) &&
             tabs.get(tabKey(tab.threadId, tab.tabId)) === tab
           ) {
             await runPromise(manager.close({ threadId: tab.threadId, tabId: tab.tabId }));
