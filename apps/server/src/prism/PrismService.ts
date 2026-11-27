@@ -148,8 +148,11 @@ function usageBlock(
   provider: ServerProvider,
   failures: ReadonlyArray<UsageLimitFailure>,
   now: number,
+  model: string,
 ) {
-  const window = exhaustedWindow(provider, now);
+  // Model-scoped windows list slugs; a Color may name the model by an alias.
+  const slug = provider.models.find((m) => m.aliases?.includes(model))?.slug ?? model;
+  const window = exhaustedWindow(provider, now, slug);
   if (window)
     return `${window.label} usage window is exhausted ${window.resetsAt ? `until ${window.resetsAt}` : "with no reported reset"}`;
   const failure = failures
@@ -300,7 +303,7 @@ const make = Effect.gen(function* () {
           skip(candidate, provider ? "provider is disabled" : "provider is not configured");
           continue;
         }
-        const block = usageBlock(provider, failures, now);
+        const block = usageBlock(provider, failures, now, candidate.model);
         if (block !== undefined) {
           // Credits cover only spent plan windows, never a recorded usage-limit failure. No read
           // for an unavailable instance or a Color whose model the provider does not advertise.
