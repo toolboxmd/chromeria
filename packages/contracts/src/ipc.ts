@@ -1,3 +1,8 @@
+import type {
+  CookieMirrorConnectionInput,
+  CookieMirrorConnectionStatus,
+} from "./browserCookieMirror.ts";
+import type { AuthRenewalLocalRecord } from "./auth.ts";
 import * as Schema from "effect/Schema";
 import type { DatabaseMigrationProgress } from "./server.ts";
 import type { PreviewCaptureFailureEncoded } from "./previewCapture.ts";
@@ -1110,6 +1115,9 @@ export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
 export interface DesktopBridge {
+  cookieMirrorConnection?: (
+    input: CookieMirrorConnectionInput,
+  ) => Promise<CookieMirrorConnectionStatus>;
   getAppBranding: () => DesktopAppBranding | null;
   getDatabaseMigrationProgress?: () => Promise<DatabaseMigrationProgress | null>;
   /** `null` until the desktop host has read the login shell's environment; ask again later. */
@@ -1145,8 +1153,15 @@ export interface DesktopBridge {
   getLocalEnvironmentBearerToken: () => Promise<string>;
   getClientSettings: () => Promise<ClientSettings | null>;
   setClientSettings: (settings: ClientSettings) => Promise<void>;
+  getRenewalRecord?: (key: string) => Promise<AuthRenewalLocalRecord | null>;
+  compareRenewalRecord?: (input: {
+    key: string;
+    revision: number | null;
+    value: AuthRenewalLocalRecord;
+  }) => Promise<boolean>;
   getConnectionCatalog: () => Promise<string | null>;
   setConnectionCatalog: (catalog: string) => Promise<boolean>;
+  clearConnectionCatalog?: () => Promise<void>;
   discoverSshHosts: () => Promise<readonly DesktopDiscoveredSshHost[]>;
   resolveSshHost: (alias: string) => Promise<DesktopSshEnvironmentTarget>;
   requestSnapShotPermissions: (includeAccessibility: boolean) => Promise<void>;

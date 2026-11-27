@@ -1,5 +1,7 @@
 import { msg } from "gt-i18n";
 import { translatableDetail } from "../errors/translatable.ts";
+import * as SessionRenewal from "../authorization/renewal.ts";
+import * as Clock from "effect/Clock";
 import type {
   AuthClientPresentationMetadata,
   ExecutionEnvironmentDescriptor,
@@ -100,6 +102,24 @@ const makePrimaryBroker = Effect.fn("clientRuntime.connection.broker.makePrimary
   ) {
     const bearerToken = yield* auth.bearerToken;
     if (Option.isNone(bearerToken)) {
+      const renewal = yield* Effect.serviceOption(SessionRenewal.SessionRenewal);
+      if (Option.isSome(renewal)) {
+        const key = `cookie:${new URL(target.httpBaseUrl).origin}`;
+        const record = yield* renewal.value.read(key);
+        const slot = record?.active ?? record?.provisional[0];
+        if (
+          slot &&
+          (slot.pending ||
+            slot.expiresAt === null ||
+            slot.expiresAt <= (yield* Clock.currentTimeMillis))
+        ) {
+          yield* renewal.value.ensure(key, target.httpBaseUrl).pipe(
+            Effect.catchTags({
+              RenewalRejected: () => Effect.fail(credentialMissingError("primary")),
+            }),
+          );
+        }
+      }
       return {
         environmentId: target.environmentId,
         label: target.label,
@@ -158,29 +178,63 @@ const makeBearerBroker = Effect.fn("clientRuntime.connection.broker.makeBearer")
       });
       return { ...authorized, target } satisfies PreparedConnection;
     }
-    const credential = yield* credentials.get(credentialConnectionId(target.connectionId)).pipe(
-      Effect.flatMap(
-        Option.match({
-          onNone: () => Effect.fail(credentialMissingError(target.connectionId)),
-          onSome: Effect.succeed,
+    const key = credentialConnectionId(target.connectionId);
+    const credential = yield* credentials.get(key);
+    if (Option.isSome(credential) && credential.value._tag === "DpopConnectionCredential") {
+      const authorized = yield* remote.authorizeDirectDpop({
+        expectedEnvironmentId: target.environmentId,
+        connectionId: key,
+        httpBaseUrl: profile.httpBaseUrl,
+        wsBaseUrl: profile.wsBaseUrl,
+      });
+      return { ...authorized, target } satisfies PreparedConnection;
+    }
+    let token =
+      Option.isSome(credential) && isBearerCredential(credential.value)
+        ? credential.value.token
+        : undefined;
+    const renewal = yield* Effect.serviceOption(SessionRenewal.SessionRenewal);
+    if (Option.isSome(renewal)) {
+      const record = yield* renewal.value.read(key);
+      const slot = record?.active ?? record?.provisional[0];
+      if (slot?.accessToken) token = slot.accessToken;
+      if (
+        slot &&
+        (slot.pending ||
+          !token ||
+          slot.expiresAt === null ||
+          slot.expiresAt <= (yield* Clock.currentTimeMillis))
+      ) {
+        const outcome = yield* renewal.value.ensure(key, profile.httpBaseUrl).pipe(
+          Effect.catchTags({
+            RenewalRejected: () => Effect.fail(credentialMissingError(target.connectionId)),
+          }),
+        );
+        if (outcome._tag === "Renewed") token = outcome.result.accessToken ?? token;
+      }
+    }
+    if (!token) return yield* credentialMissingError(target.connectionId);
+    const authorize = (bearerToken: string) =>
+      remote.authorizeBearer({
+        expectedEnvironmentId: target.environmentId,
+        httpBaseUrl: profile.httpBaseUrl,
+        wsBaseUrl: profile.wsBaseUrl,
+        bearerToken,
+        connectionMethod: "direct",
+      });
+    const authorized = yield* authorize(token).pipe(
+      Effect.catchTags({
+        ConnectionBlockedError: Effect.fnUntraced(function* (error) {
+          if (error.reason !== "authentication" || Option.isNone(renewal)) return yield* error;
+          const outcome = yield* renewal.value
+            .ensure(key, profile.httpBaseUrl)
+            .pipe(Effect.catchTags({ RenewalRejected: () => Effect.fail(error) }));
+          if (outcome._tag === "Renewed" && outcome.result.accessToken)
+            return yield* authorize(outcome.result.accessToken);
+          return yield* error;
         }),
-      ),
+      }),
     );
-    const authorized =
-      credential._tag === "DpopConnectionCredential"
-        ? yield* remote.authorizeDirectDpop({
-            expectedEnvironmentId: target.environmentId,
-            connectionId: credentialConnectionId(target.connectionId),
-            httpBaseUrl: profile.httpBaseUrl,
-            wsBaseUrl: profile.wsBaseUrl,
-          })
-        : yield* remote.authorizeBearer({
-            expectedEnvironmentId: target.environmentId,
-            httpBaseUrl: profile.httpBaseUrl,
-            wsBaseUrl: profile.wsBaseUrl,
-            bearerToken: credential.token,
-            connectionMethod: "direct",
-          });
     return {
       ...authorized,
       target,
