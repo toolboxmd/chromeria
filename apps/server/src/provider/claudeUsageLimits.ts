@@ -67,6 +67,7 @@ function scopedWindow(
   displayName: string,
   usedPercent: number,
   resetsAt: string | undefined,
+  modelIds?: ReadonlyArray<string>,
 ): ServerProviderUsageWindow {
   return {
     id: scopedWindowId(displayName),
@@ -75,7 +76,17 @@ function scopedWindow(
     windowDurationMins: WEEK_MINS,
     usedPercent: clampPercent(usedPercent),
     ...(resetsAt ? { resetsAt } : {}),
+    ...(modelIds ? { modelIds } : {}),
   };
+}
+
+const CLAUDE_FAMILIES = ["fable", "opus", "sonnet", "haiku"] as const;
+
+/** Names an unprobed scoped bucket by the turn model's family, the name the probe uses. */
+function modelScopeName(model: string): string {
+  const tokens = scopeToken(model).split("_");
+  const family = CLAUDE_FAMILIES.find((name) => tokens.includes(name));
+  return family ? family[0]!.toUpperCase() + family.slice(1) : model;
 }
 
 function percentFromAmounts(used: number | null | undefined, limit: number | null | undefined) {
@@ -163,37 +174,88 @@ function makeWindow(
   };
 }
 
-/** Stream utilization is 0-1. Drop unnamed overage buckets until probed to avoid unreconcilable rows. */
+/**
+ * Stream utilization is 0-1. An overage bucket the probe did not name is scoped to the turn's
+ * model through `modelIds`, so it blocks only that model; without a model it is dropped.
+ */
+function streamedWindow(
+  type: string,
+  utilization: number,
+  resetsAtSeconds: number | undefined,
+  names: ClaudeScopedLimitNames,
+  model: string | null,
+): ServerProviderUsageWindow | undefined {
+  const usedPercent = utilization * 100;
+  const resetsAt = isoFromEpochSeconds(resetsAtSeconds);
+  if (type in WINDOWS) return makeWindow(type, usedPercent, resetsAt);
+  if (type !== OVERAGE_INCLUDED_EVENT_TYPE) return undefined;
+  if (names.overageIncluded) return scopedWindow(names.overageIncluded, usedPercent, resetsAt);
+  return model ? scopedWindow(modelScopeName(model), usedPercent, resetsAt, [model]) : undefined;
+}
+
+// `unifiedWindows` is an `@internal` CLI field the SDK does not type. It is the
+// only reading a setup-token session gets, since top-level `utilization` is
+// usually absent there.
+const decodeUnifiedWindow = Schema.decodeUnknownOption(
+  Schema.Struct({ utilization: Schema.Finite, resetsAt: Schema.optional(Schema.Number) }),
+);
+
 export function claudeRateLimitEventToUpdate(
   info: SDKRateLimitInfo,
   names: ClaudeScopedLimitNames,
+  model: string | null = null,
 ): ProviderUsageLimitsUpdate | undefined {
-  const type: string | undefined = info.rateLimitType;
-  if (!type || typeof info.utilization !== "number") {
-    return undefined;
+  const windows = new Map<string, ServerProviderUsageWindow>();
+  const unified = (info as { readonly unifiedWindows?: unknown }).unifiedWindows;
+  if (typeof unified === "object" && unified !== null) {
+    for (const [type, raw] of Object.entries(unified)) {
+      const window = Option.getOrUndefined(decodeUnifiedWindow(raw));
+      const mapped =
+        window && streamedWindow(type, window.utilization, window.resetsAt, names, model);
+      if (mapped) windows.set(mapped.id, mapped);
+    }
   }
-  const usedPercent = info.utilization * 100;
-  const resetsAt = isoFromEpochSeconds(info.resetsAt);
-  if (type in WINDOWS) {
-    return { windows: [makeWindow(type, usedPercent, resetsAt)] };
+  // The CLI drops a window from this snapshot once its reset passes, so a
+  // complete snapshot can lack the weekly window right after the week resets.
+  const complete = windows.size > 0;
+  // The CLI can skip refreshing its per-window snapshot for a response, so the
+  // event's own window is the newer reading.
+  if (info.rateLimitType && typeof info.utilization === "number") {
+    const mapped = streamedWindow(
+      info.rateLimitType,
+      info.utilization,
+      info.resetsAt,
+      names,
+      model,
+    );
+    if (mapped) windows.set(mapped.id, mapped);
   }
-  if (type === OVERAGE_INCLUDED_EVENT_TYPE && names.overageIncluded) {
-    return { windows: [scopedWindow(names.overageIncluded, usedPercent, resetsAt)] };
-  }
-  return undefined;
+  if (windows.size === 0) return undefined;
+  return { windows: [...windows.values()], ...(complete ? { clearsProbeFailure: true } : {}) };
 }
+
+// `claude setup-token` credentials cannot read limits through `get_usage`, but
+// their turns stream them.
+const SETUP_TOKEN_SOURCES = new Set([
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+]);
 
 /** get_usage percentages are already 0-100. */
 export function claudeUsageResponseToLimits(input: {
   readonly response: Pick<SDKControlGetUsageResponse, "rate_limits_available" | "rate_limits">;
   readonly checkedAt: string;
+  readonly tokenSource?: string | undefined;
 }): { readonly limits: ServerProviderUsageLimits; readonly names: ClaudeScopedLimitNames } {
   const { response, checkedAt } = input;
   if (!response.rate_limits_available || !response.rate_limits) {
+    const setupToken =
+      !response.rate_limits_available && SETUP_TOKEN_SOURCES.has(input.tokenSource ?? "");
     return {
       limits: makeUnavailableUsageLimits({
         checkedAt,
-        reason: response.rate_limits_available ? "probeFailed" : "unsupported",
+        reason: response.rate_limits_available || setupToken ? "probeFailed" : "unsupported",
+        ...(setupToken ? { message: "Limits appear after this account's next turn." } : {}),
       }),
       names: { overageIncluded: undefined },
     };
