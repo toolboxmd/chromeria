@@ -1,11 +1,20 @@
 import {
+  threadRelationshipLiveStatus,
+  threadRelationshipLiveStatusLabel,
+} from "@t3tools/client-runtime/state/thread-relationships";
+import {
   workflowMemberModelSelection,
   type SubagentWorkflowGroup,
   type RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { SideThreadOpenIntent } from "@t3tools/client-runtime/side-thread";
 import { useSideThreadTrigger } from "../../hooks/useSideThreadTrigger";
-import type { ProviderDriverKind, ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
+import type {
+  OrchestrationV2ThreadShell,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ServerProvider,
+} from "@t3tools/contracts";
 import { msg, T, useGT, useMessages } from "gt-react";
 import { ChevronDownIcon, SquareIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -69,19 +78,25 @@ function WorkflowMemberRow({
   providerEntries,
   driver,
   onOpen,
+  available,
+  childThread,
 }: {
   member: RuntimeSubagent;
+  childThread: OrchestrationV2ThreadShell | null | undefined;
   providerInstanceId: ProviderInstanceId;
   provider: ServerProvider | undefined;
   providers: ReadonlyArray<ServerProvider> | undefined;
   providerEntries: ReadonlyArray<ProviderInstanceEntry>;
   driver: ProviderDriverKind | undefined;
   onOpen: (threadId: string, intent: SideThreadOpenIntent) => void;
+  available: boolean;
 }) {
   const gt = useGT();
   const trigger = useSideThreadTrigger();
   const threadId = member.childThreadId;
-  const canOpen = threadId !== null;
+  const canOpen = threadId !== null && available;
+  const liveStatus = threadRelationshipLiveStatus(childThread);
+  const liveLabel = threadRelationshipLiveStatusLabel(liveStatus);
   return (
     <li>
       <Tooltip>
@@ -90,7 +105,11 @@ function WorkflowMemberRow({
           render={
             <ThreadDetailsControl
               part="row"
-              aria-label={gt("Open {title} chat", { title: member.title })}
+              aria-label={
+                liveLabel === null
+                  ? gt("Open {title} chat", { title: member.title })
+                  : gt("Open {title} chat, {status}", { title: member.title, status: liveLabel })
+              }
               disabled={!canOpen}
               {...(canOpen ? trigger((intent) => onOpen(threadId, intent)) : {})}
             />
@@ -100,11 +119,13 @@ function WorkflowMemberRow({
             driver={driver}
             provider={provider}
             providerEntries={providerEntries}
-            status={member.status}
+            status={liveStatus ?? member.status}
           />
           <span className="min-w-0 flex-1 truncate">{member.title}</span>
-          <span className="sr-only">{member.status}</span>
-          {member.startedAt ? (
+          {liveLabel === null ? <span className="sr-only">{member.status}</span> : null}
+          {liveLabel !== null ? (
+            <span className="shrink-0 text-2xs text-muted-foreground">{liveLabel}</span>
+          ) : member.startedAt ? (
             <span className="shrink-0 text-2xs font-normal tabular-nums text-muted-foreground">
               <AgentElapsed agent={member} />
             </span>
@@ -122,6 +143,7 @@ function WorkflowMemberRow({
             driver={driver}
             elapsed={<AgentElapsed agent={member} />}
             status={member.status}
+            presentationStatus={liveStatus}
             result={member.result ?? member.error}
             progress={member.progress}
           />
@@ -140,6 +162,8 @@ export function ThreadLineageWorkflowRow({
   providerEntries,
   driver,
   onOpenThread,
+  isThreadAvailable,
+  getThreadShell,
   onStop,
   stopping,
   stopDisabled,
@@ -152,6 +176,8 @@ export function ThreadLineageWorkflowRow({
   readonly providerEntries: ReadonlyArray<ProviderInstanceEntry>;
   readonly driver: ProviderDriverKind | undefined;
   readonly onOpenThread: (threadId: string, intent: SideThreadOpenIntent) => void;
+  readonly isThreadAvailable: (threadId: string) => boolean;
+  readonly getThreadShell: (threadId: string) => OrchestrationV2ThreadShell | null | undefined;
   readonly onStop?: (() => void) | undefined;
   readonly stopping: boolean;
   readonly stopDisabled: boolean;
@@ -265,12 +291,20 @@ export function ThreadLineageWorkflowRow({
                       <WorkflowMemberRow
                         key={member.id}
                         member={member}
+                        childThread={
+                          member.childThreadId === null
+                            ? null
+                            : getThreadShell(member.childThreadId)
+                        }
                         providerInstanceId={providerInstanceId}
                         provider={provider}
                         providers={providers}
                         providerEntries={providerEntries}
                         driver={driver}
                         onOpen={onOpenThread}
+                        available={
+                          member.childThreadId !== null && isThreadAvailable(member.childThreadId)
+                        }
                       />
                     ))}
                   </ul>
@@ -282,12 +316,16 @@ export function ThreadLineageWorkflowRow({
             <WorkflowMemberRow
               key={member.id}
               member={member}
+              childThread={
+                member.childThreadId === null ? null : getThreadShell(member.childThreadId)
+              }
               providerInstanceId={providerInstanceId}
               provider={provider}
               providers={providers}
               providerEntries={providerEntries}
               driver={driver}
               onOpen={onOpenThread}
+              available={member.childThreadId !== null && isThreadAvailable(member.childThreadId)}
             />
           ))}
           {phases.length === 0 && group.unphasedMembers.length === 0 ? (

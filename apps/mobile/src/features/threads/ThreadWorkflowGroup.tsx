@@ -1,3 +1,4 @@
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   isActiveSubagentStatus,
@@ -60,7 +61,13 @@ export function ThreadWorkflowGroup(props: {
   const rail = workflowRail(group, m);
   const open = rail.find((item) => item.key === selected);
   const label = group.workflow.workflowName ?? group.workflow.title;
-  const statusLabel = resolveSubagentRowPresentation(props.subagent, false, m).statusLabel;
+  const childTarget = subagentChildTarget(props.subagent);
+  const child = useThreadShell(
+    childTarget === null
+      ? null
+      : scopeThreadRef(childTarget.environmentId ?? props.environmentId, childTarget.threadId),
+  )?.source;
+  const statusLabel = resolveSubagentRowPresentation(props.subagent, false, child, m).statusLabel;
 
   return (
     <View className="my-2">
@@ -183,6 +190,7 @@ function WorkflowMemberRow(props: {
       childThreadId: threadId,
     },
     false,
+    shell?.source,
     m,
   );
   const { detail, error } = workflowMemberDetail(member);

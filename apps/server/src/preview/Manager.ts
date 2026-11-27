@@ -12,6 +12,7 @@ import {
   FILL_PREVIEW_VIEWPORT,
   PreviewSessionLookupError,
   type PreviewSessionSnapshot,
+  type PreviewSiteHold,
 } from "@t3tools/contracts";
 import {
   isPreviewUrlNormalizationError,
@@ -29,14 +30,24 @@ import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import { PreviewControlRequiredError } from "@t3tools/contracts";
 
+/** Internal effect context. Never included in public preview events or snapshots. */
+export type Authorize = () => Promise<void>;
+export interface ServerEvent {
+  readonly event: PreviewEvent;
+  readonly authorize?: Authorize;
+}
+
 export class PreviewManager extends Context.Service<
   PreviewManager,
   {
     readonly open: (
       input: PreviewOpenInput & {
         readonly automationOwner?: string;
+        /** A page already in the server browser, such as a popup a person opened from one. */
+        readonly serverPage?: boolean;
         /** Runs before the `opened` event publishes, so subscribers find state keyed by the tab. */
         readonly beforePublish?: (snapshot: PreviewSessionSnapshot) => void;
+        readonly authorize?: Authorize;
       },
     ) => Effect.Effect<PreviewSessionSnapshot, PreviewError>;
     readonly reportStatus: (
@@ -53,19 +64,41 @@ export class PreviewManager extends Context.Service<
     readonly requestReveal: (
       input: PreviewCloseInput & { readonly tabId: string; readonly force: boolean },
     ) => Effect.Effect<void, PreviewError>;
+    /** Shows or withdraws the tab's Site hold on every client. */
+    readonly setSiteHold: (
+      input: PreviewCloseInput & {
+        readonly tabId: string;
+        readonly siteHold: PreviewSiteHold | undefined;
+      },
+    ) => Effect.Effect<void, PreviewError>;
     readonly resize: (
       input: PreviewResizeInput,
+      authorize?: Authorize,
     ) => Effect.Effect<PreviewSessionSnapshot, PreviewError>;
     readonly adjust: (
       input: PreviewAdjustInput,
+      authorize?: Authorize,
     ) => Effect.Effect<PreviewSessionSnapshot, PreviewError>;
     readonly close: (input: PreviewCloseInput) => Effect.Effect<void, PreviewError>;
+    /** Runs when a client clears a tab's Site hold; the hold owner decides what clears. */
+    readonly registerSiteHoldClear: (
+      handler: (input: {
+        readonly threadId: string;
+        readonly tabId: string;
+        readonly authorize?: Authorize;
+      }) => Effect.Effect<void>,
+    ) => Effect.Effect<void, never, Scope.Scope>;
     /** Runs before closed events publish, while clients still own their page surfaces. */
     readonly registerBeforeClose: (
       handler: (snapshots: ReadonlyArray<PreviewSessionSnapshot>) => Effect.Effect<void>,
     ) => Effect.Effect<void, never, Scope.Scope>;
     readonly list: (input: PreviewListInput) => Effect.Effect<PreviewListResult>;
     readonly events: Stream.Stream<PreviewEvent>;
+    readonly subscribeServerEvents: Effect.Effect<
+      PubSub.Subscription<ServerEvent>,
+      never,
+      Scope.Scope
+    >;
     readonly subscribeEvents: Effect.Effect<PubSub.Subscription<PreviewEvent>, never, Scope.Scope>;
   }
 >()("t3/preview/Manager/PreviewManager") {}
@@ -131,6 +164,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   const serverEpoch = yield* random.uuidV4();
   const stateRef = yield* SynchronizedRef.make<ManagerState>(initialState);
   const eventsPubSub = yield* PubSub.unbounded<PreviewEvent>();
+  const serverEventsPubSub = yield* PubSub.unbounded<ServerEvent>();
   const events: Stream.Stream<PreviewEvent> = Stream.fromPubSub(eventsPubSub);
   const beforeClose = new Set<
     (snapshots: ReadonlyArray<PreviewSessionSnapshot>) => Effect.Effect<void>
@@ -140,6 +174,24 @@ export const make = Effect.gen(function* PreviewManagerMake() {
       Effect.sync(() => beforeClose.add(handler)),
       () => Effect.sync(() => beforeClose.delete(handler)),
     ).pipe(Effect.asVoid);
+  const siteHoldClears = new Set<
+    Parameters<PreviewManager["Service"]["registerSiteHoldClear"]>[0]
+  >();
+  const registerSiteHoldClear: PreviewManager["Service"]["registerSiteHoldClear"] = (handler) =>
+    Effect.acquireRelease(
+      Effect.sync(() => siteHoldClears.add(handler)),
+      () => Effect.sync(() => siteHoldClears.delete(handler)),
+    ).pipe(Effect.asVoid);
+  const publish = Effect.fn("Manager.publish")(function* (
+    event: PreviewEvent,
+    authorize?: Authorize,
+  ) {
+    yield* PubSub.publish(eventsPubSub, event);
+    yield* PubSub.publish(serverEventsPubSub, {
+      event,
+      ...(authorize === undefined ? {} : { authorize }),
+    });
+  });
 
   /** Publish inside the lock to preserve state-transition order. */
   const mutateExistingSession = <R, E>(
@@ -148,6 +200,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     mutator: (
       session: PreviewSessionState,
     ) => Effect.Effect<{ next: PreviewSessionState; emit: PreviewEventDraft | null; result: R }, E>,
+    authorize?: Authorize,
   ): Effect.Effect<R, E | PreviewSessionLookupError> => {
     type ModifyResult =
       | { kind: "fail"; error: PreviewSessionLookupError }
@@ -166,11 +219,14 @@ export const make = Effect.gen(function* PreviewManagerMake() {
           Effect.fn("PreviewManager.commitMutation")(function* ({ next, emit, result }) {
             const revision = emit ? state.revision + 1 : state.revision;
             if (emit) {
-              yield* PubSub.publish(eventsPubSub, {
-                ...emit,
-                revision,
-                serverEpoch,
-              } as PreviewEvent);
+              yield* publish(
+                {
+                  ...emit,
+                  revision,
+                  serverEpoch,
+                } as PreviewEvent,
+                authorize,
+              );
             }
             const sessions = new Map(state.sessions);
             sessions.set(compositeKey(threadId, tabId), next);
@@ -210,6 +266,10 @@ export const make = Effect.gen(function* PreviewManagerMake() {
         ...(runtime === "server" && input.automationOwner !== undefined
           ? { automationOwner: input.automationOwner }
           : {}),
+        // Agents' tabs and pages that already exist there run in the server browser.
+        ...(runtime === "server" && (input.automationOwner !== undefined || input.serverPage)
+          ? { serverPage: true }
+          : {}),
         ...(input.reveal === undefined ? {} : { reveal: input.reveal }),
         updatedAt,
       };
@@ -223,15 +283,18 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             snapshot,
           });
           input.beforePublish?.(snapshot);
-          yield* PubSub.publish(eventsPubSub, {
-            type: "opened",
-            threadId: input.threadId,
-            tabId,
-            createdAt: snapshot.updatedAt,
-            serverEpoch,
-            revision,
-            snapshot,
-          });
+          yield* publish(
+            {
+              type: "opened",
+              threadId: input.threadId,
+              tabId,
+              createdAt: snapshot.updatedAt,
+              serverEpoch,
+              revision,
+              snapshot,
+            },
+            input.authorize,
+          );
           return [snapshot, { sessions, revision }] as const;
         }),
       );
@@ -339,7 +402,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
   );
 
   const resize: PreviewManager["Service"]["resize"] = Effect.fn("PreviewManager.resize")(
-    function* (input) {
+    function* (input, authorize) {
       return yield* mutateExistingSession(
         input.threadId,
         input.tabId,
@@ -362,12 +425,28 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             result: snapshot,
           };
         }),
+        authorize,
       );
     },
   );
 
   const adjust: PreviewManager["Service"]["adjust"] = Effect.fn("PreviewManager.adjust")(
-    function* (input) {
+    function* (rawInput, authorize) {
+      const { clear, ...rest } = rawInput;
+      if (clear === "siteHold")
+        yield* Effect.forEach(
+          [...siteHoldClears],
+          (handler) =>
+            handler({
+              threadId: rawInput.threadId,
+              tabId: rawInput.tabId,
+              ...(authorize === undefined ? {} : { authorize }),
+            }),
+          { discard: true },
+        );
+      const input: Omit<PreviewAdjustInput, "clear"> & {
+        readonly clear?: "cookies" | "cache";
+      } = clear === undefined || clear === "siteHold" ? rest : { ...rest, clear };
       return yield* mutateExistingSession(
         input.threadId,
         input.tabId,
@@ -401,6 +480,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
             result: snapshot,
           };
         }),
+        authorize,
       );
     },
   );
@@ -440,7 +520,7 @@ export const make = Effect.gen(function* PreviewManagerMake() {
           return Effect.succeed([undefined, state] as const);
         }
         return Effect.as(
-          Effect.forEach(eventsToEmit, (event) => PubSub.publish(eventsPubSub, event), {
+          Effect.forEach(eventsToEmit, (event) => publish(event), {
             discard: true,
           }),
           [undefined, { sessions, revision }] as const,
@@ -494,9 +574,38 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     );
   });
 
+  const setSiteHold: PreviewManager["Service"]["setSiteHold"] = Effect.fn(
+    "PreviewManager.setSiteHold",
+  )(function* (input) {
+    yield* mutateExistingSession(
+      input.threadId,
+      input.tabId,
+      Effect.fn("PreviewManager.siteHoldSession")(function* (session) {
+        const { siteHold: _previous, ...rest } = session.snapshot;
+        const snapshot: PreviewSessionSnapshot = {
+          ...rest,
+          ...(input.siteHold === undefined ? {} : { siteHold: input.siteHold }),
+          updatedAt: yield* currentIsoTimestamp,
+        };
+        return {
+          next: { ...session, snapshot },
+          emit: {
+            type: "navigated" as const,
+            threadId: session.threadId,
+            tabId: session.tabId,
+            createdAt: snapshot.updatedAt,
+            snapshot,
+          },
+          result: undefined,
+        };
+      }),
+    );
+  });
+
   return PreviewManager.of({
     open,
     requestReveal,
+    setSiteHold,
     reportStatus,
     markHeadless,
     announce,
@@ -504,8 +613,10 @@ export const make = Effect.gen(function* PreviewManagerMake() {
     adjust,
     close,
     registerBeforeClose,
+    registerSiteHoldClear,
     list,
     events,
+    subscribeServerEvents: PubSub.subscribe(serverEventsPubSub),
     subscribeEvents: PubSub.subscribe(eventsPubSub),
   });
 }).pipe(Effect.withSpan("PreviewManager.make"));

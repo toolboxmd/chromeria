@@ -31,7 +31,13 @@ function RemoteSubagentOpenButton(props: {
   readonly title: string;
   readonly onOpened: () => void;
 }) {
-  const opener = useLinkedThreadOpener(props.parentRef, props.remoteChild, props.title);
+  const { environmentId, threadId, label } = props.remoteChild;
+  // Fork: a remote launch has no thread there until it is accepted.
+  const opener = useLinkedThreadOpener(
+    props.parentRef,
+    threadId === undefined ? undefined : { environmentId, threadId, label },
+    props.title,
+  );
   const trigger = useSideThreadTrigger();
   if (!opener) return null;
   return (
@@ -107,7 +113,13 @@ export function BackgroundWorkDetails(props: {
                     : kindLabel(task.kind);
               const itemId =
                 task.itemId ?? (item?.type === "command_execution" ? item.id : undefined);
-              const childThreadId = task.kind === "subagent" ? task.childThreadId : undefined;
+              // Fork: a remote child's thread id names a thread in its own environment.
+              const childThreadId =
+                task.kind === "subagent" &&
+                (task.childEnvironmentId === undefined ||
+                  task.childEnvironmentId === props.environmentId)
+                  ? task.childThreadId
+                  : undefined;
               const remoteChild =
                 task.kind === "subagent" && item?.type === "subagent"
                   ? item.remoteChild

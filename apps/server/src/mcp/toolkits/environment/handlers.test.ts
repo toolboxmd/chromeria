@@ -1,4 +1,5 @@
 import { expect, it } from "@effect/vitest";
+import * as HostResources from "../../../resourceTelemetry/HostResources.ts";
 import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
@@ -11,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as Environment from "../../../environment/ServerEnvironment.ts";
@@ -58,6 +60,7 @@ it.effect("refuses a preferences update when the caller's turn ends while it wai
           capabilities: { repositoryIdentity: false },
         }),
       }),
+      Layer.mock(HostResources.HostResources)({}),
       Layer.mock(Settings.ServerSettingsService)({
         getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
         updateSettings: () =>
@@ -106,4 +109,31 @@ it("keeps agent feedback out of the preferences agents read and write", () => {
   expect(
     Object.keys(EnvironmentToolkit.tools.t3_environment_preferences_update.parametersSchema.fields),
   ).not.toContain("agentFeedback");
+});
+
+it("accepts a linked environment's read that predates host resources and Auto balance", () => {
+  const decode = Schema.decodeUnknownSync(
+    EnvironmentToolkit.tools.t3_environment_read.successSchema,
+  );
+  const { loadBalancing, ...olderPreferences } =
+    EnvironmentHandlers.preferences(DEFAULT_SERVER_SETTINGS);
+  expect(loadBalancing).toEqual({ enabled: false, weights: {} });
+  const identity = {
+    environmentId,
+    label: "Test",
+    serverVersion: "0.0.0",
+    platform: { os: "linux", arch: "x64" },
+    preferences: olderPreferences,
+  };
+  const older = decode(identity);
+  expect(older.hostResources).toBeUndefined();
+  expect(older.preferences.loadBalancing).toBeUndefined();
+  const hostResources = {
+    sampledAt: 1_700_000_000_000,
+    cpuUtilization: null,
+    cpuCount: 4,
+    availableMemoryBytes: 1024,
+    totalMemoryBytes: 2048,
+  };
+  expect(decode({ ...identity, hostResources }).hostResources).toEqual(hostResources);
 });

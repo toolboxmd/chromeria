@@ -18,6 +18,8 @@ import {
   vi,
 } from "vite-plus/test";
 
+import { makeExternalBrowserContext } from "./testing/BrowserExternal.fixture.ts";
+import { BrowserControlInterrupted } from "./SessionControl.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 import { SessionControl } from "./SessionControl.ts";
 
@@ -221,6 +223,144 @@ describe("server browser capture deadlines", () => {
         "Page.captureScreenshot",
         "Runtime.evaluate",
       ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("evaluate authority", () => {
+  it("sends nothing when its authority ends before dispatch, and leaves no timer behind", async () => {
+    vi.useFakeTimers();
+    try {
+      const sent: string[] = [];
+      const cdp = { send: async (method: string) => (sent.push(method), {}) };
+      let calls = 0;
+      const authorize = async () => {
+        if (++calls === 2) throw new Error("revoked");
+      };
+      await expect(
+        ServerBrowserPage.evaluate(
+          cdp as unknown as Parameters<typeof ServerBrowserPage.evaluate>[0],
+          { expression: "1" },
+          1_000,
+          authorize,
+        ),
+      ).rejects.toThrow("revoked");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(sent).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("authorizes the top-level-await retry, the first run of the expression", async () => {
+    const sent: string[] = [];
+    const cdp = {
+      send: async (method: string, params?: { replMode?: boolean }) => {
+        sent.push(params?.replMode ? `${method} repl` : method);
+        // The page's parser rejects top-level await, which runs nothing.
+        return {
+          result: { type: "undefined" },
+          exceptionDetails: {
+            text: "Uncaught",
+            scriptId: "1",
+            exception: { className: "SyntaxError", description: "await is only valid" },
+          },
+        };
+      },
+    };
+    let calls = 0;
+    const authorize = async () => {
+      if (++calls === 3) throw new Error("held");
+    };
+    await expect(
+      ServerBrowserPage.evaluate(
+        cdp as unknown as Parameters<typeof ServerBrowserPage.evaluate>[0],
+        { expression: "await 1" },
+        1_000,
+        authorize,
+      ),
+    ).rejects.toThrow("held");
+    expect(sent).toEqual(["Runtime.evaluate"]);
+  });
+
+  it("expiring while the top-level-await retry waits for authority stops no page script", async () => {
+    vi.useFakeTimers();
+    try {
+      for (const world of ["main", "isolated"] as const) {
+        const sent: string[] = [];
+        const cdp = {
+          send: async (method: string) => {
+            sent.push(method);
+            if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+            if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
+            return {
+              result: { type: "undefined" },
+              exceptionDetails: {
+                text: "Uncaught",
+                scriptId: "1",
+                exception: { className: "SyntaxError", description: "await is only valid" },
+              },
+            };
+          },
+        };
+        let calls = 0;
+        const held = Promise.withResolvers<void>();
+        const authorize = () => (++calls === 3 ? held.promise : Promise.resolve());
+        const evaluating = ServerBrowserPage.evaluate(
+          cdp as unknown as Parameters<typeof ServerBrowserPage.evaluate>[0],
+          { expression: "await 1" },
+          1_000,
+          authorize,
+          world,
+        );
+        const outcome = expect(evaluating).rejects.toThrow("did not finish");
+        await vi.advanceTimersByTimeAsync(1_500);
+        held.resolve();
+        await outcome;
+        expect(
+          sent.filter((method) => method.startsWith("Runtime.")),
+          world,
+        ).toEqual(["Runtime.evaluate"]);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("expiring while its last check is pending stops no page script and sends nothing", async () => {
+    vi.useFakeTimers();
+    try {
+      for (const world of ["main", "isolated"] as const) {
+        const sent: string[] = [];
+        const cdp = {
+          send: async (method: string) => {
+            sent.push(method);
+            if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+            if (method === "Page.createIsolatedWorld") return { executionContextId: 7 };
+            return {};
+          },
+        };
+        let calls = 0;
+        const held = Promise.withResolvers<void>();
+        const authorize = () => (++calls === 2 ? held.promise : Promise.resolve());
+        const evaluating = ServerBrowserPage.evaluate(
+          cdp as unknown as Parameters<typeof ServerBrowserPage.evaluate>[0],
+          { expression: "1" },
+          1_000,
+          authorize,
+          world,
+        );
+        const outcome = expect(evaluating).rejects.toThrow("did not finish");
+        await vi.advanceTimersByTimeAsync(1_500);
+        held.resolve();
+        await outcome;
+        expect(
+          sent.filter((method) => method.startsWith("Runtime.")),
+          world,
+        ).toEqual([]);
+      }
     } finally {
       vi.useRealTimers();
     }
@@ -440,6 +580,157 @@ describe("server browser element refs", () => {
     expect(await page.locator("#sent").inputValue()).toBe("");
   });
 
+  it("gives a public page a person's keys, pointer and wheel, and keeps the locator's target", async () => {
+    await page.setContent(
+      `<div style="height:3000px"><input id=q style="position:absolute;left:300px;top:200px">
+        <button id=go style="position:absolute;left:300px;top:260px;width:120px;height:40px">Search</button></div>
+        <script>window.log=[];for(const t of["keydown","mousemove","mousedown","mouseup","wheel","click"])
+          addEventListener(t,e=>log.push(t==="click"?"click:"+e.target.id:t),true)</script>`,
+    );
+    const sleeps: number[] = [];
+    let seed = 7;
+    const human = {
+      // A fixed sequence, so the plan is the same on every run.
+      pacing: {
+        random: () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646,
+        sleep: async (ms: number) => void sleeps.push(ms),
+      },
+      from: { x: 5, y: 5 },
+      deadline: Number.MAX_SAFE_INTEGER,
+    };
+    const log = () => page.evaluate(() => (globalThis as unknown as { log: string[] }).log);
+
+    await ServerBrowserPage.type(page, { locator: "#q", text: "cat food" }, undefined, human);
+    expect(await page.locator("#q").inputValue()).toBe("cat food");
+    expect((await log()).filter((event) => event === "keydown")).toHaveLength(8);
+    expect(sleeps, "every key waits a varied, person-like gap").toHaveLength(8);
+    expect(new Set(sleeps).size).toBeGreaterThan(4);
+    expect(Math.min(...sleeps)).toBeGreaterThan(20);
+
+    await page.evaluate(() => ((globalThis as unknown as { log: string[] }).log.length = 0));
+    await ServerBrowserPage.click(page, { locator: "#go" }, undefined, undefined, human);
+    const clicked = await log();
+    expect(clicked.indexOf("mousedown"), "the pointer travels before it presses").toBeGreaterThan(
+      10,
+    );
+    expect(clicked.slice(0, clicked.indexOf("mousedown")).every((e) => e === "mousemove")).toBe(
+      true,
+    );
+    expect(clicked).toContain("click:go");
+
+    await page.evaluate(() => ((globalThis as unknown as { log: string[] }).log.length = 0));
+    await ServerBrowserPage.scroll(page, { deltaY: 450 }, undefined, human);
+    // Chromium may merge queued wheel events, so count notches loosely.
+    expect((await log()).filter((event) => event === "wheel").length).toBeGreaterThan(2);
+    await expect.poll(() => page.evaluate("scrollY")).toBeGreaterThan(0);
+
+    // A narrow target with a thick border still gets a valid hit point.
+    await page.evaluate(`(() => {
+      const button = Object.assign(document.createElement("button"), { id: "edge" });
+      button.style.cssText = "position:absolute;left:600px;top:200px;width:8px;height:8px;border:20px solid red";
+      button.onclick = () => log.push("click:edge");
+      document.body.append(button);
+    })()`);
+    await ServerBrowserPage.click(page, { locator: "#edge" }, undefined, undefined, human);
+    expect(await log()).toContain("click:edge");
+
+    // A page scroll moves the page, not a scrollable box under a stale pointer.
+    await page.evaluate(`(() => {
+      scrollTo(0, 0);
+      const box = document.createElement("div");
+      box.style.cssText = "position:fixed;left:0;top:0;width:300px;height:300px;overflow:auto";
+      box.innerHTML = '<div style="height:2000px"></div>';
+      document.body.append(box);
+    })()`);
+    // A drag can leave the real pointer over the box while the remembered point is elsewhere.
+    await page.mouse.move(50, 50);
+    await ServerBrowserPage.scroll(page, { deltaY: 300 }, undefined, {
+      ...human,
+      from: { x: 700, y: 500 },
+    });
+    await expect.poll(() => page.evaluate("scrollY")).toBe(300);
+
+    // A scroll box inside a shadow root under the pointer also keeps the wheel off it.
+    await page.evaluate(`(() => {
+      scrollTo(0, 0);
+      const host = document.createElement("div");
+      host.style.cssText = "position:fixed;left:400px;top:0;width:300px;height:300px";
+      host.attachShadow({ mode: "open" }).innerHTML =
+        '<div style="width:300px;height:300px;overflow:auto"><div style="height:2000px"></div></div>';
+      document.body.append(host);
+    })()`);
+    await ServerBrowserPage.scroll(page, { deltaY: 300 }, undefined, {
+      ...human,
+      from: { x: 450, y: 50 },
+    });
+    await expect.poll(() => page.evaluate("scrollY")).toBe(300);
+
+    // A wheel lands on a later frame than its send returns; the page still moves once.
+    for (let run = 0; run < 3; run++) {
+      await page.evaluate("scrollTo(0, 0)");
+      await ServerBrowserPage.scroll(page, { deltaY: 100 }, undefined, {
+        ...human,
+        from: { x: 700, y: 500 },
+      });
+      // A late wheel would land within the next frames.
+      await page.evaluate("new Promise((done) => setTimeout(done, 1500))");
+      expect(await page.evaluate("scrollY"), `run ${run}`).toBe(100);
+    }
+
+    // A page that takes the gesture and scrolls itself later still moves once.
+    await page.evaluate(`(() => {
+      scrollTo(0, 0);
+      window.addEventListener("wheel", (event) => {
+        event.preventDefault();
+        const delta = event.deltaY;
+        setTimeout(() => scrollBy(0, delta), 300);
+      }, { passive: false, once: true });
+    })()`);
+    await ServerBrowserPage.scroll(page, { deltaY: 100 }, undefined, {
+      ...human,
+      from: { x: 700, y: 500 },
+    });
+    await page.evaluate("new Promise((done) => setTimeout(done, 800))");
+    expect(await page.evaluate("scrollY"), "a page that scrolls itself late").toBe(100);
+
+    // A closed shadow root and slotted content hide their boxes from the probe; the page still moves.
+    for (const mode of ["closed", "partial", "slotted"] as const) {
+      const shadow =
+        mode !== "slotted"
+          ? // "partial": the hidden box takes two notches, then has nothing left to scroll.
+            `host.attachShadow({ mode: "closed" }).innerHTML = '<div style="height:200px;overflow:auto"><div style="height:${mode === "closed" ? 2000 : 400}px"></div></div>';`
+          : `host.attachShadow({ mode: "open" }).innerHTML = '<div style="height:200px;overflow:auto"><slot></slot></div>';
+             host.innerHTML = '<div style="height:2000px"></div>';`;
+      await page.evaluate(`(() => {
+        scrollTo(0, 0);
+        document.querySelectorAll(".hidden-box").forEach((node) => node.remove());
+        const host = document.createElement("div");
+        host.className = "hidden-box";
+        host.style.cssText = "position:fixed;left:400px;top:320px;width:300px;height:200px";
+        ${shadow}
+        document.body.append(host);
+      })()`);
+      await ServerBrowserPage.scroll(page, { deltaY: 300 }, undefined, {
+        ...human,
+        from: { x: 450, y: 350 },
+      });
+      await expect.poll(() => page.evaluate("scrollY"), { message: mode }).toBe(300);
+    }
+
+    sleeps.length = 0;
+    await ServerBrowserPage.type(
+      page,
+      // Natural pacing would take about 22 s; real key round trips need time of their own.
+      { locator: "#q", text: "x".repeat(200), timeoutMs: 12_000 },
+      undefined,
+      human,
+    );
+    expect(
+      sleeps.reduce((sum, ms) => sum + ms, 0),
+      "the cadence shrinks to fit the call's deadline",
+    ).toBeLessThanOrEqual(6_000);
+  });
+
   it("shows dotted fields as dots wherever their value appears, keeping text values and refs", async () => {
     await page.setContent(`
       <table><tr><td>password:</td><td><input id="pw" type="password" aria-label="Password"></td></tr></table>
@@ -573,6 +864,24 @@ describe("server browser element refs", () => {
       5_000,
     );
     expect(result).toBe("Ready");
+  });
+
+  it("evaluates in an isolated world that shares the DOM but not page variables", async () => {
+    await page.setContent(
+      "<title>Ready</title><script>window.pageSecret = 42; document.modelContext = {};</script>",
+    );
+    const run = (expression: string, world?: "isolated" | "main") =>
+      ServerBrowserPage.evaluate(cdp, { expression }, 5_000, undefined, world);
+    const probe = "[document.title, typeof window.pageSecret, typeof document.modelContext]";
+    expect(await run(probe, "isolated")).toEqual(["Ready", "undefined", "undefined"]);
+    expect(await run(probe, "main")).toEqual(["Ready", "number", "object"]);
+    expect(await run(probe)).toEqual(["Ready", "number", "object"]);
+    await run("window.agentOnly = 1; document.body.dataset.agent = 'seen'", "isolated");
+    expect(await run("[typeof window.agentOnly, document.body.dataset.agent]", "main")).toEqual([
+      "undefined",
+      "seen",
+    ]);
+    expect(await run("await Promise.resolve(); document.title", "isolated")).toBe("Ready");
   });
 
   it("returns object contents even when a legacy caller asks for a remote reference", async () => {
@@ -1109,5 +1418,128 @@ describe("server browser net errors", () => {
     ["net::ERR_TLS13_DOWNGRADE_DETECTED", "ERR_TLS13_DOWNGRADE_DETECTED", -2],
   ])("reads the whole error name from %j", (errorText, description, code) => {
     expect(ServerBrowserPage.parseNetError(errorText)).toEqual({ description, code });
+  });
+});
+
+// These cases exercise deterministic driver leaves only. Their selection does not
+// run the Chromium suite above; installed-runtime/browser proof belongs to the parent.
+describe("page dispatch authorization", () => {
+  const retired = () => new BrowserControlInterrupted({ message: "Original invocation retired" });
+  it("checks again after geometry and pointer waits, with explicit local compatibility", async () => {
+    for (const boundary of ["geometry", "pointer"] as const) {
+      const external = makeExternalBrowserContext();
+      const page = external.page as unknown as Page;
+      let current = true;
+      const authorize = async () => {
+        if (!current) throw retired();
+      };
+      if (boundary === "geometry")
+        external.controls.beforeBounds = async () => {
+          current = false;
+        };
+      await expect(
+        ServerBrowserPage.click(
+          page,
+          { selector: "#button" },
+          async () => {
+            if (boundary === "pointer") current = false;
+          },
+          authorize,
+        ),
+      ).rejects.toThrow("Original invocation retired");
+      expect(external.effects).not.toContain("click");
+      external.controls.beforeBounds = async () => {};
+      await ServerBrowserPage.click(page, { selector: "#button" });
+      expect(external.effects.filter((effect) => effect === "click")).toHaveLength(1);
+    }
+  });
+
+  it("refuses screenshot dispatch after authorization retires", async () => {
+    const external = makeExternalBrowserContext();
+    const cdp = external.cdp as unknown as CDPSession;
+    let current = true;
+    const authorize = async () => {
+      if (!current) throw retired();
+    };
+    await ServerBrowserPage.captureViewport(cdp, { format: "png" }, authorize);
+    expect(external.effects.filter((effect) => effect === "capture")).toHaveLength(1);
+    current = false;
+    await expect(
+      ServerBrowserPage.captureViewport(cdp, { format: "png" }, authorize),
+    ).rejects.toThrow("Original invocation retired");
+    expect(external.effects.filter((effect) => effect === "capture")).toHaveLength(1);
+  });
+
+  it("dispatches only resolved file paths, including clear, under its current callback", async () => {
+    const external = makeExternalBrowserContext();
+    const page = external.page as unknown as Page;
+    const calls: Array<ReadonlyArray<string>> = [];
+    external.controls.afterSetFiles = async (paths) => {
+      calls.push(paths);
+    };
+    await ServerBrowserPage.setInputFiles(page, {
+      paths: ["/verified/staging/report.txt"],
+      locator: "input[type=file]",
+    });
+    await ServerBrowserPage.setInputFiles(page, { paths: [], locator: "input[type=file]" });
+    expect(calls).toEqual([["/verified/staging/report.txt"], []]);
+    await expect(
+      ServerBrowserPage.setInputFiles(
+        page,
+        { paths: ["/verified/retired.txt"], locator: "input[type=file]" },
+        async () => {
+          throw retired();
+        },
+      ),
+    ).rejects.toThrow("Original invocation retired");
+    expect(calls).toHaveLength(2);
+  });
+
+  it("checks every dispatch in a focused clear sequence", async () => {
+    const external = makeExternalBrowserContext();
+    const page = external.page as unknown as Page;
+    let current = true;
+    const authorize = async () => {
+      if (!current) throw retired();
+    };
+    await ServerBrowserPage.type(page, { text: "lawful", clear: true }, authorize);
+    expect(external.effects).toEqual(["key:ControlOrMeta+A", "key:Delete", "type:lawful"]);
+    external.effects.length = 0;
+    external.controls.afterKey = async () => {
+      current = false;
+    };
+    await expect(
+      ServerBrowserPage.type(page, { text: "retired", clear: true }, authorize),
+    ).rejects.toThrow("Original invocation retired");
+    expect(external.effects).toEqual(["key:ControlOrMeta+A"]);
+  });
+
+  it("a page scroll over a scroll box checks authority again after its probe", async () => {
+    let current = true;
+    const sent: string[] = [];
+    // The probe finds a scroll box under the pointer; the grant retires while it runs.
+    const page = {
+      evaluate: async (expression: string) => {
+        sent.push(expression);
+        current = false;
+        return true;
+      },
+    } as unknown as Page;
+    await expect(
+      ServerBrowserPage.scroll(
+        page,
+        { deltaY: 300 },
+        async () => {
+          if (!current) throw retired();
+        },
+        {
+          pacing: { random: () => 0.5, sleep: async () => {} },
+          from: { x: 10, y: 10 },
+          deadline: Number.MAX_SAFE_INTEGER,
+        },
+      ),
+    ).rejects.toThrow("Original invocation retired");
+    expect(sent, "only the probe reached the page").toHaveLength(1);
+    expect(sent[0]).toContain("elementFromPoint");
   });
 });

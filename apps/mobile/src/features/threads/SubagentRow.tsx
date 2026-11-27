@@ -8,7 +8,9 @@ import {
   resolveSubagentMetadata,
   subagentCardDetail,
 } from "@t3tools/client-runtime/state/subagent-display";
+import { subagentIconDriver } from "@t3tools/client-runtime/state/subagentRuntime";
 import { formatSubagentEffort } from "@t3tools/client-runtime/state/thread-execution";
+import { subagentChildTarget } from "@t3tools/client-runtime/state/thread-relationships";
 import type { EnvironmentId, OrchestrationV2Subagent } from "@t3tools/contracts";
 import { msg, T, useMessages, Var } from "gt-react-native";
 import type { ReactNode } from "react";
@@ -26,6 +28,7 @@ type SubagentRowSubagent = Pick<
   OrchestrationV2Subagent,
   | "threadId"
   | "childThreadId"
+  | "remoteChild"
   | "model"
   | "modelSelection"
   | "driver"
@@ -46,9 +49,16 @@ export function SubagentRow(props: {
   readonly canOpenRemote?: boolean;
 }) {
   const messages = useMessages();
+  const childTarget = subagentChildTarget(props.subagent);
+  const child = useThreadShell(
+    childTarget === null
+      ? null
+      : scopeThreadRef(childTarget.environmentId ?? props.environmentId, childTarget.threadId),
+  )?.source;
   const presentation = resolveSubagentRowPresentation(
     props.subagent,
     props.canOpenRemote,
+    child,
     messages,
   );
   const detail = subagentCardDetail(presentation.detail);
@@ -137,17 +147,23 @@ function SubagentMetadata(props: {
     (candidate) => candidate.instanceId === subagent.providerInstanceId,
   );
   const showBadge = provider !== undefined && shouldShowInstanceBadge(provider, providers);
-  // A remote task's own driver is only a "remote" label.
-  const driver =
-    provider?.driver ?? (subagent.remoteChild === undefined ? subagent.driver : undefined);
+  const driver = subagentIconDriver({
+    remote: subagent.remoteChild,
+    driver: subagent.driver,
+    resolvedDriver: provider?.driver,
+  });
   const parent = useThreadShell(scopeThreadRef(environmentId, subagent.threadId))?.source;
+  const childTarget = subagentChildTarget(subagent);
+  const childEnvironmentId = childTarget?.environmentId ?? environmentId;
   const child = useThreadShell(
-    subagent.childThreadId === null ? null : scopeThreadRef(environmentId, subagent.childThreadId),
+    childTarget === null ? null : scopeThreadRef(childEnvironmentId, childTarget.threadId),
   )?.source;
   const parentProject = useProject(
     parent ? scopeProjectRef(environmentId, parent.projectId) : null,
   );
-  const childProject = useProject(child ? scopeProjectRef(environmentId, child.projectId) : null);
+  const childProject = useProject(
+    child ? scopeProjectRef(childEnvironmentId, child.projectId) : null,
+  );
   const selection = subagent.modelSelection;
   const { modelLabel, modelSlug, workspace } = resolveSubagentMetadata(
     {

@@ -10,6 +10,13 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult, Atom } from "effect/reactivity";
 import * as Dialog from "../../components/ui/Dialog";
+import { AppText as Text } from "../../components/ui/AppText";
+import { Button as RetryStopButton } from "../../components/ui/Button";
+import { resourcesFromToolItem, type ToolResource } from "@t3tools/shared/toolOutput";
+import { useRefreshAssetUrl } from "../../state/assets";
+import { downloadAndShareAttachment } from "../../lib/attachmentDownload";
+import { AppText } from "../../components/ui/AppText";
+import { RemoteTaskViewer } from "./RemoteTaskViewer";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import { mobilePreferencesAtom } from "../../state/preferences";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
@@ -86,6 +93,7 @@ import {
   useCallback,
   useEffect,
   useEffectEvent,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -93,7 +101,9 @@ import {
 import { useGT, useMessages } from "gt-react-native";
 import { m } from "../../i18n/messages";
 import {
+  Pressable,
   AppState,
+  ScrollView,
   Keyboard,
   Platform,
   useWindowDimensions,
@@ -119,6 +129,7 @@ import Animated, {
   useSharedValue,
   withTiming,
 } from "react-native-reanimated";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { useBarOverlap } from "../../components/ui/useBarInset";
 import {
   useWorkspaceContentWidth,
@@ -213,7 +224,7 @@ import {
 import { ComposerPopoverHost } from "./ComposerPopoverHost";
 import { ThreadFeed, type ThreadFeedHistoryControls } from "./ThreadFeed";
 import { WorkspaceMutationIdProvider } from "./WorkspaceMutationIdProvider";
-import { useThreadTurnSubagents } from "./ThreadAgentsSheet";
+import { useThreadTurnSubagents, usePendingRemoteTasks } from "./ThreadAgentsSheet";
 import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
 import { ThreadGuestShareBar } from "./ThreadGuestShareBar";
@@ -224,6 +235,9 @@ import { useOpenLinkedThread } from "./useOpenLinkedThread";
 import { useGlobalVoiceInput } from "../voice-input/VoiceInputProvider";
 import type { OrchestrationV2ProviderSession } from "@t3tools/contracts";
 import { voiceInputBlocksSubmission } from "@t3tools/client-runtime/voice-input";
+import { PromachosChatScope } from "../promachos/PromachosChatScope";
+import { PromachosChatContext } from "../promachos/PromachosBubbles";
+import { usePromachosChatModels } from "../promachos/promachosHome";
 
 export interface ThreadDetailScreenProps {
   readonly draftMode?: {
@@ -358,6 +372,24 @@ function ColumnWidth(props: { readonly width: number | null; readonly children: 
     </WorkspaceSettledContentWidthContext>
   );
 }
+function waitsForTransportRetry(thread: {
+  readonly transportRecovery?: { readonly runId: string } | null | undefined;
+  readonly latestRun?: { readonly runId: string } | null | undefined;
+  readonly runtime?: { readonly status: string } | null | undefined;
+  readonly archivedAt?: string | null | undefined;
+  readonly deletedAt?: string | null | undefined;
+  readonly settledOverride?: string | null | undefined;
+}): boolean {
+  if (!thread.transportRecovery || thread.transportRecovery.runId !== thread.latestRun?.runId)
+    return false;
+  return (
+    thread.runtime?.status === "failed" &&
+    !thread.archivedAt &&
+    !thread.deletedAt &&
+    thread.settledOverride !== "settled"
+  );
+}
+
 const USAGE_LIMITS_PANEL_GAP = 12;
 const FEED_END_GAP = 12;
 const USAGE_LIMITS_PANEL_MIN_HEIGHT = 44;
@@ -366,6 +398,63 @@ const USER_INPUT_TOGGLE_TIMING = {
   duration: USER_INPUT_TOGGLE_DURATION_MS,
   easing: Easing.out(Easing.cubic),
 };
+
+function ToolArtifactButton({
+  environmentId,
+  resource,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly resource: Extract<ToolResource, { _tag: string }>;
+}) {
+  const gt = useGT();
+  const reference = resource._tag === "peer-attachment" ? resource.reference : resource;
+  const operation = useRef<AbortController | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Abort the native artifact download when its button unmounts.
+  useEffect(() => () => operation.current?.abort(), []);
+  const refresh = useRefreshAssetUrl(environmentId, resource);
+  const [pending, setPending] = useState(false);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      disabled={pending}
+      onPress={() => {
+        const controller = new AbortController();
+        operation.current?.abort();
+        operation.current = controller;
+        setPending(true);
+        void (async () => {
+          const url = await refresh();
+          if (controller.signal.aborted) return;
+          if (url === null)
+            throw new Error(gt("This artifact is unavailable to the current connection."));
+          await downloadAndShareAttachment({
+            url,
+            attachment: { name: reference.name, mimeType: reference.mimeType },
+            signal: controller.signal,
+          });
+        })()
+          .catch((error: unknown) => {
+            if (!controller.signal.aborted)
+              Dialog.alert(
+                gt("Could not save artifact"),
+                error instanceof Error ? error.message : gt("The artifact is unavailable."),
+              );
+          })
+          .finally(() => {
+            if (operation.current === controller) {
+              operation.current = null;
+              setPending(false);
+            }
+          });
+      }}
+      className="px-3 py-2"
+    >
+      <AppText numberOfLines={1}>
+        {pending ? gt("Saving…") : gt("Save {name}", { name: reference.name })}
+      </AppText>
+    </Pressable>
+  );
+}
 
 // A scheduled wake can happen without a newer server update, so the tracker
 // is told when one takes effect. The shell's updatedAt ticks while a run
@@ -440,6 +529,40 @@ function ThreadDetailBody(
   const navigation = useNavigation();
   const openLinkedThread = useOpenLinkedThread();
   const openInspector = useOpenThreadInspector();
+  const promachosChat =
+    usePromachosChatModels({
+      environmentId: props.environmentId,
+      projectId: props.selectedThread.projectId,
+    }) !== null;
+  const toolResources = useMemo(() => {
+    const resources = new Map<string, ToolResource>();
+    for (const entry of props.selectedThreadFeed) {
+      if (entry.type !== "activity-group") continue;
+      for (const activity of entry.activities) {
+        const item = activity.projectedItem.item;
+        if (item.type !== "dynamic_tool" || item.status !== "completed") continue;
+        for (const resource of resourcesFromToolItem(item))
+          resources.set(JSON.stringify(resource), resource);
+      }
+    }
+    return [...resources.values()];
+  }, [props.selectedThreadFeed]);
+  const openToolResource = (resource: Exclude<ToolResource, { _tag: string }>) => {
+    Keyboard.dismiss();
+    if (resource.type === "device")
+      navigation.navigate("ThreadDevicePreview", {
+        environmentId: props.environmentId,
+        threadId: props.selectedThread.id,
+        resource,
+      });
+    else
+      navigation.navigate("ThreadBrowserPreview", {
+        environmentId: props.environmentId,
+        threadId: props.selectedThread.id,
+        tabId: resource.tabId,
+        resource,
+      });
+  };
   const { session: voiceInputSession } = useGlobalVoiceInput();
   const reportedModelSelection = useThreadReportedModelSelection(props.selectedThreadDetailRef);
   const devicePreviewCount = useThreadDevicePreviewCount(
@@ -525,6 +648,8 @@ function ThreadDetailBody(
     ? (preferences.value.toolCallVisibility ?? "showAll")
     : "showAll";
   const queuedCount = useThreadQueuedCount(props.selectedThreadDetailRef);
+  const pendingRemoteTasks = usePendingRemoteTasks(props.selectedThreadDetailRef);
+  const [viewingRemoteInput, setViewingRemoteInput] = useState(false);
   const turnSubagents = useThreadTurnSubagents(props.selectedThreadDetailRef);
   const agentsSegment = resolveSubagentPillSegment(turnSubagents, messages);
   const defaultComposerEditorRef = useRef<ComposerEditorHandle>(null);
@@ -882,6 +1007,19 @@ function ThreadDetailBody(
     if (props.creationState?.kind === "failed") {
       return null;
     }
+    const remoteInput = pendingRemoteTasks[0];
+    if (remoteInput && contentPresentationKind === "ready")
+      return {
+        kind: "child-input",
+        label: gt("Remote task needs input"),
+        accessibilityLabel: gt("Open request from {title}", {
+          title: remoteInput.title ?? gt("remote task"),
+        }),
+        onPress: () => {
+          Keyboard.dismiss();
+          setViewingRemoteInput(true);
+        },
+      };
     const childInput = childThreadInputs[0];
     if (childInput && contentPresentationKind === "ready") {
       return {
@@ -1514,7 +1652,46 @@ function ThreadDetailBody(
   return (
     <View className="flex-1" onLayout={handleScreenLayout}>
       <ThreadStreamHaptics threadRef={props.selectedThreadDetailRef} />
+      {viewingRemoteInput && pendingRemoteTasks[0] ? (
+        <RemoteTaskViewer
+          environmentId={props.environmentId}
+          task={pendingRemoteTasks[0]}
+          onClose={() => setViewingRemoteInput(false)}
+        />
+      ) : null}
       {!usesNativeWorkspaceColumns ? <NativeLayoutObserver onChange={setScreenMetrics} /> : null}
+      {showContent && toolResources.length > 0 ? (
+        <SafeAreaView edges={Platform.OS === "ios" ? ["top"] : []} style={{ flexShrink: 0 }}>
+          <View className="h-12 shrink-0 border-b border-secondary-border">
+            <ScrollView
+              horizontal
+              accessibilityLabel={gt("Resources returned by tools")}
+              showsHorizontalScrollIndicator={false}
+            >
+              {toolResources.map((item) =>
+                "_tag" in item ? (
+                  <ToolArtifactButton
+                    key={JSON.stringify(item)}
+                    environmentId={props.environmentId}
+                    resource={item}
+                  />
+                ) : (
+                  <Pressable
+                    key={JSON.stringify(item)}
+                    accessibilityRole="button"
+                    onPress={() => openToolResource(item)}
+                    className="px-3 py-2"
+                  >
+                    <AppText>
+                      {item.type === "device" ? gt("View device") : gt("View browser")}
+                    </AppText>
+                  </Pressable>
+                ),
+              )}
+            </ScrollView>
+          </View>
+        </SafeAreaView>
+      ) : null}
       {props.draftMode ? (
         props.draftMode.content(
           navigationHeaderHeight,
@@ -1550,61 +1727,67 @@ function ThreadDetailBody(
           >
             <WorkspaceMutationIdProvider threadRef={props.selectedThreadDetailRef}>
               <ColumnWidth width={columnWidth}>
-                <ThreadFeed
-                  toolCallVisibility={toolCallVisibility}
+                <PromachosChatScope
                   environmentId={props.environmentId}
+                  projectId={props.selectedThread.projectId}
                   threadId={props.selectedThread.id}
-                  detailRef={props.selectedThreadDetailRef}
-                  workspaceRoot={props.threadCwd}
-                  feed={props.selectedThreadFeed}
-                  pendingHandoff={props.pendingHandoff}
-                  statusLines={statusLines}
-                  worktreeSetup={props.worktreeSetup}
-                  preparingWorktree={
-                    props.creationState?.kind === "preparing" &&
-                    props.creationState.preparingWorktree &&
-                    !props.worktreeSetup
-                  }
-                  queuedMessages={props.queuedMessages}
-                  dispatchingMessageId={props.dispatchingMessageId}
-                  // A native subagent has no composer to edit a pending message in;
-                  // Cancel on the edit banner would discard it.
-                  onEditPendingMessage={
-                    isProviderSubagent || pendingMessageEditBlocked
-                      ? null
-                      : handleEditPendingMessage
-                  }
-                  contentPresentation={props.contentPresentation}
-                  threadTitle={props.selectedThread.title}
-                  latestRun={props.activityRun}
-                  activeWorkStartedAt={props.activeWorkStartedAt}
-                  runlessWorkActive={props.runlessWorkActive ?? false}
-                  listRef={listRef}
-                  freeze={freeze}
-                  anchorMessageId={anchorMessageId}
-                  jumpToMessageId={jumpMessageLoaded ? jumpMessageId : null}
-                  onJumpedToMessage={() => finishThreadMessageJump(selectedThreadKey)}
-                  contentInsetEndAdjustment={combinedContentInsetEndAdjustment}
-                  keyboardOffset={composerKeyboardOffset}
-                  sendingWithKeyboard={sendingWithKeyboard}
-                  fitShortFeedToViewport={questionInFlow && !isKeyboardVisible}
-                  contentBottomInset={
-                    questionInFlow
-                      ? 0
-                      : estimatedOverlayHeight +
-                        (showFloatingStatus ? FLOATING_WORKING_CONTROL_COVERAGE : FEED_END_GAP)
-                  }
-                  contentMaxWidth={contentMaxWidth}
-                  historyControls={props.historyControls}
-                  contentSideInsets={deriveContentSideInsets(nativeMetrics)}
-                  layoutVariant={layoutVariant}
-                  usesAutomaticContentInsets={props.usesAutomaticContentInsets}
-                  onHeaderMaterialVisibilityChange={props.onHeaderMaterialVisibilityChange}
-                  onIsAtEndChange={setIsAtEnd}
-                  skills={selectedProviderSkills}
-                  onCiteAssistantText={canCiteAssistantText ? handleCiteAssistantText : undefined}
-                  onUseArtifactTemplate={handleUseArtifactTemplate}
-                />
+                >
+                  <ThreadFeed
+                    toolCallVisibility={toolCallVisibility}
+                    environmentId={props.environmentId}
+                    threadId={props.selectedThread.id}
+                    detailRef={props.selectedThreadDetailRef}
+                    workspaceRoot={props.threadCwd}
+                    feed={props.selectedThreadFeed}
+                    pendingHandoff={props.pendingHandoff}
+                    statusLines={statusLines}
+                    worktreeSetup={props.worktreeSetup}
+                    preparingWorktree={
+                      props.creationState?.kind === "preparing" &&
+                      props.creationState.preparingWorktree &&
+                      !props.worktreeSetup
+                    }
+                    queuedMessages={props.queuedMessages}
+                    dispatchingMessageId={props.dispatchingMessageId}
+                    // A native subagent has no composer to edit a pending message in;
+                    // Cancel on the edit banner would discard it.
+                    onEditPendingMessage={
+                      isProviderSubagent || pendingMessageEditBlocked
+                        ? null
+                        : handleEditPendingMessage
+                    }
+                    contentPresentation={props.contentPresentation}
+                    threadTitle={props.selectedThread.title}
+                    latestRun={props.activityRun}
+                    activeWorkStartedAt={props.activeWorkStartedAt}
+                    runlessWorkActive={props.runlessWorkActive ?? false}
+                    listRef={listRef}
+                    freeze={freeze}
+                    anchorMessageId={anchorMessageId}
+                    jumpToMessageId={jumpMessageLoaded ? jumpMessageId : null}
+                    onJumpedToMessage={() => finishThreadMessageJump(selectedThreadKey)}
+                    contentInsetEndAdjustment={combinedContentInsetEndAdjustment}
+                    keyboardOffset={composerKeyboardOffset}
+                    sendingWithKeyboard={sendingWithKeyboard}
+                    fitShortFeedToViewport={questionInFlow && !isKeyboardVisible}
+                    contentBottomInset={
+                      questionInFlow
+                        ? 0
+                        : estimatedOverlayHeight +
+                          (showFloatingStatus ? FLOATING_WORKING_CONTROL_COVERAGE : FEED_END_GAP)
+                    }
+                    contentMaxWidth={contentMaxWidth}
+                    historyControls={props.historyControls}
+                    contentSideInsets={deriveContentSideInsets(nativeMetrics)}
+                    layoutVariant={layoutVariant}
+                    usesAutomaticContentInsets={props.usesAutomaticContentInsets}
+                    onHeaderMaterialVisibilityChange={props.onHeaderMaterialVisibilityChange}
+                    onIsAtEndChange={setIsAtEnd}
+                    skills={selectedProviderSkills}
+                    onCiteAssistantText={canCiteAssistantText ? handleCiteAssistantText : undefined}
+                    onUseArtifactTemplate={handleUseArtifactTemplate}
+                  />
+                </PromachosChatScope>
               </ColumnWidth>
             </WorkspaceMutationIdProvider>
           </RenderErrorBoundary>
@@ -1748,6 +1931,26 @@ function ThreadDetailBody(
                       thread={props.selectedThread}
                       environmentId={props.environmentId}
                     />
+                    {props.selectedThread.transportRecovery &&
+                    waitsForTransportRetry(props.selectedThread) ? (
+                      <View className="mx-3 mb-2 rounded-xl border border-warning-foreground/25 bg-screen p-3">
+                        <Text accessibilityRole="alert" className="text-sm text-warning-foreground">
+                          {gt(
+                            "Waiting to retry the connection. Next retry {time}. Send a message or press Stop to cancel.",
+                            {
+                              time: new Date(
+                                props.selectedThread.transportRecovery.retryAt,
+                              ).toLocaleString(),
+                            },
+                          )}
+                        </Text>
+                        <RetryStopButton
+                          label={gt("Stop retrying")}
+                          disabled={!props.canOperateThread}
+                          onPress={props.onStopThread}
+                        />
+                      </View>
+                    ) : null}
                     <ChildThreadApprovals
                       threadRef={props.selectedThreadDetailRef}
                       maxHeight={pendingUserInputMaxHeight}
@@ -1859,32 +2062,34 @@ function ThreadDetailBody(
                           </Animated.ScrollView>
                         ) : null}
                         {props.activePendingUserInput ? (
-                          <PendingUserInputCard
-                            environmentId={props.environmentId}
-                            threadId={props.selectedThread.id}
-                            workspaceRoot={props.threadCwd}
-                            canOperateThread={props.canOperateThread}
-                            pendingUserInput={props.activePendingUserInput}
-                            maxHeight={pendingUserInputMaxHeight}
-                            collapsed={userInputCollapsed}
-                            onToggleCollapsed={handleToggleUserInputCollapsed}
-                            onStopThread={props.onStopThread}
-                            cardProgress={userInputCardProgress}
-                            cardCoverage={userInputCardCoverage}
-                            onLayout={
-                              Platform.OS === "ios"
-                                ? (event) => userInputCardTop.set(event.nativeEvent.layout.y)
-                                : undefined
-                            }
-                            onInputFocusChange={handleOwnedInputFocusChange}
-                            drafts={props.activePendingUserInputDrafts}
-                            answers={props.activePendingUserInputAnswers}
-                            respondingUserInputId={props.respondingUserInputId}
-                            onSelectOption={props.onSelectUserInputOption}
-                            onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
-                            onSubmit={props.onSubmitUserInput}
-                            onDismiss={props.onDismissUserInput}
-                          />
+                          <PromachosChatContext value={promachosChat}>
+                            <PendingUserInputCard
+                              environmentId={props.environmentId}
+                              threadId={props.selectedThread.id}
+                              workspaceRoot={props.threadCwd}
+                              canOperateThread={props.canOperateThread}
+                              pendingUserInput={props.activePendingUserInput}
+                              maxHeight={pendingUserInputMaxHeight}
+                              collapsed={userInputCollapsed}
+                              onToggleCollapsed={handleToggleUserInputCollapsed}
+                              onStopThread={props.onStopThread}
+                              cardProgress={userInputCardProgress}
+                              cardCoverage={userInputCardCoverage}
+                              onLayout={
+                                Platform.OS === "ios"
+                                  ? (event) => userInputCardTop.set(event.nativeEvent.layout.y)
+                                  : undefined
+                              }
+                              onInputFocusChange={handleOwnedInputFocusChange}
+                              drafts={props.activePendingUserInputDrafts}
+                              answers={props.activePendingUserInputAnswers}
+                              respondingUserInputId={props.respondingUserInputId}
+                              onSelectOption={props.onSelectUserInputOption}
+                              onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
+                              onSubmit={props.onSubmitUserInput}
+                              onDismiss={props.onDismissUserInput}
+                            />
+                          </PromachosChatContext>
                         ) : null}
                       </Animated.View>
                     ) : null}

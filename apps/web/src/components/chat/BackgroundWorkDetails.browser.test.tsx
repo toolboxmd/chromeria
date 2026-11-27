@@ -79,6 +79,7 @@ it("opens full command details for short labels and keeps pending tasks current"
         stopping: false,
         onStop: async () => undefined,
         onOpenThread: () => undefined,
+        reachableEnvironments: new Set(),
       })}
     />
   );
@@ -125,6 +126,7 @@ it("gives a subagent the same status as the background work line", async () => {
         stopping: false,
         onStop: async () => undefined,
         onOpenThread: () => undefined,
+        reachableEnvironments: new Set(),
       })}
     />,
   );
@@ -137,6 +139,7 @@ it("gives a subagent the same status as the background work line", async () => {
 
 it("offers to open a subagent running in a linked environment", async () => {
   const remoteItemId = TurnItemId.make("subagent-item-1");
+  const onOpenThread = vi.fn();
   await using screen = await render(
     <ThreadNow
       attention={null}
@@ -151,6 +154,9 @@ it("offers to open a subagent running in a linked environment", async () => {
             itemId: remoteItemId,
             kind: "subagent",
             description: "Implement Anzen",
+            // As derivePendingBackgroundWork emits an attached remote child.
+            childThreadId: ThreadId.make("remote-child"),
+            childEnvironmentId: EnvironmentId.make("boat"),
           },
         ],
         turnItems: [
@@ -187,12 +193,15 @@ it("offers to open a subagent running in a linked environment", async () => {
         stopDisabled: false,
         stopping: false,
         onStop: async () => undefined,
-        onOpenThread: () => undefined,
+        onOpenThread,
+        reachableEnvironments: new Set(),
       })}
     />,
   );
   await screen.getByRole("button", { name: "Details", exact: true }).click();
-  await expect
-    .element(page.getByRole("dialog").getByRole("button", { name: "Open subagent" }))
-    .toBeVisible();
+  const open = page.getByRole("dialog").getByRole("button", { name: "Open subagent" });
+  await expect.element(open).toBeVisible();
+  await open.click();
+  // The thread lives in the linked environment, so the local opener must not get its id.
+  expect(onOpenThread).not.toHaveBeenCalled();
 });

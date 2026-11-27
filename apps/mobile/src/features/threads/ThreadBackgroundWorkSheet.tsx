@@ -15,9 +15,11 @@ import { SheetHeader } from "../../components/ui/SheetHeader";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
 import { ScreenContent } from "../../components/ui/ScreenContent";
-import { useLinkedThreadReach } from "../../state/linkedThread";
-import { environmentThreadDetails, environmentThreadShells } from "../../state/threads";
-import { subagentThreadTarget, type SubagentThreadTarget } from "./threadAgentsPresentation";
+import { useEnvironments } from "../../state/environments";
+import { useLinkedEnvironments } from "../../state/peerLinks";
+import { environmentThreadShells } from "../../state/threads";
+import { backgroundWorkThreadTarget } from "./backgroundWorkTarget";
+import type { SubagentThreadTarget } from "./threadAgentsPresentation";
 import { useOpenLinkedThreadRead } from "./useOpenLinkedThread";
 
 const KIND_LABELS = {
@@ -31,30 +33,29 @@ type BackgroundWorkTarget = { readonly environmentId: EnvironmentId; readonly th
 
 export function ThreadBackgroundWorkSheet({ route }: StaticScreenProps<BackgroundWorkTarget>) {
   const navigation = useNavigation();
-  const openLinkedRead = useOpenLinkedThreadRead();
   const insets = useSafeAreaInsets();
   const gt = useGT();
   const m = useMessages();
   const target = route.params;
-  const threadRef = scopeThreadRef(target.environmentId, target.threadId);
-  const thread = useAtomValue(environmentThreadShells.threadShellAtom(threadRef));
-  const detail = useAtomValue(environmentThreadDetails.threadAtom(threadRef));
-  const pendingTasks = thread?.pendingBackgroundTasks ?? [];
-  const turnItems = detail?.projection.turnItems ?? [];
-  const presentation = presentPendingBackgroundWork(pendingTasks, m);
-  const rows = (presentation?.items ?? []).map((item) => {
-    const pending = pendingTasks.find((candidate) => candidate.taskId === item.taskId);
-    const itemKey = pending?.nativeItemId ?? item.taskId;
-    const turnItem = turnItems.findLast((candidate) =>
-      pending?.itemId === undefined
-        ? (candidate.nativeItemRef?.nativeId || candidate.id) === itemKey
-        : candidate.id === pending.itemId,
-    );
-    const remoteChild =
-      item.kind === "subagent" && turnItem?.type === "subagent" ? turnItem.remoteChild : undefined;
-    return { item, childThreadId: item.childThreadId ?? null, remoteChild };
-  });
-  const reach = useLinkedThreadReach(target.environmentId, rows);
+  const thread = useAtomValue(
+    environmentThreadShells.threadShellAtom(scopeThreadRef(target.environmentId, target.threadId)),
+  );
+  const presentation = presentPendingBackgroundWork(thread?.pendingBackgroundTasks ?? [], m);
+  const openLinkedRead = useOpenLinkedThreadRead();
+  const { presentationById } = useEnvironments();
+  const ownConnection = (environmentId: EnvironmentId) => {
+    const own = presentationById.get(environmentId);
+    return own && { connected: own.connection.phase === "connected" };
+  };
+  const links = useLinkedEnvironments(
+    presentation?.items.some(
+      (item) =>
+        item.childEnvironmentId !== undefined &&
+        ownConnection(item.childEnvironmentId)?.connected !== true,
+    )
+      ? target.environmentId
+      : null,
+  );
   const openThread = (child: SubagentThreadTarget, title: string) => {
     void Haptics.selectionAsync();
     if (child.linked !== undefined) {
@@ -82,21 +83,16 @@ export function ThreadBackgroundWorkSheet({ route }: StaticScreenProps<Backgroun
           <T>Nothing running in the background.</T>
         </Text>
       ) : (
-        rows.map((row) => {
-          const { item } = row;
-          const openTarget =
-            item.kind === "subagent"
-              ? subagentThreadTarget(row, target.environmentId, reach.ownConnection, reach.isLinked)
-              : null;
-          return (
-            <BackgroundWorkRow
-              key={item.taskId}
-              item={item}
-              openTarget={openTarget}
-              onOpen={openThread}
-            />
-          );
-        })
+        presentation.items.map((item) => (
+          <BackgroundWorkRow
+            key={item.taskId}
+            item={item}
+            target={backgroundWorkThreadTarget(item, target.environmentId, ownConnection, (id) =>
+              links.get(id),
+            )}
+            onOpen={openThread}
+          />
+        ))
       )}
     </ScrollView>
   );
@@ -110,10 +106,10 @@ export function ThreadBackgroundWorkSheet({ route }: StaticScreenProps<Backgroun
 
 function BackgroundWorkRow(props: {
   readonly item: PendingBackgroundWorkItem;
-  readonly openTarget: SubagentThreadTarget | null;
+  readonly target: SubagentThreadTarget | null;
   readonly onOpen: (child: SubagentThreadTarget, title: string) => void;
 }) {
-  const { item, openTarget } = props;
+  const { item, target } = props;
   const gt = useGT();
   const m = useMessages();
   const row = (
@@ -130,18 +126,18 @@ function BackgroundWorkRow(props: {
         <Text className="font-t3-medium text-sm text-foreground">{item.label}</Text>
         <Text className="text-xs text-foreground-muted">{m(KIND_LABELS[item.kind])}</Text>
       </View>
-      {openTarget === null ? null : (
+      {target === null ? null : (
         <SymbolView name="chevron.right" size={12} tintColorClassName="accent-icon-subtle" />
       )}
     </View>
   );
-  return openTarget === null ? (
+  return target === null ? (
     <View accessible>{row}</View>
   ) : (
     <Pressable
       accessibilityRole="link"
       accessibilityLabel={gt("Open subagent {label}", { label: item.label })}
-      onPress={() => props.onOpen(openTarget, item.label)}
+      onPress={() => props.onOpen(target, item.label)}
       className="active:opacity-70"
     >
       {row}

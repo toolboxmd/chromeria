@@ -1,3 +1,5 @@
+import { hasSourceRemoteTaskView } from "@t3tools/client-runtime/state/remote-tasks";
+import { RemoteTaskViewer } from "./RemoteTaskViewer";
 import { useAtomValue } from "@effect/atom-react";
 import { useGT, useMessages } from "gt-react-native";
 import { StackActions, useNavigation } from "@react-navigation/native";
@@ -7,7 +9,10 @@ import {
   shouldShowInstanceBadge,
 } from "@t3tools/client-runtime/state/provider-instance-display";
 import { summarizeSubagentStatuses } from "@t3tools/client-runtime/state/subagent-display";
-import { isActiveSubagentStatus } from "@t3tools/client-runtime/state/subagentRuntime";
+import {
+  isActiveSubagentStatus,
+  subagentIconDriver,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import type {
   EnvironmentId,
   OrchestrationV2Subagent,
@@ -15,6 +20,7 @@ import type {
   ServerConfig,
 } from "@t3tools/contracts";
 import { Pressable, View, type ColorValue } from "react-native";
+import { useState } from "react";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { SymbolView } from "../../components/ui/AppSymbol";
@@ -55,9 +61,6 @@ function SubagentAvatar(props: {
   const provider = providers.find(
     (candidate) => candidate.instanceId === props.item.providerInstanceId,
   );
-  // A remote task's own driver is only a "remote" label.
-  const driver =
-    provider?.driver ?? (props.item.remoteChild === undefined ? props.item.driver : undefined);
   const badgeEntries = providers.map((candidate) => {
     const rawConfig = props.config?.settings.providerInstances[candidate.instanceId]?.config;
     const instanceConfig =
@@ -78,6 +81,11 @@ function SubagentAvatar(props: {
     provider !== undefined &&
     badgeEntry !== undefined &&
     shouldShowInstanceBadge(badgeEntry, badgeEntries);
+  const iconDriver = subagentIconDriver({
+    remote: props.item.remoteChild,
+    driver: props.item.driver,
+    resolvedDriver: provider?.driver,
+  });
   return (
     <View
       accessible={false}
@@ -92,10 +100,10 @@ function SubagentAvatar(props: {
           accentColor={provider.accentColor}
           showBadge
         />
-      ) : driver === undefined ? (
+      ) : iconDriver === undefined ? (
         <SymbolView name="robot" size={13} tintColorClassName="accent-icon-muted" />
       ) : (
-        <ProviderIcon provider={driver} iconUrl={provider?.iconUrl} size={15} />
+        <ProviderIcon provider={iconDriver} iconUrl={provider?.iconUrl} size={15} />
       )}
     </View>
   );
@@ -111,6 +119,7 @@ export function ThreadSubagentGroup(props: {
 }) {
   const gt = useGT();
   const messages = useMessages();
+  const [remoteTaskId, setRemoteTaskId] = useState<string | null>(null);
   const config = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
   const navigation = useNavigation();
   const openInspector = useOpenThreadInspector();
@@ -134,9 +143,14 @@ export function ThreadSubagentGroup(props: {
       progress: live?.progress ?? item.progress,
       model: live?.model ?? null,
       modelSelection: live?.modelSelection,
+      // A remote launch attaches its thread on the live record after the
+      // turn item was first projected.
+      childThreadId: live?.childThreadId ?? item.childThreadId,
+      remoteChild: live?.remoteChild ?? item.remoteChild,
     };
   });
   const reach = useLinkedThreadReach(props.environmentId, agents);
+  const selectedRemote = agents.find((agent) => agent.item.subagentId === remoteTaskId);
   const grouped = agents.length > 1;
   const label = gt("{count, plural, one {{count} subagent} other {{count} subagents}}", {
     count: agents.length,
@@ -152,6 +166,19 @@ export function ThreadSubagentGroup(props: {
     item.remoteChild === undefined ? config : serverConfigs.get(item.remoteChild.environmentId);
   return (
     <WorkLogBlock>
+      {selectedRemote ? (
+        <RemoteTaskViewer
+          environmentId={props.environmentId}
+          task={{
+            id: selectedRemote.item.subagentId,
+            threadId: selectedRemote.item.threadId,
+            title: selectedRemote.title,
+            result: selectedRemote.result,
+            remoteChild: selectedRemote.remoteChild,
+          }}
+          onClose={() => setRemoteTaskId(null)}
+        />
+      ) : null}
       {grouped ? (
         <Pressable
           accessibilityRole="button"
@@ -213,16 +240,31 @@ export function ThreadSubagentGroup(props: {
                 accessible
                 accessibilityRole={target === null ? undefined : "link"}
                 accessibilityHint={
-                  target === null
-                    ? gt("Provider-managed agent")
-                    : target.linked === undefined
-                      ? gt("Opens this agent's thread")
-                      : gt("Opens a read-only view of this agent's thread on {label}", {
-                          label: target.linked.label,
-                        })
+                  hasSourceRemoteTaskView(agent) && target?.linked !== undefined
+                    ? gt("Runs on {label}, available through this conversation", {
+                        label: agent.remoteChild.label,
+                      })
+                    : target === null
+                      ? agent.remoteChild
+                        ? gt(
+                            "Running on {label}. Its thread opens once the launch there is attached",
+                            {
+                              label: agent.remoteChild.label,
+                            },
+                          )
+                        : gt("Provider-managed agent")
+                      : target.linked === undefined
+                        ? gt("Opens this agent's thread")
+                        : gt("Opens a read-only view of this agent's thread on {label}", {
+                            label: target.linked.label,
+                          })
                 }
                 disabled={target === null}
                 onPress={() => {
+                  if (agent.remoteChild?.threadId !== undefined && hasSourceRemoteTaskView(agent)) {
+                    setRemoteTaskId(agent.item.subagentId);
+                    return;
+                  }
                   if (target === null) return;
                   if (target.linked !== undefined) {
                     openLinkedRead(target, target.linked, agent.title, {

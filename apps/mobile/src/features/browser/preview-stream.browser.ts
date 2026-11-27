@@ -47,6 +47,7 @@ interface Viewer {
   readonly stop: () => void;
   readonly command: (input: PreviewStreamInput) => void;
   readonly togglePictureInPicture: () => void;
+  readonly updateAccess: (access: PreviewStreamConfiguration["access"]) => void;
 }
 
 let activeViewer: Viewer | null = null;
@@ -64,6 +65,10 @@ export function pictureInPicture() {
   activeViewer?.togglePictureInPicture();
 }
 
+export function updateAccess(access: PreviewStreamConfiguration["access"]) {
+  activeViewer?.updateAccess(access);
+}
+
 export function start(configuration: PreviewStreamConfiguration) {
   stop();
   const post = (message: PreviewStreamMessage) => {
@@ -71,6 +76,7 @@ export function start(configuration: PreviewStreamConfiguration) {
     window.ReactNativeWebView.postMessage(JSON.stringify(message));
   };
   const { interactive } = configuration;
+  let access = configuration.access;
   document.body.style.background = configuration.background;
   const container = document.createElement("div");
   const canvas = document.createElement("canvas");
@@ -163,9 +169,10 @@ export function start(configuration: PreviewStreamConfiguration) {
     if (!cap || stopped) return;
     const next = createPreviewStreamClient(
       {
-        access: configuration.access,
+        access,
         threadId: configuration.threadId,
         tabId: configuration.tabId,
+        ...(configuration.resource === undefined ? {} : { resource: configuration.resource }),
         maxWidth: cap.width,
         maxHeight: cap.height,
         interactive,
@@ -174,6 +181,9 @@ export function start(configuration: PreviewStreamConfiguration) {
         onFrame: (jpeg) => painter.paint(jpeg),
         onPointer: showAgentCursor,
         onClipboard: (text) => post({ type: "clipboard", text }),
+        onInputRejected: (message) => post({ type: "inputRejected", message }),
+        onPopup: (tabId, resource) =>
+          post({ type: "popup", tabId, ...(resource === undefined ? {} : { resource }) }),
         onDownload: (download) => post({ type: "download", ...download }),
         onFileChooser: (chooser) => post({ type: "fileChooser", chooser }),
         onSelectMenu: (menu) => post({ type: "selectMenu", menu }),
@@ -704,6 +714,10 @@ export function start(configuration: PreviewStreamConfiguration) {
       send(message);
     },
     togglePictureInPicture,
+    updateAccess: (current) => {
+      access = current;
+      connect();
+    },
   };
   window.addEventListener("pagehide", stop, { once: true });
   reportStatus("connecting");
