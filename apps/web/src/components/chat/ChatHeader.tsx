@@ -1,3 +1,5 @@
+import { IdleModeControl } from "./IdleModeControl";
+import { PromachosRoundButton, PromachosTitlePill } from "../promachos/PromachosChrome";
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
@@ -12,7 +14,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { T, useGT, Var } from "gt-react";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, EllipsisIcon } from "lucide-react";
 import {
   memo,
   useEffect,
@@ -23,6 +25,7 @@ import {
 } from "react";
 import { isTrailingDoubleClick } from "../Sidebar.logic";
 import { Badge } from "../ui/badge";
+import { ThreadBareBadge } from "./ThreadBareBadge";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { toastManager } from "../ui/toast";
 import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
@@ -33,6 +36,8 @@ import { useAtomValue } from "@effect/atom-react";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { ThreadSharingControl } from "../people/ThreadSharingControl";
+import { ThreadParentCrumbs } from "./ThreadParentCrumbs";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -51,6 +56,7 @@ interface ChatHeaderProps {
   activeThreadId: ThreadId;
   activeThreadTitle: string;
   activeThreadLinkOrigin?: string | null | undefined;
+  activeThreadBare?: boolean | undefined;
   isServerThread: boolean;
   activeProject: EnvironmentProject | null;
   parentThreadLink: { threadId: ThreadId; title: string } | null;
@@ -59,6 +65,8 @@ interface ChatHeaderProps {
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
   onFindInThread?: ((threadRef: ScopedThreadRef) => void) | undefined;
+  /** Fork: a Promachos chat shows his name pill and one "…" menu (toolboxmd/chromeria#898). */
+  promachos?: boolean | undefined;
 }
 
 function resolveRenameCommit(input: {
@@ -76,6 +84,7 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadId,
   activeThreadTitle,
   activeThreadLinkOrigin,
+  activeThreadBare,
   isServerThread,
   activeProject,
   parentThreadLink,
@@ -84,6 +93,7 @@ export const ChatHeader = memo(function ChatHeader({
   onNewThreadInProject,
   onOpenProjectSettings,
   onFindInThread,
+  promachos,
 }: ChatHeaderProps) {
   const gt = useGT();
   const activeProjectName = activeProject?.isScratch ? gt("No project") : activeProject?.title;
@@ -250,6 +260,32 @@ export const ChatHeader = memo(function ChatHeader({
       setRenaming(null);
     }
   };
+  if (promachos && renamingTitle === null) {
+    return (
+      <div
+        ref={breadcrumbContainerRef}
+        className={cn(
+          "flex min-w-0 flex-1 items-center justify-center gap-2",
+          rightPanelOpen ? "pr-10" : "pr-24",
+        )}
+        onContextMenu={handleHeaderContextMenu}
+      >
+        <PromachosTitlePill
+          title={activeThreadTitle}
+          label={gt("Thread actions for {title}", { title: activeThreadTitle })}
+          onClick={isServerThread ? openMenuFromTitle : undefined}
+        />
+        {isServerThread ? (
+          <PromachosRoundButton label={gt("More")} onClick={openMenuFromTitle}>
+            <EllipsisIcon />
+          </PromachosRoundButton>
+        ) : null}
+        {isServerThread ? (
+          <IdleModeControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
+        ) : null}
+      </div>
+    );
+  }
   return (
     <div
       ref={breadcrumbContainerRef}
@@ -297,7 +333,9 @@ export const ChatHeader = memo(function ChatHeader({
             </WorkspaceBreadcrumbSeparator>
           </>
         ) : null}
-        {parentThreadLink ? (
+        {isServerThread ? (
+          <ThreadParentCrumbs environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
+        ) : parentThreadLink ? (
           <>
             <WorkspaceBreadcrumbItem>
               <SharedTooltipTrigger
@@ -407,9 +445,16 @@ export const ChatHeader = memo(function ChatHeader({
               </T>
             </SharedTooltipTrigger>
           ) : null}
+          {renamingTitle === null && activeThreadBare ? <ThreadBareBadge /> : null}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
+      {isServerThread ? (
+        <IdleModeControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
+      ) : null}
+      {isServerThread ? (
+        <ThreadSharingControl environmentId={activeThreadEnvironmentId} threadId={activeThreadId} />
+      ) : null}
     </div>
   );
 });
