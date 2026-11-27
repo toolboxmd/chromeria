@@ -219,3 +219,14 @@ describe("SiteHolds ordering", () => {
     expect(holds.classifyingOn("tab-a")).toBe(false);
   });
 });
+
+describe("SiteHolds fence", () => {
+  it("stops a response that never finishes from holding the tab back after its fence", () => {
+    let now = 0;
+    const holds = new SiteHolds(10_000, () => now);
+    holds.receive("profile:default", "thread-a", "shop.test", "tab-a");
+    expect(holds.classifyingOn("tab-a")).toBe(true);
+    now = 10_001;
+    expect(holds.classifyingOn("tab-a"), "a stalled body lapses").toBe(false);
+  });
+});

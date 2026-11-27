@@ -79,8 +79,19 @@ export interface HeldSite extends PreviewSiteHold {
  * Site holds per browser scope (one cookie jar): one per site, kept in memory. A
  * restart forgets them, and the next challenge page creates the hold again.
  */
+// A response still being read holds actions and releases back for at most this long; it is
+// still classified afterwards, and a late verdict still raises the hold.
+const FENCE_MS = 10_000;
+
 export class SiteHolds {
   private readonly holds = new Map<string, Map<string, HeldSite>>();
+  private readonly fenceMs: number;
+  private readonly now: () => number;
+
+  constructor(fenceMs = FENCE_MS, now: () => number = Date.now) {
+    this.fenceMs = fenceMs;
+    this.now = now;
+  }
   // Events are ordered by one counter, not the clock, so two in one millisecond keep their order.
   private sequence = 0;
   // When a person last ended a site's hold, by browser scope and by thread: a response that
@@ -93,13 +104,18 @@ export class SiteHolds {
     readonly site: string;
     readonly tabId: string;
     readonly at: number;
+    readonly since: number;
   }>();
   private readonly settled = new Set<() => void>();
 
   /** A response that may be a check holds back every release on its site until it is classified. */
   receive(scope: string, threadId: string, site: string, tabId: string) {
-    const entry = { scope, threadId, site, tabId, at: ++this.sequence };
+    const entry = { scope, threadId, site, tabId, at: ++this.sequence, since: this.now() };
     this.classifying.add(entry);
+    // Waiters learn when this response stops holding them back.
+    // @effect-diagnostics-next-line globalTimers:off -- Browser callbacks run outside the Effect runtime.
+    const lapse = setTimeout(() => this.notify(), this.fenceMs);
+    lapse.unref?.();
     return {
       at: entry.at,
       done: () => {
@@ -109,9 +125,14 @@ export class SiteHolds {
     };
   }
 
-  /** Whether a response a tab received is still being classified and not yet dismissed. */
+  private fencing() {
+    const from = this.now() - this.fenceMs;
+    return [...this.classifying].filter((each) => each.since > from);
+  }
+
+  /** Whether a response a tab received is still being classified, not dismissed or lapsed. */
   classifyingOn(tabId: string) {
-    return [...this.classifying].some((each) => each.tabId === tabId);
+    return this.fencing().some((each) => each.tabId === tabId);
   }
 
   /** Resolves on the next change to what is being classified. */
@@ -140,7 +161,7 @@ export class SiteHolds {
 
   /** Whether a response that could hold this site again is still being classified. */
   classifyingUnder(scope: string, hold: HeldSite) {
-    return [...this.classifying].some(
+    return this.fencing().some(
       (each) =>
         each.site === hold.site && (each.scope === scope || each.threadId === hold.threadId),
     );
