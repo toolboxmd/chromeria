@@ -553,15 +553,6 @@ interface Recording {
   readonly authorize: () => Promise<void>;
 }
 
-interface MainDocumentRecord {
-  readonly status: number;
-  readonly headers: Record<string, string>;
-  readonly url: string;
-  readonly at: number;
-  /** When its request left; only a commit after that can be this document's. */
-  readonly requestedAt: number;
-}
-
 interface ServerTab {
   readonly authorize: () => Promise<void>;
   readonly threadId: ThreadId;
@@ -582,10 +573,6 @@ interface ServerTab {
   readonly actionTimeline: Array<PreviewAutomationActionEvent>;
   readonly control: SessionControl;
   agentOperating: boolean;
-  /** The latest main-frame document response; clearing a hold classifies the page with it. */
-  mainDocument: MainDocumentRecord | null;
-  pendingDocument: MainDocumentRecord | null;
-  lastCommit: { readonly url: string; readonly at: number } | null;
   /** Classification of the latest error document, so an action can report the hold it caused. */
   siteHoldCheck: Promise<void>;
   fileChooserIntercepted: boolean;
@@ -688,8 +675,6 @@ const SITE_HOLD_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> =
   "evaluate",
   "watchStart",
 ]);
-
-const withoutHash = (url: string) => url.split("#", 1)[0]!;
 
 const SITE_HOLD_VENDOR_NAMES = {
   datadome: "DataDome",
@@ -1615,9 +1600,6 @@ const make = Effect.gen(function* () {
         actionTimeline: [],
         control,
         agentOperating: false,
-        mainDocument: null,
-        pendingDocument: null,
-        lastCommit: null,
         siteHoldCheck: Promise.resolve(),
         fileChooserIntercepted: false,
         onFileChooser: (chooser) => {
@@ -1719,22 +1701,6 @@ const make = Effect.gen(function* () {
         frame(): unknown;
       }) => appLinkUrl(request.url()) === null && isMainFrameNavigation(request);
       const navigationGenerations = new WeakMap<object, number>();
-      const requestedAt = new WeakMap<object, number>();
-      // Only a committed response is the document on screen; a 204 or a history change
-      // commits none. The commit and the response arrive on different sessions, in either order.
-      const promoteDocument = () => {
-        const pending = tab.pendingDocument;
-        const commit = tab.lastCommit;
-        if (
-          pending === null ||
-          commit === null ||
-          commit.at < pending.requestedAt ||
-          withoutHash(commit.url) !== withoutHash(pending.url)
-        )
-          return;
-        tab.mainDocument = pending;
-        tab.pendingDocument = null;
-      };
       page.on("request", (request) => {
         if (appLinkUrl(request.url()) !== null && isMainFrameNavigation(request)) {
           // A redirect into an app link ends the navigation that led there.
@@ -1744,7 +1710,6 @@ const make = Effect.gen(function* () {
           return;
         }
         if (!isMainNavigation(request)) return;
-        requestedAt.set(request, Date.now());
         stopTabWatches(tab, "navigation");
         // Playwright can deliver the first request after Stop has already settled its navigation.
         const stoppedInitialRequest =
@@ -1775,14 +1740,8 @@ const make = Effect.gen(function* () {
       });
       // frameNavigated is cross-document only; a select's handle dies with its document.
       cdp.on("Page.frameNavigated", ({ frame }) => {
-        if (frame.parentId) return;
-        for (const viewer of tab.viewers) withdrawSelectMenu(viewer);
-        // Only a committed response is the document on screen; a 204 or a history change commits none.
-        tab.lastCommit = { url: frame.url, at: Date.now() };
-        promoteDocument();
+        if (!frame.parentId) for (const viewer of tab.viewers) withdrawSelectMenu(viewer);
       });
-      // Server tabs turn the Page domain on with their viewport; a desktop tab needs it for commits.
-      if (desktop) await cdp.send("Page.enable").catch(constVoid);
       page.on("framenavigated", (frame) => {
         const open = tab.fileChooser;
         if (open)
@@ -1873,13 +1832,7 @@ const make = Effect.gen(function* () {
           const document = {
             status: response.status(),
             headers: response.headers(),
-            url: response.url(),
-            at: Date.now(),
-            // A popup's first request can predate the listener.
-            requestedAt: requestedAt.get(response.request()) ?? 0,
           };
-          tab.pendingDocument = document;
-          promoteDocument();
           if (document.status >= 400 || document.headers["cf-mitigated"] !== undefined)
             tab.siteHoldCheck = Promise.all([
               tab.siteHoldCheck,
@@ -3599,21 +3552,27 @@ const make = Effect.gen(function* () {
       // Only an observed main document on the held site, with no check on it, is verified
       // clean; a navigation or control change during the read makes the result stale.
       const generation = [tab.navigationGeneration, tab.control.generation] as const;
-      // The document must be the one on screen and must have loaded after the check appeared.
-      const candidate = tab.mainDocument;
-      const document =
-        candidate !== null &&
-        siteOf(tab.page.url()) === hold.site &&
-        withoutHash(candidate.url) === withoutHash(tab.page.url()) &&
-        candidate.at >= Date.parse(hold.since)
-          ? candidate
-          : null;
-      // A page that cannot be read is not proof of a clean one.
-      const html = document === null ? null : await tab.page.content().catch(() => null);
+      // The page itself says which document is on screen: its navigation entry keeps the
+      // status and start of the response that committed, through a 204 or a history change.
+      const shown = (await tab.page
+        .evaluate(
+          `(() => {
+            const entry = performance.getEntriesByType("navigation")[0];
+            return entry && { status: entry.responseStatus, startedAt: performance.timeOrigin + entry.startTime, html: document.documentElement.outerHTML };
+          })()`,
+        )
+        .catch(() => undefined)) as
+        | { readonly status: number; readonly startedAt: number; readonly html: string }
+        | undefined;
+      // An unreadable page, a failed status or a document older than the check is not proof.
       const verified =
-        document !== null &&
-        html !== null &&
-        classifyAntiBotPage({ ...document, html }) === undefined &&
+        shown !== undefined &&
+        shown.status >= 200 &&
+        shown.status < 400 &&
+        shown.startedAt >= Date.parse(hold.since) &&
+        siteOf(tab.page.url()) === hold.site &&
+        classifyAntiBotPage({ status: shown.status, headers: {}, html: shown.html }) ===
+          undefined &&
         generation[0] === tab.navigationGeneration &&
         generation[1] === tab.control.generation;
       if (!verified && how === "release") continue;
