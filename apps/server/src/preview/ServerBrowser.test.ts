@@ -3778,6 +3778,73 @@ it.live("a check that a same-site API call answers holds the site without a navi
   ).pipe(Effect.provide(layer)),
 );
 
+it.live("a check another tab of the profile meets again keeps the hold", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      let challenged = false;
+      yield* Effect.promise(() =>
+        context.route("https://shop.test/**", (route) =>
+          route.fulfill(
+            challenged
+              ? {
+                  status: 403,
+                  contentType: "text/html",
+                  body: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+                }
+              : { status: 200, contentType: "text/html", body: "<p>ok</p>" },
+          ),
+        ),
+      );
+      realContextOverride = context;
+      const browser = yield* ServerBrowser.ServerBrowser;
+      const broker = yield* Broker.PreviewAutomationBroker;
+      const open = () =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: {
+            url: "https://shop.test/",
+            reuseExistingTab: false,
+            show: false,
+            profileId: "default",
+          },
+        });
+      const first = PreviewTabId.make((yield* open()).tabId!);
+      yield* open();
+      const [firstPage, secondPage] = context.pages();
+      challenged = true;
+      yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "https://shop.test/a" },
+          tabId: first,
+        }),
+      );
+      const viewer = yield* browser.attachViewer(viewerInput(first, true));
+      yield* viewer.input({ type: "takeControl" });
+      challenged = false;
+      yield* Effect.promise(() => firstPage!.goto("https://shop.test/clean"));
+      // The person's other tab meets the check again after that clean load.
+      challenged = true;
+      yield* Effect.promise(() => secondPage!.reload());
+      yield* viewer.input({ type: "releaseControl" });
+      const status = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "status",
+        input: {},
+        tabId: first,
+      });
+      expect(status.siteHold, "the site still shows its check in the profile").toBeDefined();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live("releasing one site keeps the banner of another site the tab still holds", () =>
   Effect.scoped(
     Effect.gen(function* () {

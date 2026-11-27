@@ -71,6 +71,8 @@ export const siteOf = (url: string): string | undefined => {
 export interface HeldSite extends PreviewSiteHold {
   readonly threadId: string;
   readonly tabId: string;
+  /** When any covered tab last met a check on the site; a release needs a newer document. */
+  metAt: number;
 }
 
 /**

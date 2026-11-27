@@ -575,8 +575,6 @@ interface ServerTab {
   agentOperating: boolean;
   /** Classification of the latest error document, so an action can report the hold it caused. */
   siteHoldCheck: Promise<void>;
-  /** When this tab last met a check, held already or not; a release needs a document newer. */
-  checkMetAt: number;
   fileChooserIntercepted: boolean;
   readonly onFileChooser: (chooser: FileChooser) => void;
   readonly watches: Set<string>;
@@ -1603,7 +1601,6 @@ const make = Effect.gen(function* () {
         control,
         agentOperating: false,
         siteHoldCheck: Promise.resolve(),
-        checkMetAt: 0,
         fileChooserIntercepted: false,
         onFileChooser: (chooser) => {
           pendingFileChooserOffer = pendingFileChooserOffer
@@ -3468,7 +3465,13 @@ const make = Effect.gen(function* () {
   ) => {
     const site = siteOf(url);
     if (site === undefined || tab.closing) return;
-    tab.checkMetAt = Date.now();
+    // A check met again, by any tab or answer the hold covers, moves the bar for release.
+    const metAt = Date.now();
+    for (const covering of [
+      siteHolds.get(siteHoldScope(tab), site),
+      siteHolds.forThread(tab.threadId, site),
+    ])
+      if (covering) covering.metAt = Math.max(covering.metAt, metAt);
     const hold: HeldSite = {
       site,
       ...verdict,
@@ -3476,6 +3479,7 @@ const make = Effect.gen(function* () {
       since: new Date().toISOString(),
       threadId: tab.threadId,
       tabId: tab.tabId,
+      metAt,
     };
     if (!siteHolds.create(siteHoldScope(tab), hold)) return;
     runFork(Effect.logInfo("Site hold raised", { site, vendor: hold.vendor, kind: hold.kind }));
@@ -3576,7 +3580,7 @@ const make = Effect.gen(function* () {
         shown.status < 400 &&
         shown.startedAt >= Date.parse(hold.since) &&
         // A check met again on a later document or by a same-site answer keeps the hold.
-        shown.startedAt > tab.checkMetAt &&
+        shown.startedAt > hold.metAt &&
         siteOf(tab.page.url()) === hold.site &&
         generation[0] === tab.navigationGeneration &&
         generation[1] === tab.control.generation;
