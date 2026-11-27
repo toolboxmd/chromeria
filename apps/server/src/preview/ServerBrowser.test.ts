@@ -3776,6 +3776,56 @@ const queuedSiteActions = (apiAnswer: "challenge" | "ok") =>
     return { browser, second, running, queued, answer, scrolled };
   });
 
+it.live("a person who takes a fresh tab during its open keeps it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      const requested = Promise.withResolvers<void>();
+      const answer = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => answer.resolve()));
+      yield* Effect.promise(() =>
+        context.route("https://shop.example.com/**", async (route) => {
+          requested.resolve();
+          await answer.promise;
+          return route.fulfill({ status: 200, contentType: "text/html", body: "<p>ok</p>" });
+        }),
+      );
+      realContextOverride = context;
+      const browser = yield* ServerBrowser.ServerBrowser;
+      const broker = yield* Broker.PreviewAutomationBroker;
+      const manager = yield* Manager.PreviewManager;
+      const opening = yield* broker
+        .invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: {
+            url: "https://shop.example.com/",
+            reuseExistingTab: false,
+            show: false,
+            profileId: "default",
+          },
+        })
+        .pipe(Effect.exit, Effect.forkScoped);
+      // The tab exists and its page is loading while the open holds the site's turn.
+      yield* Effect.promise(() => requested.promise);
+      const [session] = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
+      const viewer = yield* browser.attachViewer(viewerInput(session!.tabId, true));
+      yield* viewer.input({ type: "takeControl" });
+      answer.resolve();
+      yield* Fiber.join(opening);
+      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+      expect(
+        sessions.map((each) => each.tabId),
+        "the person's tab stays",
+      ).toContain(session!.tabId);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live("a check another tab meets stops a same-site action queued behind it", () =>
   Effect.scoped(
     Effect.gen(function* () {
