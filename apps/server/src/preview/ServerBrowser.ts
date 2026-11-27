@@ -4020,6 +4020,8 @@ const make = Effect.gen(function* () {
           if (
             !started &&
             tab.control.controller === null &&
+            // A tab holding a site's check stays for the person, as an agent's close leaves it.
+            siteHolds.heldBy(tab.tabId).length === 0 &&
             tabs.get(tabKey(tab.threadId, tab.tabId)) === tab
           ) {
             await runPromise(manager.close({ threadId: tab.threadId, tabId: tab.tabId }));
