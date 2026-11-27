@@ -3629,7 +3629,7 @@ const make = Effect.gen(function* () {
     const guarded = (authority: () => Promise<void>) => async () => {
       for (;;) {
         const pending = tab.siteHoldCheck;
-        await pending;
+        await classifiedBy(tab, deadlineMs);
         await authority();
         if (
           generation !== tab.control.generation ||
