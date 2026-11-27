@@ -575,6 +575,8 @@ interface ServerTab {
   agentOperating: boolean;
   /** Classification of the latest error document, so an action can report the hold it caused. */
   siteHoldCheck: Promise<void>;
+  /** When this tab last met a check, held already or not; a release needs a document newer. */
+  checkMetAt: number;
   fileChooserIntercepted: boolean;
   readonly onFileChooser: (chooser: FileChooser) => void;
   readonly watches: Set<string>;
@@ -1601,6 +1603,7 @@ const make = Effect.gen(function* () {
         control,
         agentOperating: false,
         siteHoldCheck: Promise.resolve(),
+        checkMetAt: 0,
         fileChooserIntercepted: false,
         onFileChooser: (chooser) => {
           pendingFileChooserOffer = pendingFileChooserOffer
@@ -3465,6 +3468,7 @@ const make = Effect.gen(function* () {
   ) => {
     const site = siteOf(url);
     if (site === undefined || tab.closing) return;
+    tab.checkMetAt = Date.now();
     const hold: HeldSite = {
       site,
       ...verdict,
@@ -3571,6 +3575,8 @@ const make = Effect.gen(function* () {
         shown.status >= 200 &&
         shown.status < 400 &&
         shown.startedAt >= Date.parse(hold.since) &&
+        // A check met again on a later document or by a same-site answer keeps the hold.
+        shown.startedAt > tab.checkMetAt &&
         siteOf(tab.page.url()) === hold.site &&
         generation[0] === tab.navigationGeneration &&
         generation[1] === tab.control.generation;

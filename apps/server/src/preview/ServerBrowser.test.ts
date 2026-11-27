@@ -3758,6 +3758,22 @@ it.live("a check that a same-site API call answers holds the site without a navi
         (yield* invoke("status", {})).siteHold,
         "releasing on the page that loaded before the check keeps the hold",
       ).toBeDefined();
+      // A newer page that meets the check again keeps the hold too.
+      const page = context.pages()[0]!;
+      yield* viewer.input({ type: "takeControl" });
+      yield* Effect.promise(() => page.reload());
+      yield* Effect.promise(() =>
+        Promise.all([page.waitForResponse(/\/api\/search$/), page.click("button")]),
+      );
+      yield* viewer.input({ type: "releaseControl" });
+      expect(
+        (yield* invoke("status", {})).siteHold,
+        "the check met again after the reload keeps the hold",
+      ).toBeDefined();
+      yield* viewer.input({ type: "takeControl" });
+      yield* Effect.promise(() => page.reload());
+      yield* viewer.input({ type: "releaseControl" });
+      expect((yield* invoke("status", {})).siteHold, "a clean reload clears it").toBeUndefined();
     }),
   ).pipe(Effect.provide(layer)),
 );
