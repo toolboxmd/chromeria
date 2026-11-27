@@ -12,13 +12,13 @@ pnpm mcp-tool-use --case review-round-uses-thread-send --samples 1 --out runs/ch
 pnpm mcp-tool-use --model claude-opus-5-5 --max-samples 696 --out runs/opus
 ```
 
-- `ANTHROPIC_API_KEY` in the repo root `.env` pays for Claude models and the Haiku shell simulator.
-- On every machine, Claude evals use `http://100.77.241.44:8317` with no flag. The client key is OpenBao `shared/cliproxyapi` field `api_key`, read with `bao-agent` on rocky and `bao get` on the other machines. The summary names the URL. `--anthropic-base-url https://api.anthropic.com` sends the run to the API instead, using `ANTHROPIC_API_KEY`. `ANTHROPIC_BASE_URL` stays ignored.
+- On every machine, Claude evals and their Haiku shell simulator use the Claude subscription through rocky's CLIProxyAPI at `http://100.77.241.44:8317` with no flag, so they are not paid per token. The client key is OpenBao `shared/cliproxyapi` field `api_key`, read with `bao-agent` on rocky and `bao get` on the other machines. The summary names the URL. `--anthropic-base-url https://api.anthropic.com` sends the run to the API instead, using `ANTHROPIC_API_KEY`. `ANTHROPIC_BASE_URL` stays ignored.
+- Paid per token: `--anthropic-base-url https://api.anthropic.com`, which uses `ANTHROPIC_API_KEY` from the repo root `.env`, and a Codex run with the default Haiku shell simulator while `ANTHROPIC_API_KEY` is set, because Codex runs do not use rocky's proxy for Claude. Pass `--shell-model gpt-6.1-terra` to keep a Codex run off the API.
 - Codex models (`gpt-*` in `MODELS` in `run.ts`) go through a CLIProxyAPI server, set up as the Codex model provider: `model_provider` in `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) when it names a `[model_providers.<name>]` table, otherwise `[model_providers.vibeproxy]`. Set `T3CODE_EVAL_MODEL_PROVIDER=<name>` to use another table, such as `vibeproxy` when your everyday `model_provider` is a different custom provider. That table needs `base_url` (the proxy's OpenAI-compatible URL, such as `http://localhost:8317/v1`) and a key in `experimental_bearer_token` or the variable named by `env_key`. Keep the proxy under about 12 samples in flight across all runs.
 - `--shell-model` picks the model that plays the shell: `claude-haiku-5-5` by default, or `gpt-6.1-terra` / `gpt-6-luna` through the same proxy, so Codex runs need no Anthropic key. Prefer Terra: Luna often contradicts the case's world (it calls named checkouts missing or files empty). Compare runs only when they used the same shell model.
 - Flags: `--case <ids>`, `--cases <file.ndjson>`, `--samples <n>` (default 2, and a 3rd when the first 2 disagree), `--max-samples <n>` (default 30: a run planning more samples refuses), `--concurrency <n>` (samples in flight, default 8), `--max-steps <n>`, `--effort <level>`, `--dry-run` (prints request bodies, no model calls), and `--context` (prints the size of T3's text and schemas, no key needed).
 - `--baseline <results.jsonl> --stop-on-regression` stops as soon as a case that passed every baseline sample fails. Use it to test one copy change against a baseline run.
-- Cost: a full run of all cases at 3 samples cost $25 on Sonnet and $45 on Opus on 2026-11-10. The 16 device cases at 3 samples each cost about $5.70–5.90 on Opus and $2.90–3.40 on Sonnet (main's text–#25661), including the Haiku shell simulator; dry runs cost $0. Results record token costs for the agent and shell simulator. Codex proxy charges are outside that total; only its shell simulator is priced here, about $0.60–0.70 for the device cases.
+- Cost: results price tokens at API rates even when the run used a subscription proxy, so these figures measure size, not money spent. A full run of all cases at 3 samples cost $25 on Sonnet and $45 on Opus on 2026-11-10. The 16 device cases at 3 samples each cost about $5.70–5.90 on Opus and $2.90–3.40 on Sonnet (main's text–#25661), including the Haiku shell simulator; dry runs cost $0. Results record token costs for the agent and shell simulator. Codex proxy charges are outside that total; only its shell simulator is priced here, about $0.60–0.70 for the device cases.
 - A rate limit or overload (429, 529 or another 5xx) is retried with backoff for up to about 4 minutes. A sample that still fails gets an `error` in `results.jsonl`, is left out of every pass rate, and is listed in the summary; the tokens it spent still count toward the cost.
 
 ## Add a case
@@ -106,7 +106,7 @@ Passes per case, main's text → #25661, from one paired run of 3 samples per ca
 
 Some results are artifacts of the simulated shell rather than the agent: dev-client loads that never finish (HOST-01a), refusals it invented for valid commands (DOC-01, DISC-01), compound commands that escaped FAIL-AFTER-hub's outage mock, and an invented recording result (DEL-02). They are counted as graded. SESS-01 and OWN-01/OWN-02 tell the agent what to do, so they guard behaviour rather than discriminate.
 
-Run a single case before a paid batch:
+Run a single case before a batch:
 
 ```sh
 pnpm mcp-tool-use --case HOST-01a --dry-run
@@ -246,7 +246,7 @@ Passes per case, main's text → the request_secret guidance change stacked on t
 
 ## Login import cases
 
-`cases/login-import.ndjson` checks when a computer-use child on a machine without the user's session copies it with `preview_import_login` ([#522](https://github.com/toolboxmd/chromeria/issues/522)). Prompts, worlds and pages are authored Acme data. These cases have not run yet; the user decides how a run is paid.
+`cases/login-import.ndjson` checks when a computer-use child on a machine without the user's session copies it with `preview_import_login` ([#522](https://github.com/toolboxmd/chromeria/issues/522)). Prompts, worlds and pages are authored Acme data. These cases have not run yet.
 
 | Case                         | Kind    | What it checks                                                                                               |
 | ---------------------------- | ------- | ------------------------------------------------------------------------------------------------------------ |

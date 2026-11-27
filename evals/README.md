@@ -21,7 +21,7 @@ Write or run an eval when a change affects what a model sees or does: agent inst
 
 Each eval's README lists its models, flags, and cost. Start with one case and one sample to check the setup.
 
-Evals call paid models, so CI does not run them. CI typechecks this package and runs the graders' unit tests.
+Evals are not paid by default. Claude MCP tool-use evals run on the Claude subscription through the CLIProxyAPI on rocky (`http://100.77.241.44:8317`), and the other evals run through Codex or the Codex CLIProxyAPI provider. Only two setups bill per token: `--anthropic-base-url https://api.anthropic.com`, and a Codex `mcp-tool-use` run with the default Haiku shell simulator while `ANTHROPIC_API_KEY` is set. See [mcp-tool-use](mcp-tool-use/README.md#run). Evals call real models and use quota, so CI does not run them. CI typechecks this package and runs the graders' unit tests.
 
 ## The shape of an eval
 
