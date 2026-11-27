@@ -15,8 +15,10 @@ import * as AcpSchema from "effect-acp/schema";
 import type * as AcpCompat from "effect-acp/compat";
 
 import { beginAcpMockPrompt } from "./acpMockCancellationState.ts";
+import { makeAcpMockRequestLogAppender } from "./acpMockRequestLog.ts";
 
 const requestLogPath = process.env.T3_ACP_REQUEST_LOG_PATH;
+const appendRequestLog = requestLogPath ? makeAcpMockRequestLogAppender(requestLogPath) : undefined;
 const antigravityProfile = process.env.T3_ACP_ANTIGRAVITY === "1";
 const antigravityThoughtLevel = process.env.T3_ACP_ANTIGRAVITY_THOUGHT_LEVEL === "1";
 const antigravityResumeThoughtLevel = process.env.T3_ACP_RESUME_THOUGHT_LEVEL;
@@ -2300,7 +2302,7 @@ const program = Effect.gen(function* () {
 }).pipe(
   Effect.provide(
     EffectAcpAgent.layerStdio(
-      requestLogPath
+      appendRequestLog
         ? {
             logIncoming: true,
             logger: (event) => {
@@ -2311,13 +2313,7 @@ const program = Effect.gen(function* () {
                 return Effect.void;
               }
               const payload = event.payload;
-              return Effect.sync(() => {
-                NodeFS.appendFileSync(
-                  requestLogPath,
-                  payload.endsWith("\n") ? payload : `${payload}\n`,
-                  "utf8",
-                );
-              });
+              return Effect.sync(() => appendRequestLog(payload));
             },
           }
         : {},
