@@ -121,12 +121,37 @@ When the reason names a thread or a pull request, a link right after it opens th
 request; on a narrow row the link shows as an icon. Clicking anywhere else on the row opens the
 Issue.
 
-Above the list, one line counts the open Issues of the listed repositories and how many of them
-nobody updated for 30 days. With a Status, Linked or Parent filter it reads "5 of 113 open Issues".
-A search text, label or milestone is searched on GitHub, so the line then counts the matching Issues
-and names no open total. A count ends in `+` while more Issues are still being read, and a group's
-count starts with `~` until every Issue and its threads are read, because a row can still move to
-another group.
+Above the list, one line gives the open Issues of the listed repositories and the week's flow:
+"113 open Issues", then "Last 7 days: 12 filed, 9 closed". The 7 days are the 168 hours before the
+numbers were read, not calendar days. Filed counts the Issues created in them and closed the Issues
+closed in them, so the two show whether the pile grows; they are not the change in the open total,
+because a reopened Issue grows the pile without being filed.
+These numbers cover every listed repository whatever the list is narrowed to. Under a search text,
+a filter or a repository the line reads "5 of 113 open Issues"; with State set to Closed or All it
+counts the rows shown and gives the open total beside them. The line also says how many open Issues
+nobody updated for 30 days, while the list holds every open Issue.
+
+The total and the week's flow are read when the page opens and when you press Refresh, not when
+you sort, search or filter, so they can lag the rows by a few Issues until the next Refresh. While
+Refresh reads them again, the numbers stay in sight with a `~` in front; rows that are only being
+read again do not mark them.
+
+If the rows come to hold more open Issues than the total that was counted, that total is out of
+date and is not shown. The unfiltered Open list then counts its own rows: exactly once it is read
+to its end, and with a `+` while more are arriving. Under a search, a filter that GitHub applies,
+or another State, the line gives the rows' own count and "Open Issues: unknown" until the next
+Refresh.
+
+The totals are for the repositories listed, and need each of them counted by a server that
+answers. A server that stopped answering, or whose listing GitHub refused, does not hold them back
+when another server lists the same repositories; it does when it listed a repository no other
+server has. A server that is not connected and has listed nothing since the page was opened adds no
+rows and no repositories, so the numbers go without it. When they cannot be read, the line says
+"Last 7 days: unknown" instead of a number: a connected server has not yet said what it lists, a
+server is too old to count, or GitHub did not answer in time. The rows are not affected.
+
+A count ends in `+` while more Issues are still being read, and a group's count starts with `~`
+until every Issue and its threads are read, because a row can still move to another group.
 
 The status a row names is the first of these that applies:
 

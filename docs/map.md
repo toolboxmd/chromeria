@@ -158,6 +158,8 @@ flowchart TD
     WR --- WRR
     IWM["Issues grouped by whose move"]
     %% IWM: #1009
+    IWF["Issues week flow and open total"]
+    %% IWF: #1037
 
     T3P --- PZ
     T3T --- VT
@@ -185,6 +187,7 @@ flowchart TD
     T3M --- OAG
     T3M --- WR
     T3C --- IWM
+    T3C --- IWF
     T3S --- EP
     EP --- DR
     EP --- XM

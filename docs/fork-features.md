@@ -663,7 +663,8 @@ only when that file set changes; this is not an exhaustive history of follow-ups
   "issues": [
     "https://github.com/toolboxmd/t3code/issues/27",
     "https://github.com/toolboxmd/t3code/issues/42",
-    "https://github.com/toolboxmd/chromeria/issues/171"
+    "https://github.com/toolboxmd/chromeria/issues/171",
+    "https://github.com/toolboxmd/chromeria/issues/1037"
   ],
   "prs": [
     "https://github.com/toolboxmd/t3code/pull/32",
@@ -699,7 +700,10 @@ only when that file set changes; this is not an exhaustive history of follow-ups
     "scripts/scenarios/issues-view-counts-every-page.e2e.ts",
     "scripts/scenarios/issues-view-empty-list-states-its-total.e2e.ts",
     "scripts/scenarios/issues-view-failed-page-keeps-rows.e2e.ts",
-    "scripts/scenarios/issues-view-failed-thread-read-marks-counts.e2e.ts"
+    "scripts/scenarios/issues-view-failed-thread-read-marks-counts.e2e.ts",
+    "scripts/scenarios/issues-view-week-flow-failed-refresh-claims-no-total.e2e.ts",
+    "scripts/scenarios/issues-view-week-flow-holds-through-slow-server.e2e.ts",
+    "scripts/scenarios/issues-view-week-flow-keeps-open-total.e2e.ts"
   ],
   "upstreamFiles": [
     "apps/server/src/auth/RpcAuthorization.ts",

@@ -4,6 +4,8 @@ import {
   type FeatureMapSnapshot,
   gitHubRepositoryOf,
   type GitHubIssueCommentInput,
+  type GitHubIssueCountsInput,
+  type GitHubIssueCountsResult,
   type GitHubIssueDetail,
   type GitHubIssueListEntry,
   type GitHubIssueListInput,
@@ -18,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
@@ -43,8 +46,11 @@ import {
 import * as GitHubApi from "./IssueGitHubApi.ts";
 import { type GraphQlDocument, readGraphQlPages } from "./gitHubDocuments.ts";
 import {
+  decodeIssueCountsJson,
   decodeIssueDetailJson,
   decodeIssueStatesJson,
+  issueCountsGraphQlDocument,
+  issueCountsOf,
   issueDetailOf,
   decodeIssueSearchJson,
   decodeViewerJson,
@@ -67,6 +73,14 @@ import {
 const REPOSITORY_SEARCH_CHUNK = 100;
 const DEFAULT_LIMIT = 50;
 const SEARCH_CONCURRENCY = 4;
+/**
+ * How long a counts read may take. One request held the counts of 105 repositories in 1.0 to
+ * 1.3 s and of the 1000 a read may name (30 searches) in 1.9 to 2.8 s; this leaves room for a
+ * wait on a request slot behind the list's pages.
+ */
+export const ISSUE_COUNTS_DEADLINE = Duration.seconds(8);
+/** The week `filed` and `closed` cover: the 168 hours before the read. */
+const COUNTS_WINDOW = Duration.days(7);
 
 export class IssueService extends Context.Service<
   IssueService,
@@ -81,6 +95,13 @@ export class IssueService extends Context.Service<
     readonly states: (
       input: IssueStatesInput,
     ) => Effect.Effect<IssueStatesResult, GitHubIssueOperationError>;
+    /**
+     * The open total and the week's filed and closed over exactly the repositories named, within
+     * `ISSUE_COUNTS_DEADLINE`. It fails rather than answer for only some of them.
+     */
+    readonly counts: (
+      input: GitHubIssueCountsInput,
+    ) => Effect.Effect<GitHubIssueCountsResult, GitHubIssueOperationError>;
     readonly comment: (
       input: GitHubIssueCommentInput,
     ) => Effect.Effect<void, GitHubIssueOperationError>;
@@ -134,6 +155,24 @@ const failure = (operation: string, cause: unknown, fallback: string) =>
 const restRepository = (repository: string) => {
   const { owner, name } = repositoryParts(repository);
   return `${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+};
+
+/** The searches that read `repositories`: per host, chunks of what one search names. */
+const searchesOf = (repositories: ReadonlyArray<WorkspaceRepository>): ReadonlyArray<Search> => {
+  const byHost = new Map<string, Array<WorkspaceRepository>>();
+  for (const repository of repositories) {
+    const group = byHost.get(repository.host) ?? [];
+    group.push(repository);
+    byHost.set(repository.host, group);
+  }
+  return [...byHost].flatMap(([host, group]) => {
+    const chunks: Array<Search> = [];
+    for (let start = 0; start < group.length; start += REPOSITORY_SEARCH_CHUNK) {
+      const chunk = group.slice(start, start + REPOSITORY_SEARCH_CHUNK);
+      chunks.push({ key: `${host}#${start / REPOSITORY_SEARCH_CHUNK}`, host, chunk });
+    }
+    return chunks;
+  });
 };
 
 const make = Effect.gen(function* () {
@@ -305,20 +344,7 @@ const make = Effect.gen(function* () {
                 key.toLowerCase() === `${repository.host} ${repository.repository}`.toLowerCase(),
             ),
           );
-    const byHost = new Map<string, Array<WorkspaceRepository>>();
-    for (const repository of wanted) {
-      const group = byHost.get(repository.host) ?? [];
-      group.push(repository);
-      byHost.set(repository.host, group);
-    }
-    const searches = [...byHost].flatMap(([host, group]) => {
-      const chunks: Array<Search> = [];
-      for (let start = 0; start < group.length; start += REPOSITORY_SEARCH_CHUNK) {
-        const chunk = group.slice(start, start + REPOSITORY_SEARCH_CHUNK);
-        chunks.push({ key: `${host}#${start / REPOSITORY_SEARCH_CHUNK}`, host, chunk });
-      }
-      return chunks;
-    });
+    const searches = searchesOf(wanted);
     // A continuation reads only the searches it names.
     const reads =
       input.cursors === undefined
@@ -535,6 +561,77 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const counts: IssueService["Service"]["counts"] = Effect.fn("IssueService.counts")(
+    function* (input) {
+      const { repositories } = yield* workspace;
+      const asked = new Set(input.repositories.map((key) => key.toLowerCase()));
+      const wanted = repositories.filter((repository) =>
+        asked.has(`${repository.host} ${repository.repository}`.toLowerCase()),
+      );
+      // Left out quietly, a repository this server does not list would make the totals a part
+      // of what was asked.
+      if (wanted.length !== asked.size) {
+        return yield* new GitHubIssueOperationError({
+          operation: "countIssues",
+          detail: "A repository to count is not one of this server's projects.",
+        });
+      }
+      const searches = searchesOf(wanted);
+      const hosts = [...new Set(searches.map((search) => search.host))];
+      const pinned = yield* pinnedCredentials(hosts);
+      const since = DateTime.formatIso(
+        DateTime.subtractDuration(yield* DateTime.now, COUNTS_WINDOW),
+      ).replace(/\.\d+Z$/u, "Z");
+      // One request per host carries every chunk's three searches; one that fails fails the read.
+      const totals = yield* Effect.forEach(
+        hosts,
+        (host) => {
+          const chunks = searches
+            .filter((search) => search.host === host)
+            .map((search) => search.chunk.map((repository) => repository.repository));
+          const document = issueCountsGraphQlDocument({ chunks, since });
+          if (document === null) {
+            return Effect.fail(
+              new GitHubIssueOperationError({
+                operation: "countIssues",
+                detail: `A repository on ${host} has a name GitHub cannot search.`,
+              }),
+            );
+          }
+          return pinned(
+            host,
+            graphqlRead({
+              host,
+              operation: "countIssues",
+              document,
+              decode: (raw) =>
+                Result.flatMap(decodeIssueCountsJson(raw), (answer) => {
+                  const counted = issueCountsOf(chunks.length, answer.data);
+                  return counted === null ? Result.fail(answer) : Result.succeed(counted);
+                }),
+            }),
+          );
+        },
+        { concurrency: SEARCH_CONCURRENCY },
+      );
+      return {
+        open: totals.reduce((sum, host) => sum + host.open, 0),
+        filed: totals.reduce((sum, host) => sum + host.filed, 0),
+        closed: totals.reduce((sum, host) => sum + host.closed, 0),
+      };
+    },
+    Effect.timeoutOrElse({
+      duration: ISSUE_COUNTS_DEADLINE,
+      orElse: () =>
+        Effect.fail(
+          new GitHubIssueOperationError({
+            operation: "countIssues",
+            detail: "GitHub did not answer the Issue counts in time.",
+          }),
+        ),
+    }),
+  );
+
   /** A user's change to one Issue, through GitHub's REST API. */
   const issueWrite = (
     operation: string,
@@ -704,7 +801,7 @@ const make = Effect.gen(function* () {
     );
   });
 
-  return IssueService.of({ list, detail, states, comment, setState, readFeatureMap });
+  return IssueService.of({ list, detail, states, counts, comment, setState, readFeatureMap });
 });
 
 export const layer = Layer.effect(IssueService, make);

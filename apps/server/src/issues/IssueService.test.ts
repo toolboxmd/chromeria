@@ -1,9 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 import { type OrchestrationProjectShell, ProjectId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as IssueLinks from "../issueLinks/IssueLinks.ts";
 import { gitHubIdentity } from "../issueLinks/IssueLinks.testFixtures.ts";
@@ -148,6 +150,138 @@ describe("IssueService.list", () => {
       expect(yield* Ref.get(searches)).toEqual(["account-1", "account-1"]);
       expect(result.viewers).toEqual([{ host: "github.com", login: "account-1" }]);
       expect(result.errors).toEqual([]);
+    }),
+  );
+});
+
+describe("IssueService.counts", () => {
+  const key = (index: number) => `github.com acme/repo-${index}`;
+  /** A project on a second GitHub host. */
+  const enterprise: OrchestrationProjectShell = {
+    ...projects[0]!,
+    id: ProjectId.make("enterprise"),
+    repositoryIdentity: {
+      ...gitHubIdentity("corp/tool"),
+      canonicalKey: "github.corp.example/corp/tool",
+    },
+  };
+  /** Each search of a request answered with its own number: `count3` matches 3 Issues. */
+  const numbered = (input: GitHubApi.GitHubGraphQlInput) =>
+    JSON.stringify({
+      data: Object.fromEntries(
+        Object.keys(input.variables ?? {}).map((variable, index) => [
+          variable.replace("_q", ""),
+          { issueCount: index },
+        ]),
+      ),
+    });
+
+  it.effect("counts the named repositories in one request per host, three searches a chunk", () =>
+    Effect.gen(function* () {
+      const requests = yield* Ref.make<ReadonlyArray<GitHubApi.GitHubGraphQlInput>>([]);
+      const issues = yield* serviceWith([...projects, enterprise], (input) =>
+        Ref.update(requests, (all) => [...all, input]).pipe(Effect.as(numbered(input))),
+      );
+
+      // 101 repositories on one host are two of the list's chunks: six searches, one request.
+      const everything = yield* issues.counts({
+        repositories: projects.map((_, index) => key(index)),
+      });
+      const [first, ...rest] = yield* Ref.get(requests);
+      expect(rest).toEqual([]);
+      const searches = Object.values(first?.variables ?? {}) as ReadonlyArray<string>;
+      expect(searches.map((q) => q.split(" repo:").length - 1)).toEqual([100, 100, 100, 1, 1, 1]);
+      // The clock of an effect test stands at the epoch, seven days after this instant.
+      expect(searches.map((q) => q.split(" repo:")[0])).toEqual([
+        "is:issue is:open",
+        "is:issue created:>=1969-12-25T00:00:00Z",
+        "is:issue is:closed closed:>=1969-12-25T00:00:00Z",
+        "is:issue is:open",
+        "is:issue created:>=1969-12-25T00:00:00Z",
+        "is:issue is:closed closed:>=1969-12-25T00:00:00Z",
+      ]);
+      expect(everything).toEqual({ open: 0 + 3, filed: 1 + 4, closed: 2 + 5 });
+
+      // Only what a read names is counted, and each host it names is asked once.
+      yield* Ref.set(requests, []);
+      const two = yield* issues.counts({
+        repositories: [key(7), "github.corp.example corp/tool"],
+      });
+      expect(
+        (yield* Ref.get(requests)).map((input) => [input.host, Object.values(input.variables!)[0]]),
+      ).toEqual([
+        ["github.com", "is:issue is:open repo:acme/repo-7"],
+        ["github.corp.example", "is:issue is:open repo:corp/tool"],
+      ]);
+      expect(two).toEqual({ open: 0, filed: 2, closed: 4 });
+    }),
+  );
+
+  it.effect("fails rather than answer for a part of the repositories named", () =>
+    Effect.gen(function* () {
+      const both = [key(0), "github.corp.example corp/tool"];
+      const cases: ReadonlyArray<{
+        readonly repositories: ReadonlyArray<string>;
+        /** GitHub's answer to one host's request; null for a request that fails. */
+        readonly answer: (input: GitHubApi.GitHubGraphQlInput) => string | null;
+        readonly asked: boolean;
+      }> = [
+        // A repository that is not this server's project: refused before GitHub is asked.
+        {
+          repositories: [key(0), "github.com acme/not-a-project"],
+          answer: numbered,
+          asked: false,
+        },
+        // One of two hosts cannot be read.
+        {
+          repositories: both,
+          answer: (input) => (input.host === "github.com" ? numbered(input) : null),
+          asked: true,
+        },
+        // An answer that lacks one of its three searches.
+        {
+          repositories: both,
+          answer: () =>
+            JSON.stringify({ data: { count0: { issueCount: 4 }, count1: { issueCount: 1 } } }),
+          asked: true,
+        },
+      ];
+      for (const { repositories, answer, asked } of cases) {
+        const reads = yield* Ref.make(0);
+        const issues = yield* serviceWith([projects[0]!, enterprise], (input) =>
+          Ref.update(reads, (count) => count + 1).pipe(
+            Effect.flatMap(() => {
+              const raw = answer(input);
+              return raw === null
+                ? Effect.fail(
+                    new GitHubApi.GitHubApiRequestError({
+                      host: input.host,
+                      operation: input.operation,
+                      cause: new Error("offline"),
+                    }),
+                  )
+                : Effect.succeed(raw);
+            }),
+          ),
+        );
+        const error = yield* issues.counts({ repositories }).pipe(Effect.flip);
+        expect(error).toMatchObject({ _tag: "IssueOperationError", operation: "countIssues" });
+        expect((yield* Ref.get(reads)) > 0).toBe(asked);
+      }
+    }),
+  );
+
+  it.effect("gives up at its deadline instead of holding its reader", () =>
+    Effect.gen(function* () {
+      const issues = yield* serviceWith(projects.slice(0, 1), () => Effect.never);
+      const read = yield* issues
+        .counts({ repositories: [key(0)] })
+        .pipe(Effect.flip, Effect.forkChild);
+      yield* TestClock.adjust(IssueService.ISSUE_COUNTS_DEADLINE);
+      expect(yield* Fiber.join(read)).toMatchObject({
+        _tag: "IssueOperationError",
+        detail: "GitHub did not answer the Issue counts in time.",
+      });
     }),
   );
 });

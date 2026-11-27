@@ -34,7 +34,7 @@ import { cn } from "~/lib/utils";
 import { PULL_REQUESTS_PANEL_REF } from "~/rightPanelStore";
 import { useAllEnvironmentShellsBootstrapped, useProjects } from "~/state/entities";
 import { useEnvironments } from "~/state/environments";
-import { issueDetailRead, useIssueList } from "~/state/githubIssues";
+import { issueDetailRead, useIssueCounts, useIssueList } from "~/state/githubIssues";
 import { useDebouncedValue } from "~/state/queries";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { buildThreadRouteParams } from "~/threadRoutes";
@@ -65,13 +65,14 @@ import {
   environmentIdsWithCapability,
   issueCountCertainty,
   issueKey,
-  issueNumbersScope,
+  issueNumbersLine,
   matchesIssueFilters,
   repositoryKey,
   sortIssues,
   staleIssueCount,
   type EnvironmentIssueEntry,
   type IssueTreeNode,
+  type MarkedIssueCount,
 } from "./issueList.logic";
 import { publishIssuePaletteSource } from "./issuePaletteStore";
 import { issueMarkdownCwd, resolveIssuePanelEnvironment } from "./issueLinks.logic";
@@ -169,7 +170,7 @@ const NOBODY_ON_IT: IssueRowFacts = {
 };
 
 /** A count with the mark of how far it can be trusted: `12`, `12+` while rows arrive, `~12`. */
-const marked = (count: number, certainty: ReturnType<typeof issueCountCertainty>) =>
+const marked = (count: number, certainty: MarkedIssueCount["certainty"]) =>
   certainty === "floor" ? `${count}+` : certainty === "unsettled" ? `~${count}` : String(count);
 
 /** The Issues half of the Pull Requests page (`/pull-requests?view=issues`). GitHub only. */
@@ -250,9 +251,14 @@ export function IssuesView() {
   );
   const data = list.data;
 
+  // Asked of the repositories every listing holds, whatever the rows are narrowed to: sorting,
+  // searching, filtering and State leave this read alone.
+  const counts = useIssueCounts(list.listings);
+
   const refresh = () => {
     setNow(Date.now());
     list.refresh();
+    counts.refresh();
   };
 
   const linkEnvironments = new Set(environmentIdsWithCapability(environments, "issueLinks"));
@@ -388,40 +394,72 @@ export function IssuesView() {
       ? null
       : issueMarkdownCwd(projects, selected.environmentId, selected.reference);
 
-  const shown = marked(visible.length, shownCertainty);
-  const numbersScope = issueNumbersScope(baseInput);
+  // What GitHub searched for the rows, so they are not every Issue of the State.
+  const searched =
+    baseInput.query !== undefined ||
+    baseInput.labels !== undefined ||
+    baseInput.milestone !== undefined ||
+    baseInput.repositories !== undefined;
+  // A read in flight over numbers already shown leaves them in sight, marked as not final.
+  const counted = (count: number) => (counts.totals?.exact === false ? `~${count}` : String(count));
+  const line = issueNumbersLine({
+    state: preferences.state,
+    searched,
+    shown: { count: visible.length, certainty: shownCertainty },
+    loadedOpen: openCount,
+    rows: !rowsComplete ? "incomplete" : list.isPending ? "refreshing" : "complete",
+    counted:
+      counts.totals === null
+        ? null
+        : { count: counts.totals.open, certainty: counts.totals.exact ? "final" : "unsettled" },
+  });
+  const openIssues = ({ count, certainty }: MarkedIssueCount) =>
+    certainty === "final"
+      ? gt("{count, plural, one {{count} open Issue} other {{count} open Issues}}", { count })
+      : gt("{count} open Issues", { count: marked(count, certainty) });
   const numbers = (
     <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-2 text-xs text-muted-foreground">
       <span>
-        {numbersScope === "matching"
-          ? // GitHub narrowed the list, so these are the matches, not the open total.
-            gt("Matching Issues: {count}", { count: shown })
-          : numbersScope === "listed"
-            ? shownCertainty === "final"
+        {line.kind === "subset"
+          ? // Any filter that narrows the rows leaves the total of open Issues in sight.
+            gt("{shown} of {total} open Issues", {
+              shown: marked(line.shown.count, line.shown.certainty),
+              total: marked(line.total.count, line.total.certainty),
+            })
+          : line.kind === "open"
+            ? openIssues(line.count)
+            : line.count.certainty === "final"
               ? gt("{count, plural, one {{count} Issue} other {{count} Issues}}", {
-                  count: visible.length,
+                  count: line.count.count,
                 })
-              : shownCertainty === "floor"
-                ? gt("{count}+ Issues", { count: visible.length })
-                : gt("~{count} Issues", { count: visible.length })
-            : visible.length !== openCount
-              ? // Filters that only narrow the rows shown leave the total of open Issues in sight.
-                gt("{shown} of {total} open Issues", {
-                  shown,
-                  total: marked(openCount, rowCertainty),
-                })
-              : shownCertainty === "final"
-                ? gt("{count, plural, one {{count} open Issue} other {{count} open Issues}}", {
-                    count: openCount,
-                  })
-                : gt("{count} open Issues", { count: shown })}
+              : line.count.certainty === "floor"
+                ? gt("{count}+ Issues", { count: line.count.count })
+                : gt("~{count} Issues", { count: line.count.count })}
       </span>
-      {numbersScope === "open" ? (
+      {line.kind !== "listed" ? null : line.open !== null ? (
+        <span>{openIssues(line.open)}</span>
+      ) : counts.totals !== null ? (
+        // The rows hold more open Issues than the counts read found: it is out of date.
+        <span>{gt("Open Issues: unknown")}</span>
+      ) : null}
+      {/* The week's flow, not a change in the open total: a reopened Issue grows the pile
+          without being filed. Unknown is said, never shown as zero. */}
+      <span>
+        {counts.totals !== null
+          ? gt("Last 7 days: {filed} filed, {closed} closed", {
+              filed: counted(counts.totals.filed),
+              closed: counted(counts.totals.closed),
+            })
+          : line.kind === "listed" && line.open === null
+            ? gt("Open Issues and last 7 days: unknown")
+            : gt("Last 7 days: unknown")}
+      </span>
+      {preferences.state === "open" && !searched ? (
         <span>
           {gt("Not updated for 30 days: {count}", { count: marked(staleCount, rowCertainty) })}
         </span>
       ) : null}
-      {(list.isPending && !rowsComplete) || rowThreads.loading ? (
+      {(list.isPending && !rowsComplete) || rowThreads.loading || counts.isPending ? (
         <Spinner size="xs" aria-label={gt("Loading more Issues")} />
       ) : null}
     </p>

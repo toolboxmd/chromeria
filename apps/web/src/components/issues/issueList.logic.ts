@@ -1,12 +1,15 @@
 import type {
   EnvironmentId,
   IssueLink,
+  GitHubIssueCountsInput,
+  GitHubIssueCountsResult,
   GitHubIssueListCursors,
   GitHubIssueListEntry,
   GitHubIssueListInput,
   IssueListRepository,
   GitHubIssueListResult,
   GitHubIssueListSort,
+  GitHubIssueListState,
   IssuePullRequest,
 } from "@t3tools/contracts";
 
@@ -219,23 +222,203 @@ export function mergeIssueLists(
   };
 }
 
+export interface IssueCountsTarget {
+  readonly environmentId: EnvironmentId;
+  readonly input: GitHubIssueCountsInput;
+}
+
+/** What a server's listing says now of the repositories it holds. */
+export interface IssueListing {
+  readonly environmentId: EnvironmentId;
+  /** `failed`: connected, and its latest read failed or GitHub refused a search in it. */
+  readonly state: "answered" | "pending" | "failed" | "disconnected";
+  /** Repository keys of its latest answer, sorted, kept through a failed reread; null for none. */
+  readonly repositories: ReadonlyArray<string> | null;
+}
+
+export function issueListingOf(input: {
+  readonly environmentId: EnvironmentId;
+  readonly connected: boolean;
+  /** The listing's latest answer, also the one a failed reread left behind; null for none. */
+  readonly answer: Pick<GitHubIssueListResult, "repositories" | "errors"> | null;
+  readonly failed: boolean;
+}): IssueListing {
+  return {
+    environmentId: input.environmentId,
+    // A server that dropped its connection keeps its reads waiting with their last answer, so
+    // the read alone would still look answered.
+    state: !input.connected
+      ? "disconnected"
+      : // An answer carrying GitHub's refusal still says what the server lists, but a server
+        // that cannot search cannot count.
+        input.failed || (input.answer?.errors.length ?? 0) > 0
+        ? "failed"
+        : input.answer === null
+          ? "pending"
+          : "answered",
+    repositories:
+      input.answer?.repositories
+        .map((repository) => repositoryKey(repository.host, repository.repository))
+        .toSorted() ?? null,
+  };
+}
+
+/** The repositories a listing server holds, null while unknown, and whether it can be asked. */
+export interface IssueListingScope {
+  readonly environmentId: EnvironmentId;
+  readonly repositories: ReadonlyArray<string> | null;
+  readonly answering: boolean;
+}
+
 /**
- * What the count above the list may be called. Text, labels and a milestone are searched on
- * GitHub, so under them the rows are `matching` Issues, whatever State is set to. Otherwise the
- * rows are every `open` Issue of the listed repositories when State is Open, and just what is
- * `listed` for any other State.
+ * The scope of each server the counts must cover: what its listing says now, and `held`, the
+ * scopes as last worked out, where it says nothing. A listing read again keeps its server's scope
+ * until it answers, and a server that stopped answering keeps the repositories it last listed.
+ * A server not connected that has listed nothing adds no rows to the view, and has no scope here.
  */
-export function issueNumbersScope(
-  input: Pick<GitHubIssueListInput, "state" | "query" | "labels" | "milestone">,
-): "open" | "matching" | "listed" {
-  if (
-    input.query !== undefined ||
-    (input.labels?.length ?? 0) > 0 ||
-    input.milestone !== undefined
-  ) {
-    return "matching";
+export function issueListingScopes(
+  listings: ReadonlyArray<IssueListing>,
+  held: ReadonlyArray<IssueListingScope>,
+): ReadonlyArray<IssueListingScope> {
+  return listings.flatMap(({ environmentId, state, repositories }) => {
+    const last = held.find((scope) => scope.environmentId === environmentId);
+    if (state === "answered") return [{ environmentId, repositories, answering: true }];
+    if (state === "pending") {
+      return [last ?? { environmentId, repositories: null, answering: false }];
+    }
+    const listed = repositories ?? last?.repositories ?? null;
+    return listed === null && state === "disconnected"
+      ? []
+      : [{ environmentId, repositories: listed, answering: false }];
+  });
+}
+
+/**
+ * The counts read each server is asked for: every repository goes to the first answering server
+ * that lists it, so none is counted twice and no answer has to be split. Null when the counts
+ * cannot cover the view: a server's scope is unknown, or no answering server lists a repository.
+ */
+export function issueCountTargets(
+  scopes: ReadonlyArray<IssueListingScope>,
+): ReadonlyArray<IssueCountsTarget> | null {
+  // Sorted, so the same scopes always make the same reads however the listings arrived.
+  const servers = scopes.toSorted((left, right) =>
+    left.environmentId.localeCompare(right.environmentId),
+  );
+  const byServer = new Map<EnvironmentId, Array<string>>();
+  const owned = new Set<string>();
+  for (const { environmentId, repositories, answering } of servers) {
+    if (repositories === null) return null;
+    if (!answering) continue;
+    for (const repository of repositories) {
+      if (owned.has(repository)) continue;
+      owned.add(repository);
+      byServer.set(environmentId, [...(byServer.get(environmentId) ?? []), repository]);
+    }
   }
-  return input.state === "open" ? "open" : "listed";
+  if (servers.some(({ repositories }) => repositories!.some((key) => !owned.has(key)))) {
+    return null;
+  }
+  return [...byServer].map(([environmentId, repositories]) => ({
+    environmentId,
+    input: { repositories: repositories.toSorted() },
+  }));
+}
+
+/** The totals of the listed repositories; not `exact` while a read of them is in flight. */
+export interface IssueCountsTotal extends GitHubIssueCountsResult {
+  readonly exact: boolean;
+}
+
+/**
+ * The totals over every server's counts read, or null for unknown: the reads cannot cover the
+ * view (`targets` is null), one failed, or one has no answer yet. Never a sum over some servers.
+ * With every answer in hand and a read in flight, they are the answers being replaced.
+ */
+export function issueCountsTotal(input: {
+  readonly targets: ReadonlyArray<IssueCountsTarget> | null;
+  readonly answers: ReadonlyArray<readonly [EnvironmentId, GitHubIssueCountsResult]>;
+  readonly failed: boolean;
+  readonly reading: boolean;
+}): IssueCountsTotal | null {
+  if (input.targets === null || input.failed) return null;
+  const byServer = new Map(input.answers);
+  const totals = { open: 0, filed: 0, closed: 0 };
+  for (const { environmentId } of input.targets) {
+    const answer = byServer.get(environmentId);
+    if (answer === undefined) return null;
+    totals.open += answer.open;
+    totals.filed += answer.filed;
+    totals.closed += answer.closed;
+  }
+  return { ...totals, exact: !input.reading };
+}
+
+/** A count with how far it can be trusted; see `issueCountCertainty`. */
+export interface MarkedIssueCount {
+  readonly count: number;
+  readonly certainty: "final" | "floor" | "unsettled";
+}
+
+/**
+ * How the line above the list states the rows shown against the open total. Rows that are every
+ * open Issue (State Open, nothing searched on GitHub, every page read) count themselves; else the
+ * counts read does. `listed` rows claim no total and carry it apart in `open`, null for unknown.
+ */
+export function issueNumbersLine(input: {
+  readonly state: GitHubIssueListState;
+  /** Text, labels, a milestone or a repository narrowed the search on GitHub. */
+  readonly searched: boolean;
+  readonly shown: MarkedIssueCount;
+  /** The open Issues among the loaded rows. */
+  readonly loadedOpen: number;
+  /** `refreshing`: every page is read, and some are waiting on a read of them again. */
+  readonly rows: "complete" | "refreshing" | "incomplete";
+  /** The open total of the counts read, unsettled while it is read again; null for unknown. */
+  readonly counted: MarkedIssueCount | null;
+}):
+  | { readonly kind: "open"; readonly count: MarkedIssueCount }
+  | { readonly kind: "subset"; readonly shown: MarkedIssueCount; readonly total: MarkedIssueCount }
+  | {
+      readonly kind: "listed";
+      readonly count: MarkedIssueCount;
+      readonly open: MarkedIssueCount | null;
+    } {
+  const everyOpenIssue = input.state === "open" && !input.searched;
+  // The loaded open rows are a floor of the open total: a counted total below them was read
+  // before Issues were opened, and is unknown until it is read again.
+  const counted =
+    input.counted !== null && input.counted.count >= input.loadedOpen ? input.counted : null;
+  // Rows read to their end are the total. Rows still arriving are its floor when nothing was
+  // counted. Rows being read again say nothing of it alone: with the counts read again too, as
+  // on Refresh, they carry its mark, and a counts read that left no answer leaves it unknown.
+  const fromRows =
+    everyOpenIssue &&
+    (input.rows === "complete" ||
+      (input.rows === "incomplete" && counted === null) ||
+      (input.rows === "refreshing" && counted?.certainty === "unsettled"));
+  const total: MarkedIssueCount | null = fromRows
+    ? {
+        count: input.loadedOpen,
+        certainty:
+          input.rows === "complete" ? "final" : input.rows === "refreshing" ? "unsettled" : "floor",
+      }
+    : counted;
+  if (input.state !== "open" || total === null) {
+    return { kind: "listed", count: input.shown, open: total };
+  }
+  // No filter narrows the rows, and they are as many as the total: the rows are the total.
+  if (
+    everyOpenIssue &&
+    input.shown.count === input.loadedOpen &&
+    total.count === input.loadedOpen
+  ) {
+    return {
+      kind: "open",
+      count: fromRows && input.shown.certainty !== "final" ? input.shown : total,
+    };
+  }
+  return { kind: "subset", shown: input.shown, total };
 }
 
 const STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;

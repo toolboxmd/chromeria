@@ -16,6 +16,7 @@ describe("Issue RPC permissions", () => {
       ISSUE_WS_METHODS.issuesList,
       ISSUE_WS_METHODS.issuesDetail,
       ISSUE_WS_METHODS.issuesStates,
+      ISSUE_WS_METHODS.issuesCounts,
       FEATURE_MAP_WS_METHODS.read,
     ]) {
       expect(clientRpcRequiredScopes(method, undefined)).toEqual([]);

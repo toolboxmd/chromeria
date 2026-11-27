@@ -246,6 +246,30 @@ export type IssueStateEntry = typeof IssueStateEntry.Type;
 export const IssueStatesResult = Schema.Struct({ issues: Schema.Array(IssueStateEntry) });
 export type IssueStatesResult = typeof IssueStatesResult.Type;
 
+/**
+ * Repositories one `githubIssues.counts` read may name. They are counted in searches of 100, three
+ * per search chunk in one GitHub request, so this caps the request at 30 searches.
+ */
+const ISSUE_COUNTS_REPOSITORIES_MAX = 1000;
+
+export const GitHubIssueCountsInput = Schema.Struct({
+  /** The repositories to count, as `<host> <owner/name>`, each one this server lists. */
+  repositories: Schema.Array(BoundedText).check(Schema.isMaxLength(ISSUE_COUNTS_REPOSITORIES_MAX)),
+});
+export type GitHubIssueCountsInput = typeof GitHubIssueCountsInput.Type;
+
+/**
+ * Totals over every repository the read named, never over some of them: a read that cannot count
+ * one fails instead. `filed` and `closed` are the Issues created, and the closed Issues last
+ * closed, in the 168 hours before the server read them.
+ */
+export const GitHubIssueCountsResult = Schema.Struct({
+  open: NonNegativeInt,
+  filed: NonNegativeInt,
+  closed: NonNegativeInt,
+});
+export type GitHubIssueCountsResult = typeof GitHubIssueCountsResult.Type;
+
 export class GitHubIssueOperationError extends Schema.TaggedError<GitHubIssueOperationError>()(
   "IssueOperationError",
   {
@@ -262,6 +286,7 @@ export const ISSUE_WS_METHODS = {
   issuesList: "githubIssues.list",
   issuesDetail: "githubIssues.detail",
   issuesStates: "githubIssues.states",
+  issuesCounts: "githubIssues.counts",
   issuesComment: "githubIssues.comment",
   issuesSetState: "githubIssues.setState",
 } as const;
@@ -282,6 +307,11 @@ export const IssueRpcs = [
   Rpc.make(ISSUE_WS_METHODS.issuesStates, {
     payload: IssueStatesInput,
     success: IssueStatesResult,
+    error: IssueRpcError,
+  }),
+  Rpc.make(ISSUE_WS_METHODS.issuesCounts, {
+    payload: GitHubIssueCountsInput,
+    success: GitHubIssueCountsResult,
     error: IssueRpcError,
   }),
   Rpc.make(ISSUE_WS_METHODS.issuesComment, {

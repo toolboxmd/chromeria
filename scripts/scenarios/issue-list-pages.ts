@@ -26,9 +26,26 @@ type IssueFacts = {
 type IssuePageAnswer = {
   issues: Array<number>;
   next?: string;
+  /** GitHub's match count for this read, when not every Issue of the plan: a narrower search. */
+  matches?: number;
+  /** The read gets no answer until the scenario calls `releaseIssueReads`. */
+  held?: boolean;
   /** `rpc` fails the read itself; `github` answers it with GitHub's refusal inside the result. */
   failure?: "rpc" | "github";
 };
+
+/** One answer to a counts read: the totals of the listed repositories, or a failed read. */
+type IssueCountsAnswer =
+  | { open: number; filed: number; closed: number; held?: boolean }
+  | "failure";
+
+/** Answers every read the helper is holding back. */
+export function releaseIssueReads(browser: Browser) {
+  return browser.evaluate(() => {
+    (window as unknown as { releaseIssueReads: () => void }).releaseIssueReads();
+    return null;
+  });
+}
 
 /**
  * Answers every `githubIssues.list` read in the page: `plan.first` for a listing and
@@ -39,10 +56,17 @@ type IssuePageAnswer = {
 export function answerIssueListPages(
   browser: Browser,
   plan: Record<string, Array<IssuePageAnswer>>,
-  options: { failedThreadReads?: number; facts?: Record<number, IssueFacts> } = {},
+  options: {
+    failedThreadReads?: number;
+    facts?: Record<number, IssueFacts>;
+    /** One answer per `githubIssues.counts` read, the last repeating; absent, they reach the server. */
+    counts?: Array<IssueCountsAnswer>;
+    /** A second server at `host` (as in its WebSocket URL), whose page reads follow `plan`. */
+    second?: { host: string; plan: Record<string, Array<IssuePageAnswer>> };
+  } = {},
 ) {
   return browser.addInitScript(
-    ({ answersByPage, failedThreadReads, facts }) => {
+    ({ answersByPage, failedThreadReads, facts, counts, second }) => {
       const SEARCH = "github.com#0";
       const repository = {
         host: "github.com",
@@ -56,6 +80,11 @@ export function answerIssueListPages(
       ).size;
       const taken = new Map<string, number>();
       let threadReads = 0;
+      let countReads = 0;
+      const held: Array<() => void> = [];
+      Object.assign(window, {
+        releaseIssueReads: () => held.splice(0).forEach((answer) => answer()),
+      });
       const send = WebSocket.prototype.send;
       WebSocket.prototype.send = function (data) {
         const request: {
@@ -64,14 +93,16 @@ export function answerIssueListPages(
           tag: string;
           payload: { cursors?: Record<string, string>; issues?: Array<{ number: number }> };
         } | null = typeof data === "string" ? JSON.parse(data) : null;
-        const reply = (exit: unknown) =>
-          queueMicrotask(() =>
+        const reply = (exit: unknown, hold = false) => {
+          const answer = () =>
             this.dispatchEvent(
               new MessageEvent("message", {
                 data: JSON.stringify({ _tag: "Exit", requestId: request?.id, exit }),
               }),
-            ),
-          );
+            );
+          if (hold) held.push(answer);
+          else queueMicrotask(answer);
+        };
         const failure = (error: object) => ({ _tag: "Failure", cause: [{ _tag: "Fail", error }] });
         if (request?._tag === "Request" && request.tag === "issueLinks.threadsForIssues") {
           threadReads += 1;
@@ -102,13 +133,32 @@ export function answerIssueListPages(
             },
           });
         }
+        if (request?._tag === "Request" && request.tag === "githubIssues.counts" && counts) {
+          const answer = counts[Math.min(countReads, counts.length - 1)];
+          countReads += 1;
+          return reply(
+            answer === undefined || answer === "failure"
+              ? failure({
+                  _tag: "IssueOperationError",
+                  operation: "countIssues",
+                  detail: "GitHub did not answer the Issue counts in time.",
+                })
+              : {
+                  _tag: "Success",
+                  value: { open: answer.open, filed: answer.filed, closed: answer.closed },
+                },
+            answer !== undefined && answer !== "failure" && answer.held,
+          );
+        }
         if (request?._tag !== "Request" || request.tag !== "githubIssues.list") {
           return send.call(this, data);
         }
         const page = request.payload.cursors?.[SEARCH] ?? "first";
-        const answers = answersByPage[page] ?? [];
-        const read = taken.get(page) ?? 0;
-        taken.set(page, read + 1);
+        const remote = second !== null && new URL(this.url).host === second.host;
+        const answers = (remote ? second.plan : answersByPage)[page] ?? [];
+        const turn = `${remote} ${page}`;
+        const read = taken.get(turn) ?? 0;
+        taken.set(turn, read + 1);
         const answer = answers[Math.min(read, answers.length - 1)] ?? { issues: [] };
         reply(
           answer.failure === "rpc"
@@ -186,9 +236,11 @@ export function answerIssueListPages(
                     };
                   }),
                   nextCursors: answer.next === undefined ? {} : { [SEARCH]: answer.next },
-                  matchCounts: answer.failure === "github" ? {} : { [SEARCH]: matches },
+                  matchCounts:
+                    answer.failure === "github" ? {} : { [SEARCH]: answer.matches ?? matches },
                 },
               },
+          answer.held,
         );
       };
     },
@@ -196,6 +248,8 @@ export function answerIssueListPages(
       answersByPage: plan,
       failedThreadReads: options.failedThreadReads ?? 0,
       facts: options.facts ?? {},
+      counts: options.counts ?? null,
+      second: options.second ?? null,
     },
   );
 }
