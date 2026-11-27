@@ -54,7 +54,7 @@ export function environmentTransportLabel(
   return environment.displayUrl ?? resolve(msg("Remote link"));
 }
 
-export function useEnvironmentTransportLabel(environment: EnvironmentPresentation): string {
+function useEnvironmentTransportLabel(environment: EnvironmentPresentation): string {
   const prepared = usePreparedConnection(environment.environmentId);
   const resolve = useMessages();
   return environmentTransportLabel(

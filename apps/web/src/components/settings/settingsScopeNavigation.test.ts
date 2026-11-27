@@ -11,7 +11,10 @@ import { describe, expect, it } from "vite-plus/test";
 import { resolveSettingsScope } from "./settingsScope";
 import { retainSettingsScope, validateSettingsRouteSearch } from "./settingsScopeNavigation";
 
-import { validateScheduledTasksSearch } from "./scheduledTasksSettings.logic";
+import {
+  redirectToScheduledTasksPage,
+  validateScheduledTasksPageSearch,
+} from "./scheduledTasksPage";
 
 const checkoutSearch = {
   project: "repository:t3code",
@@ -48,10 +51,16 @@ function createSettingsRouter(initialEntry = "/settings/general") {
         : {}),
     }),
   });
-  const scheduledTasks = createRoute({
+  const legacyScheduledTasks = createRoute({
     getParentRoute: () => settings,
     path: "scheduled-tasks",
-    validateSearch: validateScheduledTasksSearch,
+    beforeLoad: redirectToScheduledTasksPage,
+  });
+  const scheduledTasks = createRoute({
+    getParentRoute: () => root,
+    path: "scheduled-tasks",
+    validateSearch: validateScheduledTasksPageSearch,
+    search: { middlewares: [retainSettingsScope] },
   });
   const legacyProject = createRoute({
     getParentRoute: () => root,
@@ -72,8 +81,9 @@ function createSettingsRouter(initialEntry = "/settings/general") {
         integrations,
         sourceControl,
         providers,
-        scheduledTasks,
+        legacyScheduledTasks,
       ]),
+      scheduledTasks,
       legacyProject,
     ]),
     history: createMemoryHistory({ initialEntries: [initialEntry] }),
@@ -106,7 +116,7 @@ describe("settings scope navigation", () => {
     expect(router.state.location.search).toEqual(checkoutSearch);
   });
 
-  it.each(["/settings/projects", "/settings/scheduled-tasks"] as const)(
+  it.each(["/settings/projects"] as const)(
     "keeps %s when regrouping or selecting a target from the shared settings layout",
     async (to) => {
       const router = createSettingsRouter();
@@ -237,10 +247,28 @@ describe("settings scope navigation", () => {
 });
 
 describe("scheduled task scope navigation", () => {
+  it("sends an old settings task link to the scheduled tasks page with its task, without the anchor", async () => {
+    const router = createSettingsRouter(
+      "/settings/scheduled-tasks?environmentId=remote-server&taskId=task-1#scheduled-tasks",
+    );
+    await router.load();
+    // The settings layout normalizes the search first, then the old page redirects.
+    for (let hop = 0; hop < 3 && router.state.redirect; hop++) {
+      await router.navigate(router.state.redirect.options);
+    }
+    expect(router.state.location.pathname).toBe("/scheduled-tasks");
+    expect(router.state.location.hash).toBe("");
+    expect(router.state.matches.at(-1)?.search).toEqual({
+      machine: "remote-server",
+      environmentId: "remote-server",
+      taskId: "task-1",
+    });
+  });
+
   it("opens a task link on its owning environment, then clears the task when changing filters", async () => {
     const router = createSettingsRouter();
     await router.navigate({
-      to: "/settings/scheduled-tasks",
+      to: "/scheduled-tasks",
       search: {
         environmentId: EnvironmentId.make("remote-server"),
         taskId: ScheduledTaskId.make("task-1"),
@@ -252,7 +280,7 @@ describe("scheduled task scope navigation", () => {
       taskId: "task-1",
     });
     await router.navigate({
-      from: "/settings",
+      from: "/scheduled-tasks",
       to: router.state.location.pathname,
       search: () => ({ machine: undefined, project: undefined, checkout: undefined }),
     });

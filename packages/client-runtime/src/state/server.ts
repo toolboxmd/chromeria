@@ -23,6 +23,8 @@ import {
   shouldRecommendDatabaseCompaction,
   type UsageSummary,
   type WorkflowRunsSnapshot,
+  withoutProviderCredits,
+  SCHEDULED_TASK_RUNS_WS_METHODS,
   WS_METHODS,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -529,6 +531,13 @@ function withFetchedMachineCatalogs(
   return changed ? { ...projection, config: { ...projection.config, providers } } : projection;
 }
 
+/** A cache may neither store an account's credits nor bring back ones an older build stored. */
+function withoutCredits(config: ServerConfig): ServerConfig {
+  return config.providers.some((provider) => provider.credits !== undefined)
+    ? { ...config, providers: config.providers.map(withoutProviderCredits) }
+    : config;
+}
+
 // Configs are JSON-shaped. Missing and undefined object fields persist identically.
 function sameCacheValue(previous: unknown, next: unknown): boolean {
   if (previous === next) return true;
@@ -585,11 +594,14 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
       ),
     );
     const state = yield* SubscriptionRef.make<Option.Option<ServerConfigProjection>>(
-      Option.map(cachedConfig, (cached) => ({
-        config: withoutEnvironmentThemes(cached),
-        latestEvent: cachedConfigSnapshotEvent(withoutEnvironmentThemes(cached)),
-        source: "cache" as const,
-      })),
+      Option.map(cachedConfig, (stored) => {
+        const cached = withoutCredits(stored);
+        return {
+          config: withoutEnvironmentThemes(cached),
+          latestEvent: cachedConfigSnapshotEvent(withoutEnvironmentThemes(cached)),
+          source: "cache" as const,
+        };
+      }),
     );
     const persistence = yield* Queue.sliding<ServerConfig>(1);
     const pendingPersistence = yield* Ref.make<Option.Option<ServerConfig>>(Option.none());
@@ -606,7 +618,7 @@ export const makeEnvironmentServerConfigState = Effect.fn("EnvironmentServerConf
         lastEventLoopStall: _stall,
         serverTime: _serverTime,
         ...cacheable
-      } = config;
+      } = withoutCredits(config);
       if (lastPersisted !== undefined && sameCacheValue(lastPersisted, cacheable)) {
         return true;
       }
@@ -1484,6 +1496,10 @@ export function createServerEnvironmentAtoms<R, E>(
         ),
       ),
   });
+  const scheduledTasksLive = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+    label: "environment-data:server:scheduled-tasks:live",
+    tag: WS_METHODS.scheduledTasksSubscribe,
+  });
   const liveWorkflowSnapshot = (environmentId: EnvironmentId) => {
     const live = workflowsLive({ environmentId, input: {} });
     return (get: Atom.AtomContext) => Option.getOrUndefined(AsyncResult.value(get(live)));
@@ -1517,12 +1533,31 @@ export function createServerEnvironmentAtoms<R, E>(
   const updateSettings = createEnvironmentRpcCommand(runtime, {
     label: "environment-data:server:update-settings",
     tag: WS_METHODS.serverUpdateSettings,
+    // This client stores partial Prism project overrides; the server drops
+    // empty Prism lists from project override writes that do not say so.
+    execute: (input) =>
+      requestGuarded(
+        WS_METHODS.serverUpdateSettings,
+        input.patch.projectSettingsOverrides === undefined
+          ? input
+          : { ...input, patch: { ...input.patch, prismRoleOverridesPartial: true } },
+      ),
     scheduler: configScheduler,
     concurrency: configConcurrency,
   });
 
+  // Fork: whether the config came from this session's server rather than the launch cache.
+  const configLiveAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make(
+      (get) =>
+        AsyncResult.getOrElse(get(configProjectionFamily(environmentId)), () => null)?.source ===
+        "live",
+    ).pipe(Atom.withLabel(`environment-data:server:config-live:${environmentId}`)),
+  );
+
   return {
     configValueAtom,
+    configLiveAtom,
     runStorageCleanup: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:run-storage-cleanup",
       tag: WS_METHODS.serverRunStorageCleanup,
@@ -1687,9 +1722,30 @@ export function createServerEnvironmentAtoms<R, E>(
         return Atom.make((get) => snapshot(get)?.definition?.revision);
       },
     }),
-    scheduledTasksLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
-      label: "environment-data:server:scheduled-tasks:live",
-      tag: WS_METHODS.scheduledTasksSubscribe,
+    /** Full scheduled-task list, with command output the live list leaves out. */
+    scheduledTasksList: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:scheduled-tasks:list",
+      tag: WS_METHODS.scheduledTasksList,
+    }),
+    /** Live scheduled-task list: snapshot on subscribe, fresh list after every server-side change. */
+    scheduledTasksLive,
+    // Fork: a task's kept runs (toolboxmd/chromeria#951), read again when its last run changes.
+    scheduledTaskRuns: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:server:scheduled-task:runs",
+      tag: SCHEDULED_TASK_RUNS_WS_METHODS.list,
+      // Never served from cache on a return to the page: a run may have ended meanwhile, and
+      // nothing on the client says so for a thread it has not been watching.
+      staleTimeMs: 0,
+      idleTtlMs: 0,
+      refreshTrigger: ({ environmentId, input }) => {
+        const live = scheduledTasksLive({ environmentId, input: {} });
+        return Atom.make((get) => {
+          const task = Option.getOrUndefined(AsyncResult.value(get(live)))?.tasks.find(
+            (entry) => entry.id === input.id,
+          );
+          return `${task?.lastRunAt}:${task?.lastRunStatus}:${task?.runCount}`;
+        });
+      },
     }),
     // A cold transcript scan is measured in seconds, so keep the result around
     // long enough that switching windows or re-rendering does not rescan. With

@@ -114,6 +114,21 @@ describe("scheduleFromDraft", () => {
   );
 });
 
+it("replaces a checkout from the old project with a new worktree in the destination", () => {
+  const draft = {
+    ...createDraft(ProjectId.make("old"), null),
+    workspace: "existing_worktree" as const,
+    checkoutPath: "/repos/old-checkout",
+  };
+  const destination = ProjectId.make("new");
+  expect(changeDraftProject(draft, destination)).toMatchObject({
+    projectId: destination,
+    workspace: "worktree",
+    baseRef: "",
+    checkoutPath: "",
+  });
+});
+
 describe("scheduled task model defaults", () => {
   const instanceId = ProviderInstanceId.make("codex");
   const projectId = ProjectId.make("project");
@@ -263,8 +278,9 @@ describe("scheduled task worktree base", () => {
       ...rootTask,
       workspaceStrategy: { type: "existing_worktree", worktreePath: "/work/project-a" },
     });
+    // Fork: another project's checkout cannot be reused, so the task starts a new worktree.
     expect(changeDraftProject(checkout, other)).toMatchObject({
-      workspace: "existing_worktree",
+      workspace: "worktree",
       checkoutPath: "",
     });
   });

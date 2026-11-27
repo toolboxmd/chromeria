@@ -2,6 +2,9 @@ import {
   EnvironmentId,
   ProviderDriverKind,
   ServerSelfUpdateError,
+  SCHEDULED_TASK_RUNS_WS_METHODS,
+  ScheduledTaskId,
+  type ScheduledTaskRunRecord,
   ProviderInstanceId,
   type ProviderInstallState,
   type ProviderSetupInput,
@@ -1367,6 +1370,10 @@ describe("server state projection", () => {
 
   it.effect("starts from cached configuration and persists the live projection", () =>
     Effect.gen(function* () {
+      // An account's credits come from a live snapshot only: never stored, never restored.
+      const provider = { instanceId: "codex", driver: "codex" };
+      const credited = (balance: number) =>
+        [{ ...provider, credits: { readAt: "2026-11-26T15:30:00.000Z", balance } }] as never;
       const events = yield* Queue.unbounded<ServerConfigStreamEvent>();
       const client = {
         [WS_METHODS.subscribeServerConfig]: () => Stream.fromQueue(events),
@@ -1387,7 +1394,7 @@ describe("server state projection", () => {
         loadThread: () => Effect.succeedNone,
         saveThread: () => Effect.void,
         removeThread: () => Effect.void,
-        loadServerConfig: () => Effect.succeedSome(CONFIG),
+        loadServerConfig: () => Effect.succeedSome({ ...CONFIG, providers: credited(111) }),
         saveServerConfig: (_environmentId, config) => Queue.offer(savedConfigs, config),
         loadVcsRefs: () => Effect.succeedNone,
         saveVcsRefs: () => Effect.void,
@@ -1402,9 +1409,12 @@ describe("server state projection", () => {
             Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
             Effect.provideService(Persistence.EnvironmentCacheStore, cache),
           );
-          expect(Option.getOrThrow(yield* SubscriptionRef.get(state)).config).toBe(CONFIG);
+          expect(Option.getOrThrow(yield* SubscriptionRef.get(state)).config).toEqual({
+            ...CONFIG,
+            providers: [provider],
+          });
 
-          const providers: ServerConfig["providers"] = [];
+          const providers: ServerConfig["providers"] = credited(222);
           yield* Queue.offer(events, {
             version: 1,
             type: "providerStatuses",
@@ -1425,7 +1435,7 @@ describe("server state projection", () => {
         }),
       );
 
-      expect((yield* Queue.take(savedConfigs)).providers).toEqual([]);
+      expect((yield* Queue.take(savedConfigs)).providers).toEqual([provider]);
     }),
   );
 
@@ -1896,6 +1906,83 @@ describe("provider setup commands", () => {
     }),
   );
 });
+
+it.effect("reads scheduled task runs afresh after the page is closed and reopened", () =>
+  Effect.gen(function* () {
+    let reads = 0;
+    let run: ScheduledTaskRunRecord = {
+      id: "scheduled-run",
+      startedAt: "2026-11-24T08:00:00.000Z",
+      endedAt: null,
+      status: "running",
+      thread: null,
+      summary: null,
+    };
+    const client = {
+      [SCHEDULED_TASK_RUNS_WS_METHODS.list]: () =>
+        Effect.promise(async () => {
+          reads++;
+          return { runs: [run] };
+        }),
+      [WS_METHODS.scheduledTasksSubscribe]: () => Stream.never,
+    } as unknown as WsRpcProtocolClient;
+    const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+      target: TARGET,
+      state: yield* SubscriptionRef.make<SupervisorConnectionState>({
+        ...AVAILABLE_CONNECTION_STATE,
+        phase: "connected",
+      }),
+      session: yield* SubscriptionRef.make(Option.some(session(client))),
+      prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+      connect: Effect.void,
+      disconnect: Effect.void,
+      retryNow: Effect.void,
+    });
+    const environments = EnvironmentRegistry.EnvironmentRegistry.of({
+      run: (_id, effect) =>
+        Effect.provideService(effect, EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+      followStream: (_id, stream) =>
+        Stream.provideService(stream, EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+    } as EnvironmentRegistry.EnvironmentRegistry["Service"]);
+    const runtime = Atom.runtime(
+      Layer.merge(
+        Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environments),
+        Layer.succeed(
+          Persistence.EnvironmentCacheStore,
+          {} as Persistence.EnvironmentCacheStore["Service"],
+        ),
+      ),
+    );
+    const atoms = createServerEnvironmentAtoms(runtime, {
+      initialConfigValueAtom: () => Atom.make(CONFIG),
+    });
+    const registry = yield* Effect.acquireRelease(Effect.sync(AtomRegistry.make), (registry) =>
+      Effect.sync(() => registry.dispose()),
+    );
+    const runs = atoms.scheduledTaskRuns({
+      environmentId: TARGET.environmentId,
+      input: { id: ScheduledTaskId.make("task:daily") },
+    });
+    const read = AtomRegistry.getResult(registry, runs, { suspendOnWaiting: true });
+    const afterScheduledTasks = Effect.callback<void>((resume) => {
+      registry.schedulerAsync.makeDispatcher().scheduleTask(() => resume(Effect.void), 0);
+    });
+
+    const closeBadge = registry.mount(runs);
+    const closePanel = registry.mount(runs);
+    expect((yield* read).runs).toEqual([run]);
+    expect(reads).toBe(1);
+    closeBadge();
+    closePanel();
+    yield* afterScheduledTasks;
+
+    run = { ...run, status: "succeeded", endedAt: "2026-11-24T08:00:10.000Z" };
+    registry.mount(runs);
+    yield* afterScheduledTasks;
+    expect((yield* read).runs).toEqual([run]);
+    expect(reads).toBe(2);
+  }),
+);
 
 describe("resource telemetry history", () => {
   it.effect.each([
