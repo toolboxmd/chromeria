@@ -285,6 +285,37 @@ describe("evaluate authority", () => {
     }
   });
 
+  it("authorizes the top-level-await retry, the first run of the expression", async () => {
+    const sent: string[] = [];
+    const cdp = {
+      send: async (method: string, params?: { replMode?: boolean }) => {
+        sent.push(params?.replMode ? `${method} repl` : method);
+        // The page's parser rejects top-level await, which runs nothing.
+        return {
+          result: { type: "undefined" },
+          exceptionDetails: {
+            text: "Uncaught",
+            scriptId: "1",
+            exception: { className: "SyntaxError", description: "await is only valid" },
+          },
+        };
+      },
+    };
+    let calls = 0;
+    const authorize = async () => {
+      if (++calls === 3) throw new Error("held");
+    };
+    await expect(
+      ServerBrowserPage.evaluate(
+        cdp as unknown as Parameters<typeof ServerBrowserPage.evaluate>[0],
+        { expression: "await 1" },
+        1_000,
+        authorize,
+      ),
+    ).rejects.toThrow("held");
+    expect(sent).toEqual(["Runtime.evaluate"]);
+  });
+
   it("expiring while its last check is pending stops no page script and sends nothing", async () => {
     vi.useFakeTimers();
     try {

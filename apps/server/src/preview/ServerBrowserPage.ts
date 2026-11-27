@@ -1447,15 +1447,17 @@ export const evaluate = async (
     // so it only retries what the page's parser rejected. A parse error has a scriptId but no stack and
     // ran nothing; a browser-internal rejection has neither.
     dispatched = true;
-    const evaluation = cdp.send("Runtime.evaluate", params).then((classic) => {
+    const evaluation = cdp.send("Runtime.evaluate", params).then(async (classic) => {
       const failure = classic.exceptionDetails;
       const unparsed =
         failure?.exception?.className === "SyntaxError" &&
         failure.scriptId !== undefined &&
         failure.stackTrace === undefined;
-      return unparsed && !timedOut && input.expression.includes("await")
-        ? cdp.send("Runtime.evaluate", { ...params, replMode: true })
-        : classic;
+      if (!unparsed || timedOut || !input.expression.includes("await")) return classic;
+      // The parse failure ran nothing, so the retry is the first run: it is authorized again.
+      await authorize();
+      if (timedOut) throw new Error("Evaluation expired before its retry.");
+      return cdp.send("Runtime.evaluate", { ...params, replMode: true });
     });
     void evaluation.catch(constVoid);
     const result = await Promise.race([evaluation, expired]);
