@@ -1,5 +1,6 @@
 import type { AgentFeedbackMode } from "@t3tools/contracts";
 
+import { T3_CODE_TOOL_USE_INSTRUCTIONS } from "@t3tools/shared/forkToolInstructions";
 import type { ProviderAdapterV2RuntimePolicy } from "./ProviderAdapter.ts";
 
 /** None while agent feedback is off, so users who never opt in pay no context for it. */
@@ -26,6 +27,8 @@ export function buildRuntimeInstructions(runtime: {
   readonly pullRequestLinking?: boolean;
   /** Adds the folder list of a multi-folder thread. */
   readonly runtimePolicy?: Pick<ProviderAdapterV2RuntimePolicy, "cwd" | "workspace"> | undefined;
+  /** False when the harness carries the fork's tool-use block as its own entry. */
+  readonly toolUse?: boolean;
 }): string {
   const harness = toSingleLine(runtime.harness);
   const model = toSingleLine(runtime.model ?? "");
@@ -35,7 +38,7 @@ export function buildRuntimeInstructions(runtime: {
     modelName && modelName !== model ? `${modelName} (model slug: ${model})` : model;
   const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${modelLabel}` : "";
   const effortInfo = effort ? ` with ${effort} reasoning effort` : "";
-  const runtimeInfo = `<runtime_info>In case you're asked: you are running in T3 Code through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise. You can embed images, video, and audio using Markdown image syntax with absolute file paths. Link every other file you cite or produce by its absolute path, as in [http.ts:42](/abs/path/http.ts:42), so the user can open it in T3 Code's files viewer.</runtime_info>`;
+  const runtimeInfo = `<runtime_info>In case you're asked: you are running in Chromeria, the fork of T3 Code, through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise. You can embed images, video, and audio using Markdown image syntax with absolute file paths. Link every other file you cite or produce by its absolute path, as in [http.ts:42](/abs/path/http.ts:42), so the user can open it in Chromeria's files viewer.</runtime_info>`;
   const feedbackLine = AGENT_FEEDBACK_INSTRUCTIONS[runtime.agentFeedback ?? "off"];
   const feedback = feedbackLine ? `\n${feedbackLine}` : "";
   const workspace =
@@ -44,7 +47,13 @@ export function buildRuntimeInstructions(runtime: {
     runtime.pullRequestLinking === false
       ? runtimeInfo
       : `${runtimeInfo}\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}`;
-  return [linked + feedback, ...(workspace === "" ? [] : [workspace])].join("\n\n");
+  return [
+    linked + feedback,
+    workspace,
+    runtime.toolUse === false ? "" : T3_CODE_TOOL_USE_INSTRUCTIONS,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function toSingleLine(value: string): string {
