@@ -40,6 +40,9 @@ Each server checks npm/Homebrew/pnpm using its own local registry and proxy sett
 
 Open **Settings → Providers** and click **Update now** on individual providers or **Update all** across connected environments. Running chats keep using their current CLI until they end; new sessions and model catalogs refresh automatically. (Provider update checks in **Settings → Maintenance** must be enabled to fetch model catalog updates.)
 
+- **Settings → Providers → Advanced → Update providers automatically** is off by default on web and desktop; the phone app has no switch for it. Turn it on to let an environment install newer supported provider CLI versions without clicking the notice. It needs Provider update checks and uses the same action as the Update button, including while provider work is active or queued.
+- Installs without a supported update command are skipped. Each version is tried once per server start; a failed update stays in the provider notice until you update it manually or restart the server.
+
 ## Mobile updates
 
 - Update connected environments and providers from **Settings → Environments** on mobile.
