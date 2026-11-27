@@ -754,7 +754,9 @@ it.layer(
         });
         const paid = { hasCredits: true, unlimited: false };
         const spent = { hasCredits: false, unlimited: false };
+        // In the order `codexCreditsShown` decides: the first row that applies decides.
         const rows: ReadonlyArray<{
+          readonly row: 1 | 2 | 3 | 4 | 5 | 6 | 7;
           readonly reply: string;
           readonly usage: Parameters<typeof statusForUsageReply>[0];
           readonly config?: Record<string, unknown>;
@@ -762,88 +764,161 @@ it.layer(
           /** The reply breaks Codex's protocol schema, so its usage is not read either. */
           readonly invalid?: true;
         }> = [
+          // 1: failed, timed out, never ran, or not valid under Codex's protocol schema.
           {
+            row: 1,
             reply: "failed",
             usage: { error: { code: -32000, message: "usage unavailable" } },
             published: undefined,
           },
-          { reply: "timed out", usage: "silent", published: undefined },
+          { row: 1, reply: "timed out", usage: "silent", published: undefined },
           {
+            row: 1,
+            reply: "never ran",
+            usage: answered({ ...paid, balance: "4321" }),
+            config: { openai_base_url: "http://127.0.0.1:8317/v1" },
+            published: undefined,
+          },
+          {
+            row: 1,
             reply: "not valid: credits without hasCredits",
             usage: answered({ unlimited: false, balance: "4321" }),
             published: undefined,
             invalid: true,
           },
           {
+            row: 1,
             reply: "not valid: credits without unlimited",
             usage: answered({ hasCredits: true, balance: "4321" }),
             published: undefined,
             invalid: true,
           },
           {
+            row: 1,
             reply: "not valid: unlimited with a JSON number as balance",
             usage: answered({ hasCredits: true, unlimited: true, balance: 4321 }),
             published: undefined,
             invalid: true,
           },
           {
+            row: 1,
             reply: "not valid: no credits with a JSON number as balance",
             usage: answered({ hasCredits: false, unlimited: false, balance: 4321 }),
             published: undefined,
             invalid: true,
           },
+          // 2: `credits` omitted or null.
+          { row: 2, reply: "credits omitted", usage: answered(), published: undefined },
+          { row: 2, reply: "credits null", usage: answered(null), published: undefined },
+          // 3: `unlimited: true`.
           {
-            reply: "never ran",
-            usage: answered({ ...paid, balance: "4321" }),
-            config: { openai_base_url: "http://127.0.0.1:8317/v1" },
-            published: undefined,
-          },
-          { reply: "credits omitted", usage: answered(), published: undefined },
-          { reply: "credits null", usage: answered(null), published: undefined },
-          {
+            row: 3,
             reply: "unlimited, whatever else it carries",
             usage: answered({ hasCredits: false, unlimited: true, balance: "5" }),
             published: "unlimited",
           },
+          // 4: `hasCredits: false`.
           {
-            reply: "a balance that rounds up",
-            usage: answered({ ...paid, balance: "4321.5000000000" }),
-            published: 4322,
-          },
-          { reply: "half a credit", usage: answered({ ...paid, balance: "0.5" }), published: 1 },
-          {
-            reply: "under half a credit",
-            usage: answered({ ...paid, balance: "0.49" }),
-            published: "none",
-          },
-          { reply: "zero", usage: answered({ ...paid, balance: "0" }), published: "none" },
-          {
+            row: 4,
             reply: "no credits, with a balance",
             usage: answered({ ...spent, balance: "77" }),
             published: "none",
           },
-          { reply: "no credits, without a balance", usage: answered(spent), published: "none" },
-          { reply: "balance missing", usage: answered(paid), published: undefined },
           {
+            row: 4,
+            reply: "no credits, without a balance",
+            usage: answered(spent),
+            published: "none",
+          },
+          // 5: no balance that is a whole number within the safe range.
+          { row: 5, reply: "balance missing", usage: answered(paid), published: undefined },
+          {
+            row: 5,
             reply: "balance null",
             usage: answered({ ...paid, balance: null }),
             published: undefined,
           },
           {
+            row: 5,
+            reply: "balance blank",
+            usage: answered({ ...paid, balance: " " }),
+            published: undefined,
+          },
+          {
+            row: 5,
             reply: "balance not a number",
             usage: answered({ ...paid, balance: "not a number" }),
             published: undefined,
           },
           {
-            reply: "balance empty",
-            usage: answered({ ...paid, balance: " " }),
+            row: 5,
+            reply: "balance not finite",
+            usage: answered({ ...paid, balance: "Infinity" }),
             published: undefined,
+          },
+          {
+            row: 5,
+            reply: "balance an exponent that overflows",
+            usage: answered({ ...paid, balance: "1e400" }),
+            published: undefined,
+          },
+          {
+            row: 5,
+            reply: "balance one above the range",
+            usage: answered({ ...paid, balance: "9007199254740992" }),
+            published: undefined,
+          },
+          {
+            row: 5,
+            reply: "balance a negative beyond the range",
+            usage: answered({ ...paid, balance: "-9007199254740992" }),
+            published: undefined,
+          },
+          // 6: a rounded balance below 1.
+          {
+            row: 6,
+            reply: "under half a credit",
+            usage: answered({ ...paid, balance: "0.49" }),
+            published: "none",
+          },
+          { row: 6, reply: "zero", usage: answered({ ...paid, balance: "0" }), published: "none" },
+          {
+            row: 6,
+            reply: "a negative balance",
+            usage: answered({ ...paid, balance: "-3" }),
+            published: "none",
+          },
+          // 7: everything else, a rounded balance from 1 to the top of the range.
+          {
+            row: 7,
+            reply: "a balance that rounds up",
+            usage: answered({ ...paid, balance: "4321.5000000000" }),
+            published: 4322,
+          },
+          {
+            row: 7,
+            reply: "half a credit",
+            usage: answered({ ...paid, balance: "0.5" }),
+            published: 1,
+          },
+          {
+            row: 7,
+            reply: "an exponent inside the range",
+            usage: answered({ ...paid, balance: "1e3" }),
+            published: 1000,
+          },
+          {
+            row: 7,
+            reply: "the largest balance in range",
+            usage: answered({ ...paid, balance: "9007199254740991" }),
+            published: 9_007_199_254_740_991,
           },
         ];
 
         for (const row of rows) {
+          const label = `row ${row.row}: ${row.reply}`;
           const { startedAt, status } = yield* statusForUsageReply(row.usage, row.config);
-          assert.strictEqual(status.checkedAt, DateTime.formatIso(startedAt), row.reply);
+          assert.strictEqual(status.checkedAt, DateTime.formatIso(startedAt), label);
           assert.deepStrictEqual(
             status.credits,
             row.published === undefined
@@ -853,13 +928,13 @@ it.layer(
                   readAt: DateTime.formatIso(DateTime.add(startedAt, { seconds: 4 })),
                   balance: row.published,
                 },
-            row.reply,
+            label,
           );
           if (row.invalid) {
-            assert.deepStrictEqual(status.usageLimits?.windows, [], row.reply);
-            assert.strictEqual(status.usageLimits?.unavailable?.reason, "probeFailed", row.reply);
+            assert.deepStrictEqual(status.usageLimits?.windows, [], label);
+            assert.strictEqual(status.usageLimits?.unavailable?.reason, "probeFailed", label);
           } else if (row.published !== undefined) {
-            assert.strictEqual(status.usageLimits?.windows[0]?.usedPercent, 42, row.reply);
+            assert.strictEqual(status.usageLimits?.windows[0]?.usedPercent, 42, label);
           }
         }
       }),
