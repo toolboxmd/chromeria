@@ -72,6 +72,7 @@ import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { isThreadRetired } from "../childThreads/retirement.ts";
+import { pendingStoppedDelegatedTasks } from "./RestartBackgroundNote.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "gpt-5.1-codex" };
@@ -3471,6 +3472,137 @@ it.effect(
           generation: cohort.delivery!.generation,
           messageId: cohort.delivery!.messageId,
         });
+      }).pipe(
+        Effect.provide(layerTest),
+        Effect.provideService(ProviderContinuationRequests.ProviderContinuationRequests, {
+          offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          take: Effect.never,
+        }),
+      );
+    }),
+);
+
+it.effect(
+  "a child the user resumes after a non-holding Stop wakes the parent and keeps its sibling's Stop note",
+  () =>
+    Effect.gen(function* () {
+      const offers =
+        yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const parentThreadId = ThreadId.make("thread:open-stop-resume-parent");
+        yield* createWatchingThread(parentThreadId, 4);
+        yield* send(parentThreadId, "first", "start_immediately");
+        const childThreadId = yield* delegate(parentThreadId, "resumed child task");
+        const siblingThreadId = yield* delegate(parentThreadId, "sibling left stopped");
+        const parentRun = (yield* orchestrator.getThreadProjection(parentThreadId)).runs[0]!;
+        // A non-holding Stop leaves the children running, so each is stopped on its own.
+        yield* orchestrator.dispatch({
+          type: "run.interrupt",
+          commandId: CommandId.make("open-stop-resume-parent"),
+          threadId: parentThreadId,
+          runId: parentRun.id,
+        });
+        for (const threadId of [childThreadId, siblingThreadId])
+          yield* orchestrator.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make(`open-stop-resume:${threadId}`),
+            threadId,
+          });
+        yield* orchestrator.recoverDelegatedTasks;
+        const stopped = yield* orchestrator.getThreadProjection(parentThreadId);
+        assert.equal(
+          stopped.runs.find((run) => run.id === parentRun.id)!.delegatedCompletion!.disposition,
+          "stopped",
+        );
+        const childTask = stopped.subagents.find((task) => task.childThreadId === childThreadId)!;
+        const siblingTask = stopped.subagents.find((task) => task.id !== childTask.id)!;
+        assert.equal(childTask.status, "interrupted");
+        assert.equal(siblingTask.status, "interrupted");
+        const interrupted = (yield* orchestrator.getThreadProjection(childThreadId)).runs[0]!;
+
+        const resumeMessageId = MessageId.make("message:open-stop-resume-child:resume");
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("resume:open-stop-resume-child"),
+          threadId: childThreadId,
+          messageId: resumeMessageId,
+          text: "",
+          attachments: [],
+          dispatchMode: { type: "start_immediately" },
+          manualContinuationOfRunId: interrupted.id,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const reopened = (yield* orchestrator.getThreadProjection(parentThreadId)).runs.find(
+          (run) => run.id === parentRun.id,
+        )!.delegatedCompletion!;
+        assert.equal(reopened.disposition, "open");
+        assert.isTrue(reopened.reopenedAfterStop);
+        const resumed = (yield* orchestrator.getThreadProjection(childThreadId)).runs.find(
+          (run) => run.userMessageId === resumeMessageId,
+        )!;
+        assert.equal(resumed.delegatedTaskId, childTask.id);
+
+        const now = yield* DateTime.now;
+        yield* projections.apply({
+          id: EventId.make("event:open-stop-resume-child:answer"),
+          type: "message.updated",
+          threadId: childThreadId,
+          runId: resumed.id,
+          occurredAt: now,
+          payload: {
+            id: MessageId.make("message:open-stop-resume-child:answer"),
+            threadId: childThreadId,
+            runId: resumed.id,
+            nodeId: null,
+            role: "assistant",
+            text: "CHILD_DONE",
+            attachments: [],
+            streaming: false,
+            createdBy: "agent",
+            creationSource: "server",
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+        yield* projections.apply({
+          id: EventId.make("event:open-stop-resume-child:completed"),
+          type: "run.updated",
+          threadId: childThreadId,
+          runId: resumed.id,
+          occurredAt: now,
+          payload: { ...resumed, status: "completed", startedAt: now, completedAt: now },
+        });
+        yield* orchestrator.recoverDelegatedTasks;
+
+        const parent = yield* orchestrator.getThreadProjection(parentThreadId);
+        const followup = parent.subagents.find((task) => task.id === childTask.id)!;
+        assert.equal(followup.followUpResult, "CHILD_DONE");
+        assert.equal(followup.completionDelivery?.state, "claimed");
+        const cohort = parent.runs.find((run) => run.id === parentRun.id)!.delegatedCompletion!;
+        // Without a held queue the follow-up's result wakes the parent at once.
+        const wake = yield* Queue.take(offers);
+        assert.equal(wake.threadId, parentThreadId);
+        assert.deepEqual(wake.delegatedCompletion, {
+          parentRunId: parentRun.id,
+          generation: cohort.delivery!.generation,
+          messageId: cohort.delivery!.messageId,
+        });
+        // The reopened cohort still tells the parent about the sibling the Stop left stopped;
+        // the resumed child reports back, so the note no longer lists it.
+        assert.deepEqual(
+          pendingStoppedDelegatedTasks({
+            providerThreadId: parentRun.providerThreadId,
+            runs: parent.runs,
+            providerTurns: parent.providerTurns,
+            attempts: parent.attempts,
+            subagents: parent.subagents,
+            compactionMessageIds: new Set(),
+          }).map((task) => task.id),
+          [siblingTask.id],
+        );
       }).pipe(
         Effect.provide(layerTest),
         Effect.provideService(ProviderContinuationRequests.ProviderContinuationRequests, {
