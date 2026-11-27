@@ -7117,6 +7117,25 @@
   "cd312dae87fc794f": "L’annotation a été conservée sans la capture d’écran.",
   "4616fb6552fd8875": "La page ne s’est pas chargée. La sélection est indisponible tant que la page n’est pas affichée",
   "770d6036de8dbcb7": "Cet onglet est ouvert dans l’app desktop T3 Code.",
+  "a374adebaaf3b980": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " demande une vérification humaine"
+  ],
+  "b4628441b1a38b85": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " a bloqué ce navigateur"
+  ],
+  "e6abf335d3b6ffb6": "Les agents n’agissent plus sur ce site. Prenez le contrôle, passez la vérification, rendez le contrôle, puis dites à l’agent de continuer.",
+  "83b8cce0be4b3d8f": "Les agents n’agissent plus sur ce site. Levez la suspension quand le site fonctionne à nouveau dans ce navigateur.",
+  "e6d9f36e3b1ffb43": "Lever la suspension",
   "126d7b538224ff9a": "Appareil",
   "faa872f37599503d": "Navigateur",
   "b252602c8f71d6af": "Impossible de détacher l’aperçu",

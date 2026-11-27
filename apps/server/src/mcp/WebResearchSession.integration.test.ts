@@ -155,6 +155,7 @@ const attachBrowser = Effect.fnUntraced(function* (
     finalUrl: url,
     requests: [] as PreviewAutomationRequest[],
     hold: undefined as Deferred.Deferred<void> | undefined,
+    readControlReason: undefined as string | undefined,
   };
   const connected = yield* Deferred.make<void>();
   const entered = yield* Queue.unbounded<void>();
@@ -175,6 +176,20 @@ const attachBrowser = Effect.fnUntraced(function* (
       if (request.operation === "readPage") {
         yield* Queue.offer(entered, undefined);
         if (state.hold) yield* Deferred.await(state.hold);
+        if (state.readControlReason) {
+          yield* broker.respond({
+            clientId: "existing-browser",
+            connectionId: event.connectionId,
+            requestId: request.requestId,
+            ok: false,
+            error: {
+              _tag: "PreviewAutomationControlInterruptedError",
+              message: "held",
+              detail: state.readControlReason,
+            },
+          });
+          return;
+        }
       }
       yield* broker.respond({
         clientId: "existing-browser",
@@ -418,6 +433,11 @@ it.effect(
       expect(f.state.requests.filter((request) => request.operation === "readPage")).toHaveLength(
         before,
       );
+      f.state.owner = "agent";
+      f.state.readControlReason = "antiBotChallenge";
+      const held = failure(yield* f.call({ url, useSession: true, session: selected }));
+      expect(held.code, "a Site hold is not a busy tab to wait for").toBe("session_warning");
+      expect(held.message).toContain("anti-bot check");
     }).pipe(Effect.provide(NodeCrypto.layer)),
 );
 

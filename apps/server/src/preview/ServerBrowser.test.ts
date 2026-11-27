@@ -1,4 +1,6 @@
 import * as NodeEvents from "node:events";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- A raw socket stalls a response body mid-read, which routed fixtures cannot.
+import * as NodeHttp from "node:http";
 import * as NodeVM from "node:vm";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Playwright download mocks perform real file operations outside the Effect runtime.
 import * as NodeFSP from "node:fs/promises";
@@ -396,6 +398,7 @@ function makeEncoderPage() {
 const contexts: ReturnType<typeof makeContext>[] = [];
 let encoderPageOverride: Page | undefined;
 let realContextOverride: BrowserContext | undefined;
+
 const encoderStreams: Array<{ frameRate: number | undefined; bitsPerSecond: number }> = [];
 let decodeGate: PromiseWithResolvers<void> | null = null;
 const contextRequests: Array<{ profileId: string; isolated: boolean }> = [];
@@ -3509,6 +3512,892 @@ it.live("navigating away or releasing control withdraws an offered select menu",
     }),
   ).pipe(Effect.provide(layer)),
 );
+
+it.live(
+  "an anti-bot check holds its site until a human passes it, and a navigation never clears it",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const chromiumBrowser = yield* Effect.acquireRelease(
+          Effect.promise(() => chromium.launch({ headless: true })),
+          (launched) => Effect.promise(() => launched.close()),
+        );
+        const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+        const requests: Array<string> = [];
+        let challenged = true;
+        yield* Effect.promise(() =>
+          context.route("https://*.shop.test/**", (route) => {
+            requests.push(route.request().url());
+            return route.fulfill(
+              challenged
+                ? {
+                    status: 403,
+                    contentType: "text/html",
+                    body: `<title>shop.test</title><script>var dd={'rt':'c','cid':'x','t':'fe'}</script>
+                    <iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+                  }
+                : {
+                    status: 200,
+                    contentType: "text/html",
+                    body: "<title>Results</title><p>ok</p>",
+                  },
+            );
+          }),
+        );
+        realContextOverride = context;
+        const { browser, broker, tabId } = yield* ready;
+        const manager = yield* Manager.PreviewManager;
+        const invoke = (operation: string, input: unknown) =>
+          broker.invoke<PreviewAutomationStatus>({
+            scope,
+            operation: operation as never,
+            input,
+            tabId,
+          });
+
+        const met = yield* Effect.flip(
+          invoke("navigate", { url: "https://www.shop.test/search?q=cat+food" }),
+        );
+        expect(met, "the triggering call reports the check").toMatchObject({
+          _tag: "PreviewAutomationControlInterruptedError",
+          reason: "antiBotChallenge",
+        });
+        expect(met.message).toContain("Do not retry");
+        const [session] = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
+        expect(session?.siteHold).toMatchObject({ site: "shop.test", vendor: "datadome" });
+        expect(session?.revealRequest?.force, "the tab is shown to the user").toBe(true);
+        expect((yield* invoke("status", {})).siteHold?.kind).toBe("challenge");
+
+        const sent = requests.length;
+        for (const [operation, input] of [
+          ["navigate", { url: "https://api.shop.test/other" }],
+          ["scroll", { direction: "down" }],
+          ["evaluate", { expression: "1" }],
+        ] as const)
+          expect(yield* Effect.flip(invoke(operation, input))).toMatchObject({
+            reason: "antiBotChallenge",
+          });
+        expect(
+          yield* Effect.flip(invoke("close", {})),
+          "the agent cannot end the hold by closing its tab",
+        ).toMatchObject({ reason: "antiBotChallenge" });
+        expect(
+          yield* Effect.flip(
+            broker.invoke<PreviewAutomationStatus>({
+              scope,
+              operation: "open",
+              input: { url: "https://shop.test/", reuseExistingTab: false, show: false },
+            }),
+          ),
+          "a fresh isolated tab cannot retry the held site",
+        ).toMatchObject({ reason: "antiBotChallenge" });
+        expect(requests.length, "a held site gets no request").toBe(sent);
+
+        // A persistent-profile tab, so closing it leaves the shared test context open.
+        const spare = yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false, profileId: "default" },
+        });
+        const events = yield* manager.subscribeEvents;
+        yield* settleThread(scope.thread.threadId);
+        let closedEvent = yield* PubSub.take(events);
+        while (closedEvent.type !== "closed") closedEvent = yield* PubSub.take(events);
+        expect(closedEvent.tabId, "settlement closes the spare tab").toBe(spare.tabId);
+        expect(
+          (yield* manager.list({ threadId: scope.thread.threadId })).sessions.map(
+            (each) => each.tabId,
+          ),
+          "and keeps the tab that holds its site for the person",
+        ).toContain(tabId);
+
+        yield* Effect.promise(() =>
+          context.route("https://elsewhere.test/**", (route) =>
+            route.fulfill({
+              status: 200,
+              contentType: "text/html",
+              body: "<title>Elsewhere</title>",
+            }),
+          ),
+        );
+        const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+        const page = context.pages()[0]!;
+        yield* viewer.input({ type: "takeControl" });
+        yield* Effect.promise(() => page.goto("https://elsewhere.test/"));
+        yield* viewer.input({ type: "releaseControl" });
+        expect(
+          (yield* manager.list({ threadId: scope.thread.threadId })).sessions[0]?.siteHold,
+          "a release on another site proves nothing about the held one",
+        ).toBeDefined();
+        yield* viewer.input({ type: "takeControl" });
+        challenged = false;
+        yield* Effect.promise(() => page.goto("https://www.shop.test/search?q=cat+food"));
+        expect(
+          (yield* invoke("status", {})).siteHold,
+          "a clean navigation alone does not clear the hold",
+        ).toBeDefined();
+        yield* viewer.input({ type: "releaseControl" });
+        // The banner goes once the release verified the clean page.
+        let update = yield* PubSub.take(events);
+        while (update.type !== "navigated" || update.snapshot.siteHold !== undefined)
+          update = yield* PubSub.take(events);
+        expect((yield* invoke("status", {})).siteHold).toBeUndefined();
+        yield* invoke("navigate", { url: "https://api.shop.test/other" });
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
+it.live("a release trusts only a committed document, whatever its fragment", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      let answer: "challenge" | "noContent" | "clean" = "challenge";
+      yield* Effect.promise(() =>
+        context.route("https://shop.test/**", (route) =>
+          route.fulfill(
+            answer === "challenge"
+              ? {
+                  status: 403,
+                  contentType: "text/html",
+                  body: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+                }
+              : answer === "noContent"
+                ? { status: 204 }
+                : { status: 200, contentType: "text/html", body: "<p>ok</p>" },
+          ),
+        ),
+      );
+      realContextOverride = context;
+      const { browser, broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const held = () =>
+        manager
+          .list({ threadId: scope.thread.threadId })
+          .pipe(Effect.map(({ sessions }) => sessions[0]?.siteHold));
+      yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "https://shop.test/a" },
+          tabId,
+        }),
+      );
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      const page = context.pages()[0]!;
+      yield* viewer.input({ type: "takeControl" });
+      // A 204 commits nothing, and a history change is no new document: the check stays on screen.
+      answer = "noContent";
+      yield* Effect.promise(() => page.goto("https://shop.test/a").catch(() => undefined));
+      yield* Effect.promise(() => page.evaluate(`history.pushState(null, "", "/a")`));
+      yield* viewer.input({ type: "releaseControl" });
+      expect(yield* held(), "the check is still on screen").toBeDefined();
+      yield* viewer.input({ type: "takeControl" });
+      answer = "clean";
+      yield* Effect.promise(() => page.goto("https://shop.test/clean#results"));
+      // A release answers once it verified or kept its hold.
+      yield* viewer.input({ type: "releaseControl" });
+      expect(yield* held()).toBeUndefined();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a check that a same-site API call answers holds the site without a navigation", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      yield* Effect.promise(() =>
+        context.route("https://shop.test/**", (route) =>
+          route.request().url().endsWith("/api/search")
+            ? route.fulfill({
+                status: 403,
+                contentType: "application/json",
+                headers: { "x-dd-b": "1" },
+                body: JSON.stringify({
+                  url: "https://geo.captcha-delivery.com/captcha/?initialCid=x",
+                }),
+              })
+            : route.fulfill({
+                status: 200,
+                contentType: "text/html",
+                body: "<title>Shop</title><button onclick=\"fetch('/api/search')\">Search</button>",
+              }),
+        ),
+      );
+      realContextOverride = context;
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const invoke = (operation: string, input: unknown) =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: operation as never,
+          input,
+          tabId,
+        });
+      yield* invoke("navigate", { url: "https://shop.test/" });
+      const events = yield* manager.subscribeEvents;
+      yield* Effect.ignore(invoke("click", { locator: "button" }));
+      let update = yield* PubSub.take(events);
+      while (update.type !== "navigated" || update.snapshot.siteHold === undefined)
+        update = yield* PubSub.take(events);
+      expect(update.snapshot.siteHold).toMatchObject({ site: "shop.test", vendor: "datadome" });
+      expect(yield* Effect.flip(invoke("evaluate", { expression: "1" }))).toMatchObject({
+        reason: "antiBotChallenge",
+      });
+      const viewer = yield* (yield* ServerBrowser.ServerBrowser).attachViewer(
+        viewerInput(tabId, true),
+      );
+      yield* viewer.input({ type: "takeControl" });
+      yield* viewer.input({ type: "releaseControl" });
+      expect(
+        (yield* invoke("status", {})).siteHold,
+        "releasing on the page that loaded before the check keeps the hold",
+      ).toBeDefined();
+      // A newer page that meets the check again keeps the hold too.
+      const page = context.pages()[0]!;
+      yield* viewer.input({ type: "takeControl" });
+      yield* Effect.promise(() => page.reload());
+      yield* Effect.promise(() =>
+        Promise.all([page.waitForResponse(/\/api\/search$/), page.click("button")]),
+      );
+      yield* viewer.input({ type: "releaseControl" });
+      expect(
+        (yield* invoke("status", {})).siteHold,
+        "the check met again after the reload keeps the hold",
+      ).toBeDefined();
+      yield* viewer.input({ type: "takeControl" });
+      yield* Effect.promise(() => page.reload());
+      yield* viewer.input({ type: "releaseControl" });
+      expect((yield* invoke("status", {})).siteHold, "a clean reload clears it").toBeUndefined();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live.each([
+  {
+    name: "a check another tab of the profile meets again",
+    secondBody: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+  },
+] as const)("$name keeps the hold", ({ secondBody }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      let challenged = false;
+      let secondAnswer: string | undefined;
+      yield* Effect.promise(() =>
+        context.route("https://shop.test/**", (route) =>
+          route.fulfill(
+            secondAnswer !== undefined
+              ? { status: 403, contentType: "text/html", body: secondAnswer }
+              : challenged
+                ? {
+                    status: 403,
+                    contentType: "text/html",
+                    body: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+                  }
+                : { status: 200, contentType: "text/html", body: "<p>ok</p>" },
+          ),
+        ),
+      );
+      realContextOverride = context;
+      const browser = yield* ServerBrowser.ServerBrowser;
+      const broker = yield* Broker.PreviewAutomationBroker;
+      const open = () =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: {
+            url: "https://shop.test/",
+            reuseExistingTab: false,
+            show: false,
+            profileId: "default",
+          },
+        });
+      const first = PreviewTabId.make((yield* open()).tabId!);
+      yield* open();
+      const [firstPage, secondPage] = context.pages();
+      challenged = true;
+      yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "https://shop.test/a" },
+          tabId: first,
+        }),
+      );
+      const viewer = yield* browser.attachViewer(viewerInput(first, true));
+      yield* viewer.input({ type: "takeControl" });
+      challenged = false;
+      yield* Effect.promise(() => firstPage!.goto("https://shop.test/clean"));
+      // The person's other tab meets the check again after that clean load.
+      secondAnswer = secondBody;
+      yield* Effect.promise(() => secondPage!.reload());
+      yield* viewer.input({ type: "releaseControl" });
+      const status = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "status",
+        input: {},
+        tabId: first,
+      });
+      expect(status.siteHold, "the site still shows its check in the profile").toBeDefined();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a challenge its header decides holds the site while its body never finishes", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = NodeHttp.createServer((_, response) => {
+        response.writeHead(403, { "content-type": "text/html", "cf-mitigated": "challenge" });
+        response.write("<title>Just a moment...</title>");
+      });
+      yield* Effect.acquireRelease(
+        Effect.promise(() => new Promise<void>((done) => server.listen(0, "127.0.0.1", done))),
+        () =>
+          Effect.sync(() => {
+            server.closeAllConnections();
+            server.close();
+          }),
+      );
+      const port = (server.address() as { port: number }).port;
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          chromium.launch({
+            headless: true,
+            args: [`--host-resolver-rules=MAP shop.test 127.0.0.1:${port}`],
+          }),
+        ),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      realContextOverride = yield* Effect.promise(() => chromiumBrowser.newContext());
+      const { broker, tabId } = yield* ready;
+      const met = yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "http://shop.test/", readiness: "domContentLoaded", timeoutMs: 8_000 },
+          tabId,
+        }),
+      );
+      expect(met).toMatchObject({ reason: "antiBotChallenge" });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a challenge whose body arrives late still holds the site", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = NodeHttp.createServer((_, response) => {
+        response.writeHead(403, { "content-type": "text/html" });
+        response.write("<html>");
+        // @effect-diagnostics-next-line globalTimers:off -- The fixture server sends its body late.
+        const late = setTimeout(
+          () =>
+            response.end(
+              `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+            ),
+          6_000,
+        );
+        response.on("close", () => clearTimeout(late));
+      });
+      yield* Effect.acquireRelease(
+        Effect.promise(() => new Promise<void>((done) => server.listen(0, "127.0.0.1", done))),
+        () =>
+          Effect.sync(() => {
+            server.closeAllConnections();
+            server.close();
+          }),
+      );
+      const port = (server.address() as { port: number }).port;
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          chromium.launch({
+            headless: true,
+            args: [`--host-resolver-rules=MAP shop.test 127.0.0.1:${port}`],
+          }),
+        ),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      realContextOverride = yield* Effect.promise(() => chromiumBrowser.newContext());
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const events = yield* manager.subscribeEvents;
+      // The request ends before the body does; it does not report the page as clean.
+      yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "http://shop.test/", readiness: "domContentLoaded", timeoutMs: 3_000 },
+          tabId,
+        }),
+      );
+      const held = () =>
+        manager
+          .list({ threadId: scope.thread.threadId })
+          .pipe(Effect.map(({ sessions }) => sessions[0]?.siteHold));
+      while ((yield* held()) === undefined) yield* PubSub.take(events);
+      expect(yield* held()).toMatchObject({ site: "shop.test", vendor: "datadome" });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("releasing one site keeps the banner of another site the tab still holds", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      let shopChallenged = true;
+      const challenge = {
+        status: 403,
+        contentType: "text/html",
+        body: `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`,
+      };
+      yield* Effect.promise(() =>
+        context.route("https://*/**", (route) => {
+          const url = route.request().url();
+          if (url.startsWith("https://other.test/") || shopChallenged)
+            return route.fulfill(challenge);
+          return route.fulfill({ status: 200, contentType: "text/html", body: "<p>ok</p>" });
+        }),
+      );
+      realContextOverride = context;
+      const { browser, broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "https://shop.test/" },
+          tabId,
+        }),
+      );
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      const page = context.pages()[0]!;
+      yield* viewer.input({ type: "takeControl" });
+      yield* Effect.promise(() => page.goto("https://other.test/"));
+      shopChallenged = false;
+      yield* Effect.promise(() => page.goto("https://shop.test/"));
+      const events = yield* manager.subscribeEvents;
+      yield* viewer.input({ type: "releaseControl" });
+      let update = yield* PubSub.take(events);
+      while (update.type !== "navigated" || update.snapshot.siteHold?.site !== "other.test")
+        update = yield* PubSub.take(events);
+      expect(update.snapshot.siteHold).toMatchObject({ site: "other.test" });
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("clearing a hold on a page still showing its check clears it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() => chromium.launch({ headless: true })),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      const context = yield* Effect.promise(() => chromiumBrowser.newContext());
+      yield* Effect.promise(() =>
+        context.route("https://shop.test/**", (route) =>
+          route.fulfill({
+            status: 403,
+            contentType: "text/html",
+            headers: { "cf-mitigated": "challenge" },
+            body: "<title>Just a moment...</title>",
+          }),
+        ),
+      );
+      realContextOverride = context;
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      yield* Effect.flip(
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "navigate",
+          input: { url: "https://shop.test/" },
+          tabId,
+        }),
+      );
+      // A page stuck in a dialog cannot answer; the person's override needs nothing from it.
+      const page = context.pages()[0]!;
+      yield* Effect.promise(() =>
+        Promise.all([
+          page.waitForEvent("dialog"),
+          page.evaluate("setTimeout(() => alert('stuck'))"),
+        ]),
+      );
+      yield* manager.adjust({ threadId: scope.thread.threadId, tabId, clear: "siteHold" });
+      const [session] = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
+      expect(session?.siteHold).toBeUndefined();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+/** A main-document answer whose body the test finishes, so the server is still reading it. */
+const pendingDocument = (page: { mainFrame(): unknown }, url: string) => {
+  const body = Promise.withResolvers<string>();
+  return {
+    body,
+    response: {
+      url: () => url,
+      status: () => 403,
+      headers: () => ({ "content-type": "text/html" }),
+      text: () => body.promise,
+      request: () => ({
+        method: () => "GET",
+        url: () => url,
+        isNavigationRequest: () => true,
+        frame: () => page.mainFrame(),
+      }),
+    },
+  };
+};
+const DATADOME_CHECK = `<iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=x"></iframe>`;
+
+it.live("an open whose page never finishes loading reports the tab, not an expired request", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const server = NodeHttp.createServer((_, response) => {
+        response.writeHead(200, { "content-type": "text/html" });
+        response.write("<title>Slow</title><p>still loading");
+      });
+      yield* Effect.acquireRelease(
+        Effect.promise(() => new Promise<void>((done) => server.listen(0, "127.0.0.1", done))),
+        () =>
+          Effect.sync(() => {
+            server.closeAllConnections();
+            server.close();
+          }),
+      );
+      const port = (server.address() as { port: number }).port;
+      const chromiumBrowser = yield* Effect.acquireRelease(
+        Effect.promise(() =>
+          chromium.launch({
+            headless: true,
+            args: [`--host-resolver-rules=MAP shop.test 127.0.0.1:${port}`],
+          }),
+        ),
+        (launched) => Effect.promise(() => launched.close()),
+      );
+      realContextOverride = yield* Effect.promise(() => chromiumBrowser.newContext());
+      yield* ServerBrowser.ServerBrowser;
+      const broker = yield* Broker.PreviewAutomationBroker;
+      yield* Effect.yieldNow;
+      // `load` never fires, so the wait for it uses the whole budget; the open still happened.
+      const opened = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "open",
+        input: { url: "http://shop.test/", reuseExistingTab: false, show: false },
+        timeoutMs: 2_000,
+      });
+      expect(opened.tabId).toBeDefined();
+      expect(opened.url).toBe("http://shop.test/");
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("an action that finished stays a success while a check it started is still read", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const page = contexts[0]!.page;
+      const session = contexts[0]!.sessions[0]!;
+      const check = pendingDocument(page, "https://shop.test/next");
+      yield* Effect.addFinalizer(() => Effect.sync(() => check.body.resolve("")));
+      const realNow = performance.now.bind(performance);
+      const clock = vi.spyOn(performance, "now");
+      yield* Effect.addFinalizer(() => Effect.sync(() => clock.mockRestore()));
+      const send = session.send.getMockImplementation()!;
+      session.send.mockImplementation(async (method, input) => {
+        if (
+          method !== "Runtime.evaluate" ||
+          (input as { expression?: string }).expression !== "submit()"
+        )
+          return send(method, input);
+        // The submit starts a navigation whose answer is still being read when the request's
+        // time runs out.
+        page.emit("response", check.response);
+        clock.mockImplementation(() => realNow() + 60_000);
+        return { result: { value: "submitted" } };
+      });
+      expect(
+        yield* broker.invoke({
+          scope,
+          tabId,
+          operation: "evaluate",
+          input: { expression: "submit()" },
+        }),
+      ).toBe("submitted");
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a page watch keeps reading after its setup request's deadline", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const source = new EventTarget();
+      const realm = NodeVM.createContext({ TextEncoder, source });
+      const events = new NodeEvents.EventEmitter();
+      let dispose: (() => void) | undefined;
+      const session = {
+        ...makeSession(undefined, { width: 1280, height: 720 }),
+        on: vi.fn((name: string, listener: () => void) => events.on(name, listener)),
+        off: vi.fn((name: string, listener: () => void) => events.off(name, listener)),
+        send: vi.fn(async (method: string, input?: unknown): Promise<Record<string, unknown>> => {
+          const params = input as Record<string, unknown>;
+          if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+          if (method === "Runtime.enable")
+            events.emit("Runtime.executionContextCreated", {
+              context: { id: 17, auxData: { isDefault: true, frameId: "main" } },
+            });
+          if (method === "Runtime.addBinding") {
+            const name = String(params.name);
+            realm[name] = (payload: string) =>
+              events.emit("Runtime.bindingCalled", { name, payload, executionContextId: 17 });
+          }
+          if (method === "Runtime.evaluate") {
+            dispose = NodeVM.runInContext(String(params.expression), realm) as () => void;
+            return { result: { type: "function", objectId: "cleanup-17" } };
+          }
+          if (method === "Runtime.callFunctionOn") dispose?.();
+          return {};
+        }),
+      };
+      vi.spyOn(contexts[0]!, "newCDPSession").mockResolvedValue(session);
+      const started = yield* broker.invoke<{ watchId: string; epoch: string }>({
+        scope,
+        tabId,
+        operation: "watchStart",
+        input: {
+          subscription: `(emit) => {
+            const listener = () => emit(2);
+            source.addEventListener('change', listener);
+            emit(1);
+            return () => source.removeEventListener('change', listener);
+          }`,
+        },
+      });
+      // The setup request's deadline passes; the watch outlives it.
+      const realNow = performance.now.bind(performance);
+      const clock = vi
+        .spyOn(performance, "now")
+        .mockImplementation(() => realNow() + 60 * 60 * 1000);
+      yield* Effect.addFinalizer(() => Effect.sync(() => clock.mockRestore()));
+      source.dispatchEvent(new Event("change"));
+      const read = yield* browser.readWatch!(
+        { ...started, threadId: scope.thread.threadId, after: 0, timeoutMs: 0 },
+        Effect.void,
+      );
+      expect(read.events.map((event) => event.value)).toEqual([1, 2]);
+    }).pipe(
+      Effect.provide(
+        layer.pipe(
+          Layer.provide(
+            Layer.mock(PeerAuthority.PeerAuthority)({
+              recheckInvocation: (invocation) => Effect.succeed(invocation),
+              acquirePreviewWatchAuthority: () => Effect.succeed(Effect.void),
+            }),
+          ),
+        ),
+      ),
+    ),
+  ),
+);
+
+it.effect("navigate sends nothing once its budget ran out during the last hold check", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const page = contexts[0]!.page;
+      const session = contexts[0]!.sessions[0]!;
+      // The busy-page probe runs right before the last hold check. That check still finds
+      // time left; every later read finds the budget spent.
+      const realNow = performance.now.bind(performance);
+      let readsSinceProbe = -1;
+      const clock = vi.spyOn(performance, "now").mockImplementation(() => {
+        if (readsSinceProbe < 0) return realNow();
+        readsSinceProbe++;
+        return realNow() + (readsSinceProbe > 1 ? 60 * 60 * 1000 : 0);
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(() => clock.mockRestore()));
+      const send = session.send.getMockImplementation()!;
+      session.send.mockImplementation(async (method, input) => {
+        if (method === "Runtime.evaluate" && (input as { expression?: string }).expression === "0")
+          readsSinceProbe = 0;
+        return send(method, input);
+      });
+      const sent = page.goto.mock.calls.length;
+      const expired = yield* broker
+        .invoke<PreviewAutomationStatus>({
+          scope,
+          tabId,
+          operation: "navigate",
+          input: { url: "https://shop.test/" },
+        })
+        .pipe(Effect.flip);
+      expect(expired).toMatchObject({ _tag: "PreviewAutomationTimeoutError" });
+      expect(page.goto, "a spent budget sends no navigation").toHaveBeenCalledTimes(sent);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("settlement keeps a tab whose check is still read after the action fence lapsed", () => {
+  // The site-hold clock is read from `Date.now` when the browser starts.
+  const clock = vi.spyOn(Date, "now");
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const spare = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "open",
+        input: { reuseExistingTab: false, show: false },
+      });
+      const check = pendingDocument(contexts[0]!.page, "https://shop.test/");
+      yield* Effect.addFinalizer(() => Effect.sync(() => check.body.resolve("")));
+      clock.mockReturnValue(1_000);
+      contexts[0]!.page.emit("response", check.response);
+      // The body is still unread after the 10 s fence that holds actions back.
+      clock.mockReturnValue(12_000);
+      const events = yield* manager.subscribeEvents;
+      yield* settleThread(scope.thread.threadId);
+      let closed = yield* PubSub.take(events);
+      while (closed.type !== "closed") closed = yield* PubSub.take(events);
+      expect(closed.tabId, "settlement closes the tab with nothing pending").toBe(spare.tabId);
+      const kept = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId,
+        operation: "status",
+        input: {},
+      });
+      expect(kept.tabId, "and keeps the tab whose verdict may still hold its site").toBe(tabId);
+    }),
+  ).pipe(Effect.provide(layer), Effect.ensuring(Effect.sync(() => clock.mockRestore())));
+});
+
+it.effect("a full server keeps an idle tab whose check is still being read", () => {
+  // The site-hold clock is read from `Date.now` when the browser starts.
+  const now = vi.spyOn(Date, "now");
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* Broker.PreviewAutomationBroker;
+      yield* ServerBrowser.ServerBrowser;
+      yield* Effect.yieldNow;
+      const open = (providerSessionId: string) =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope: asSession(providerSessionId),
+          operation: "open",
+          input: { reuseExistingTab: false, show: false },
+        });
+      const opened: Array<string> = [];
+      const releases = yield* Queue.unbounded<string>();
+      for (let index = 0; index < 32; index++) {
+        now.mockReturnValue(index);
+        const { tabId } = yield* open(`agent-${Math.floor(index / 8)}`);
+        opened.push(tabId!);
+        contexts.at(-1)!.page.on("close", () => Queue.offerUnsafe(releases, tabId!));
+      }
+      // The longest idle tab met an answer whose body has not finished.
+      const check = pendingDocument(contexts[0]!.page, "https://shop.test/");
+      yield* Effect.addFinalizer(() => Effect.sync(() => check.body.resolve("")));
+      contexts[0]!.page.emit("response", check.response);
+      now.mockReturnValue(31 * 60 * 1000);
+      expect((yield* open("agent-new")).tabId).toBeDefined();
+      expect(yield* Queue.take(releases), "the next idle tab gives up its slot").toBe(opened[1]);
+    }),
+  ).pipe(Effect.provide(layer), Effect.ensuring(Effect.sync(() => now.mockRestore())));
+});
+
+it.effect("a check read before a person's clear still keeps the holds that cover it", () => {
+  const now = vi.spyOn(Date, "now");
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const manager = yield* Manager.PreviewManager;
+      const events = yield* manager.subscribeEvents;
+      const heldOn = function* (tab: string) {
+        let update = yield* PubSub.take(events);
+        while (
+          update.type !== "navigated" ||
+          update.tabId !== tab ||
+          update.snapshot.siteHold === undefined
+        )
+          update = yield* PubSub.take(events);
+        return Date.parse(update.snapshot.siteHold.since);
+      };
+      const isolatedPage = contexts[0]!.page;
+      // The isolated tab meets the check and holds the site in its own cookie jar.
+      const first = pendingDocument(isolatedPage, "https://shop.test/a");
+      first.body.resolve(DATADOME_CHECK);
+      isolatedPage.emit("response", first.response);
+      yield* heldOn(tabId);
+      // The thread's profile tab meets it too: a second hold, in the profile.
+      const profileTab = PreviewTabId.make(
+        (yield* broker.invoke<PreviewAutomationStatus>({
+          scope,
+          operation: "open",
+          input: { reuseExistingTab: false, show: false, profileId: "default" },
+        })).tabId!,
+      );
+      const profilePage = contexts[1]!.page;
+      const second = pendingDocument(profilePage, "https://shop.test/b");
+      second.body.resolve(DATADOME_CHECK);
+      profilePage.emit("response", second.response);
+      // Times below count from when that hold began.
+      const base = yield* heldOn(profileTab);
+      // The isolated tab meets the check again; its body is still being read when the person
+      // clears that tab's hold, which dismisses the answer for the isolated jar.
+      const late = pendingDocument(isolatedPage, "https://shop.test/c");
+      isolatedPage.emit("response", late.response);
+      yield* manager.adjust({ threadId: scope.thread.threadId, tabId, clear: "siteHold" });
+      // The person loads a clean page in the profile tab, then the late check is classified.
+      let shownAt = base + 60_000;
+      profilePage.commit("https://shop.test/clean");
+      profilePage.evaluate.mockImplementation((async (script: unknown) =>
+        String(script).includes("getEntriesByType")
+          ? { status: 200, startedAt: shownAt }
+          : {
+              url: profilePage.url(),
+              title: "test page",
+              loading: false,
+              visibleText: "",
+            }) as never);
+      now.mockReturnValue(base + 120_000);
+      late.body.resolve(DATADOME_CHECK);
+      const viewer = yield* browser.attachViewer(viewerInput(profileTab, true));
+      const status = () =>
+        broker.invoke<PreviewAutomationStatus>({
+          scope,
+          tabId: profileTab,
+          operation: "status",
+          input: {},
+        });
+      yield* viewer.input({ type: "takeControl" });
+      yield* viewer.input({ type: "releaseControl" });
+      expect(
+        (yield* status()).siteHold,
+        "the clean page loaded before the check covered tabs met again",
+      ).toBeDefined();
+      shownAt = base + 180_000;
+      yield* viewer.input({ type: "takeControl" });
+      yield* viewer.input({ type: "releaseControl" });
+      expect((yield* status()).siteHold, "a newer clean page releases it").toBeUndefined();
+    }),
+  ).pipe(Effect.provide(layer), Effect.ensuring(Effect.sync(() => now.mockRestore())));
+});
 
 it.effect("overlapping file pickers keep the newer offer answerable", () =>
   Effect.scoped(

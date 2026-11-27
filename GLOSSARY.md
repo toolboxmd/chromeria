@@ -362,3 +362,8 @@ _Avoid_: scrape cache
 **Page watch**:
 A caller-authored subscription in one authorized browser opening whose JSON
 changes remain available as an ordered, replayable event queue.
+
+**Site hold**:
+A stop on agent actions for one site in one browser profile after the site shows
+an anti-bot check or block, until a person passes the check or clears the hold.
+_Avoid_: ban list, quarantine

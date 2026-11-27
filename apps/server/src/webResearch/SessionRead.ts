@@ -32,6 +32,7 @@ export class SessionReadError extends Schema.TaggedError<SessionReadError>()("Se
     "expired",
     "control",
     "warning",
+    "site_hold",
     "continuation",
     "response",
     "timeout",
@@ -44,7 +45,7 @@ export class SessionReadError extends Schema.TaggedError<SessionReadError>()("Se
       ? ("session_expired" as const)
       : this.reason === "control"
         ? ("session_in_use" as const)
-        : this.reason === "warning"
+        : this.reason === "warning" || this.reason === "site_hold"
           ? ("session_warning" as const)
           : ("session_unavailable" as const);
   }
@@ -66,6 +67,8 @@ export class SessionReadError extends Schema.TaggedError<SessionReadError>()("Se
         return "A human or another agent controls this tab, or control changed during the read. Wait for release and select the tab again.";
       case "warning":
         return "The account returned a rate limit, checkpoint or automation warning. Stop browsing this account; do not retry or bypass the warning.";
+      case "site_hold":
+        return "The site shows an anti-bot check or block in this profile, so agent actions on it are stopped until the user passes it in the tab. Do not retry or read the site another way; tell the user.";
       case "continuation":
         return "This private continuation expired or belongs to another caller, profile or tab generation. Read the URL again with explicit session opt-in.";
       case "response":
@@ -199,7 +202,9 @@ const make = Effect.gen(function* () {
                 new SessionReadError({
                   reason:
                     cause._tag === "PreviewAutomationControlInterruptedError"
-                      ? "control"
+                      ? cause.reason === "antiBotChallenge" || cause.reason === "antiBotBlocked"
+                        ? "site_hold"
+                        : "control"
                       : cause._tag === "PreviewAutomationTabNotFoundError"
                         ? "tab"
                         : cause._tag === "PreviewAutomationTimeoutError"

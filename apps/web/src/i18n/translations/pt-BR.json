@@ -7116,6 +7116,25 @@
   "cd312dae87fc794f": "A anotação foi mantida sem a captura de tela.",
   "4616fb6552fd8875": "A página não carregou. Escolher elementos fica indisponível até a página renderizar",
   "770d6036de8dbcb7": "Esta aba está aberta no app para desktop do T3 Code.",
+  "a374adebaaf3b980": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " pede uma verificação humana"
+  ],
+  "b4628441b1a38b85": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " bloqueou este navegador"
+  ],
+  "e6abf335d3b6ffb6": "Os agentes pararam de agir neste site. Assuma o controle, passe pela verificação, libere o controle e depois diga ao agente para continuar.",
+  "83b8cce0be4b3d8f": "Os agentes pararam de agir neste site. Remova a retenção quando o site voltar a funcionar neste navegador.",
+  "e6d9f36e3b1ffb43": "Remover retenção",
   "126d7b538224ff9a": "Dispositivo",
   "faa872f37599503d": "Navegador",
   "b252602c8f71d6af": "Não foi possível destacar a pré-visualização",

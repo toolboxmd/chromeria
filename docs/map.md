@@ -42,6 +42,9 @@ flowchart TD
     PWS["Replayable page subscriptions"]
     %% PWS: #622
     PBI --> PWS --> T3M
+    SHB["Human-like browsing and Site hold"]
+    %% SHB: #993 #994 #995 #996 #997 #998 PR #1000 PR #1003
+    PBI --> SHB
 
     BLM["Chrome login mirror"]
     %% BLM: #520 #541 PR #530 PR #545

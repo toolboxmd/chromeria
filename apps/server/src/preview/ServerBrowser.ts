@@ -133,6 +133,7 @@ import {
 import { PageWatchStore } from "./PageWatchStore.ts";
 import { installPageWatch } from "./ServerBrowserWatch.ts";
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
+import { classifyAntiBotPage, siteOf, SiteHolds, type HeldSite } from "./SiteHold.ts";
 import { installPdfDocumentNavigation, isPdfAssetUrl } from "./PdfDocumentNavigation.ts";
 
 const SERVER_HOST_CLIENT_ID = SERVER_BROWSER_AUTOMATION_CLIENT_ID;
@@ -572,6 +573,8 @@ interface ServerTab {
   readonly actionTimeline: Array<PreviewAutomationActionEvent>;
   readonly control: SessionControl;
   agentOperating: boolean;
+  /** Classification of the latest error document, so an action can report the hold it caused. */
+  siteHoldCheck: Promise<void>;
   fileChooserIntercepted: boolean;
   readonly onFileChooser: (chooser: FileChooser) => void;
   readonly watches: Set<string>;
@@ -655,6 +658,43 @@ const READ_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> = new 
   "snapshot",
   "waitFor",
 ]);
+
+/** Operations that can send a request to the tab's site, so a Site hold refuses them. */
+// How long a release waits for its tab's classification before deciding on what it has.
+const RELEASE_CLASSIFY_WAIT_MS = 3_000;
+
+const SITE_HOLD_OPERATIONS: ReadonlySet<PreviewAutomationRequest["operation"]> = new Set([
+  "navigate",
+  "readPage",
+  "click",
+  "type",
+  "press",
+  "scroll",
+  "hover",
+  "select",
+  "drag",
+  "upload",
+  "fillCredential",
+  "evaluate",
+  "watchStart",
+]);
+
+const SITE_HOLD_VENDOR_NAMES = {
+  datadome: "DataDome",
+  cloudflare: "Cloudflare",
+  akamai: "Akamai",
+  human: "HUMAN",
+  imperva: "Imperva",
+} as const;
+
+const siteHoldError = (hold: HeldSite) =>
+  new BrowserControlInterrupted({
+    reason: hold.kind === "challenge" ? "antiBotChallenge" : "antiBotBlocked",
+    message:
+      hold.kind === "challenge"
+        ? `${hold.site} shows a ${SITE_HOLD_VENDOR_NAMES[hold.vendor]} anti-bot check. Agent actions on ${hold.site} are stopped in this browser profile, and the user was asked to pass it in this tab. Do not retry, reload, or open the site in another tab or profile. Tell the user and end your turn; the user tells you when the check is done.`
+        : `${hold.site} blocked this browser (${SITE_HOLD_VENDOR_NAMES[hold.vendor]}). Agent actions on ${hold.site} are stopped in this browser profile, and the user was told. Do not retry, reload, or open the site in another tab or profile. Tell the user and end your turn.`,
+  });
 
 const AGENT_TAB_LIMIT = 8;
 const SERVER_TAB_LIMIT = 32;
@@ -934,11 +974,16 @@ const make = Effect.gen(function* () {
   /** Sessions closed while their tab was still opening; the open discards its page. */
   const closedPendingTabs = new Set<string>();
   const adoptedPages = new Map<string, { readonly page: Page; readonly openerTabId: string }>();
+  const siteHolds = new SiteHolds();
+  // A tab holding its site waits for the person, so no automatic cleanup closes it.
   const mayCloseSettledTab = (tab: ServerTab) =>
     tab.control.agentId !== null &&
     tab.control.controller === null &&
     tab.viewers.size === 0 &&
-    tab.watches.size === 0;
+    tab.watches.size === 0 &&
+    siteHolds.heldBy(tab.tabId).length === 0 &&
+    // A check still being read may be about to hold this tab for the person.
+    !siteHolds.verdictPendingOn(tab.tabId);
   const closedSessions = new Set<string>();
   let hostConnectionId: string | null = null;
   let viewerResizeOrder = 0;
@@ -1353,6 +1398,23 @@ const make = Effect.gen(function* () {
   };
 
   const unloadingTabs = new WeakMap<ServerTab, Promise<void>>();
+  yield* manager.registerSiteHoldClear(({ threadId, tabId, authorize }) =>
+    Effect.promise(async () => {
+      const tab = tabs.get(tabKey(threadId, tabId));
+      if (tab) await settleSiteHold(tab, "clear", authorize);
+      else {
+        // A detached tab can still be cleared by the person.
+        await authorize?.();
+        for (const [scope, hold] of siteHolds.heldBy(tabId))
+          if (hold.threadId === threadId) siteHolds.clear(scope, hold, true);
+        await runPromise(
+          manager
+            .setSiteHold({ threadId: ThreadId.make(threadId), tabId, siteHold: undefined })
+            .pipe(Effect.ignore),
+        );
+      }
+    }),
+  );
   yield* manager.registerBeforeClose((snapshots) =>
     Effect.promise(async () => {
       await Promise.all(
@@ -1393,6 +1455,9 @@ const make = Effect.gen(function* () {
     // A desktop page outlives the connection unless its session closed with it.
     const end =
       (tab.desktop || reopening) && !closeSession && sessionOpen(tab) ? "reconnect" : "gone";
+    // Nobody can pass a check in a closed tab; the next challenge page holds the site again.
+    if (end === "gone")
+      for (const [scope, hold] of siteHolds.heldBy(tab.tabId)) siteHolds.clear(scope, hold);
     for (const viewer of tab.viewers) viewer.push({ _tag: end });
     void tab.control.close().catch(constVoid);
     if (tab.desktop) void tab.desktop.close().catch(constVoid);
@@ -1540,6 +1605,7 @@ const make = Effect.gen(function* () {
         actionTimeline: [],
         control,
         agentOperating: false,
+        siteHoldCheck: Promise.resolve(),
         fileChooserIntercepted: false,
         onFileChooser: (chooser) => {
           pendingFileChooserOffer = pendingFileChooserOffer
@@ -1744,6 +1810,51 @@ const make = Effect.gen(function* () {
           failed: false,
           timestamp: new Date().toISOString(),
         });
+        const isDocument = isMainNavigation(response.request());
+        // A same-site API answer can itself be the check a page then shows without navigating.
+        if (
+          !isDocument &&
+          response.status() >= 400 &&
+          (response.headers()["cf-mitigated"] !== undefined ||
+            response.headers()["x-dd-b"] !== undefined ||
+            response.headers()["x-datadome"] !== undefined) &&
+          siteOf(response.url()) === siteOf(page.url())
+        ) {
+          const answer = { status: response.status(), headers: response.headers() };
+          const classified = suspectCheck(tab, response.url());
+          const decided = answer.headers["cf-mitigated"] === "challenge";
+          tab.siteHoldCheck = Promise.all([
+            tab.siteHoldCheck,
+            (decided ? Promise.resolve("") : response.text().catch(() => ""))
+              .then((body) => {
+                const verdict = classifyAntiBotPage({ ...answer, html: body.slice(0, 65_536) });
+                if (verdict) return raiseSiteHold(tab, verdict, response.url(), classified.at);
+              })
+              .catch(constVoid)
+              .finally(classified.done),
+          ]).then(constVoid);
+        }
+        if (isDocument) {
+          const document = {
+            status: response.status(),
+            headers: response.headers(),
+          };
+          if (document.status >= 400 || document.headers["cf-mitigated"] !== undefined) {
+            const classified = suspectCheck(tab, response.url());
+            // Cloudflare's header alone decides a challenge, so its body is not waited for.
+            const decided = document.headers["cf-mitigated"] === "challenge";
+            tab.siteHoldCheck = Promise.all([
+              tab.siteHoldCheck,
+              (decided ? Promise.resolve("") : response.text().catch(() => ""))
+                .then((html) => {
+                  const verdict = classifyAntiBotPage({ ...document, html });
+                  if (verdict) return raiseSiteHold(tab, verdict, response.url(), classified.at);
+                })
+                .catch(constVoid)
+                .finally(classified.done),
+            ]).then(constVoid);
+          }
+        }
       });
       page.on("console", (message) => {
         pushBounded(tab.consoleEntries, {
@@ -1806,10 +1917,15 @@ const make = Effect.gen(function* () {
         if (initialUrl) initialUrl.hash = "";
         tab.pendingInitialRequestUrl = initialUrl?.href ?? null;
         const options = { waitUntil: "commit", timeout: NAVIGATION_TIMEOUT_MS } as const;
+        // An agent's first request is checked against holds raised while the tab was set up.
+        const held =
+          tab.control.agentId === null ? undefined : siteHoldOf(tab, snapshot.navStatus.url);
         tab.initialNavigation = (
-          (desktop || adopted) && page.url() === snapshot.navStatus.url
-            ? page.reload(options)
-            : page.goto(snapshot.navStatus.url, options)
+          held
+            ? Promise.reject(siteHoldError(held))
+            : (desktop || adopted) && page.url() === snapshot.navStatus.url
+              ? page.reload(options)
+              : page.goto(snapshot.navStatus.url, options)
         ).then(constVoid, (cause: unknown) => {
           throw ServerBrowserPage.toOperationError(cause, NAVIGATION_TIMEOUT_MS);
         });
@@ -2509,6 +2625,8 @@ const make = Effect.gen(function* () {
         !reclaimingTabs.has(tab) &&
         !isVisible(tab) &&
         tab.watches.size === 0 &&
+        siteHolds.heldBy(tab.tabId).length === 0 &&
+        !siteHolds.verdictPendingOn(tab.tabId) &&
         tab.usedAt < cutoff,
     );
   };
@@ -2892,6 +3010,10 @@ const make = Effect.gen(function* () {
           ...(candidate.profileId === undefined ? {} : { profileId: candidate.profileId }),
         })),
       ...profileStatus(),
+      ...(() => {
+        const hold = siteHoldOf(tab);
+        return hold ? { siteHold: publicSiteHold(hold) } : {};
+      })(),
       downloads: tab.downloads.map(
         ({ id, fileName, path, sizeBytes, url, completedAt, digest }) => ({
           resource: {
@@ -2932,12 +3054,23 @@ const make = Effect.gen(function* () {
     url: string,
     readiness: "load" | "domContentLoaded" | "none",
     timeout: number,
+    deadlineMs = Infinity,
   ) => {
     tab.pendingInitialRequestUrl = null;
     const startedAt = performance.now();
     const remaining = () => Math.max(1, timeout - (performance.now() - startedAt));
     await leaveBusyPage(tab, tab.cdp, timeout / 2);
-    const navigation = tab.page.goto(url, { timeout: remaining(), waitUntil: "commit" });
+    // The last check before the request leaves, after any check still being classified.
+    await classifiedBy(tab, Math.min(startedAt + timeout, deadlineMs), url);
+    const held = siteHoldOf(tab, url);
+    if (held) throw siteHoldError(held);
+    // The navigation's own timeout never outlasts the request's, and a spent budget sends nothing.
+    const budget = Math.min(
+      timeout - (performance.now() - startedAt),
+      deadlineMs - performance.now(),
+    );
+    if (budget <= 0) throw new DOMException("This browser request expired.", "TimeoutError");
+    const navigation = tab.page.goto(url, { timeout: budget, waitUntil: "commit" });
     if (readiness === "none") {
       tab.control.track(navigation);
       return;
@@ -3317,6 +3450,266 @@ const make = Effect.gen(function* () {
     }
   };
 
+  const isolatedScopes = new WeakMap<object, string>();
+  /** One scope per cookie jar: a persistent profile per runtime, or one isolated context. */
+  const siteHoldScope = (tab: ServerTab) => {
+    if (!tab.isolatedContext) return `profile:${tab.profileId ?? DEFAULT_BROWSER_PROFILE_ID}`;
+    const context = tab.page.context();
+    let scope = isolatedScopes.get(context);
+    if (scope === undefined) {
+      scope = `isolated:${tab.threadId}:${tab.tabId}`;
+      isolatedScopes.set(context, scope);
+    }
+    return scope;
+  };
+  // A profile's hold covers its desktop and server tabs; a thread's hold also covers its
+  // other tabs, so a fresh incognito tab or a popup is no way around it.
+  const siteHoldOf = (tab: ServerTab, url = tab.page.url()) =>
+    siteHolds.get(siteHoldScope(tab), siteOf(url)) ??
+    siteHolds.forThread(tab.threadId, siteOf(url));
+  const publicSiteHold = ({ site, vendor, kind, url, since }: HeldSite) => ({
+    site,
+    vendor,
+    kind,
+    url,
+    since,
+  });
+
+  /**
+   * Waits for the tab's pending classification within the request's time. A check still being
+   * read when the time runs out is no success: the request stops and the caller can try again.
+   */
+  /**
+   * `beforeSend` refuses an expired request; after an action has run, the wait only reports a
+   * hold and never turns the finished action into a failure.
+   */
+  const classifiedBy = async (
+    tab: ServerTab,
+    deadlineMs: number,
+    url = tab.page.url(),
+    beforeSend = true,
+  ) => {
+    // A hold that exists already is the answer, whatever is still being read.
+    for (;;) {
+      const held = siteHoldOf(tab, url);
+      if (held) throw siteHoldError(held);
+      const left = deadlineMs - performance.now();
+      if (!siteHolds.classifyingOn(tab.tabId)) {
+        // Nothing to wait for still leaves nothing to send once the request has expired.
+        if (left <= 0 && beforeSend)
+          throw new DOMException("This browser request expired.", "TimeoutError");
+        return;
+      }
+      if (left <= 0 && !beforeSend) return;
+      if (left <= 0)
+        throw new BrowserControlInterrupted({
+          message:
+            "The site's answer is still being checked for an anti-bot check. Try again shortly.",
+        });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        siteHolds.changed(),
+        new Promise((resolve) => {
+          // Timers take at most about 24.8 days; an unbounded wait ends on a change instead.
+          timer = setTimeout(resolve, Math.min(left, 2 ** 31 - 1));
+        }),
+      ]).finally(() => clearTimeout(timer));
+    }
+  };
+
+  const suspectCheck = (tab: ServerTab, url: string) => {
+    const site = siteOf(url);
+    return site === undefined
+      ? { at: 0, done: () => {} }
+      : siteHolds.receive(siteHoldScope(tab), tab.threadId, site, tab.tabId);
+  };
+
+  const raiseSiteHold = async (
+    tab: ServerTab,
+    verdict: NonNullable<ReturnType<typeof classifyAntiBotPage>>,
+    url: string,
+    receivedAt?: number,
+  ) => {
+    const site = siteOf(url);
+    if (site === undefined || tab.closing) return;
+    // A check met again, by any tab or answer the hold covers, moves the bar for release,
+    // even when it came before a person's clear and raises nothing new.
+    const metAt = Date.now();
+    for (const covering of siteHolds.covering(siteHoldScope(tab), tab.threadId, site))
+      covering.metAt = Math.max(covering.metAt, metAt);
+    if (
+      receivedAt !== undefined &&
+      siteHolds.dismissed(siteHoldScope(tab), tab.threadId, site, receivedAt)
+    )
+      return;
+    const hold: HeldSite = {
+      site,
+      ...verdict,
+      url: ServerBrowserPage.withoutDataPayload(url).slice(0, 2048),
+      since: new Date().toISOString(),
+      threadId: tab.threadId,
+      tabId: tab.tabId,
+      metAt,
+    };
+    if (!siteHolds.create(siteHoldScope(tab), hold)) return;
+    runFork(Effect.logInfo("Site hold raised", { site, vendor: hold.vendor, kind: hold.kind }));
+    // Page watches run caller code on the page, so they stop with the agent.
+    for (const covered of tabs.values())
+      if (covered === tab || siteHoldOf(covered) === hold) stopTabWatches(covered, "revoked");
+    const target = { threadId: tab.threadId, tabId: tab.tabId };
+    await runPromise(
+      manager.setSiteHold({ ...target, siteHold: publicSiteHold(hold) }).pipe(Effect.ignore),
+    );
+    await runPromise(manager.requestReveal({ ...target, force: true }).pipe(Effect.ignore));
+  };
+
+  /**
+   * Refuses before anything reaches a held site: every authority check the action makes
+   * right before it sends something also checks the hold. After the action, reports the hold it met.
+   */
+  const guardSiteHold = async <A>(
+    tab: ServerTab,
+    request: PreviewAutomationRequest,
+    deadlineMs: number,
+    authorities: readonly [() => Promise<void>, () => Promise<void>],
+    run: (authorize: () => Promise<void>, resourceAuthorization: () => Promise<void>) => Promise<A>,
+  ): Promise<A> => {
+    if (!SITE_HOLD_OPERATIONS.has(request.operation)) return run(...authorities);
+    const leavesPage = request.operation === "navigate" || request.operation === "readPage";
+    let target = tab.page.url();
+    try {
+      if (request.operation === "navigate")
+        target = resolveNavigationUrl(request.input as PreviewAutomationNavigateInput);
+      else if (request.operation === "readPage")
+        target = normalizePreviewUrl(decodeReadPage(request.input).url);
+    } catch {
+      // The operation reports its own input error.
+    }
+    // A check still being classified must not let the next action through. A page the
+    // action leaves is not where it acts, so navigations check their target.
+    // The request's deadline bounds the action; a watch's later reads, which reuse these
+    // checks after the request answered, are bounded by the fence alone.
+    let answered = false;
+    const refuseHeld = async () => {
+      await classifiedBy(
+        tab,
+        answered ? Number.POSITIVE_INFINITY : deadlineMs,
+        leavesPage ? target : tab.page.url(),
+      );
+      const hold = siteHoldOf(tab, leavesPage ? target : tab.page.url());
+      if (hold) throw siteHoldError(hold);
+    };
+    await refuseHeld();
+    const guarded = (authority: () => Promise<void>) => async () => {
+      await authority();
+      await refuseHeld();
+    };
+    const met = async () => {
+      await classifiedBy(tab, deadlineMs, tab.page.url(), false).catch((cause: unknown) => {
+        if (request.operation === "watchStart" && siteHoldOf(tab)) stopTabWatches(tab, "revoked");
+        throw cause;
+      });
+      const hold = siteHoldOf(tab);
+      if (hold) {
+        // A watch that finished installing after the hold began stops too.
+        if (request.operation === "watchStart") stopTabWatches(tab, "revoked");
+        throw siteHoldError(hold);
+      }
+    };
+    let result: A;
+    try {
+      result = await run(guarded(authorities[0]), guarded(authorities[1]));
+    } catch (cause) {
+      await met();
+      throw cause;
+    } finally {
+      answered = true;
+    }
+    await met();
+    return result;
+  };
+
+  /**
+   * A human release clears the tab's hold only on a verified clean page; Clear hold
+   * clears it either way. The hold stays set until classification ends.
+   */
+  const settleSiteHold = async (
+    tab: ServerTab,
+    how: "release" | "clear",
+    authorize: () => Promise<void> = async () => {},
+  ) => {
+    for (const [scope, hold] of siteHolds.heldBy(tab.tabId)) {
+      if (how === "clear") {
+        // The person's override needs nothing from the page, which may be stuck in a dialog.
+        await authorize();
+        if (!siteHolds.clear(scope, hold, true)) continue;
+        runFork(Effect.logInfo("Site hold cleared", { site: hold.site, verified: false }));
+        await showRemainingHold(tab, hold);
+        continue;
+      }
+      // The person's own tab gets a moment to finish classifying; any response still being
+      // classified then keeps the hold, so a stalled body cannot hold the release up.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        tab.siteHoldCheck,
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, RELEASE_CLASSIFY_WAIT_MS);
+        }),
+      ]).finally(() => clearTimeout(timer));
+      // Only a document on the held site that loaded after the check, with a status vendors
+      // never give a check (2xx, 3xx), is verified clean; a navigation or control change
+      // during the read makes the result stale.
+      const generation = [tab.navigationGeneration, tab.control.generation] as const;
+      // The page itself says which document is on screen: its navigation entry keeps the
+      // status and start of the response that committed, through a 204 or a history change.
+      const shown = (await tab.page
+        .evaluate(
+          `(() => {
+            const entry = performance.getEntriesByType("navigation")[0];
+            return entry && { status: entry.responseStatus, startedAt: performance.timeOrigin + entry.startTime };
+          })()`,
+        )
+        .catch(() => undefined)) as
+        | { readonly status: number; readonly startedAt: number }
+        | undefined;
+      // An unreadable page, a failed status or a document older than the check is not proof.
+      const verified =
+        shown !== undefined &&
+        shown.status >= 200 &&
+        shown.status < 400 &&
+        shown.startedAt >= Date.parse(hold.since) &&
+        // A check met again on a later document or by a same-site answer keeps the hold, and
+        // so does a response another covered tab is still classifying.
+        shown.startedAt > hold.metAt &&
+        !siteHolds.classifyingUnder(scope, hold) &&
+        siteOf(tab.page.url()) === hold.site &&
+        generation[0] === tab.navigationGeneration &&
+        generation[1] === tab.control.generation;
+      // The person's access is checked again right before the hold goes; a response that
+      // began classifying during the read keeps the hold.
+      if (!verified) continue;
+      await authorize();
+      if (siteHolds.classifyingUnder(scope, hold) || shown.startedAt <= hold.metAt) continue;
+      if (!siteHolds.clear(scope, hold)) continue;
+      runFork(Effect.logInfo("Site hold cleared", { site: hold.site, verified }));
+      await showRemainingHold(tab, hold);
+    }
+  };
+
+  /** Another site this tab still holds keeps its banner. */
+  const showRemainingHold = async (tab: ServerTab, hold: HeldSite) => {
+    const [remaining] = siteHolds.heldBy(tab.tabId);
+    await runPromise(
+      manager
+        .setSiteHold({
+          threadId: ThreadId.make(hold.threadId),
+          tabId: hold.tabId,
+          siteHold: remaining ? publicSiteHold(remaining[1]) : undefined,
+        })
+        .pipe(Effect.ignore),
+    );
+  };
+
   const runOperation = async (
     request: PreviewAutomationRequest,
     authorize: () => Promise<void>,
@@ -3396,6 +3789,15 @@ const make = Effect.gen(function* () {
             : undefined;
         const navigationTimeout = Math.min(request.timeoutMs, NAVIGATION_TIMEOUT_MS);
         const profileId = existing ? undefined : resolveOpenProfile(open.profileId);
+        if (url) {
+          const held = existing
+            ? siteHoldOf(existing, url)
+            : profileId === undefined || profileId === INCOGNITO_BROWSER_PROFILE_ID
+              ? siteHolds.forThread(request.threadId, siteOf(url))
+              : (siteHolds.get(`profile:${profileId}`, siteOf(url)) ??
+                siteHolds.forThread(request.threadId, siteOf(url)));
+          if (held) throw siteHoldError(held);
+        }
         if (!existing) await authorize();
         const tab =
           existing ??
@@ -3429,7 +3831,12 @@ const make = Effect.gen(function* () {
                 reason: "dialogPending",
               });
             if (existing) {
-              if (url) await navigate(tab, url, "load", navigationTimeout);
+              if (url) {
+                // A hold may have been raised while this open waited for the tab.
+                const held = siteHoldOf(tab, url);
+                if (held) throw siteHoldError(held);
+                await navigate(tab, url, "load", navigationTimeout, deadlineMs);
+              }
             } else {
               // A failed open returns no tabId; a leftover hidden tab would block later reuse.
               await Promise.resolve(tab.initialNavigation)
@@ -3476,6 +3883,11 @@ const make = Effect.gen(function* () {
                 ).then(constVoid);
             }
             await shown;
+            // A check still being classified is waited for only while the request has time.
+            // The open has already happened, so expiry here reports only a hold, never a timeout.
+            await classifiedBy(tab, deadlineMs - 100, tab.page.url(), false);
+            const held = siteHoldOf(tab);
+            if (held) throw siteHoldError(held);
             return statusWithTitle(tab, request.agentSessionId);
           },
           deadlineMs,
@@ -3542,6 +3954,9 @@ const make = Effect.gen(function* () {
           message: "A human controls this tab.",
           reason: "humanControl",
         });
+      // Closing ends the tab's hold, so only the user may close a tab that holds its site.
+      const [held] = siteHolds.heldBy(tab.tabId);
+      if (held) throw siteHoldError(held[1]);
       stopTabWatches(tab, "closed");
       await runPromise(manager.close({ threadId: tab.threadId, tabId: tab.tabId }));
       dropTab(tab, false);
@@ -3585,7 +4000,14 @@ const make = Effect.gen(function* () {
         tab.agentOperating = !READ_OPERATIONS.has(request.operation);
         updateFileChooserInterception(tab);
         try {
-          return await runTabOperation(tab, request, authorize, resourceAuthorization, deadlineMs);
+          return await guardSiteHold(
+            tab,
+            request,
+            deadlineMs,
+            [authorize, resourceAuthorization],
+            (guardedAuthorize, guardedResource) =>
+              runTabOperation(tab, request, guardedAuthorize, guardedResource, deadlineMs),
+          );
         } finally {
           tab.agentOperating = false;
           updateFileChooserInterception(tab);
@@ -3637,6 +4059,8 @@ const make = Effect.gen(function* () {
             tag: "PreviewAutomationExecutionError",
             message: "Select an existing tab in the requested persistent browser profile.",
           });
+        const held = siteHoldOf(tab, normalizePreviewUrl(read.url));
+        if (held) throw siteHoldError(held);
         const response = await tab.page.goto(normalizePreviewUrl(read.url), {
           waitUntil: "domcontentloaded",
           timeout: request.timeoutMs,
@@ -3676,6 +4100,7 @@ const make = Effect.gen(function* () {
             resolveNavigationUrl(navigateInput),
             navigateInput.readiness ?? "load",
             navigateInput.timeoutMs ?? request.timeoutMs,
+            deadlineMs,
           ),
         );
         return statusWithTitle(tab, request.agentSessionId);
@@ -4041,6 +4466,10 @@ const make = Effect.gen(function* () {
       // A closed session is a closed page; a detached desktop page is not.
       if (event.type === "closed" && !tab && pendingTabs.has(key)) closedPendingTabs.add(key);
       if (event.type === "closed") tabAuthorizations.delete(key);
+      // A detached tab's session closing ends its holds too; nothing else could clear them.
+      if (event.type === "closed" && !tab)
+        for (const [scope, hold] of siteHolds.heldBy(event.tabId))
+          if (hold.threadId === event.threadId) siteHolds.clear(scope, hold);
       if (!tab) return;
       if (event.type === "closed") {
         closedSessions.add(key);
@@ -4704,6 +5133,8 @@ const make = Effect.gen(function* () {
             );
             broadcastControl(tab);
             await releasing;
+            // The release answers once its hold is verified or kept.
+            await settleSiteHold(tab, "release").catch(constVoid);
           } else if (
             message.type === "dialog" &&
             tab.control.controller === viewer.id &&

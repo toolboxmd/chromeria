@@ -129,6 +129,7 @@ vi.mock("react-native-safe-area-context", () => ({
   useSafeAreaInsets: () => ({ bottom: 0 }),
 }));
 vi.mock("../../components/ui/Menu", () => ({ Menu: () => null }));
+vi.mock("./SiteHoldBanner", () => ({ SiteHoldBanner: () => null }));
 // The select menu sheet pulls uniwind's web components, which do not load here.
 vi.mock("../../components/ui/Sheet", () => ({ Sheet: () => null }));
 vi.mock("../../components/ui/ListChoiceRow", () => ({ ListChoiceRow: () => null }));
