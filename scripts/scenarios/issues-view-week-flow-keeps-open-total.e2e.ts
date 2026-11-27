@@ -1,6 +1,6 @@
 import { expect } from "e2e";
 
-import { answerIssueListPages } from "./issue-list-pages.ts";
+import { answerIssueListPages, releaseIssueReads } from "./issue-list-pages.ts";
 import { test, WEB } from "./t3.ts";
 
 test(
@@ -10,12 +10,24 @@ test(
     await t3.project("demo");
     await answerIssueListPages(
       browser,
-      // Every open Issue, then the one a search matches, which GitHub takes a second to answer;
-      // a later read repeats that.
-      { first: [{ issues: [3, 2, 1] }, { issues: [2], matches: 1, delayMs: 1000 }] },
-      // What the first counts read answers, what a second would, and a third that fails.
+      // Every open Issue; the same again for Refresh, held back; then the one a search matches,
+      // held back too, which later reads repeat.
       {
-        counts: [{ open: 3, filed: 4, closed: 2 }, { open: 30, filed: 40, closed: 20 }, "failure"],
+        first: [
+          { issues: [3, 2, 1] },
+          { issues: [3, 2, 1], held: true },
+          { issues: [2], matches: 1, held: true },
+          { issues: [2], matches: 1 },
+        ],
+      },
+      // The first counts read, the one Refresh starts and the scenario holds back, and a third
+      // that fails.
+      {
+        counts: [
+          { open: 3, filed: 4, closed: 2 },
+          { open: 30, filed: 40, closed: 20, held: true },
+          "failure",
+        ],
       },
     );
     const says = (text: string) => screen.getByText(text, { exact: true });
@@ -28,6 +40,15 @@ test(
       await expect(says("3 open Issues")).toBeVisible();
       await app.screenshot("week-flow");
 
+      // While Refresh reads the rows and the counts again, the numbers stay, marked not final.
+      await refresh.tap();
+      await expect(says("Last 7 days: ~4 filed, ~2 closed")).toBeVisible();
+      await expect(says("~3 open Issues")).toBeVisible();
+      await app.screenshot("refreshing");
+      await releaseIssueReads(browser);
+      await expect(says("Last 7 days: 40 filed, 20 closed")).toBeVisible();
+      await expect(says("3 open Issues")).toBeVisible();
+
       // A minute on, the counts are stale enough that mounting their read again would repeat it.
       await browser.evaluate(() => {
         const now = Date.now;
@@ -35,17 +56,14 @@ test(
         Date.now = () => now() + 60_000;
         return null;
       });
-      // A search narrows the rows to a part of the open total, and starts no new counts read:
-      // a second one would answer 40 filed.
+      // A search narrows the rows to a part of the open total, and starts no counts read: one
+      // would fail and read as unknown.
       await screen.getByRole("searchbox", "Search Issues", { exact: true }).fill("two");
-      await expect(says("1 of 3 open Issues")).toBeVisible();
-      await expect(says("Last 7 days: 4 filed, 2 closed")).toBeVisible();
-      await app.screenshot("searched");
-
-      // Refresh is what reads the counts again.
-      await refresh.tap();
-      await expect(says("Last 7 days: 40 filed, 20 closed")).toBeVisible();
+      await says("Open Issue 3").waitFor({ state: "hidden" });
+      await releaseIssueReads(browser);
       await expect(says("1 of 30 open Issues")).toBeVisible();
+      await expect(says("Last 7 days: 40 filed, 20 closed")).toBeVisible();
+      await app.screenshot("searched");
 
       // A counts read that fails says so; the rows stay, and no stale total is claimed.
       await refresh.tap();

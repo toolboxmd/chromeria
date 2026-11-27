@@ -64,7 +64,6 @@ import {
   collectIssueFacets,
   environmentIdsWithCapability,
   issueCountCertainty,
-  issueCountTargets,
   issueKey,
   issueNumbersLine,
   matchesIssueFilters,
@@ -254,15 +253,7 @@ export function IssuesView() {
 
   // Asked of the repositories every listing holds, whatever the rows are narrowed to: sorting,
   // searching, filtering and State leave this read alone.
-  const counts = useIssueCounts(
-    data === null
-      ? null
-      : issueCountTargets({
-          listings: environmentIds,
-          answered: list.answered,
-          repositories: data.repositories,
-        }),
-  );
+  const counts = useIssueCounts(list.listings);
 
   const refresh = () => {
     setNow(Date.now());
@@ -409,16 +400,23 @@ export function IssuesView() {
     baseInput.labels !== undefined ||
     baseInput.milestone !== undefined ||
     baseInput.repositories !== undefined;
+  // A read in flight over numbers already shown leaves them in sight, marked as not final.
+  const counted = (count: number) => (counts.totals?.exact === false ? `~${count}` : String(count));
   const line = issueNumbersLine({
     state: preferences.state,
     searched,
     shown: { count: visible.length, certainty: shownCertainty },
     loadedOpen: openCount,
-    rowsComplete,
-    countedOpen: counts.totals?.open ?? null,
+    rows: !rowsComplete ? "incomplete" : list.isPending ? "refreshing" : "complete",
+    counted:
+      counts.totals === null
+        ? null
+        : { count: counts.totals.open, certainty: counts.totals.exact ? "final" : "unsettled" },
   });
-  const openIssues = (count: number) =>
-    gt("{count, plural, one {{count} open Issue} other {{count} open Issues}}", { count });
+  const openIssues = ({ count, certainty }: MarkedIssueCount) =>
+    certainty === "final"
+      ? gt("{count, plural, one {{count} open Issue} other {{count} open Issues}}", { count })
+      : gt("{count} open Issues", { count: marked(count, certainty) });
   const numbers = (
     <p className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-2 text-xs text-muted-foreground">
       <span>
@@ -429,11 +427,7 @@ export function IssuesView() {
               total: marked(line.total.count, line.total.certainty),
             })
           : line.kind === "open"
-            ? line.count.certainty === "final"
-              ? openIssues(line.count.count)
-              : gt("{count} open Issues", {
-                  count: marked(line.count.count, line.count.certainty),
-                })
+            ? openIssues(line.count)
             : line.count.certainty === "final"
               ? gt("{count, plural, one {{count} Issue} other {{count} Issues}}", {
                   count: line.count.count,
@@ -442,14 +436,19 @@ export function IssuesView() {
                 ? gt("{count}+ Issues", { count: line.count.count })
                 : gt("~{count} Issues", { count: line.count.count })}
       </span>
-      {line.kind === "listed" && line.open !== null ? <span>{openIssues(line.open)}</span> : null}
+      {line.kind !== "listed" ? null : line.open !== null ? (
+        <span>{openIssues(line.open)}</span>
+      ) : counts.totals !== null ? (
+        // The rows hold more open Issues than the counts read found: it is out of date.
+        <span>{gt("Open Issues: unknown")}</span>
+      ) : null}
       {/* The week's flow, not a change in the open total: a reopened Issue grows the pile
           without being filed. Unknown is said, never shown as zero. */}
       <span>
         {counts.totals !== null
           ? gt("Last 7 days: {filed} filed, {closed} closed", {
-              filed: counts.totals.filed,
-              closed: counts.totals.closed,
+              filed: counted(counts.totals.filed),
+              closed: counted(counts.totals.closed),
             })
           : line.kind === "listed" && line.open === null
             ? gt("Open Issues and last 7 days: unknown")

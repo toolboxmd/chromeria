@@ -15,6 +15,8 @@ import {
   issueCountsTotal,
   issueCountTargets,
   issueKey,
+  issueListingOf,
+  issueListingScopes,
   issueListPages,
   issueNumbersLine,
   matchesIssueFilters,
@@ -216,111 +218,179 @@ describe("mergeIssueLists", () => {
 });
 
 describe("the line of numbers", () => {
-  const repo = (repository: string) => ({
+  const listed = (repository: string) => ({
     host: "github.com",
     repository,
     projectId: "project-1" as ProjectId,
     projectTitle: repository,
-  });
-  const repositoryOn = (environmentId: EnvironmentId, repository: string) => ({
-    ...repo(repository),
-    environmentId,
   });
   const counted = (open: number, filed: number, closed: number): GitHubIssueCountsResult => ({
     open,
     filed,
     closed,
   });
-
-  it("asks each server to count only the repositories the merged list kept for it", () => {
-    // Both servers list Shared; the merged list kept it for the first, as `mergeIssueLists` does.
-    const merged = mergeIssueLists([
-      [ENV_A, result([], { repositories: [repo("acme/Shared"), repo("acme/only-a")] })],
-      [ENV_B, result([], { repositories: [repo("acme/shared"), repo("acme/only-b")] })],
-    ])!;
-    expect(
-      issueCountTargets({
-        listings: [ENV_A, ENV_B],
-        answered: [ENV_B, ENV_A],
-        repositories: merged.repositories,
-      }),
-    ).toEqual([
-      {
-        environmentId: ENV_A,
-        input: { repositories: ["github.com acme/only-a", "github.com acme/shared"] },
-      },
-      { environmentId: ENV_B, input: { repositories: ["github.com acme/only-b"] } },
-    ]);
-    // A server whose every repository another kept is asked for nothing.
-    expect(
-      issueCountTargets({
-        listings: [ENV_A, ENV_B],
-        answered: [ENV_A, ENV_B],
-        repositories: [repositoryOn(ENV_A, "acme/shared")],
-      }),
-    ).toEqual([{ environmentId: ENV_A, input: { repositories: ["github.com acme/shared"] } }]);
-    // Until every listing server has answered, the repositories to count are not known.
-    expect(
-      issueCountTargets({
-        listings: [ENV_A, ENV_B],
-        answered: [ENV_B],
-        repositories: [repositoryOn(ENV_B, "acme/shared")],
-      }),
-    ).toBeNull();
+  const SHARED = "github.com acme/shared";
+  const ONLY_A = "github.com acme/only-a";
+  const ONLY_B = "github.com acme/only-b";
+  /** Both servers list Shared; each lists one repository more. */
+  const answered = (environmentId: EnvironmentId, repositories: ReadonlyArray<string>) =>
+    ({ environmentId, state: "answered", repositories }) as const;
+  const scope = (
+    environmentId: EnvironmentId,
+    repositories: ReadonlyArray<string> | null,
+    answering = true,
+  ) => ({ environmentId, repositories, answering });
+  const BOTH = [scope(ENV_A, [ONLY_A, SHARED]), scope(ENV_B, [ONLY_B, SHARED])];
+  const target = (environmentId: EnvironmentId, ...repositories: ReadonlyArray<string>) => ({
+    environmentId,
+    input: { repositories },
   });
 
-  const targets = [
-    { environmentId: ENV_A, input: { repositories: ["github.com acme/only-a"] } },
-    { environmentId: ENV_B, input: { repositories: ["github.com acme/only-b"] } },
-  ];
   it.each([
     [
-      "sums every server's answer",
-      {
-        targets,
-        answers: [
-          [ENV_A, counted(100, 9, 4)],
-          [ENV_B, counted(13, 3, 5)],
-        ],
-        failed: false,
-      },
-      counted(113, 12, 9),
+      "a connected server that answered",
+      { connected: true, answer: { repositories: [listed("acme/Web"), listed("acme/api")] } },
+      { state: "answered", repositories: ["github.com acme/api", "github.com acme/web"] },
+    ],
+    ["a connected server yet to answer", { connected: true }, { state: "pending" }],
+    ["a failed read with no answer before it", { connected: true, failed: true }, {}],
+    [
+      // Its reads wait on the connection with their last answer, so the listing itself still
+      // looks answered.
+      "a server that dropped its connection after answering",
+      { connected: false, answer: { repositories: [listed("acme/api")] } },
+      { repositories: ["github.com acme/api"] },
     ],
     [
-      "is unknown while a listing server has not answered",
-      { targets: null, answers: [[ENV_A, counted(100, 9, 4)]], failed: false },
+      "a failed reread that left its answer behind",
+      { connected: true, failed: true, answer: { repositories: [listed("acme/api")] } },
+      { repositories: ["github.com acme/api"] },
+    ],
+  ] as const)("reads the listing of %s", (_name, input, expected) => {
+    expect(issueListingOf({ environmentId: ENV_A, answer: null, failed: false, ...input })).toEqual(
+      { environmentId: ENV_A, state: "unreachable", repositories: null, ...expected },
+    );
+  });
+
+  it.each([
+    [
+      "each answering server's own listing",
+      [answered(ENV_A, [ONLY_A, SHARED]), answered(ENV_B, [ONLY_B, SHARED])],
+      [],
+      BOTH,
+    ],
+    [
+      // A new sort, search, filter or State reads the rows again, and the slower server's
+      // listing says nothing for a while.
+      "the scope held for a server whose listing is being read again",
+      [
+        answered(ENV_A, [ONLY_A, SHARED]),
+        { environmentId: ENV_B, state: "pending", repositories: null },
+      ],
+      BOTH,
+      BOTH,
+    ],
+    [
+      "nothing for a server that has never answered",
+      [
+        answered(ENV_A, [ONLY_A, SHARED]),
+        { environmentId: ENV_B, state: "pending", repositories: null },
+      ],
+      [],
+      [scope(ENV_A, [ONLY_A, SHARED]), scope(ENV_B, null, false)],
+    ],
+    [
+      // The listing of a new row query has no answer of its own to keep.
+      "the repositories an unreachable server last listed, and that it cannot be asked",
+      [
+        answered(ENV_A, [ONLY_A, SHARED]),
+        { environmentId: ENV_B, state: "unreachable", repositories: null },
+      ],
+      BOTH,
+      [scope(ENV_A, [ONLY_A, SHARED]), scope(ENV_B, [ONLY_B, SHARED], false)],
+    ],
+    [
+      "a new answer in place of the scope held, and no server that stopped listing",
+      [answered(ENV_B, [SHARED])],
+      BOTH,
+      [scope(ENV_B, [SHARED])],
+    ],
+  ] as const)("a server's scope is %s", (_name, listings, held, expected) => {
+    const scopes = issueListingScopes(listings, held);
+    expect(scopes).toEqual(expected);
+    // Worked out again from itself it does not move, so holding it settles.
+    expect(issueListingScopes(listings, scopes)).toEqual(scopes);
+  });
+
+  it.each([
+    [
+      "each repository of the first answering server that lists it",
+      BOTH,
+      [target(ENV_A, ONLY_A, SHARED), target(ENV_B, ONLY_B)],
+    ],
+    [
+      "nothing of a server whose every repository another counts",
+      [scope(ENV_A, [SHARED]), scope(ENV_B, [SHARED])],
+      [target(ENV_A, SHARED)],
+    ],
+    [
+      // An offline laptop that lists what an always-on machine lists holds nothing back.
+      "the answering server alone when an unreachable one only duplicates it",
+      [scope(ENV_A, [SHARED], false), scope(ENV_B, [ONLY_B, SHARED])],
+      [target(ENV_B, ONLY_B, SHARED)],
+    ],
+    [
+      "nothing at all while an unreachable server lists a repository no other does",
+      [scope(ENV_A, [ONLY_A, SHARED]), scope(ENV_B, [ONLY_B, SHARED], false)],
       null,
     ],
     [
+      "nothing at all while a server's repositories are unknown",
+      [scope(ENV_A, [ONLY_A, SHARED]), scope(ENV_B, null, false)],
+      null,
+    ],
+  ] as const)("the counts ask %s", (_name, scopes, expected) => {
+    expect(issueCountTargets(scopes)).toEqual(expected);
+    expect(issueCountTargets(scopes.toReversed())).toEqual(expected);
+  });
+
+  const targets = [target(ENV_A, ONLY_A), target(ENV_B, ONLY_B)];
+  const answers = [
+    [ENV_A, counted(100, 9, 4)],
+    [ENV_B, counted(13, 3, 5)],
+  ] as const;
+  const read = { targets, answers, failed: false, reading: false };
+  it.each([
+    ["sums every server's answer", read, { ...counted(113, 12, 9), exact: true }],
+    [
+      // Refresh, or a stale view opened again: the answers shown are being replaced.
+      "is not exact while a read is in flight over answers already in hand",
+      { ...read, reading: true },
+      { ...counted(113, 12, 9), exact: false },
+    ],
+    ["is unknown while the reads cannot cover the view", { ...read, targets: null }, null],
+    [
       "is unknown while a server's counts have no answer, not the sum of the others",
-      { targets, answers: [[ENV_A, counted(100, 9, 4)]], failed: false },
+      { ...read, answers: answers.slice(0, 1), reading: true },
       null,
     ],
     [
       // An older server without the query, a deadline passed, or a refresh that failed after an
       // answer: the answers a failed read leaves behind are not shown as current.
       "is unknown after a failed counts read, whatever answers remain",
-      {
-        targets,
-        answers: [
-          [ENV_A, counted(100, 9, 4)],
-          [ENV_B, counted(13, 3, 5)],
-        ],
-        failed: true,
-      },
+      { ...read, failed: true },
       null,
     ],
     [
       "is zero, not unknown, when every counted repository has none",
       {
-        targets,
+        ...read,
         answers: [
           [ENV_A, counted(0, 0, 0)],
           [ENV_B, counted(0, 0, 0)],
         ],
-        failed: false,
       },
-      counted(0, 0, 0),
+      { ...counted(0, 0, 0), exact: true },
     ],
   ] as const)("the counts total %s", (_name, input, expected) => {
     expect(issueCountsTotal(input)).toEqual(expected);
@@ -328,20 +398,38 @@ describe("the line of numbers", () => {
 
   const final = (count: number) => ({ count, certainty: "final" }) as const;
   const floor = (count: number) => ({ count, certainty: "floor" }) as const;
+  const unsettled = (count: number) => ({ count, certainty: "unsettled" }) as const;
   const line = (overrides: Partial<Parameters<typeof issueNumbersLine>[0]>) =>
     issueNumbersLine({
       state: "open",
       searched: false,
       shown: final(113),
       loadedOpen: 113,
-      rowsComplete: true,
-      countedOpen: 113,
+      rows: "complete",
+      counted: final(113),
       ...overrides,
     });
   it.each([
     [
       "the whole open list counts its own rows, even past a counts read a moment older",
-      line({ countedOpen: 112 }),
+      line({ counted: final(112) }),
+      { kind: "open", count: final(113) },
+    ],
+    [
+      // Refresh reads the rows and the counts again together.
+      "the whole open list being read again is not final",
+      line({ rows: "refreshing", counted: unsettled(113) }),
+      { kind: "open", count: unsettled(113) },
+    ],
+    [
+      // An unreachable server keeps its pages waiting; the counts of a server that answers stand.
+      "rows being read again give way to an exact counted total",
+      line({ rows: "refreshing" }),
+      { kind: "open", count: final(113) },
+    ],
+    [
+      "rows short of their end that reach the counted total read as that total",
+      line({ shown: floor(113), rows: "incomplete" }),
       { kind: "open", count: final(113) },
     ],
     [
@@ -356,33 +444,54 @@ describe("the line of numbers", () => {
       { kind: "subset", shown: final(5), total: final(113) },
     ],
     [
+      "a counted total being read again is not final",
+      line({ searched: true, shown: final(5), loadedOpen: 5, counted: unsettled(113) }),
+      { kind: "subset", shown: final(5), total: unsettled(113) },
+    ],
+    [
       "a search that matches every open Issue still reads against the total",
       line({ searched: true }),
       { kind: "subset", shown: final(113), total: final(113) },
     ],
     [
+      // Two Issues were opened since the counts read: never "114 of 113".
+      "a search matching more open Issues than were counted claims no total",
+      line({ searched: true, shown: final(114), loadedOpen: 114 }),
+      { kind: "listed", count: final(114), open: null },
+    ],
+    [
       "a search with the total unknown claims no total",
-      line({ searched: true, shown: final(5), loadedOpen: 5, countedOpen: null }),
+      line({ searched: true, shown: final(5), loadedOpen: 5, counted: null }),
       { kind: "listed", count: final(5), open: null },
     ],
     [
       "rows still arriving read against the counted total",
-      line({ shown: floor(100), loadedOpen: 100, rowsComplete: false, countedOpen: 350 }),
+      line({ shown: floor(100), loadedOpen: 100, rows: "incomplete", counted: final(350) }),
       { kind: "subset", shown: floor(100), total: final(350) },
     ],
     [
+      "rows still arriving past the counted total are a floor of their own",
+      line({ shown: floor(114), loadedOpen: 114, rows: "incomplete" }),
+      { kind: "open", count: floor(114) },
+    ],
+    [
       "rows still arriving are a floor when the total is unknown",
-      line({ shown: floor(100), loadedOpen: 100, rowsComplete: false, countedOpen: null }),
+      line({ shown: floor(100), loadedOpen: 100, rows: "incomplete", counted: null }),
       { kind: "open", count: floor(100) },
     ],
     [
       "another State lists its own rows and keeps the open total apart",
       line({ state: "closed", shown: final(42), loadedOpen: 0 }),
-      { kind: "listed", count: final(42), open: 113 },
+      { kind: "listed", count: final(42), open: final(113) },
+    ],
+    [
+      "another State holding more open Issues than were counted shows no total",
+      line({ state: "all", shown: final(700), loadedOpen: 114 }),
+      { kind: "listed", count: final(700), open: null },
     ],
     [
       "another State with the total unknown shows none",
-      line({ state: "all", shown: final(42), loadedOpen: 30, countedOpen: null }),
+      line({ state: "all", shown: final(42), loadedOpen: 30, counted: null }),
       { kind: "listed", count: final(42), open: null },
     ],
   ] as const)("%s", (_name, actual, expected) => {

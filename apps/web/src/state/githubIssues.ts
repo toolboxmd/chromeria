@@ -17,9 +17,14 @@ import { useEffect, useRef, useState } from "react";
 import { connectionAtomRuntime } from "../connection/runtime";
 import {
   issueCountsTotal,
+  issueCountTargets,
+  issueListingOf,
+  issueListingScopes,
   issueListPages,
   mergeIssueLists,
   type IssueCountsTarget,
+  type IssueListing,
+  type IssueListingScope,
   type IssueListTarget,
 } from "../components/issues/issueList.logic";
 import {
@@ -105,6 +110,23 @@ const issueListPagesAtom = Atom.family((key: string) =>
   ).pipe(Atom.withLabel(`web-issues:list-pages:${key}`)),
 );
 
+/** What each listing says of its server's repositories, and whether that server answers. */
+const issueListingsAtom = Atom.family((key: string) =>
+  Atom.make((get) =>
+    (JSON.parse(key) as ReadonlyArray<IssueListTarget>).map((target) => {
+      const result = get(issueList(target));
+      return issueListingOf({
+        environmentId: target.environmentId,
+        connected:
+          get(environmentPresentations.presentationAtom(target.environmentId))?.connection.phase ===
+          "connected",
+        answer: AsyncResult.getOrElse(result, () => null),
+        failed: result._tag === "Failure",
+      });
+    }),
+  ).pipe(Atom.withLabel(`web-issues:listings:${key}`)),
+);
+
 /**
  * One listing per environment with every further page, merged into the list the page renders.
  * `rows` is the page walk's verdict; a page whose reread failed still counts as answered there,
@@ -113,14 +135,15 @@ const issueListPagesAtom = Atom.family((key: string) =>
 export function useIssueList(
   listings: ReadonlyArray<EnvironmentQueryTarget<GitHubIssueListInput>>,
 ) {
-  const pages = useAtomValue(issueListPagesAtom(JSON.stringify(listings)));
+  const key = JSON.stringify(listings);
+  const pages = useAtomValue(issueListPagesAtom(key));
+  const servers = useAtomValue(issueListingsAtom(key));
   const query = useIssueListsQuery(pages.targets);
   const data = mergeIssueLists(query.values);
   return {
     data,
     rows: pages.rows,
-    /** The servers whose listing has an answer. */
-    answered: query.values.map(([environmentId]) => environmentId),
+    listings: servers,
     error: query.error?.message ?? null,
     isPending: query.isPending,
     refresh: query.refresh,
@@ -136,20 +159,28 @@ const issueCounts = createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
 const useIssueCountsQuery = createMergedEnvironmentQuery("web-issues:counts", issueCounts);
 
 const NO_COUNTS_TARGETS: ReadonlyArray<IssueCountsTarget> = [];
+const NO_SCOPES: ReadonlyArray<IssueListingScope> = [];
 
 /**
- * The open total and the week's filed and closed of the listed repositories, read apart from the
- * list: when the page opens and on `refresh`. `totals` is null while they are unknown. `targets`
- * is null while the list cannot say which repositories it holds.
+ * The open total and the week's filed and closed of the repositories the listings hold, read
+ * apart from the list: when the page opens and on `refresh`. `totals` is null while unknown.
  */
-export function useIssueCounts(targets: ReadonlyArray<IssueCountsTarget> | null) {
-  // A list being read again, for a new sort, search, filter or State, names no repositories until
-  // it answers. The read stays on the ones it had, so none of those changes starts a new one.
-  const [held, setHeld] = useState(NO_COUNTS_TARGETS);
-  if (targets !== null && JSON.stringify(targets) !== JSON.stringify(held)) setHeld(targets);
-  const query = useIssueCountsQuery(targets ?? held);
+export function useIssueCounts(listings: ReadonlyArray<IssueListing>) {
+  // A listing read again for a new sort, search, filter or State says nothing until it answers.
+  // Each server's scope is held meanwhile, so none of those changes starts a counts read or
+  // blanks numbers already known; a scope that does change replaces the one held.
+  const [held, setHeld] = useState(NO_SCOPES);
+  const scopes = issueListingScopes(listings, held);
+  if (JSON.stringify(scopes) !== JSON.stringify(held)) setHeld(scopes);
+  const targets = issueCountTargets(scopes);
+  const query = useIssueCountsQuery(targets ?? NO_COUNTS_TARGETS);
   return {
-    totals: issueCountsTotal({ targets, answers: query.values, failed: query.error !== null }),
+    totals: issueCountsTotal({
+      targets,
+      answers: query.values,
+      failed: query.error !== null,
+      reading: query.isPending,
+    }),
     isPending: query.isPending,
     refresh: query.refresh,
   };
