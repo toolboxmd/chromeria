@@ -362,8 +362,10 @@ jobs:
             filters=()
             for package in $TEST_PACKAGES; do filters+=(--filter "$package"); done
           fi
+          # Fork: each package runs its own Vitest workers. Two concurrent suites leave
+          # headroom on the 4-vCPU runner for CPU-heavy tests such as approval text (#1033).
           # The runner's trace writer can crash on surrogate pairs in test output.
-          vp run --parallel --concurrency-limit 4 "${filters[@]}" test 2>&1 | python3 -u -c '
+          vp run --parallel --concurrency-limit 2 "${filters[@]}" test 2>&1 | python3 -u -c '
           import sys
           for line in sys.stdin:
               sys.stdout.write(line.encode("ascii", "backslashreplace").decode("ascii"))
