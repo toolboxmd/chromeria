@@ -17,16 +17,24 @@ vi.mock("../e2e.config.ts", () => ({
 
 import { startSecondServer } from "./second-server.ts";
 
-it("rejects readiness when the second server exits before printing a token", async () => {
+it("rejects readiness when the second server exits before serving its environment", async () => {
   await NodeFSP.mkdir(NodePath.join(root, "apps/server/src"), { recursive: true });
-  await NodeFSP.writeFile(NodePath.join(root, "apps/server/src/bin.ts"), "process.exit(1);\n");
-  const server = startSecondServer("http://127.0.0.1:5733");
   try {
-    await expect(server.ready).rejects.toMatchObject({
-      message: "The second server exited with code 1 at startup.",
-    });
+    for (const startup of ["", 'console.log("Token: test-token");\n']) {
+      await NodeFSP.writeFile(
+        NodePath.join(root, "apps/server/src/bin.ts"),
+        startup + "process.exit(1);\n",
+      );
+      const server = startSecondServer("http://127.0.0.1:5733");
+      try {
+        await expect(server.ready).rejects.toMatchObject({
+          message: "The second server exited with code 1 at startup.",
+        });
+      } finally {
+        await server.stop();
+      }
+    }
   } finally {
-    await server.stop();
     await NodeFSP.rm(root, { recursive: true, force: true });
   }
 });

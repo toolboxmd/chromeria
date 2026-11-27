@@ -1,6 +1,6 @@
 import { expect } from "e2e";
 
-import { SECOND_HOME, startSecondServer } from "./second-server.ts";
+import { SECOND_HOME, pairSecondServer, startSecondServer } from "./second-server.ts";
 import { run } from "./shell.ts";
 import { makeState, runPromise, test, WEB } from "./t3.ts";
 
@@ -30,13 +30,7 @@ test(
       const draftPath = new URL(await browser.url()).pathname;
 
       await app.open("/settings/connections");
-      await screen.getByRole("button", "Add environment").tap();
-      const dialog = screen.getByRole("dialog");
-      await dialog.getByPlaceholder("backend.example.com").fill(host);
-      await dialog.getByPlaceholder("PAIRCODE").fill(token);
-      await dialog.getByRole("button", "Add environment").tap();
-      await screen.getByRole("button", "List", { exact: true }).tap();
-      await screen.getByRole("button", "More actions for Scenario").waitFor({ timeout: 60_000 });
+      await pairSecondServer(screen, { host, token });
       await app.open(draftPath);
 
       const runOn = screen.getByRole("combobox", "Run on", { exact: true });
