@@ -1,6 +1,10 @@
 import { interactiveAuthority } from "../../../peer/PeerAuthorityRecord.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
-import { updateAgentLinkPurpose } from "../../agentLinkPurpose.ts";
+import {
+  updateAgentLinkPurpose,
+  resumeLinkPurpose,
+  withAgentLinkLock,
+} from "../../agentLinkPurpose.ts";
 import { CurrentRequest } from "../../McpRequestReceipts.ts";
 import {
   CommandId,
@@ -542,6 +546,10 @@ const make = Effect.gen(function* () {
     handle: (params: P) => Effect.Effect<A, E, R>,
   ) => McpToolAccess.writesThreads((params: P) => [params.threadId], handle);
 
+  const writesLink = <P extends { readonly threadId?: ThreadId | undefined }, A, E, R>(
+    handle: (params: P) => Effect.Effect<A, E, R>,
+  ) => writesThread((params: P) => withAgentLinkLock(params.threadId, handle(params)));
+
   const forgeFailure = (error: { readonly message: string }) =>
     new PullRequestForgeError({ detail: error.message, cause: error });
 
@@ -853,7 +861,7 @@ const make = Effect.gen(function* () {
   });
 
   return {
-    link_pull_request: writesThread((input) =>
+    link_pull_request: writesLink((input) =>
       Effect.gen(function* () {
         const thread = yield* requireThread(PullRequestLinkFailedError, input.threadId);
         const next =
@@ -878,6 +886,7 @@ const make = Effect.gen(function* () {
         const id = yield* commandId("mcp-pr-link", thread.id);
         const replay =
           request !== undefined && (yield* (yield* ThreadManagementService).hasReceipt(id));
+        const phase = yield* resumeLinkPurpose(thread.id, replay);
         const alreadyLinked = yield* engine
           .dispatch({
             type: "thread.pull-request.link",
@@ -896,7 +905,10 @@ const make = Effect.gen(function* () {
             Effect.as(wasLinked),
             Effect.catchCause(dispatchFailure(PullRequestLinkFailedError)),
           );
-        if (!replay) yield* updatePurpose;
+        if (phase.pending) {
+          if (!replay || wasLinked) yield* updatePurpose;
+          yield* phase.finish;
+        }
         return request === undefined
           ? {
               ...target,
@@ -914,7 +926,7 @@ const make = Effect.gen(function* () {
           : confirmed(request);
       }),
     ),
-    link_pull_requests: writesThread((input) =>
+    link_pull_requests: writesLink((input) =>
       Effect.gen(function* () {
         const thread = yield* requireThread(PullRequestLinkFailedError, input.threadId);
         const targets: Array<ResolvedTarget> = [];
@@ -967,7 +979,7 @@ const make = Effect.gen(function* () {
         };
       }),
     ),
-    unlink_pull_request: writesThread((input) =>
+    unlink_pull_request: writesLink((input) =>
       Effect.gen(function* () {
         const thread = yield* requireThread(PullRequestUnlinkFailedError, input.threadId);
         const project = yield* projectOf(thread, PullRequestUnlinkFailedError);
@@ -996,6 +1008,7 @@ const make = Effect.gen(function* () {
         const id = yield* commandId("mcp-pr-unlink", thread.id);
         const replay =
           request !== undefined && (yield* (yield* ThreadManagementService).hasReceipt(id));
+        const phase = yield* resumeLinkPurpose(thread.id, replay);
         yield* engine
           .dispatch({
             type: "thread.pull-request.unlink",
@@ -1006,7 +1019,10 @@ const make = Effect.gen(function* () {
             number: target.number,
           })
           .pipe(Effect.catchCause(dispatchFailure(PullRequestUnlinkFailedError)));
-        if (!replay) yield* updatePurpose;
+        if (phase.pending) {
+          if (!replay || !isLinked) yield* updatePurpose;
+          yield* phase.finish;
+        }
         return request === undefined
           ? {
               host: target.host,
@@ -1017,7 +1033,7 @@ const make = Effect.gen(function* () {
           : confirmed(request);
       }),
     ),
-    unlink_pull_requests: writesThread((input) =>
+    unlink_pull_requests: writesLink((input) =>
       Effect.gen(function* () {
         const thread = yield* requireThread(PullRequestUnlinkFailedError, input.threadId);
         const visible = visibleThreadPullRequests(threadPullRequestsOf(thread));
@@ -1332,8 +1348,14 @@ const make = Effect.gen(function* () {
           });
         }
         const target = yield* resolveTarget({ url: created.url }, project);
-        yield* linkToThread(thread, target);
-        yield* updateAgentLinkPurpose(engine, thread.id, { type: "link", urls: [target.url] });
+        yield* withAgentLinkLock(
+          thread.id,
+          Effect.gen(function* () {
+            const current = yield* requireThread(PullRequestForgeError, thread.id);
+            yield* linkToThread(current, target);
+            yield* updateAgentLinkPurpose(engine, thread.id, { type: "link", urls: [target.url] });
+          }),
+        );
         return {
           ...identityOf(target),
           created: created.status === "created",

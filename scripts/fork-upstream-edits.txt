@@ -309,6 +309,7 @@ apps/server/src/auth/McpOAuth.ts
 apps/server/src/mcp/McpHttpServer.test.ts
 apps/server/src/mcp/McpInvocationContext.ts
 apps/server/src/mcp/McpToolAccess.test.ts
+apps/server/src/mcp/McpToolAccess.testkit.ts
 apps/server/src/mcp/McpToolAccess.ts
 apps/server/src/mcp/WorktreeMcpService.ts
 apps/server/src/mcp/toolkits/attachment/handlers.ts

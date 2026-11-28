@@ -60,6 +60,7 @@ export const liveThreadShell = (
 };
 
 export const liveThreadsLayer = Layer.mock(ThreadManagement.ThreadManagementService)({
+  withAgentLinkLock: (_id, effect) => effect,
   getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
 });
 

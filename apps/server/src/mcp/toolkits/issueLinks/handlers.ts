@@ -2,9 +2,13 @@ import * as Option from "effect/Option";
 import { CurrentRequest, McpRequestReceipts } from "../../McpRequestReceipts.ts";
 import * as Effect from "effect/Effect";
 
-import { issueUrlFor } from "@t3tools/contracts";
+import { issueUrlFor, issueKeysEqual } from "@t3tools/contracts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
-import { updateAgentLinkPurpose } from "../../agentLinkPurpose.ts";
+import {
+  updateAgentLinkPurpose,
+  resumeLinkPurpose,
+  withAgentLinkLock,
+} from "../../agentLinkPurpose.ts";
 import * as IssueLinks from "../../../issueLinks/IssueLinks.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -33,31 +37,49 @@ const make = Effect.gen(function* () {
   const links = yield* IssueLinks.IssueLinks;
   return {
     link_issue: McpToolAccess.actsAsCaller((target) =>
-      Effect.gen(function* () {
-        const threadId = yield* callerThread;
-        const replay = yield* replayingIssueMutation;
-        const { link, alreadyLinked } = yield* links.link({ threadId, target, source: "agent" });
-        if (!replay)
-          yield* updateAgentLinkPurpose(yield* ThreadManagementService, threadId, {
-            type: "link",
-            urls: [issueUrlFor(link)],
-          });
-        return { ...link, alreadyLinked };
-      }),
+      withAgentLinkLock(
+        undefined,
+        Effect.gen(function* () {
+          const threadId = yield* callerThread;
+          const replay = yield* replayingIssueMutation;
+          const phase = yield* resumeLinkPurpose(threadId, replay);
+          const { link, alreadyLinked } = yield* links.link({ threadId, target, source: "agent" });
+          if (
+            phase.pending &&
+            (!replay ||
+              (yield* links.forThread(threadId)).some((item) => issueKeysEqual(item, link)))
+          )
+            yield* updateAgentLinkPurpose(yield* ThreadManagementService, threadId, {
+              type: "link",
+              urls: [issueUrlFor(link)],
+            });
+          if (phase.pending) yield* phase.finish;
+          return { ...link, alreadyLinked };
+        }),
+      ),
     ),
     unlink_issue: McpToolAccess.actsAsCaller((target) =>
-      Effect.gen(function* () {
-        const threadId = yield* callerThread;
-        const { url, ...issue } = yield* links.resolveTarget(threadId, target);
-        const replay = yield* replayingIssueMutation;
-        const { wasLinked } = yield* links.unlink({ threadId, issue });
-        if (!replay)
-          yield* updateAgentLinkPurpose(yield* ThreadManagementService, threadId, {
-            type: "unlink",
-            urls: [url],
-          });
-        return { ...issue, wasLinked };
-      }),
+      withAgentLinkLock(
+        undefined,
+        Effect.gen(function* () {
+          const threadId = yield* callerThread;
+          const { url, ...issue } = yield* links.resolveTarget(threadId, target);
+          const replay = yield* replayingIssueMutation;
+          const phase = yield* resumeLinkPurpose(threadId, replay);
+          const { wasLinked } = yield* links.unlink({ threadId, issue });
+          if (
+            phase.pending &&
+            (!replay ||
+              !(yield* links.forThread(threadId)).some((item) => issueKeysEqual(item, issue)))
+          )
+            yield* updateAgentLinkPurpose(yield* ThreadManagementService, threadId, {
+              type: "unlink",
+              urls: [url],
+            });
+          if (phase.pending) yield* phase.finish;
+          return { ...issue, wasLinked };
+        }),
+      ),
     ),
     list_thread_issues: McpToolAccess.readsAsCaller(() =>
       Effect.gen(function* () {

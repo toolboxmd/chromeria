@@ -3336,6 +3336,7 @@ sources and reasons.
     "packages/contracts/src/nativeExecution.ts"
   ],
   "upstreamFiles": [
+    "apps/server/src/mcp/McpToolAccess.testkit.ts",
     "apps/mobile/src/features/threads/useStartSideChat.ts",
     "apps/server/src/provider/ClaudeTurnTokenUsage.ts",
     "apps/server/src/provider/CodexTurnTokenUsage.ts",
