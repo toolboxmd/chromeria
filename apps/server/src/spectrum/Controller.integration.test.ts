@@ -205,7 +205,7 @@ it.effect(
       yield* initializeRecoveryHistory;
       const state = yield* (yield* Launch.SpectrumLaunchService).register({
         ...input,
-        colors: [...input.colors, { label: "Green", selection: input.colors[0].selection }],
+        colors: [...input.colors, { label: "Green", selection: input.colors[0]!.selection }],
       });
       const controller = yield* Controller.SpectrumController;
       const projections = yield* Projection.ProjectionStoreV2;
