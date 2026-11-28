@@ -13,6 +13,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   type PurposeIntent,
+  ScheduledTaskId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -491,6 +492,83 @@ it.effect(
       assert.equal(projection.runs.length, 1);
       assert.equal(projection.messages.length, 1);
       assert.deepEqual(projection.thread.purposeSelection, { revision: 1, scope: scopedA });
+    }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect.each(["selection", "legacy", "reference", "schedule"] as const)(
+  "promotes only ordinary human sends into a scoped wake (%s)",
+  (source) =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("thread:promote-wake");
+      yield* createThread(threadId);
+      yield* orchestrator.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make("select-unscoped"),
+        threadId,
+        purposeSelection: {
+          expectedRevision: 0,
+          scope: { type: "unscoped", reason: "deliberate" },
+        },
+      });
+      yield* orchestrator.dispatch({
+        ...message(threadId, "wake"),
+        createdBy: "system",
+        creationSource: "server",
+        purposeSource: {
+          version: 1,
+          scope: scopedA,
+          provenance: { type: "delegated_completion", operationIds: ["completion"] },
+        },
+      });
+      yield* orchestrator.dispatch({
+        ...message(
+          threadId,
+          "queued",
+          source === "selection"
+            ? { version: 1, intent: { type: "selection", expectedRevision: 1 } }
+            : source === "reference"
+              ? { version: 1, intent: { type: "reference", reference: referenceB } }
+              : undefined,
+        ),
+        ...(source === "schedule"
+          ? {
+              createdBy: "system" as const,
+              creationSource: "server" as const,
+              purposeSource: {
+                version: 1 as const,
+                scope: { type: "unscoped" as const, reason: "deliberate" as const },
+                provenance: {
+                  type: "schedule" as const,
+                  scheduledTaskId: ScheduledTaskId.make("schedule"),
+                },
+              },
+            }
+          : {}),
+        dispatchMode: { type: "queue_after_active" },
+      });
+      const [target, queued] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+      const promote = orchestrator.dispatch({
+        type: "queued-message.promote-to-steer",
+        commandId: CommandId.make("promote"),
+        threadId,
+        queuedRunId: queued!.id,
+        targetRunId: target!.id,
+      });
+      if (source === "reference" || source === "schedule") {
+        const error = yield* Effect.flip(promote);
+        assert.instanceOf(error, Orchestrator.OrchestratorDispatchError);
+        assert.include(String(error.cause), source === "reference" ? "Issue #12" : "Unscoped");
+        assert.include(String(error.cause), "Issue #11");
+        assert.include(String(error.cause), "stays queued");
+        assert.equal((yield* orchestrator.getThreadProjection(threadId)).runs[1]?.status, "queued");
+      } else {
+        yield* promote;
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).runs[1]?.steerWhenReadyRunId,
+          target!.id,
+        );
+      }
     }).pipe(Effect.provide(layerTest)),
 );
 

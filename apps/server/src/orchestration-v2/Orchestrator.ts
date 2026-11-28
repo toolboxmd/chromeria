@@ -10,6 +10,7 @@ import {
   normalizeTrackingReference,
   purposeScopesEqual,
   purposeScopesJoinable,
+  purposeScopeLabel,
   purposeSelectionOf,
   purposeIntentsEqual,
   type ExecutionPurpose as ResolvedExecutionPurpose,
@@ -4269,15 +4270,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         text: message.text,
         ...(message.context ? { context: message.context } : {}),
         attachments: message.attachments,
-        // A mailbox wake replays with its reservation; any other wake returns as the notice it showed.
-        ...(item.type === "notification" && !reserved
+        ...(!reserved
           ? {
-              // It was steered into this run because their purposes matched.
               purposeSource: {
                 version: 1,
                 scope: executionPurposeOf(run).scope,
                 provenance: { type: "source_run", threadId, runId: run.id },
               },
+            }
+          : {}),
+        // A mailbox wake replays with its reservation; any other wake returns as the notice it showed.
+        ...(item.type === "notification" && !reserved
+          ? {
               notification: {
                 source: item.source,
                 outcome: item.outcome,
@@ -14660,18 +14664,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Queued run ${command.queuedRunId} is not queued.`,
       });
     }
-    const purposeTarget = projection.runs.find((run) => run.id === command.targetRunId);
-    if (
-      purposeTarget !== undefined &&
-      !purposeScopesJoinable(
-        executionPurposeOf(queuedRun).scope,
-        executionPurposeOf(purposeTarget).scope,
-      )
-    ) {
-      return yield* mapDispatchError(command)(
-        Effect.fail(new ExecutionPurpose.PurposeAdmissionError({ reason: "target_mismatch" })),
-      );
-    }
     const queuedRootNode =
       queuedRun.rootNodeId === null
         ? undefined
@@ -14693,6 +14685,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandType: command.type,
         cause: `Queued run ${queuedRun.id} is missing message or execution state.`,
       });
+    }
+    const target = projection.runs.find((run) => run.id === command.targetRunId);
+    const queuedPurpose = executionPurposeOf(queuedRun);
+    const ordinaryHumanSend =
+      queuedMessage.createdBy === "user" &&
+      queuedMessage.scheduledTaskId === undefined &&
+      queuedPurpose.scope.type === "unscoped" &&
+      (queuedPurpose.scope.reason === "deliberate" ||
+        queuedPurpose.scope.reason === "legacy_no_intent") &&
+      (queuedPurpose.provenance.type === "selection" || queuedPurpose.provenance.type === "legacy");
+    if (target !== undefined && !ordinaryHumanSend) {
+      const targetScope = executionPurposeOf(target).scope;
+      if (!purposeScopesJoinable(queuedPurpose.scope, targetScope)) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `The message purpose (${purposeScopeLabel(queuedPurpose.scope)}) differs from the running turn's purpose (${purposeScopeLabel(targetScope)}). The message stays queued.`,
+        });
+      }
     }
     if (
       queuedMessage.delegatedCompletion !== undefined ||
@@ -14731,7 +14742,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       (yield* goalDriverFor(command, modelSelection.instanceId)) === undefined
         ? null
         : parsedGoalCommand;
-    const target = projection.runs.find((run) => run.id === command.targetRunId);
     const targetMessage = projection.messages.find(
       (message) => message.id === target?.userMessageId,
     );

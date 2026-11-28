@@ -4974,6 +4974,7 @@ it.effect("replays an accepted steer after its target turn completes", () =>
 // or the server went down before sending them.
 it.effect.each([
   ["user steer", "restart"],
+  ["promoted user message", "restart"],
   ["delegated task question", "restart"],
   ["accepted delegated completion", "restart"],
   ["held delegated completion", "restart"],
@@ -4999,7 +5000,7 @@ it.effect.each([
         number: 875,
       },
     } as const;
-    const scoped = kind === "delegated task question";
+    const scoped = kind === "delegated task question" || kind === "promoted user message";
     const { events, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
       name,
       false,
@@ -5144,15 +5145,23 @@ it.effect.each([
         delegatedCompletion: { parentRunId: parent.id, generation: 1, taskIds: [taskId] },
       } as const;
       const sends =
-        kind === "user steer"
-          ? [userSteer]
-          : kind === "delegated task question"
-            ? [question]
-            : kind === "accepted delegated completion" ||
-                kind === "held delegated completion" ||
-                kind === "emptied delegated completion"
-              ? [userSteer, mailboxSend]
-              : [question, userSteer, question];
+        kind === "promoted user message"
+          ? [
+              {
+                createdBy: "user",
+                creationSource: "web",
+                dispatchMode: { type: "queue_after_active" },
+              } as const,
+            ]
+          : kind === "user steer"
+            ? [userSteer]
+            : kind === "delegated task question"
+              ? [question]
+              : kind === "accepted delegated completion" ||
+                  kind === "held delegated completion" ||
+                  kind === "emptied delegated completion"
+                ? [userSteer, mailboxSend]
+                : [question, userSteer, question];
       const messageIds = sends.map((send, index) =>
         send === mailboxSend ? mailboxId : MessageId.make(`message:${name}:${index}`),
       );
@@ -5166,6 +5175,18 @@ it.effect.each([
           attachments: [],
           ...send,
         });
+        if (kind === "promoted user message") {
+          const queued = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (run) => run.userMessageId === messageIds[index],
+          )!;
+          yield* orchestrator.dispatch({
+            type: "queued-message.promote-to-steer",
+            commandId: CommandId.make("promote-unread"),
+            threadId,
+            targetRunId: parent.id,
+            queuedRunId: queued.id,
+          });
+        }
         if (ending !== "restart before sending") yield* worker.drain();
       }
       assert.lengthOf(steered, ending === "restart before sending" ? 0 : sends.length);
