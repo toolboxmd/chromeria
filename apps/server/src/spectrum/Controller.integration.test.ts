@@ -41,6 +41,7 @@ import * as Reports from "./ReportService.ts";
 import { base, input, setup } from "./controllerTestkit.ts";
 import { makeRun, NOW } from "./testFixtures.ts";
 import { readSpectrum } from "./store.ts";
+import { continueRestartedRun } from "../orchestration-v2/RestartContinuation.ts";
 import { attemptOutcome, REPORT_STOPPED, reportAdmission, reportNeedsYou } from "./reportPolicy.ts";
 import { ForkDispatchPlans } from "../fork/ForkDispatchPlans.ts";
 import { ForkCommandInterceptor } from "../fork/ForkCommandInterceptor.ts";
@@ -191,6 +192,135 @@ it.effect(
       );
       assert.isFalse(
         transcript.messages.some((message) => message.text.includes("Partial answer")),
+      );
+    }).pipe(Effect.provide(runtime)),
+);
+
+// regression: #1058 automatic settlement before the continuation worker failed the council
+it.effect(
+  "a Color cut by a restart resumes through its continuation when automatic settlement runs first",
+  () =>
+    Effect.gen(function* () {
+      yield* setup;
+      yield* initializeRecoveryHistory;
+      const state = yield* (yield* Launch.SpectrumLaunchService).register({
+        ...input,
+        colors: [...input.colors, { label: "Green", selection: input.colors[0].selection }],
+      });
+      const controller = yield* Controller.SpectrumController;
+      const projections = yield* Projection.ProjectionStoreV2;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* Events.EventSinkV2;
+      const sql = yield* SqlClient.SqlClient;
+      let current = yield* controller.resume(state.threadId);
+      const slotRun = (index: number) =>
+        Effect.gen(function* () {
+          const slot = current.round!.slots[index]!;
+          return (yield* projections.getThreadRecords(slot.threadId, ["runs"])).runs.find(
+            (run) => run.id === slot.runId,
+          )!;
+        });
+      yield* finish(yield* slotRun(0), "Blue answer.");
+      yield* finish(yield* slotRun(1), "Red answer.");
+      const green = yield* slotRun(2);
+      current = yield* controller.resume(state.threadId);
+      const accepted = current.round!.slots.slice(0, 2).map((slot) => slot.replyIds);
+      assert.isTrue(accepted.every((replyIds) => replyIds !== null));
+
+      // Shutdown cuts Green and schedules its native continuation.
+      const commandId = CommandId.make(`command:runtime-reconcile:fixture:${green.id}`);
+      const effectId = `effect:restart-continuation:${green.id}`;
+      yield* sink.commitCommand({
+        commandId,
+        threadId: green.threadId,
+        commandType: "provider-runtime.reconcile",
+        acceptedAt: NOW,
+        events: [
+          {
+            id: EventId.make(`${green.id}:restart-cut`),
+            type: "run.updated",
+            threadId: green.threadId,
+            occurredAt: NOW,
+            payload: {
+              ...green,
+              status: "cancelled",
+              startedAt: NOW,
+              completedAt: NOW,
+              restartCut: { continuation: "scheduled", cutAt: NOW },
+            },
+          },
+        ],
+        effects: [
+          {
+            id: effectId,
+            commandId,
+            threadId: green.threadId,
+            request: { type: "provider-runtime.continue", sourceRunId: green.id },
+          },
+        ],
+      });
+      // After the restart, automatic settlement runs before the continuation worker.
+      const snapshotAt = (yield* projections.getThread(green.threadId)).updatedAt;
+      yield* orchestrator
+        .dispatch({
+          type: "thread.auto-settle",
+          commandId: CommandId.make(`server:auto-settle:${green.threadId}:restart`),
+          threadId: green.threadId,
+          snapshotAt,
+        })
+        .pipe(Effect.ignore);
+      assert.isNull((yield* projections.getThread(green.threadId)).settledOverride);
+      yield* continueRestartedRun({ threadId: green.threadId, sourceRunId: green.id }).pipe(
+        Effect.provide(
+          Layer.fresh(Threads.layer).pipe(
+            Layer.provideMerge(Settings.layerTest({ continueThreadsAfterServerUpdate: true })),
+          ),
+        ),
+      );
+      yield* sql`UPDATE orchestration_v2_effect_outbox SET status='succeeded'
+        WHERE effect_id=${effectId}`;
+      const successors = (yield* projections.getThreadRecords(green.threadId, [
+        "runs",
+      ])).runs.filter((run) => run.restartContinuationOfRunId === green.id);
+      assert.lengthOf(successors, 1);
+      current = yield* controller.resume(state.threadId);
+      assert.strictEqual(current.status, "active");
+      assert.isNull(current.round!.slots[2]!.replyIds);
+      yield* finish(successors[0]!, "Green answer after restart.");
+
+      const phases: Array<string> = [];
+      current = yield* controller.resume(state.threadId);
+      while (current.status === "active") {
+        const round = current.round!;
+        if (phases.at(-1) !== `${round.step}:${round.phase}`)
+          phases.push(`${round.step}:${round.phase}`);
+        const slot = round.slots.find((candidate) => candidate.replyIds === null)!;
+        const run = (yield* projections.getThreadRecords(slot.threadId, ["runs"])).runs.find(
+          (candidate) => candidate.id === slot.runId,
+        )!;
+        yield* finish(run, `${round.phase} ${slot.threadId}`);
+        current = yield* controller.resume(state.threadId);
+      }
+      assert.deepStrictEqual(phases, ["1:relay", "2:relay", "3:synthesis"]);
+      assert.strictEqual(current.status, "settled");
+      const transcript = (yield* projections.getThreadRecords(state.threadId, [
+        "messages",
+      ])).messages.map((message) => message.text);
+      for (const answer of [
+        "[Blue]\nBlue answer.",
+        "[Red]\nRed answer.",
+        "[Green]\nGreen answer after restart.",
+      ])
+        assert.lengthOf(
+          transcript.filter((text) => text === answer),
+          1,
+          answer,
+        );
+      assert.include(transcript, `[White]\nsynthesis ${state.white!.threadId}`);
+      const caller = yield* projections.getThreadRecords(input.callerThreadId, ["messages"]);
+      assert.lengthOf(
+        caller.messages.filter((message) => message.id === current.report!.messageId),
+        1,
       );
     }).pipe(Effect.provide(runtime)),
 );
