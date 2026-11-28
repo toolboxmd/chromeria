@@ -19318,7 +19318,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         // The completion reaction starts or holds the queue just after a run ends; settling
         // first would cancel an automatic wake it was about to start.
         const { runs } = yield* loadProjectionForCommand(command, ["runs"]);
-        const endedAt = latestExecutedRun(runs)?.completedAt;
+        const latest = latestExecutedRun(runs);
+        // A restart-cut run whose continuation is still owed resumes here, and the continuation
+        // declines in a settled thread. An explicit Stop of that run gives up the continuation.
+        if (
+          latest !== null &&
+          latest.restartCut?.continuation !== "declined" &&
+          !runs.some((run) => run.restartContinuationOfRunId === latest.id) &&
+          (yield* awaitsRestartContinuation(latest).pipe(mapDispatchError(command))) &&
+          !(yield* stopReachedRun(command, command.threadId, latest.id))
+        ) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Thread ${command.threadId} has a restart continuation that may still start.`,
+          });
+        }
+        const endedAt = latest?.completedAt;
         if (
           endedAt != null &&
           runs.some((run) => run.status === "queued") &&

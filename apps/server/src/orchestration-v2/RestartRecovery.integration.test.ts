@@ -23,6 +23,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -293,6 +294,160 @@ it.effect.each(["none", "restart-cut", "user-stop"] as const)(
           (entry) => entry.id === MessageId.make(`message:restart-continuation:${source.id}`),
         ),
         !stopped,
+      );
+    }).pipe(Effect.scoped, Effect.provide(services));
+  },
+);
+
+// regression: #1058 automatic settlement made a running Spectrum Color's continuation decline
+it.effect.each([
+  { row: "cut with its continuation owed", settles: false },
+  { row: "cut and continued by a successor", settles: true },
+  { row: "cut and its continuation declined", settles: true },
+  { row: "cut and its continuation failed", settles: true },
+  { row: "cut and then stopped", settles: true },
+  { row: "not cut", settles: true },
+] as const)(
+  "automatic settlement of a thread whose current run is $row settles: $settles",
+  ({ row, settles }) => {
+    const name = `auto-settle-${row.replaceAll(" ", "-")}`;
+    const threadId = ThreadId.make(`thread:${name}`);
+    const database = SqlitePersistence.layerMemory;
+    const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "restart-proof" };
+    const runtime = ProviderReplayHarness.layerWithRegistry(
+      { name },
+      ProviderAdapterRegistry.layerSingle(
+        unfinishedAdapter(ProviderDriverKind.make("codex"), CodexProviderCapabilitiesV2),
+      ),
+      { databaseLayer: database, runEffectWorker: false, runContinuationWorker: false },
+    );
+    const services = ThreadManagement.layer.pipe(
+      Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(database))),
+      Layer.provideMerge(runtime),
+      Layer.provideMerge(database),
+      Layer.provideMerge(ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true })),
+    );
+    return Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const sql = yield* SqlClient.SqlClient;
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make(`${name}:create`),
+        threadId,
+        projectId: ProjectId.make(`project:${name}`),
+        title: name,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`${name}:start`),
+        threadId,
+        messageId: MessageId.make(`${name}:start`),
+        text: "Work.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const source = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+      const now = yield* DateTime.now;
+      const complete = (run: typeof source) =>
+        sink.write({
+          events: [
+            {
+              id: EventId.make(`${run.id}:completed`),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...run, status: "completed", startedAt: now, completedAt: now },
+            },
+          ],
+        });
+      if (row === "not cut") {
+        yield* complete(source);
+      } else {
+        const commandId = CommandId.make(`command:runtime-reconcile:${name}`);
+        const effectId = `effect:restart-continuation:${source.id}`;
+        yield* sink.commitCommand({
+          commandId,
+          threadId,
+          commandType: "provider-runtime.reconcile",
+          acceptedAt: now,
+          events: [
+            {
+              id: EventId.make(`${name}:cut`),
+              type: "run.updated",
+              threadId,
+              runId: source.id,
+              occurredAt: now,
+              payload: {
+                ...source,
+                status: "cancelled",
+                startedAt: now,
+                completedAt: now,
+                restartCut: { continuation: "scheduled", cutAt: now },
+              },
+            },
+          ],
+          effects: [
+            {
+              id: effectId,
+              commandId,
+              threadId,
+              request: { type: "provider-runtime.continue", sourceRunId: source.id },
+            },
+          ],
+        });
+        const effectStatus = (status: "running" | "succeeded" | "failed") =>
+          sql`UPDATE orchestration_v2_effect_outbox SET status = ${status} WHERE effect_id = ${effectId}`;
+        if (row === "cut and continued by a successor") {
+          yield* continueRestartedRun({ threadId, sourceRunId: source.id });
+          yield* effectStatus("succeeded");
+          const successors = (yield* orchestrator.getThreadProjection(threadId)).runs.filter(
+            (run) => run.restartContinuationOfRunId === source.id,
+          );
+          assert.lengthOf(successors, 1);
+          yield* complete(successors[0]!);
+        } else if (row === "cut and its continuation declined") {
+          yield* orchestrator.recordRestartCutDecline(
+            threadId,
+            source.id,
+            RESTART_CUT_REASONS.NO_CONTINUATION,
+          );
+          // The worker settles its effect only after the decline commits.
+          yield* effectStatus("running");
+        } else if (row === "cut and its continuation failed") {
+          yield* effectStatus("failed");
+        } else if (row === "cut and then stopped") {
+          yield* orchestrator.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make(`${name}:stop`),
+            threadId,
+          });
+        }
+      }
+      const snapshotAt = (yield* orchestrator.getThreadProjection(threadId)).thread.updatedAt;
+      const exit = yield* orchestrator
+        .dispatch({
+          type: "thread.auto-settle",
+          commandId: CommandId.make(`${name}:auto-settle`),
+          threadId,
+          snapshotAt,
+        })
+        .pipe(Effect.exit);
+      assert.equal(exit._tag, settles ? "Success" : "Failure");
+      assert.equal(
+        (yield* orchestrator.getThreadProjection(threadId)).thread.settledOverride,
+        settles ? "settled" : null,
       );
     }).pipe(Effect.scoped, Effect.provide(services));
   },
@@ -592,17 +747,37 @@ const snapshot = (sourcePath: string, targetPath: string) =>
 it.live.each(
   providers
     .flatMap(([driver, capabilities]) =>
-      ["shutdown", "crash"].map((loss) => ({ driver, capabilities, loss, failOpen: false })),
+      ["shutdown", "crash"].map((loss) => ({
+        driver,
+        capabilities,
+        loss,
+        failOpen: false,
+        settleFirst: false,
+      })),
     )
     .concat([
-      { driver: "codex", capabilities: CodexProviderCapabilitiesV2, loss: "crash", failOpen: true },
+      {
+        driver: "codex",
+        capabilities: CodexProviderCapabilitiesV2,
+        loss: "crash",
+        failOpen: true,
+        settleFirst: false,
+      },
+      // regression: #1058 automatic settlement ran before the continuation worker
+      {
+        driver: "codex",
+        capabilities: CodexProviderCapabilitiesV2,
+        loss: "shutdown",
+        failOpen: false,
+        settleFirst: true,
+      },
     ]),
 )(
-  "records $driver's outcome after $loss (failed open: $failOpen)",
-  ({ driver, capabilities, loss, failOpen }) =>
+  "records $driver's outcome after $loss (failed open: $failOpen, settled first: $settleFirst)",
+  ({ driver, capabilities, loss, failOpen, settleFirst }) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const name = `restart-${driver}-${loss}`;
+        const name = `restart-${driver}-${loss}${settleFirst ? "-settle-first" : ""}`;
         const cwd = yield* checkpointWorkspace(name);
         const stateDir = yield* FileSystem.FileSystem.use((fs) =>
           fs.makeTempDirectoryScoped({ prefix: `${name}-state-` }),
@@ -738,8 +913,28 @@ it.live.each(
             assert.equal(cut?.status, "cancelled");
             assert.equal(cut?.restartCut?.continuation, "scheduled");
             yield* service.recover;
+            if (settleFirst) {
+              const snapshotAt = (yield* orchestrator.getThreadProjection(threadId)).thread
+                .updatedAt;
+              yield* orchestrator
+                .dispatch({
+                  type: "thread.auto-settle",
+                  commandId: CommandId.make(`${name}:auto-settle`),
+                  threadId,
+                  snapshotAt,
+                })
+                .pipe(Effect.ignore);
+            }
             const cursor = yield* sink.latestSequence({ threadId });
             yield* worker.drain();
+            if (settleFirst) {
+              const drained = yield* orchestrator.getThreadProjection(threadId);
+              assert.isNull(drained.thread.settledOverride);
+              assert.lengthOf(
+                drained.runs.filter((run) => run.restartContinuationOfRunId === sourceRunId),
+                1,
+              );
+            }
             yield* sink.stream({ threadId, afterSequence: cursor }).pipe(
               Stream.filter(
                 (stored) =>
