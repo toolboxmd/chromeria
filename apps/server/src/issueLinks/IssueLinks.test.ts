@@ -800,6 +800,38 @@ describe("issue MCP tools", () => {
         });
         expect((yield* link).alreadyLinked).toBe(true);
         expect(selection.revision).toBe(2);
+
+        yield* call("link_issue", { number: 41 }, ["pull-requests"], THREAD, threads);
+        const unlinkKey = yield* receipts.identify(
+          scope,
+          "unlink_issue",
+          { number: 41 },
+          "unlink-41",
+        );
+        const keyedUnlink = call(
+          "unlink_issue",
+          { number: 41 },
+          ["pull-requests"],
+          THREAD,
+          threads,
+        ).pipe(Effect.provideService(Receipts.CurrentRequest, unlinkKey));
+        failFirst = true;
+        expect((yield* Effect.result(keyedUnlink))._tag).toBe("Failure");
+        const afterRemoteChange = yield* keyedUnlink.pipe(
+          Effect.provideService(IssueLinks.IssueLinks, {
+            ...links,
+            resolveTarget: () =>
+              Effect.succeed({
+                ...issue(41, "another/repo"),
+                url: "https://github.com/another/repo/issues/41",
+              }),
+          }),
+        );
+        expect(afterRemoteChange).toMatchObject({ ...issue(41), wasLinked: true });
+        expect(selection).toEqual({
+          revision: 4,
+          scope: { type: "unscoped", reason: "deliberate" },
+        });
       }).pipe(
         Effect.provide(
           Receipts.layer.pipe(

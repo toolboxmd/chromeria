@@ -7,6 +7,7 @@ import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagem
 import {
   updateAgentLinkPurpose,
   resumeLinkPurpose,
+  resolveKeyedLinkTarget,
   withAgentLinkLock,
 } from "../../agentLinkPurpose.ts";
 import * as IssueLinks from "../../../issueLinks/IssueLinks.ts";
@@ -43,7 +44,20 @@ const make = Effect.gen(function* () {
           const threadId = yield* callerThread;
           const replay = yield* replayingIssueMutation;
           const phase = yield* resumeLinkPurpose(threadId, replay);
-          const { link, alreadyLinked } = yield* links.link({ threadId, target, source: "agent" });
+          const boundTarget =
+            target.url === undefined && (yield* CurrentRequest) !== undefined
+              ? {
+                  url: (yield* resolveKeyedLinkTarget(
+                    threadId,
+                    links.resolveTarget(threadId, target),
+                  )).url,
+                }
+              : target;
+          const { link, alreadyLinked } = yield* links.link({
+            threadId,
+            target: boundTarget,
+            source: "agent",
+          });
           if (
             phase.pending &&
             (!replay ||
@@ -63,7 +77,10 @@ const make = Effect.gen(function* () {
         undefined,
         Effect.gen(function* () {
           const threadId = yield* callerThread;
-          const { url, ...issue } = yield* links.resolveTarget(threadId, target);
+          const { url, ...issue } = yield* resolveKeyedLinkTarget(
+            threadId,
+            links.resolveTarget(threadId, target),
+          );
           const replay = yield* replayingIssueMutation;
           const phase = yield* resumeLinkPurpose(threadId, replay);
           const { wasLinked } = yield* links.unlink({ threadId, issue });

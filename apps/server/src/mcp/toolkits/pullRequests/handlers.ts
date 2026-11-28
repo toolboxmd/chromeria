@@ -3,6 +3,7 @@ import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagem
 import {
   updateAgentLinkPurpose,
   resumeLinkPurpose,
+  resolveKeyedLinkTarget,
   withAgentLinkLock,
 } from "../../agentLinkPurpose.ts";
 import { CurrentRequest } from "../../McpRequestReceipts.ts";
@@ -17,6 +18,8 @@ import {
   type PullRequestCheck,
   type PullRequestReviewThread,
   normalizeTrackingReference,
+  trackingReferenceUrl,
+  purposeSelectionOf,
   type McpConfirmedOperation,
   type OrchestrationProjectShell,
   type PullRequestState,
@@ -869,7 +872,7 @@ const make = Effect.gen(function* () {
             ? { next: CHILD_PULL_REQUEST_REPORT_NEXT }
             : {};
         const project = yield* projectOf(thread, PullRequestLinkFailedError);
-        const target = yield* resolveTarget(input, project);
+        const target = yield* resolveKeyedLinkTarget(thread.id, resolveTarget(input, project));
         const request = yield* negotiatedRequest;
         const existing = threadPullRequestsOf(thread).find((link) =>
           threadPullRequestKeysEqual(link, target),
@@ -983,7 +986,7 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const thread = yield* requireThread(PullRequestUnlinkFailedError, input.threadId);
         const project = yield* projectOf(thread, PullRequestUnlinkFailedError);
-        const target = yield* resolveTarget(input, project);
+        const target = yield* resolveKeyedLinkTarget(thread.id, resolveTarget(input, project));
         const request = yield* negotiatedRequest;
         const isLinked = threadPullRequestsOf(thread).some(
           (link) => link.source !== "stack-dismissed" && threadPullRequestKeysEqual(link, target),
@@ -1043,11 +1046,38 @@ const make = Effect.gen(function* () {
             ? [{ ...normalizeThreadPullRequestKey(link), state, url: link.url }]
             : [];
         });
-        yield* Effect.forEach(matching, ({ host, repository, number }) =>
+        const caller = yield* McpInvocationContext.McpInvocationContext;
+        const selection = purposeSelectionOf(thread);
+        const selected =
+          caller.client === undefined &&
+          caller.thread?.threadId === thread.id &&
+          selection.scope.type === "single" &&
+          selection.scope.reference.kind === "pr"
+            ? selection.scope.reference
+            : undefined;
+        const selectedUrl = selected && trackingReferenceUrl(selected);
+        // An unkeyed state filter loses removed links on retry. Its accepted command
+        // receipt identifies the selected link and state until the selection revision moves.
+        const removalId = (state: PullRequestState) =>
+          CommandId.make(`mcp:unlink-selected:${thread.id}:${selection.revision}:${state}`);
+        const threads = yield* ThreadManagementService;
+        const urls = matching.map((link) => link.url);
+        if (selected && !visible.some((link) => threadPullRequestKeysEqual(link, selected))) {
+          for (const state of input.states) {
+            if (yield* threads.hasReceipt(removalId(state))) {
+              urls.push(trackingReferenceUrl(selected));
+              break;
+            }
+          }
+        }
+        yield* Effect.forEach(matching, ({ host, repository, number, state, url }) =>
           Effect.gen(function* () {
             yield* engine.dispatch({
               type: "thread.pull-request.unlink",
-              commandId: yield* commandId("mcp-pr-unlink", thread.id),
+              commandId:
+                url === selectedUrl && !(yield* threads.hasReceipt(removalId(state)))
+                  ? removalId(state)
+                  : yield* commandId("mcp-pr-unlink", thread.id),
               threadId: thread.id,
               host,
               repository,
@@ -1057,7 +1087,7 @@ const make = Effect.gen(function* () {
         );
         yield* updateAgentLinkPurpose(engine, thread.id, {
           type: "unlink",
-          urls: matching.map((link) => link.url),
+          urls,
         });
         // Numbers grouped by repository and state keep a large batch's result small.
         const groups = Map.groupBy(matching, (pr) => `${pr.host}/${pr.repository}/${pr.state}`);

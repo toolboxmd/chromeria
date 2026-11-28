@@ -44,6 +44,7 @@ import * as ServerSettings from "../../../serverSettings.ts";
 import * as McpClientInput from "../../McpClientInput.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpToolAccessTestkit from "../../McpToolAccess.testkit.ts";
 import { listThreadPullRequests } from "./handlers.ts";
 import * as PullRequestsHandlers from "./handlers.ts";
@@ -149,6 +150,7 @@ function makeLink(
 
 interface HarnessOptions {
   readonly thread?: PullRequestTestThread | null;
+  readonly priorCommands?: ReadonlyArray<OrchestrationCommand>;
   readonly purposeSelection?: OrchestrationV2ThreadShell["purposeSelection"];
   readonly purposeDeliveries?: OrchestrationV2ThreadShell["purposeDeliveries"];
   readonly project?: OrchestrationProjectShell | null;
@@ -232,7 +234,12 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
     Layer.mock(GitManager.GitManager)(options.git ?? {}),
     Layer.succeed(SecureRandom.SecureRandom, testCrypto),
     ServerSettings.layerTest({}, options.managedPolicy),
-    McpToolAccessTestkit.liveThreadsLayer,
+    Layer.mock(ThreadManagementService)({
+      getThreadShell: (id) => Effect.succeed(McpToolAccessTestkit.liveThreadShell(id)),
+      withAgentLinkLock: (_id, effect) => effect,
+      hasReceipt: (id) =>
+        Effect.succeed(options.priorCommands?.some((command) => command.commandId === id) ?? false),
+    }),
   );
   const toolkit = yield* PullRequestsToolkit.pipe(
     Effect.provide(
@@ -622,6 +629,46 @@ describe("pull request toolkit handlers", () => {
         purposeSelection: { scope: { type: "single", reference: { kind: "pr", number: 1 } } },
       });
     }),
+  );
+
+  it.effect(
+    "a repeated state filter clears a selected PR removed before the metadata write failed",
+    () =>
+      Effect.gen(function* () {
+        const purposeSelection = {
+          revision: 2,
+          scope: {
+            type: "single",
+            reference: { kind: "pr", host: "github.com", repository: "t3tools/t3code", number: 3 },
+          },
+        } as const;
+        const first = yield* makeHarness({
+          thread: makeThread([makeLink(3, { headBranch: "selected" })]),
+          purposeSelection,
+          reject: (command) =>
+            command.type === "thread.metadata.update" ? "interrupted write" : null,
+        });
+        yield* first.call("unlink_pull_requests", { states: ["open"] }).pipe(Effect.flip);
+        const priorCommands = yield* Ref.get(first.commands);
+        expect(priorCommands).toMatchObject([{ type: "thread.pull-request.unlink", number: 3 }]);
+        const retry = yield* makeHarness({
+          thread: makeThread([]),
+          purposeSelection,
+          priorCommands,
+        });
+        yield* retry.call("unlink_pull_requests", { states: ["closed"] });
+        expect(yield* Ref.get(retry.commands)).toEqual([]);
+        yield* retry.call("unlink_pull_requests", { states: ["open"] });
+        expect(yield* Ref.get(retry.commands)).toMatchObject([
+          {
+            type: "thread.metadata.update",
+            purposeSelection: {
+              expectedRevision: 2,
+              scope: { type: "unscoped", reason: "deliberate" },
+            },
+          },
+        ]);
+      }),
   );
 
   it.effect("unlinks every visible pull request in the given states in one call", () =>

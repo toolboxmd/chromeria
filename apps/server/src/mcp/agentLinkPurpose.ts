@@ -31,6 +31,33 @@ export const withAgentLinkLock = Effect.fn("Mcp.withAgentLinkLock")(function* <A
   return yield* (yield* ThreadManagementService).withAgentLinkLock(own, effect);
 });
 
+/** A short target depends on the project's current remote. Bind its resolved identity before writing. */
+export const resolveKeyedLinkTarget = Effect.fn("Mcp.resolveKeyedLinkTarget")(function* <A, E, R>(
+  threadId: ThreadId,
+  resolve: Effect.Effect<A, E, R>,
+) {
+  const request = yield* CurrentRequest;
+  const caller = yield* McpInvocationContext;
+  if (!request || caller.client !== undefined || caller.thread?.threadId !== threadId)
+    return yield* resolve;
+  const owner = yield* Effect.serviceOption(McpRequestReceipts);
+  if (Option.isNone(owner))
+    return yield* new OrchestratorMcpFailure({
+      code: "orchestration_error",
+      message: "The durable link receipt is unavailable.",
+    });
+  const identity = yield* owner.value.identify(
+    caller,
+    "agent-link-target",
+    { operation: request.id },
+    request.id,
+  );
+  const prior = yield* owner.value.replay<A>(identity);
+  if (Option.isSome(prior)) return prior.value;
+  const value = yield* resolve;
+  return yield* owner.value.sqlMutation(identity, Effect.succeed(value));
+});
+
 /** Reserve before writing the link, then confirm after purpose is applied. */
 export const resumeLinkPurpose = Effect.fn("Mcp.resumeLinkPurpose")(function* (
   threadId: ThreadId,
