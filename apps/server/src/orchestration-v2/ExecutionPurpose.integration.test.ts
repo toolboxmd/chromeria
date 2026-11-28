@@ -495,7 +495,7 @@ it.effect(
     }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect.each(["selection", "legacy", "reference", "schedule"] as const)(
+it.effect.each(["selection", "legacy", "reference", "schedule", "server answer"] as const)(
   "promotes only ordinary human sends into a scoped wake (%s)",
   (source) =>
     Effect.gen(function* () {
@@ -531,6 +531,7 @@ it.effect.each(["selection", "legacy", "reference", "schedule"] as const)(
               ? { version: 1, intent: { type: "reference", reference: referenceB } }
               : undefined,
         ),
+        ...(source === "server answer" ? { creationSource: "server" as const } : {}),
         ...(source === "schedule"
           ? {
               createdBy: "system" as const,
@@ -555,7 +556,7 @@ it.effect.each(["selection", "legacy", "reference", "schedule"] as const)(
         queuedRunId: queued!.id,
         targetRunId: target!.id,
       });
-      if (source === "reference" || source === "schedule") {
+      if (source !== "selection" && source !== "legacy") {
         const error = yield* Effect.flip(promote);
         assert.instanceOf(error, Orchestrator.OrchestratorDispatchError);
         assert.include(String(error.cause), source === "reference" ? "Issue #12" : "Unscoped");

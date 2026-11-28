@@ -14689,7 +14689,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const target = projection.runs.find((run) => run.id === command.targetRunId);
     const queuedPurpose = executionPurposeOf(queuedRun);
     const ordinaryHumanSend =
-      queuedMessage.createdBy === "user" &&
+      isPersonSteering(queuedMessage) &&
       queuedMessage.scheduledTaskId === undefined &&
       queuedPurpose.scope.type === "unscoped" &&
       (queuedPurpose.scope.reason === "deliberate" ||
