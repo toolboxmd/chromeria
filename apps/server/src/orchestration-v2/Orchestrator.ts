@@ -8871,9 +8871,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const resolvedPurpose = yield* ExecutionPurpose.resolvePurposeIntent({
       intent:
-        // With no work left to steer, admit the message under the current
-        // selection just as an ordinary next message, within this dispatch lock.
-        isLateDelivery && command.purposeIntent?.intent.type === "target"
+        // A person may have composed before an agent linked its Issue. Resolve the
+        // current selection under this dispatch lock, including for a late steer.
+        (isLateDelivery && command.purposeIntent?.intent.type === "target") ||
+        (isPersonSteering(command) && command.purposeIntent?.intent.type === "selection")
           ? {
               version: 1,
               intent: {
@@ -14691,10 +14692,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const ordinaryHumanSend =
       isPersonSteering(queuedMessage) &&
       queuedMessage.scheduledTaskId === undefined &&
-      queuedPurpose.scope.type === "unscoped" &&
-      (queuedPurpose.scope.reason === "deliberate" ||
-        queuedPurpose.scope.reason === "legacy_no_intent") &&
-      (queuedPurpose.provenance.type === "selection" || queuedPurpose.provenance.type === "legacy");
+      (queuedPurpose.provenance.type === "selection" ||
+        (queuedPurpose.provenance.type === "legacy" &&
+          queuedPurpose.scope.type === "unscoped" &&
+          (queuedPurpose.scope.reason === "deliberate" ||
+            queuedPurpose.scope.reason === "legacy_no_intent")));
     if (target !== undefined && !ordinaryHumanSend) {
       const targetScope = executionPurposeOf(target).scope;
       if (!purposeScopesJoinable(queuedPurpose.scope, targetScope)) {

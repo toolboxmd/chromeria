@@ -1,12 +1,19 @@
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as Receipts from "../mcp/McpRequestReceipts.ts";
+import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
   type IssueKey,
+  type PurposeSelection,
   ProviderInstanceId,
   ThreadId,
   type ThreadGitHubIssueLink,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -17,6 +24,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { Tool } from "effect/ai";
 
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
+import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import * as McpToolAccess from "../mcp/McpToolAccess.ts";
 import * as McpToolAccessTestkit from "../mcp/McpToolAccess.testkit.ts";
 import * as IssueLinksHandlers from "../mcp/toolkits/issueLinks/handlers.ts";
@@ -663,6 +671,11 @@ describe("issue MCP tools", () => {
     capabilities: ReadonlyArray<McpInvocationContext.McpCapability> = ["pull-requests"],
     /** Null for an MCP client signed in from outside a T3 thread. */
     thread: ThreadId | null = THREAD,
+    threads = Layer.mock(ThreadManagementService)({
+      withAgentLinkLock: (_id, effect) => effect,
+      getThreadShell: (id) => Effect.succeed(McpToolAccessTestkit.liveThreadShell(id)),
+      dispatch: () => Effect.succeed({ sequence: 1, storedEvents: [] }),
+    }),
   ) =>
     IssueLinksToolkit.pipe(
       Effect.flatMap((toolkit) => toolkit.handle(name, params as never)),
@@ -677,7 +690,7 @@ describe("issue MCP tools", () => {
       ),
       Effect.provide(
         McpToolAccess.HandlersLayer.layer(IssueLinksHandlers.layer).pipe(
-          Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
+          Layer.provideMerge(Layer.merge(threads, SecureRandom.layerWebCrypto)),
         ),
       ),
     );
@@ -707,6 +720,125 @@ describe("issue MCP tools", () => {
         { issue: "acme/web#28", sources: ["branch"] },
       ]);
     }).pipe(Effect.provide(services)),
+  );
+
+  it.effect(
+    "recovers a keyed purpose write, serializes unlink, and preserves the historical replay",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const links = yield* IssueLinks.IssueLinks;
+        yield* links.link({ threadId: THREAD, target: { number: 41 }, source: "manual" });
+        const receipts = yield* Receipts.McpRequestReceipts;
+        const scope = invocation(["pull-requests"], THREAD);
+        const key = yield* receipts.identify(scope, "link_issue", { number: 41 }, "link-41");
+        const started = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const competing = yield* Deferred.make<void>();
+        const lock = yield* KeyedLock.make<ThreadId>();
+        let failFirst = true;
+        let selection: PurposeSelection = {
+          revision: 0,
+          scope: { type: "unscoped", reason: "deliberate" },
+        };
+        const threads = Layer.mock(ThreadManagementService)({
+          withAgentLinkLock: (id, effect) =>
+            Effect.gen(function* () {
+              if ((yield* lock.activeKeys).includes(id))
+                yield* Deferred.succeed(competing, undefined);
+              return yield* lock.withLock(id, effect);
+            }),
+          getThreadShell: (id) =>
+            Effect.succeed({
+              ...McpToolAccessTestkit.liveThreadShell(id),
+              purposeSelection: selection,
+            }),
+          dispatch: (command) =>
+            Effect.gen(function* () {
+              if (command.type !== "thread.metadata.update" || !command.purposeSelection)
+                throw new Error("Expected purpose update");
+              if (failFirst) {
+                failFirst = false;
+                return yield* new OrchestratorDispatchError({
+                  commandType: command.type,
+                  commandId: command.commandId,
+                  cause: "interrupted purpose write",
+                });
+              }
+              if (command.purposeSelection.scope.type === "single") {
+                yield* Deferred.succeed(started, undefined);
+                yield* Deferred.await(release);
+              }
+              expect(command.purposeSelection.expectedRevision).toBe(selection.revision);
+              selection = {
+                revision: selection.revision + 1,
+                scope: command.purposeSelection.scope,
+              };
+              return { sequence: 1, storedEvents: [] };
+            }),
+        });
+        const link = call("link_issue", { number: 41 }, ["pull-requests"], THREAD, threads).pipe(
+          Effect.provideService(Receipts.CurrentRequest, key),
+        );
+        expect((yield* Effect.result(link))._tag).toBe("Failure");
+        const resumed = yield* link.pipe(Effect.forkChild);
+        yield* Deferred.await(started);
+        const unlink = yield* call(
+          "unlink_issue",
+          { number: 41 },
+          ["pull-requests"],
+          THREAD,
+          threads,
+        ).pipe(Effect.forkChild);
+        yield* Deferred.await(competing);
+        yield* Deferred.succeed(release, undefined);
+        expect((yield* Fiber.join(resumed)).alreadyLinked).toBe(true);
+        expect((yield* Fiber.join(unlink)).wasLinked).toBe(true);
+        expect(selection).toEqual({
+          revision: 2,
+          scope: { type: "unscoped", reason: "deliberate" },
+        });
+        expect((yield* link).alreadyLinked).toBe(true);
+        expect(selection.revision).toBe(2);
+
+        yield* call("link_issue", { number: 41 }, ["pull-requests"], THREAD, threads);
+        const unlinkKey = yield* receipts.identify(
+          scope,
+          "unlink_issue",
+          { number: 41 },
+          "unlink-41",
+        );
+        const keyedUnlink = call(
+          "unlink_issue",
+          { number: 41 },
+          ["pull-requests"],
+          THREAD,
+          threads,
+        ).pipe(Effect.provideService(Receipts.CurrentRequest, unlinkKey));
+        failFirst = true;
+        expect((yield* Effect.result(keyedUnlink))._tag).toBe("Failure");
+        const afterRemoteChange = yield* keyedUnlink.pipe(
+          Effect.provideService(IssueLinks.IssueLinks, {
+            ...links,
+            resolveTarget: () =>
+              Effect.succeed({
+                ...issue(41, "another/repo"),
+                url: "https://github.com/another/repo/issues/41",
+              }),
+          }),
+        );
+        expect(afterRemoteChange).toMatchObject({ ...issue(41), wasLinked: true });
+        expect(selection).toEqual({
+          revision: 4,
+          scope: { type: "unscoped", reason: "deliberate" },
+        });
+      }).pipe(
+        Effect.provide(
+          Receipts.layer.pipe(
+            Layer.provideMerge(Layer.merge(services, SecureRandom.layerWebCrypto)),
+          ),
+        ),
+      ),
   );
 
   it.effect("refuses a credential without the pull-requests capability", () =>

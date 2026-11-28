@@ -11,6 +11,8 @@ import {
   type PurposeIntent,
   PurposeSelection,
   purposeScopeLabel,
+  parseTrackingReferenceUrl,
+  trackingReferenceUrl,
   purposeScopesEqual,
   purposeScopesJoinable,
   purposeSelectionOf,
@@ -58,6 +60,30 @@ export class PurposeAdmissionError extends Schema.TaggedError<PurposeAdmissionEr
 export function normalizePurposeScope(scope: ExecutionPurposeScope): ExecutionPurposeScope {
   return scope.type === "single"
     ? { type: "single", reference: normalizeTrackingReference(scope.reference) }
+    : scope;
+}
+
+export interface AgentLinkChange {
+  readonly type: "link" | "unlink";
+  readonly urls: ReadonlyArray<string>;
+}
+
+export function purposeAfterAgentLink(
+  scope: ExecutionPurposeScope,
+  change: AgentLinkChange,
+): ExecutionPurposeScope {
+  if (change.type === "unlink") {
+    return scope.type === "single" && change.urls.includes(trackingReferenceUrl(scope.reference))
+      ? { type: "unscoped", reason: "deliberate" }
+      : scope;
+  }
+  if (change.urls.length !== 1 || (scope.type === "single" && scope.reference.kind === "issue"))
+    return scope;
+  const url = change.urls[0]!;
+  const reference = parseTrackingReferenceUrl(url);
+  if (reference === null || trackingReferenceUrl(reference) !== url) return scope;
+  return scope.type === "unscoped" || reference.kind === "issue"
+    ? { type: "single", reference }
     : scope;
 }
 

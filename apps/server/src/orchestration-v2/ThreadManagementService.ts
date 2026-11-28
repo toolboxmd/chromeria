@@ -1,3 +1,4 @@
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as RecoveryHooks from "../prism/RecoveryHooks.ts";
 import { waitForRecovery, RecoveryWaitState } from "../peer/recoveryWait.ts";
 import type {
@@ -471,6 +472,7 @@ export type ThreadManagementError = typeof ThreadManagementError.Type;
 type ThreadManagementFailure = ThreadManagementError | Orchestrator.OrchestratorV2Error;
 
 export interface ThreadManagementServiceShape {
+  readonly withAgentLinkLock: KeyedLock.KeyedLock<ThreadId>["withLock"];
   readonly searchThreadStream: (
     input: OrchestrationV2SearchThreadInput,
   ) => Stream.Stream<OrchestrationV2SearchThreadResult, Orchestrator.OrchestratorV2Error>;
@@ -738,6 +740,7 @@ function descendantNotice(
 }
 
 const make = Effect.gen(function* () {
+  const agentLinks = yield* KeyedLock.make<ThreadId>();
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const recoveryWait = yield* RecoveryWaitState;
   const recoveryHooks = yield* RecoveryHooks.RecoveryHooks;
@@ -2172,6 +2175,7 @@ const make = Effect.gen(function* () {
   });
 
   return ThreadManagementService.of({
+    withAgentLinkLock: agentLinks.withLock,
     ensureLegacyTranscript,
     searchThreadStream: (input) =>
       Stream.unwrap(

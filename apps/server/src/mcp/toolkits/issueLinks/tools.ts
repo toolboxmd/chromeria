@@ -1,3 +1,4 @@
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as McpRouting from "../../McpRouting.ts";
 import {
   IssueLinkError,
@@ -18,6 +19,7 @@ import * as ThreadManagementService from "../../../orchestration-v2/ThreadManage
 // The handlers capture `IssueLinks` when the toolkit is built; the caller and its access check
 // (`McpToolAccess`) are per call.
 const dependencies = [
+  SecureRandom.SecureRandom,
   McpInvocationContext.McpInvocationContext,
   ThreadManagementService.ThreadManagementService,
 ];

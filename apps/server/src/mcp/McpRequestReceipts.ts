@@ -115,6 +115,10 @@ export class McpRequestReceipts extends Context.Service<
       environmentId: string,
       generation: string,
     ) => Effect.Effect<void, OrchestratorMcpFailure>;
+    readonly linkPurposePhase: (
+      request: RequestIdentity,
+      previouslyApplied: boolean,
+    ) => Effect.Effect<RequestIdentity, OrchestratorMcpFailure>;
     readonly replay: <A>(
       identity: RequestIdentity,
     ) => Effect.Effect<Option.Option<A>, OrchestratorMcpFailure>;
@@ -447,6 +451,17 @@ const make = Effect.gen(function* () {
     replay,
     external,
     sqlMutation,
+    linkPurposePhase: Effect.fn("McpRequestReceipts.linkPurposePhase")(
+      function* (request, previouslyApplied) {
+        const phase = { ...request, id: requestDigest(["agent-link-purpose", request.id]) };
+        // A pre-upgrade link receipt has no pending purpose write. A phase reserved
+        // before a new link remains pending across restart until the second write finishes.
+        yield* sql`INSERT INTO mcp_request_receipts (id,generation,input_digest,state,result_json)
+        VALUES (${phase.id},${phase.generation},${phase.inputDigest},${previouslyApplied ? "completed" : "bound"},${previouslyApplied ? json({ value: true }) : null})
+        ON CONFLICT DO NOTHING`.pipe(Effect.mapError(unavailable));
+        return phase;
+      },
+    ),
     bindDestination,
     destination,
   });

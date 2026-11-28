@@ -44,6 +44,7 @@ import * as ServerSettings from "../../../serverSettings.ts";
 import * as McpClientInput from "../../McpClientInput.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpToolAccessTestkit from "../../McpToolAccess.testkit.ts";
 import { listThreadPullRequests } from "./handlers.ts";
 import * as PullRequestsHandlers from "./handlers.ts";
@@ -149,6 +150,8 @@ function makeLink(
 
 interface HarnessOptions {
   readonly thread?: PullRequestTestThread | null;
+  readonly priorCommands?: ReadonlyArray<OrchestrationCommand>;
+  readonly purposeSelection?: OrchestrationV2ThreadShell["purposeSelection"];
   readonly purposeDeliveries?: OrchestrationV2ThreadShell["purposeDeliveries"];
   readonly project?: OrchestrationProjectShell | null;
   readonly reject?: (command: OrchestrationCommand) => string | null;
@@ -215,6 +218,7 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
           id === thread?.id
             ? {
                 ...v2PullRequestThread(thread),
+                ...(options.purposeSelection ? { purposeSelection: options.purposeSelection } : {}),
                 ...(options.purposeDeliveries === undefined
                   ? {}
                   : { purposeDeliveries: options.purposeDeliveries }),
@@ -230,7 +234,12 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
     Layer.mock(GitManager.GitManager)(options.git ?? {}),
     Layer.succeed(SecureRandom.SecureRandom, testCrypto),
     ServerSettings.layerTest({}, options.managedPolicy),
-    McpToolAccessTestkit.liveThreadsLayer,
+    Layer.mock(ThreadManagementService)({
+      getThreadShell: (id) => Effect.succeed(McpToolAccessTestkit.liveThreadShell(id)),
+      withAgentLinkLock: (_id, effect) => effect,
+      hasReceipt: (id) =>
+        Effect.succeed(options.priorCommands?.some((command) => command.commandId === id) ?? false),
+    }),
   );
   const toolkit = yield* PullRequestsToolkit.pipe(
     Effect.provide(
@@ -338,6 +347,10 @@ describe("pull request toolkit handlers", () => {
       });
       expect(yield* Ref.get(harness.commands)).toMatchObject([
         { type: "thread.pull-request.link", purposeDelivery: { version: 1, purpose } },
+        {
+          type: "thread.metadata.update",
+          purposeSelection: { scope: { reference: { kind: "pr", number: 123 } } },
+        },
       ]);
     }),
   );
@@ -492,6 +505,15 @@ describe("pull request toolkit handlers", () => {
       });
       if ("type" in result) throw new Error("Unkeyed calls keep their legacy result.");
       expect(result.alreadyLinked).toBe(true);
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        {
+          type: "thread.metadata.update",
+          purposeSelection: {
+            expectedRevision: 0,
+            scope: { type: "single", reference: { kind: "pr", number: 123 } },
+          },
+        },
+      ]);
     }),
   );
 
@@ -499,6 +521,13 @@ describe("pull request toolkit handlers", () => {
     Effect.gen(function* () {
       const harness = yield* makeHarness({
         thread: makeThread([makeLink(5)]),
+        purposeSelection: {
+          revision: 1,
+          scope: {
+            type: "single",
+            reference: { kind: "pr", host: "github.com", repository: "t3tools/t3code", number: 5 },
+          },
+        },
         reject: (command) =>
           command.type === "thread.pull-request.unlink" && command.number !== 5
             ? "not linked"
@@ -521,6 +550,13 @@ describe("pull request toolkit handlers", () => {
       expect(missing.wasLinked).toBe(false);
       expect(yield* Ref.get(harness.commands)).toMatchObject([
         { type: "thread.pull-request.unlink", number: 5 },
+        {
+          type: "thread.metadata.update",
+          purposeSelection: {
+            expectedRevision: 1,
+            scope: { type: "unscoped", reason: "deliberate" },
+          },
+        },
       ]);
     }),
   );
@@ -554,6 +590,20 @@ describe("pull request toolkit handlers", () => {
       }),
   );
 
+  it.effect("linking a PR on another thread leaves its purpose alone", () =>
+    Effect.gen(function* () {
+      const id = ThreadId.make("other");
+      const harness = yield* makeHarness({ thread: { ...makeThread([]), id } });
+      yield* harness.call("link_pull_request", {
+        threadId: id,
+        url: "https://github.com/t3tools/t3code/pull/123",
+      });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request.link", threadId: id },
+      ]);
+    }),
+  );
+
   it.effect("links several pull requests in one call", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({
@@ -573,7 +623,52 @@ describe("pull request toolkit handlers", () => {
         { type: "thread.pull-request.link", number: 2, source: "agent" },
         { type: "thread.pull-request.link", number: 3, source: "agent" },
       ]);
+      yield* harness.call("link_pull_requests", { urls: [url(1)] });
+      expect((yield* Ref.get(harness.commands)).at(-1)).toMatchObject({
+        type: "thread.metadata.update",
+        purposeSelection: { scope: { type: "single", reference: { kind: "pr", number: 1 } } },
+      });
     }),
+  );
+
+  it.effect(
+    "a repeated state filter clears a selected PR removed before the metadata write failed",
+    () =>
+      Effect.gen(function* () {
+        const purposeSelection = {
+          revision: 2,
+          scope: {
+            type: "single",
+            reference: { kind: "pr", host: "github.com", repository: "t3tools/t3code", number: 3 },
+          },
+        } as const;
+        const first = yield* makeHarness({
+          thread: makeThread([makeLink(3, { headBranch: "selected" })]),
+          purposeSelection,
+          reject: (command) =>
+            command.type === "thread.metadata.update" ? "interrupted write" : null,
+        });
+        yield* first.call("unlink_pull_requests", { states: ["open"] }).pipe(Effect.flip);
+        const priorCommands = yield* Ref.get(first.commands);
+        expect(priorCommands).toMatchObject([{ type: "thread.pull-request.unlink", number: 3 }]);
+        const retry = yield* makeHarness({
+          thread: makeThread([]),
+          purposeSelection,
+          priorCommands,
+        });
+        yield* retry.call("unlink_pull_requests", { states: ["closed"] });
+        expect(yield* Ref.get(retry.commands)).toEqual([]);
+        yield* retry.call("unlink_pull_requests", { states: ["open"] });
+        expect(yield* Ref.get(retry.commands)).toMatchObject([
+          {
+            type: "thread.metadata.update",
+            purposeSelection: {
+              expectedRevision: 2,
+              scope: { type: "unscoped", reason: "deliberate" },
+            },
+          },
+        ]);
+      }),
   );
 
   it.effect("unlinks every visible pull request in the given states in one call", () =>
@@ -583,6 +678,13 @@ describe("pull request toolkit handlers", () => {
         return { ...link, snapshot: { ...link.snapshot!, state } };
       };
       const harness = yield* makeHarness({
+        purposeSelection: {
+          revision: 2,
+          scope: {
+            type: "single",
+            reference: { kind: "pr", host: "github.com", repository: "t3tools/t3code", number: 3 },
+          },
+        },
         thread: makeThread([
           withState(1, "merged"),
           withState(2, "open"),
@@ -605,6 +707,13 @@ describe("pull request toolkit handlers", () => {
       expect(yield* Ref.get(harness.commands)).toMatchObject([
         { type: "thread.pull-request.unlink", number: 1 },
         { type: "thread.pull-request.unlink", number: 3 },
+        {
+          type: "thread.metadata.update",
+          purposeSelection: {
+            expectedRevision: 2,
+            scope: { type: "unscoped", reason: "deliberate" },
+          },
+        },
       ]);
     }),
   );
@@ -1335,6 +1444,10 @@ describe("source control tools", () => {
       expect(opened).toEqual([{ cwd: "/workspace/worktree", draft: true, private: true }]);
       expect(yield* Ref.get(harness.commands)).toMatchObject([
         { type: "thread.pull-request.link", number: 43, source: "created" },
+        {
+          type: "thread.metadata.update",
+          purposeSelection: { scope: { type: "single", reference: { kind: "pr", number: 43 } } },
+        },
       ]);
     }),
   );
