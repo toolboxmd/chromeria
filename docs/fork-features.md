@@ -3312,7 +3312,8 @@ sources and reasons.
     "https://github.com/toolboxmd/chromeria/issues/377",
     "https://github.com/toolboxmd/chromeria/issues/909",
     "https://github.com/toolboxmd/chromeria/issues/982",
-    "https://github.com/toolboxmd/chromeria/issues/983"
+    "https://github.com/toolboxmd/chromeria/issues/983",
+    "https://github.com/toolboxmd/chromeria/issues/1056"
   ],
   "prs": [
     "https://github.com/toolboxmd/chromeria/pull/388",
@@ -3322,6 +3323,8 @@ sources and reasons.
   ],
   "newFiles": [
     "apps/mobile/src/features/threads/ExecutionPurposePicker.tsx",
+    "apps/server/src/mcp/agentLinkPurpose.ts",
+    "apps/server/src/orchestration-v2/ExecutionPurpose.test.ts",
     "apps/server/src/orchestration-v2/ExecutionPurpose.integration.test.ts",
     "apps/server/src/orchestration-v2/ExecutionPurpose.ts",
     "apps/server/src/persistence/forkExecutionPurposeSchema.ts",

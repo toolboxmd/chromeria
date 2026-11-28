@@ -1,3 +1,4 @@
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import {
   ExecutionPurposeDelivery,
   PurposeDeliveryIntent,
@@ -51,6 +52,7 @@ import * as PullRequestService from "../../../pullRequest/PullRequestService.ts"
 import * as PullRequestReviewGuideService from "../../../pullRequest/PullRequestReviewGuideService.ts";
 
 const dependencies = [
+  SecureRandom.SecureRandom,
   McpInvocationContext.McpInvocationContext,
   ThreadManagementService.ThreadManagementService,
   Orchestrator.OrchestratorV2,
@@ -322,7 +324,7 @@ export type ListThreadPullRequestsResult = typeof ListThreadPullRequestsResult.T
 
 const LinkPullRequestTool = Tool.make("link_pull_request", {
   description:
-    "Link a PR to this thread. T3 shows its status and settles the thread on merge. Optional `purposeDelivery` records the exact Issue or PR outcome this PR delivers, including work before the PR existed; it never changes execution ownership, and omitting it records navigation only. Negotiated keyed calls return a historical confirmed-operation receipt; `list_thread_pull_requests` reads current links. Unkeyed relinking succeeds and can add a delivery declaration.",
+    "Link a PR to this thread. T3 shows its status and settles the thread on merge. Optional `purposeDelivery` records the exact Issue or PR outcome this PR delivers, including work before the PR existed; a link on your own unscoped thread can select this PR for future runs. Negotiated keyed calls return a historical confirmed-operation receipt; `list_thread_pull_requests` reads current links. Unkeyed relinking succeeds and can add a delivery declaration.",
   parameters: McpRouting.parameters(
     Schema.Struct({
       ...PullRequestTargetInput.fields,

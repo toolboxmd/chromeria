@@ -1,4 +1,6 @@
 import { interactiveAuthority } from "../../../peer/PeerAuthorityRecord.ts";
+import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
+import { updateAgentLinkPurpose } from "../../agentLinkPurpose.ts";
 import { CurrentRequest } from "../../McpRequestReceipts.ts";
 import {
   CommandId,
@@ -865,12 +867,21 @@ const make = Effect.gen(function* () {
           threadPullRequestKeysEqual(link, target),
         );
         const wasLinked = existing !== undefined && existing.source !== "stack-dismissed";
-        if (request === undefined && wasLinked && input.purposeDelivery === undefined)
+        const updatePurpose = updateAgentLinkPurpose(engine, thread.id, {
+          type: "link",
+          urls: [target.url],
+        });
+        if (request === undefined && wasLinked && input.purposeDelivery === undefined) {
+          yield* updatePurpose;
           return { ...target, ...next, alreadyLinked: true };
+        }
+        const id = yield* commandId("mcp-pr-link", thread.id);
+        const replay =
+          request !== undefined && (yield* (yield* ThreadManagementService).hasReceipt(id));
         const alreadyLinked = yield* engine
           .dispatch({
             type: "thread.pull-request.link",
-            commandId: yield* commandId("mcp-pr-link", thread.id),
+            commandId: id,
             threadId: thread.id,
             host: target.host,
             repository: target.repository,
@@ -885,6 +896,7 @@ const make = Effect.gen(function* () {
             Effect.as(wasLinked),
             Effect.catchCause(dispatchFailure(PullRequestLinkFailedError)),
           );
+        if (!replay) yield* updatePurpose;
         return request === undefined
           ? {
               ...target,
@@ -934,6 +946,10 @@ const make = Effect.gen(function* () {
             });
           }).pipe(Effect.catchCause(dispatchFailure(PullRequestLinkFailedError))),
         );
+        yield* updateAgentLinkPurpose(engine, thread.id, {
+          type: "link",
+          urls: targets.map((target) => target.url),
+        });
         const byRepository = (prs: ReadonlyArray<ResolvedTarget>) =>
           [...Map.groupBy(prs, (pr) => `${pr.host}/${pr.repository}`).values()].map((group) => ({
             host: group[0]!.host,
@@ -964,23 +980,33 @@ const make = Effect.gen(function* () {
           thread.purposeDeliveries?.some((entry) =>
             threadPullRequestKeysEqual(entry.pullRequest, target),
           ) ?? false;
-        if (request === undefined && !isLinked && !hasDelivery)
+        const updatePurpose = updateAgentLinkPurpose(engine, thread.id, {
+          type: "unlink",
+          urls: [target.url],
+        });
+        if (request === undefined && !isLinked && !hasDelivery) {
+          yield* updatePurpose;
           return {
             host: target.host,
             repository: target.repository,
             number: target.number,
             wasLinked: false,
           };
+        }
+        const id = yield* commandId("mcp-pr-unlink", thread.id);
+        const replay =
+          request !== undefined && (yield* (yield* ThreadManagementService).hasReceipt(id));
         yield* engine
           .dispatch({
             type: "thread.pull-request.unlink",
-            commandId: yield* commandId("mcp-pr-unlink", thread.id),
+            commandId: id,
             threadId: thread.id,
             host: target.host,
             repository: target.repository,
             number: target.number,
           })
           .pipe(Effect.catchCause(dispatchFailure(PullRequestUnlinkFailedError)));
+        if (!replay) yield* updatePurpose;
         return request === undefined
           ? {
               host: target.host,
@@ -998,7 +1024,7 @@ const make = Effect.gen(function* () {
         const matching = visible.flatMap((link) => {
           const state = link.snapshot?.state;
           return state !== undefined && input.states.includes(state)
-            ? [{ ...normalizeThreadPullRequestKey(link), state }]
+            ? [{ ...normalizeThreadPullRequestKey(link), state, url: link.url }]
             : [];
         });
         yield* Effect.forEach(matching, ({ host, repository, number }) =>
@@ -1013,6 +1039,10 @@ const make = Effect.gen(function* () {
             });
           }).pipe(Effect.catchCause(dispatchFailure(PullRequestUnlinkFailedError))),
         );
+        yield* updateAgentLinkPurpose(engine, thread.id, {
+          type: "unlink",
+          urls: matching.map((link) => link.url),
+        });
         // Numbers grouped by repository and state keep a large batch's result small.
         const groups = Map.groupBy(matching, (pr) => `${pr.host}/${pr.repository}/${pr.state}`);
         return {
@@ -1303,6 +1333,7 @@ const make = Effect.gen(function* () {
         }
         const target = yield* resolveTarget({ url: created.url }, project);
         yield* linkToThread(thread, target);
+        yield* updateAgentLinkPurpose(engine, thread.id, { type: "link", urls: [target.url] });
         return {
           ...identityOf(target),
           created: created.status === "created",

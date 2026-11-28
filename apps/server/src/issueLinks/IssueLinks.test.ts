@@ -2,11 +2,13 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
   type IssueKey,
+  type PurposeSelection,
   ProviderInstanceId,
   ThreadId,
   type ThreadGitHubIssueLink,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -17,6 +19,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { Tool } from "effect/ai";
 
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
+import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import * as McpToolAccess from "../mcp/McpToolAccess.ts";
 import * as McpToolAccessTestkit from "../mcp/McpToolAccess.testkit.ts";
 import * as IssueLinksHandlers from "../mcp/toolkits/issueLinks/handlers.ts";
@@ -663,6 +666,10 @@ describe("issue MCP tools", () => {
     capabilities: ReadonlyArray<McpInvocationContext.McpCapability> = ["pull-requests"],
     /** Null for an MCP client signed in from outside a T3 thread. */
     thread: ThreadId | null = THREAD,
+    threads = Layer.mock(ThreadManagementService)({
+      getThreadShell: (id) => Effect.succeed(McpToolAccessTestkit.liveThreadShell(id)),
+      dispatch: () => Effect.succeed({ sequence: 1, storedEvents: [] }),
+    }),
   ) =>
     IssueLinksToolkit.pipe(
       Effect.flatMap((toolkit) => toolkit.handle(name, params as never)),
@@ -677,9 +684,10 @@ describe("issue MCP tools", () => {
       ),
       Effect.provide(
         McpToolAccess.HandlersLayer.layer(IssueLinksHandlers.layer).pipe(
-          Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
+          Layer.provideMerge(threads),
         ),
       ),
+      Effect.provide(SecureRandom.layerWebCrypto),
     );
 
   it.effect("links, lists and unlinks for the calling thread with source agent", () =>
@@ -706,6 +714,43 @@ describe("issue MCP tools", () => {
       expect(linksOf(yield* links.forThread(THREAD))).toEqual([
         { issue: "acme/web#28", sources: ["branch"] },
       ]);
+    }).pipe(Effect.provide(services)),
+  );
+
+  it.effect("an already linked Issue fills the selection, then unlink clears it", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const links = yield* IssueLinks.IssueLinks;
+      yield* links.link({ threadId: THREAD, target: { number: 41 }, source: "manual" });
+      let selection: PurposeSelection = {
+        revision: 0,
+        scope: { type: "unscoped", reason: "deliberate" },
+      };
+      const threads = Layer.mock(ThreadManagementService)({
+        getThreadShell: (id) =>
+          Effect.succeed({
+            ...McpToolAccessTestkit.liveThreadShell(id),
+            purposeSelection: selection,
+          }),
+        dispatch: (command) =>
+          Effect.sync(() => {
+            if (command.type !== "thread.metadata.update" || !command.purposeSelection)
+              throw new Error("Expected purpose update");
+            expect(command.purposeSelection.expectedRevision).toBe(selection.revision);
+            selection = { revision: selection.revision + 1, scope: command.purposeSelection.scope };
+            return { sequence: 1, storedEvents: [] };
+          }),
+      });
+      expect(
+        (yield* call("link_issue", { number: 41 }, ["pull-requests"], THREAD, threads))
+          .alreadyLinked,
+      ).toBe(true);
+      expect(selection).toMatchObject({
+        revision: 1,
+        scope: { type: "single", reference: { kind: "issue", number: 41 } },
+      });
+      yield* call("unlink_issue", { number: 41 }, ["pull-requests"], THREAD, threads);
+      expect(selection).toEqual({ revision: 2, scope: { type: "unscoped", reason: "deliberate" } });
     }).pipe(Effect.provide(services)),
   );
 
